@@ -7,7 +7,7 @@ description = "High-performance, memory-efficient sync/async channels built for 
 license = "MPL-2.0"
 repository = "https://github.com/excsn/fibre"
 readme = "README.md"
-keywords = ["channel", "mpmc", "spsc", "async", "sync", "performance"]
+keywords = ["channel", "mpmc", "spsc", "communication", "concurrent"]
 categories = ["concurrency", "asynchronous", "data-structures"]
 
 exclude = [
@@ -15,7 +15,7 @@ exclude = [
 ]
 
 [features]
-default = ["std", "fibre_telemetry"]
+default = ["std"]
 std = [] # Enable if we depend on std features not in core/alloc
 alloc = [] # Enable if we use alloc-only features (e.g. Box, Vec from alloc crate)
 fibre_telemetry = ["dep:tokio"]
