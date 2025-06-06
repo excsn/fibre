@@ -1,0 +1,58 @@
+[package]
+name = "fibre"
+version = "0.1.0"
+edition = "2021"
+authors = ["Excerion Sun <dev@excsn.com>"]
+description = "High-performance, memory-efficient sync/async channels built for real-time, low-overhead communication in concurrent Rust applications."
+license = "MPL-2.0"
+repository = "https://github.com/excsn/fibre"
+readme = "README.md"
+keywords = ["channel", "mpmc", "spsc", "async", "sync", "performance"]
+categories = ["concurrency", "asynchronous", "data-structures"]
+
+[features]
+default = ["std", "fibre_telemetry"]
+std = [] # Enable if we depend on std features not in core/alloc
+alloc = [] # Enable if we use alloc-only features (e.g. Box, Vec from alloc crate)
+fibre_telemetry = ["dep:tokio"]
+
+[dependencies]
+# We'll add these as we implement features:
+futures-core = { version = "^0.3", default-features = false, features = ["alloc", "std"] } # For Waker, Future, Stream
+parking_lot = "^0.12"
+# crossbeam-utils = "0.8" # For CachePadded, maybe other utilities
+doublejump = "^1"
+
+# If using futures-util's AtomicWaker directly:
+futures-util = { version = "^0.3", default-features = false, features = ["alloc", "std"] } # "std" for AtomicWaker usually
+lazy_static = "^1"
+tokio = { version = "1", features = ["full"], optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+bench_matrix = "^0"
+# proptest = "1"
+
+[[bench]]
+name = "spsc"
+harness = false
+
+[[bench]]
+name = "mpmc_async"
+harness = false
+
+[[bench]]
+name = "mpmc_sync"
+harness = false
+
+[[bench]]
+name = "oneshot"
+harness = false
+
+# Optional: For faster compile times during development
+[profile.dev]
+opt-level = 1
+debug = true
+
+# [profile.dev.package."*"]
+# opt-level = 3 # Compile dependencies with optimizations

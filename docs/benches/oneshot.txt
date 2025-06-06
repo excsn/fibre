@@ -1,0 +1,6 @@
+Test Machine: Macbook M4 Pro
+
+OneshotAsync/Ops-100    time:   [10.192 µs 10.238 µs 10.270 µs]
+
+OneshotAsync/Ops-1000   time:   [97.315 µs 97.684 µs 98.271 µs]
+                        thrpt:  [1.0176 Melem/s 1.0237 Melem/s 1.0276 Melem/s]
