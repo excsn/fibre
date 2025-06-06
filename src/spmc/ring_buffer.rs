@@ -13,15 +13,46 @@ use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::sync::atomic::{self, AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, Thread};
 
-// --- Core Structs (No changes here) ---
+// Helper function to create a Waker that unparks a specific thread.
+// This is essential for the synchronous `recv` to park correctly.
+fn sync_waker(thread: Thread) -> Waker {
+  // This vtable defines how to clone, wake, and drop the waker's raw data.
+  // The key is that `wake` and `wake_by_ref` call `thread.unpark()`.
+  const VTABLE: RawWakerVTable = RawWakerVTable::new(
+    |data| unsafe {
+      // Clone: Create a new Box<Thread> and return a new RawWaker.
+      let thread_ptr = Box::into_raw(Box::new((*(data as *const Thread)).clone()));
+      RawWaker::new(thread_ptr as *const (), &VTABLE)
+    },
+    |data| unsafe {
+      // Wake: Consumes the waker, so we must consume and drop the Box<Thread>.
+      let thread = Box::from_raw(data as *mut Thread);
+      thread.unpark();
+    },
+    |data| unsafe {
+      // Wake_by_ref: Does not consume the waker, so we only unpark.
+      (*(data as *const Thread)).unpark();
+    },
+    |data| unsafe {
+      // Drop: The waker is dropped, so we must drop the Box<Thread>.
+      drop(Box::from_raw(data as *mut Thread));
+    },
+  );
+  let thread_ptr = Box::into_raw(Box::new(thread));
+  unsafe { Waker::from_raw(RawWaker::new(thread_ptr as *const (), &VTABLE)) }
+}
+
+// --- Core Structs ---
 
 pub(crate) struct Slot<T> {
   sequence: AtomicUsize,
   value: UnsafeCell<MaybeUninit<T>>,
-  waker: AtomicWaker,
+  // A slot can have multiple consumers (sync or async) waiting for it.
+  // We use a Mutex-guarded Vec to store all their wakers.
+  wakers: Mutex<Vec<Waker>>,
 }
 
 impl<T> Drop for Slot<T> {
@@ -67,7 +98,7 @@ impl<T: Send + Clone> SpmcShared<T> {
       buffer.push(Slot {
         sequence: AtomicUsize::new(2 * i),
         value: UnsafeCell::new(MaybeUninit::uninit()),
-        waker: AtomicWaker::new(),
+        wakers: Mutex::new(Vec::new()),
       });
     }
     SpmcShared {
@@ -98,7 +129,7 @@ impl<T: Send + Clone> SpmcShared<T> {
   }
 }
 
-// --- Handles (No changes here) ---
+// --- Handles ---
 #[derive(Debug)]
 pub struct Producer<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
@@ -122,7 +153,7 @@ pub struct AsyncReceiver<T: Send + Clone> {
   pub(crate) tail: Arc<AtomicUsize>,
 }
 
-// --- Channel Constructor (No changes here) ---
+// --- Channel Constructor ---
 pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (Producer<T>, Receiver<T>) {
   assert!(capacity > 0, "SPMC channel capacity must be > 0");
   let shared = Arc::new(SpmcShared::new(capacity));
@@ -140,7 +171,7 @@ pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (Producer<T>, Rec
   )
 }
 
-// --- Receiver Logic (No changes needed here, it was already correct) ---
+// --- Receiver Logic ---
 fn try_recv_internal<T: Send + Clone>(
   shared: &SpmcShared<T>,
   tail_atomic: &AtomicUsize,
@@ -153,7 +184,6 @@ fn try_recv_internal<T: Send + Clone>(
   if seq == 2 * tail + 1 {
     let value = unsafe { (*slot.value.get()).assume_init_ref().clone() };
     tail_atomic.store(tail + 1, Ordering::Release);
-    // CRITICAL: A consumer making progress must wake a potentially blocked producer.
     shared.wake_producer();
     Ok(value)
   } else {
@@ -165,15 +195,23 @@ impl<T: Send + Clone> Receiver<T> {
   pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
     try_recv_internal(&self.shared, &self.tail)
   }
+
   pub fn recv(&mut self) -> Result<T, RecvError> {
     loop {
       match self.try_recv() {
         Ok(value) => return Ok(value),
         Err(TryRecvError::Empty) => {
-          // This spin-wait is inefficient but correct for a simple sync implementation.
-          // A full-featured sync `recv` would park the thread here and be woken
-          // by the producer's `slot.waker.wake()`. For this fix, we focus on the deadlock.
-          thread::yield_now();
+          let tail = self.tail.load(Ordering::Relaxed);
+          let slot_idx = tail % self.shared.capacity;
+          let slot = &self.shared.buffer[slot_idx];
+
+          let waker = sync_waker(thread::current());
+          slot.wakers.lock().unwrap().push(waker);
+
+          if let Ok(value) = self.try_recv() {
+            return Ok(value);
+          }
+          thread::park();
         }
         Err(TryRecvError::Disconnected) => unreachable!(),
       }
@@ -189,7 +227,7 @@ impl<T: Send + Clone> AsyncReceiver<T> {
   }
 }
 
-// --- Common Receiver Traits (No changes here) ---
+// --- Common Receiver Traits ---
 fn clone_receiver<T: Send + Clone>(
   shared: &Arc<SpmcShared<T>>,
   tail: &Arc<AtomicUsize>,
@@ -218,7 +256,6 @@ impl<T: Send + Clone> Clone for AsyncReceiver<T> {
 fn drop_receiver<T: Send + Clone>(shared: &SpmcShared<T>, tail: &Arc<AtomicUsize>) {
   let mut tails_guard = shared.tails.lock().unwrap();
   tails_guard.list.retain(|t| !Arc::ptr_eq(t, tail));
-  // After a consumer drops, the producer might be unblocked.
   shared.wake_producer();
 }
 impl<T: Send + Clone> Drop for Receiver<T> {
@@ -232,21 +269,15 @@ impl<T: Send + Clone> Drop for AsyncReceiver<T> {
   }
 }
 
-// --- Producer Logic (FIXED) ---
-
+// --- Producer Logic ---
 impl<T: Send + Clone> Producer<T> {
   pub fn send(&mut self, value: T) -> Result<(), SendError> {
-    let head = unsafe { *self.shared.head.get() };
-
-    // Wait until there is space in the buffer.
     loop {
+      let head = unsafe { *self.shared.head.get() };
       let tails_guard = self.shared.tails.lock().unwrap();
-      // If all consumers have disconnected, the channel is closed.
       if tails_guard.list.is_empty() {
         return Err(SendError::Closed);
       }
-      // The producer is blocked if its `head` would lap the slowest consumer's `tail`.
-      // We find the minimum tail position to determine how far the producer can go.
       let min_tail = tails_guard
         .list
         .iter()
@@ -255,17 +286,13 @@ impl<T: Send + Clone> Producer<T> {
         .unwrap();
       drop(tails_guard);
 
-      // The space available is `capacity - (head - min_tail)`.
-      // If `head - min_tail == capacity`, the buffer is full.
       if head - min_tail < self.shared.capacity {
-        break; // Space is available, exit the blocking loop.
+        break;
       }
 
-      // Buffer is full, park the thread.
       unsafe { *self.shared.producer_thread.get() = Some(thread::current()) };
       self.shared.producer_parked.store(true, Ordering::Release);
 
-      // Re-check condition after setting park flag to avoid lost wakeups.
       let tails_guard = self.shared.tails.lock().unwrap();
       if tails_guard.list.is_empty() {
         return Err(SendError::Closed);
@@ -279,7 +306,6 @@ impl<T: Send + Clone> Producer<T> {
       drop(tails_guard);
 
       if head - min_tail < self.shared.capacity {
-        // Space appeared while we were preparing to park. Abort the park.
         if self
           .shared
           .producer_parked
@@ -290,26 +316,23 @@ impl<T: Send + Clone> Producer<T> {
             *self.shared.producer_thread.get() = None;
           }
         }
-        continue; // Retry the loop immediately.
+        continue;
       }
-
       sync_util::park_thread();
     }
 
-    // --- Perform the write ---
-    // At this point, we know there is space.
     unsafe {
+      let head = *self.shared.head.get();
       let slot_idx = head % self.shared.capacity;
       let slot = &self.shared.buffer[slot_idx];
 
-      // Write the value and update the sequence number for consumers.
       (*slot.value.get()).write(value);
       slot.sequence.store(2 * head + 1, Ordering::Release);
 
-      // Wake any consumers that were waiting on *this specific slot*.
-      slot.waker.wake();
+      for waker in slot.wakers.lock().unwrap().drain(..) {
+        waker.wake();
+      }
 
-      // Advance the producer's head.
       *self.shared.head.get() = head + 1;
     }
     Ok(())
@@ -325,7 +348,7 @@ impl<T: Send + Clone> AsyncProducer<T> {
   }
 }
 
-// --- Futures (FIXED) ---
+// --- Futures ---
 #[must_use]
 pub struct SendFuture<'a, T: Send + Clone> {
   producer: &'a mut AsyncProducer<T>,
@@ -336,15 +359,13 @@ impl<'a, T: Send + Clone + Unpin> Future for SendFuture<'a, T> {
   type Output = Result<(), SendError>;
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let s = self.as_mut().get_mut();
-
     loop {
       let shared = &s.producer.shared;
       let head = unsafe { *shared.head.get() };
 
-      // Check if the buffer is full relative to the slowest consumer.
       let tails_guard = shared.tails.lock().unwrap();
       if tails_guard.list.is_empty() {
-        s.value = None; // Consume the value on error.
+        s.value = None;
         return Poll::Ready(Err(SendError::Closed));
       }
       let min_tail = tails_guard
@@ -356,13 +377,9 @@ impl<'a, T: Send + Clone + Unpin> Future for SendFuture<'a, T> {
       drop(tails_guard);
 
       if head - min_tail >= shared.capacity {
-        // Buffer is full. Register our waker to be woken by a consumer.
         shared.producer_waker.register(cx.waker());
-
-        // Re-check after registering to prevent lost wakeups.
         let tails_guard = shared.tails.lock().unwrap();
         if tails_guard.list.is_empty() {
-          // Check again for drop
           s.value = None;
           return Poll::Ready(Err(SendError::Closed));
         }
@@ -373,28 +390,23 @@ impl<'a, T: Send + Clone + Unpin> Future for SendFuture<'a, T> {
           .min()
           .unwrap();
         drop(tails_guard);
-
-        // If space has opened up, we must loop to try again.
         if head - new_min_tail < shared.capacity {
           continue;
         }
-
-        // Still full, waker is registered, so we can park.
         return Poll::Pending;
       }
 
-      // --- Space is available, perform the write ---
       let value_to_write = s.value.take().expect("SendFuture polled after completion");
       let slot_idx = head % shared.capacity;
       let slot = &shared.buffer[slot_idx];
-
       unsafe {
         (*slot.value.get()).write(value_to_write);
-        // This sequence number signals to consumers that the data is ready.
         slot.sequence.store(2 * head + 1, Ordering::Release);
-        // Wake any consumers waiting for this specific slot.
-        slot.waker.wake();
-        // Advance our head.
+
+        for waker in slot.wakers.lock().unwrap().drain(..) {
+          waker.wake();
+        }
+
         *shared.head.get() = head + 1;
       }
       return Poll::Ready(Ok(()));
@@ -407,7 +419,6 @@ pub struct RecvFuture<'a, T: Send + Clone> {
   receiver: &'a mut AsyncReceiver<T>,
 }
 
-// No changes needed for RecvFuture, its logic was correct.
 impl<'a, T: Send + Clone> Future for RecvFuture<'a, T> {
   type Output = Result<T, RecvError>;
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -415,7 +426,6 @@ impl<'a, T: Send + Clone> Future for RecvFuture<'a, T> {
     let slot_idx = tail % self.receiver.shared.capacity;
     let slot = &self.receiver.shared.buffer[slot_idx];
 
-    // Check if the slot we're waiting for has the correct sequence number.
     let seq = slot.sequence.load(Ordering::Acquire);
     if seq == 2 * tail + 1 {
       let value = unsafe { (*slot.value.get()).assume_init_ref().clone() };
@@ -424,17 +434,14 @@ impl<'a, T: Send + Clone> Future for RecvFuture<'a, T> {
       return Poll::Ready(Ok(value));
     }
 
-    // Data not ready. Register waker on the slot we are waiting for.
-    slot.waker.register(cx.waker());
+    slot.wakers.lock().unwrap().push(cx.waker().clone());
 
-    // Re-check after registering to prevent lost wakeups.
     if slot.sequence.load(Ordering::Acquire) == 2 * tail + 1 {
       let value = unsafe { (*slot.value.get()).assume_init_ref().clone() };
       self.receiver.tail.store(tail + 1, Ordering::Release);
       self.receiver.shared.wake_producer();
       return Poll::Ready(Ok(value));
     }
-
     Poll::Pending
   }
 }
