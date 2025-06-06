@@ -1,0 +1,7 @@
+[profile.default]
+# Terminate after 3 × 60 s periods (i.e. 180 s)
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[[profile.default.overrides]]
+filter = 'test(spmc_deadlock_tests::looped_repro_spmc_sync_hang_14c_1cap)'
+slow-timeout = "5m"

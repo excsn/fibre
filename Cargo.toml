@@ -1,6 +1,6 @@
 [package]
 name = "fibre"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Excerion Sun <dev@excsn.com>"]
 description = "High-performance, memory-efficient sync/async channels built for real-time, low-overhead communication in concurrent Rust applications."
@@ -36,6 +36,7 @@ tokio = { version = "1", features = ["full"], optional = true }
 criterion = { version = "0.5", features = ["html_reports"] }
 bench_matrix = "^0"
 tokio = { version = "1", features = ["full"] }
+serial_test = "^3"
 # proptest = "1"
 
 [[bench]]
@@ -67,7 +68,11 @@ name = "spmc_sync"
 harness = false
 
 [[bench]]
-name = "spsc"
+name = "spsc_async"
+harness = false
+
+[[bench]]
+name = "spsc_sync"
 harness = false
 
 # Optional: For faster compile times during development

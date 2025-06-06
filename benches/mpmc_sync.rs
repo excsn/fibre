@@ -159,7 +159,7 @@ fn mpmc_sync_benches(c: &mut Criterion) {
 
   SyncBenchmarkSuite::new(
     c,
-    "MpmcV2Sync".to_string(), // New benchmark group name
+    "MpmcSync".to_string(),
     Some(parameter_names),
     parameter_axes,
     Box::new(extract_mpmc_config),

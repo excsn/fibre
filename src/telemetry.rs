@@ -8,7 +8,7 @@ pub mod enabled {
   use std::sync::Mutex;
   use std::thread::{self, ThreadId};
   use std::time::Instant;
-  use tokio::task::Id as TokioTaskId; 
+  use tokio::task::Id as TokioTaskId;
 
   static NEXT_EVENT_SEQUENCE_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -18,10 +18,10 @@ pub mod enabled {
     pub timestamp: Instant,
     pub os_thread_id: ThreadId,
     pub tokio_task_id: Option<TokioTaskId>, // Optional: Tokio's task ID
-    pub item_id: Option<usize>,     // Optional ID for the specific data item
-    pub location: String,     // Code location (e.g., module::function)
-    pub event_type: String,   // User-defined event type (e.g., "SendAttempt", "RecvSuccess")
-    pub message: Option<String>,    // Optional human-readable message or details
+    pub item_id: Option<usize>,             // Optional ID for the specific data item
+    pub location: String,                   // Code location (e.g., module::function)
+    pub event_type: String, // User-defined event type (e.g., "SendAttempt", "RecvSuccess")
+    pub message: Option<String>, // Optional human-readable message or details
   }
 
   impl fmt::Debug for TelemetryEvent {
@@ -30,7 +30,14 @@ pub mod enabled {
         .field("seq", &self.seq_id)
         // .field("ts_offset_micros", &"TODO_CALC_OFFSET") // Placeholder for relative time
         .field("os_tid", &self.os_thread_id)
-        .field("tokio_tid", &self.tokio_task_id.map(|id| id.to_string()).as_deref().unwrap_or("N/A"))
+        .field(
+          "tokio_tid",
+          &self
+            .tokio_task_id
+            .map(|id| id.to_string())
+            .as_deref()
+            .unwrap_or("N/A"),
+        )
         .field("item_id", &self.item_id)
         .field("loc", &self.location)
         .field("evt", &self.event_type)
@@ -109,12 +116,18 @@ pub mod enabled {
         println!("\n[Events] Recorded Events ({}):", collector.events.len());
         let mut sorted_events = collector.events.clone();
         // Sort by sequence ID to ensure chronological order if timestamps are too close
-        sorted_events.sort_by_key(|e| e.seq_id); 
+        sorted_events.sort_by_key(|e| e.seq_id);
 
         for event in sorted_events.iter() {
           let time_since_start = event.timestamp.duration_since(collector.start_time);
-          let os_tid_short = format!("{:?}", event.os_thread_id).trim_start_matches("ThreadId(").trim_end_matches(')').to_string();
-          let tokio_tid_str = event.tokio_task_id.map(|id| id.to_string()).unwrap_or_else(|| "---".to_string());
+          let os_tid_short = format!("{:?}", event.os_thread_id)
+            .trim_start_matches("ThreadId(")
+            .trim_end_matches(')')
+            .to_string();
+          let tokio_tid_str = event
+            .tokio_task_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "---".to_string());
 
           println!(
             "  +{:<10.6}s [Seq:{:<5}] OS_TID:{:<6} TaskID:{:<6} Item:{:<6} Loc:{:<25} Evt:{:<30} Msg: {}",
@@ -133,7 +146,10 @@ pub mod enabled {
       if collector.counters.is_empty() {
         println!("\n[Counters] No counters recorded.");
       } else {
-        println!("\n[Counters] Recorded Counters ({}):", collector.counters.len());
+        println!(
+          "\n[Counters] Recorded Counters ({}):",
+          collector.counters.len()
+        );
         let mut sorted_counters: Vec<_> = collector.counters.iter().collect();
         sorted_counters.sort_by_key(|(k, _v)| *k);
         for ((loc, name), count) in sorted_counters {
@@ -173,7 +189,7 @@ pub mod enabled {
     record_event_internal(item_id, location, event_type, message);
   }
 
-  pub fn increment_counter_fn(location: &'static str, counter_name: &str) {
+  pub fn increment_counter_fn(location: &str, counter_name: &str) {
     increment_counter_internal(location, counter_name);
   }
 
@@ -192,13 +208,13 @@ pub mod disabled {
   #[inline(always)]
   pub fn log_event_fn(
     _item_id: Option<usize>,
-    _location: &'static str,
-    _event_type: &'static str,
+    _location: &str,
+    _event_type: &str,
     _message: Option<String>,
   ) {
   }
   #[inline(always)]
-  pub fn increment_counter_fn(_location: &'static str, _counter_name: &'static str) {}
+  pub fn increment_counter_fn(_location: &str, _counter_name: &str) {}
   #[inline(always)]
   pub fn print_telemetry_report_fn() {}
   #[inline(always)]
