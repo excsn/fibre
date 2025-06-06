@@ -15,12 +15,12 @@ async fn run_async_mpmc_test(
   items_per_producer: usize,
   channel_capacity: usize,
 ) {
-  let (tx, rx) = mpmc::channel_async(channel_capacity);
+  let (tx, rx) = mpmc::bounded_async(channel_capacity);
   let total_items_expected = num_producers * items_per_producer;
   let received_items_set = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
   let received_count = Arc::new(AtomicUsize::new(0));
 
-  // --- Spawn Consumers ---
+  // --- Spawn Receivers ---
   let mut consumer_handles = Vec::new();
   for _ in 0..num_consumers {
     let rx_clone = rx.clone();
@@ -36,7 +36,7 @@ async fn run_async_mpmc_test(
   }
   drop(rx);
 
-  // --- Spawn Producers ---
+  // --- Spawn Senders ---
   let mut producer_handles = Vec::new();
   for p_id in 0..num_producers {
     let tx_clone = tx.clone();
@@ -51,10 +51,10 @@ async fn run_async_mpmc_test(
 
   // --- Join and Assert ---
   for handle in producer_handles {
-    handle.await.expect("Producer task panicked");
+    handle.await.expect("Sender task panicked");
   }
   for handle in consumer_handles {
-    handle.await.expect("Consumer task panicked");
+    handle.await.expect("Receiver task panicked");
   }
 
   assert_eq!(received_count.load(AtomicOrdering::Relaxed), total_items_expected);
@@ -111,7 +111,7 @@ async fn async_v2_rendezvous_channel() {
 
 #[tokio::test]
 async fn async_v2_drop_producer_signals_disconnect() {
-  let (tx, mut rx) = mpmc::channel_async::<i32>(5);
+  let (tx, mut rx) = mpmc::bounded_async::<i32>(5);
   let tx2 = tx.clone();
 
   tx.send(1).await.unwrap();
@@ -127,7 +127,7 @@ async fn async_v2_drop_producer_signals_disconnect() {
 
 #[tokio::test]
 async fn async_v2_drop_receiver_signals_closed() {
-  let (tx, rx) = mpmc::channel_async::<i32>(5);
+  let (tx, rx) = mpmc::bounded_async::<i32>(5);
   let rx2 = rx.clone();
 
   drop(rx);
@@ -138,8 +138,8 @@ async fn async_v2_drop_receiver_signals_closed() {
 
 #[tokio::test]
 async fn async_v2_select_compatibility() {
-  let (tx1, mut rx1) = mpmc::channel_async(1);
-  let (tx2, mut rx2) = mpmc::channel_async(1);
+  let (tx1, mut rx1) = mpmc::bounded_async(1);
+  let (tx2, mut rx2) = mpmc::bounded_async(1);
 
   tokio::spawn(async move {
     tokio::time::sleep(SHORT_TIMEOUT).await;

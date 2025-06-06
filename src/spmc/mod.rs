@@ -10,13 +10,13 @@
 //!
 //! - **Guaranteed Delivery**: This implementation guarantees that a message sent by the
 //!   producer will be delivered to all active consumers. It does not drop messages.
-//! - **Blocking Producer**: If any consumer is slow and the channel's buffer fills up
+//! - **Blocking Sender**: If any consumer is slow and the channel's buffer fills up
 //!   from that consumer's perspective, the producer will block until the slow
 //!   consumer catches up. This backpressure mechanism ensures no messages are lost.
 //! - **`T: Clone` Requirement**: Since every message is delivered to every consumer, the
 //!   message type `T` must implement the `Clone` trait.
 //! - **Mixed Paradigms**: The channel supports full interoperability between synchronous
-//!   and asynchronous code. You can have a synchronous `Producer` sending to an
+//!   and asynchronous code. You can have a synchronous `Sender` sending to an
 //!   `AsyncReceiver`, or any other combination, by using the provided `to_sync()` and
 //!   `to_async()` conversion methods.
 //!
@@ -37,17 +37,32 @@
 //! use std::thread;
 //!
 //! // Create a channel with a buffer capacity of 2.
-//! let (mut producer, mut receiver1) = spmc::channel(2);
+//! let (mut producer, mut receiver1) = spmc::bounded(2);
 //! let mut receiver2 = receiver1.clone();
+//!
+//! assert_eq!(producer.len(), 0);
+//! assert!(producer.is_empty());
+//! assert!(!producer.is_full());
+//! assert_eq!(receiver1.len(), 0);
+//! assert!(receiver1.is_empty());
 //!
 //! // The producer sends messages.
 //! producer.send("hello".to_string()).unwrap();
+//! assert_eq!(producer.len(), 1);
+//! assert_eq!(receiver1.len(), 1);
+//! assert_eq!(receiver2.len(), 1);
+//!
 //! producer.send("world".to_string()).unwrap();
+//! assert_eq!(producer.len(), 2); // Producer sees length based on slowest consumer
+//! assert!(producer.is_full());    // Capacity is 2
+//! assert_eq!(receiver1.len(), 2);
+//! assert_eq!(receiver2.len(), 2);
 //!
 //! // Both receivers get a copy of every message.
 //! let handle1 = thread::spawn(move || {
 //!     assert_eq!(receiver1.recv().unwrap(), "hello");
 //!     assert_eq!(receiver1.recv().unwrap(), "world");
+//!     assert!(receiver1.is_empty());
 //! });
 //!
 //! let handle2 = thread::spawn(move || {
@@ -68,7 +83,7 @@
 //!
 //! # async fn run() {
 //! // Create an async channel.
-//! let (producer_async, mut receiver_async) = spmc::channel_async(1);
+//! let (producer_async, mut receiver_async) = spmc::bounded_async(1);
 //!
 //! // Convert the async producer to a sync one for use in a standard thread.
 //! let mut producer_sync = producer_async.to_sync();
@@ -93,70 +108,74 @@
 
 use std::marker::PhantomData;
 use std::mem;
-use std::sync::Arc;
+// No need to import Arc here if it's only used by ring_buffer types.
 mod ring_buffer;
 
-pub use crate::error::{RecvError, SendError, TryRecvError};
-pub use ring_buffer::{AsyncProducer, AsyncReceiver, Producer, Receiver, RecvFuture, SendFuture};
+pub use crate::error::{RecvError, SendError, TryRecvError, TrySendError}; // Added TrySendError
+pub use ring_buffer::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender};
 
 // --- Constructors ---
 
 /// Creates a new bounded synchronous SPMC channel.
 ///
-/// `T` must be `Clone` because each consumer gets its own copy of the message.
+/// `T` must be `Send + Clone` because each consumer gets its own copy of the message.
 ///
 /// # Panics
 ///
 /// Panics if `capacity` is 0.
-pub fn channel<T: Send + Clone>(capacity: usize) -> (Producer<T>, Receiver<T>) {
+pub fn bounded<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>) {
   let (p, r) = ring_buffer::new_channel(capacity);
   (p, r)
 }
 
 /// Creates a new bounded asynchronous SPMC channel.
 ///
-/// `T` must be `Clone` because each consumer gets its own copy of the message.
+/// `T` must be `Send + Clone` because each consumer gets its own copy of the message.
 ///
 /// # Panics
 ///
 /// Panics if `capacity` is 0.
-pub fn channel_async<T: Send + Clone>(capacity: usize) -> (AsyncProducer<T>, AsyncReceiver<T>) {
+pub fn bounded_async<T: Send + Clone>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>) {
   let (p, r) = ring_buffer::new_channel(capacity);
   (p.to_async(), r.to_async())
 }
 
 // --- Conversion Methods ---
+// These are defined on the types in ring_buffer.rs and are available
+// because we re-export Sender, AsyncSender, Receiver, AsyncReceiver.
 
-impl<T: Send + Clone> Producer<T> {
-  /// Converts this synchronous `Producer` into an asynchronous `AsyncProducer`.
+impl<T: Send + Clone> Sender<T> {
+  /// Converts this synchronous `Sender` into an asynchronous `AsyncSender`.
   ///
   /// This is a zero-cost conversion that facilitates interoperability between
   /// synchronous and asynchronous code. The `Drop` implementation of the
-  /// original `Producer` is not called.
-  pub fn to_async(self) -> AsyncProducer<T> {
+  /// original `Sender` is not called.
+  pub fn to_async(self) -> AsyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
-    AsyncProducer {
+    AsyncSender {
       shared,
       _phantom: PhantomData,
     }
   }
+  // len(), is_empty(), is_full(), try_send() are inherited from ring_buffer::Sender
 }
 
-impl<T: Send + Clone> AsyncProducer<T> {
-  /// Converts this asynchronous `AsyncProducer` into a synchronous `Producer`.
+impl<T: Send + Clone> AsyncSender<T> {
+  /// Converts this asynchronous `AsyncSender` into a synchronous `Sender`.
   ///
   /// This is a zero-cost conversion that facilitates interoperability between
   /// synchronous and asynchronous code. The `Drop` implementation of the
-  /// original `AsyncProducer` is not called.
-  pub fn to_sync(self) -> Producer<T> {
+  /// original `AsyncSender` is not called.
+  pub fn to_sync(self) -> Sender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
-    Producer {
+    Sender {
       shared,
       _phantom: PhantomData,
     }
   }
+  // len(), is_empty(), is_full(), try_send() are inherited from ring_buffer::AsyncSender
 }
 
 impl<T: Send + Clone> Receiver<T> {
@@ -170,6 +189,7 @@ impl<T: Send + Clone> Receiver<T> {
     mem::forget(self);
     AsyncReceiver { shared, tail }
   }
+  // len(), is_empty(), is_full() are inherited from ring_buffer::Receiver
 }
 
 impl<T: Send + Clone> AsyncReceiver<T> {
@@ -183,6 +203,7 @@ impl<T: Send + Clone> AsyncReceiver<T> {
     mem::forget(self);
     Receiver { shared, tail }
   }
+  // len(), is_empty(), is_full() are inherited from ring_buffer::AsyncReceiver
 }
 
 #[cfg(test)]
@@ -191,51 +212,196 @@ mod tests {
   use std::thread;
   use std::time::Duration;
 
+  pub const SHORT_TIMEOUT: Duration = Duration::from_millis(500);
+  pub const LONG_TIMEOUT: Duration = Duration::from_secs(3);
+  pub const STRESS_TIMEOUT: Duration = Duration::from_secs(15);
+  pub const ITEMS_LOW: usize = 50;
+  pub const ITEMS_MEDIUM: usize = 200;
+  pub const ITEMS_HIGH: usize = 1000;
+
   #[test]
   fn spmc_single_recv() {
-    let (mut tx, mut rx) = channel(2);
+    let (mut tx, mut rx) = bounded(2);
+    assert_eq!(tx.len(), 0);
+    assert!(tx.is_empty());
+    assert!(!tx.is_full());
+    assert_eq!(rx.len(), 0);
+    assert!(rx.is_empty());
+    assert!(!rx.is_full()); // A receiver is "full" if len == capacity
+
     tx.send(10).unwrap();
+    assert_eq!(tx.len(), 1);
+    assert!(!tx.is_empty());
+    assert_eq!(rx.len(), 1);
+    assert!(!rx.is_empty());
+
     assert_eq!(rx.recv().unwrap(), 10);
+    assert_eq!(tx.len(), 0);
+    assert!(tx.is_empty());
+    assert_eq!(rx.len(), 0);
+    assert!(rx.is_empty());
+  }
+
+  #[test]
+  fn spmc_multiple_receivers_len_checks() {
+    let (mut tx, mut rx1) = bounded(4);
+    let mut rx2 = rx1.clone();
+
+    assert_eq!(tx.len(), 0);
+    assert!(tx.is_empty());
+    assert_eq!(rx1.len(), 0);
+    assert!(rx1.is_empty());
+    assert_eq!(rx2.len(), 0);
+    assert!(rx2.is_empty());
+
+    tx.send(1).unwrap(); // head = 1, min_tail = 0, tx.len = 1
+    assert_eq!(tx.len(), 1);
+    assert_eq!(rx1.len(), 1);
+    assert_eq!(rx2.len(), 1);
+
+    tx.send(2).unwrap(); // head = 2, min_tail = 0, tx.len = 2
+    assert_eq!(tx.len(), 2);
+    assert_eq!(rx1.len(), 2);
+    assert_eq!(rx2.len(), 2);
+
+    assert_eq!(rx1.recv().unwrap(), 1); // rx1.tail = 1. rx2.tail = 0. head = 2. min_tail = 0.
+    assert_eq!(tx.len(), 2); // Producer len depends on slowest (rx2): 2 - 0 = 2
+    assert_eq!(rx1.len(), 1); // rx1 has 1 item left (item 2)
+    assert_eq!(rx2.len(), 2); // rx2 still has 2 items (1, 2)
+
+    assert_eq!(rx2.recv().unwrap(), 1); // rx1.tail = 1. rx2.tail = 1. head = 2. min_tail = 1.
+    assert_eq!(tx.len(), 1); // Both have consumed item 1: 2 - 1 = 1
+    assert_eq!(rx1.len(), 1);
+    assert_eq!(rx2.len(), 1);
+
+    assert_eq!(rx1.recv().unwrap(), 2); // rx1.tail = 2. rx2.tail = 1. head = 2. min_tail = 1.
+    assert_eq!(tx.len(), 1); // Producer len depends on slowest (rx2): 2 - 1 = 1
+    assert_eq!(rx1.len(), 0);
+    assert_eq!(rx2.len(), 1);
+
+    assert_eq!(rx2.recv().unwrap(), 2); // rx1.tail = 2. rx2.tail = 2. head = 2. min_tail = 2.
+    assert_eq!(tx.len(), 0); // All items consumed by all: 2 - 2 = 0
+    assert!(tx.is_empty());
+    assert_eq!(rx1.len(), 0);
+    assert!(rx1.is_empty());
+    assert_eq!(rx2.len(), 0);
+    assert!(rx2.is_empty());
+  }
+
+  #[test]
+  fn spmc_sync_try_send() {
+    let (mut tx, mut rx1) = bounded(1);
+    let mut rx2 = rx1.clone(); // Keep another receiver
+
+    assert!(tx.try_send(10).is_ok()); // head = 1. min_tail(rx1,rx2) = 0. tx.len = 1.
+    assert_eq!(tx.len(), 1);
+    assert!(tx.is_full());
+
+    // Channel is full because capacity is 1 and item 10 hasn't been read by rx2 yet.
+    match tx.try_send(20) {
+      Err(TrySendError::Full(val)) => assert_eq!(val, 20),
+      other => panic!("Expected TrySendError::Full, got {:?}", other),
+    }
+
+    assert_eq!(rx1.recv().unwrap(), 10); // rx1.tail = 1. rx2.tail = 0. head = 1. min_tail = 0.
+    assert_eq!(tx.len(), 1); // Producer still sees len 1 due to rx2: 1 - 0 = 1
+    assert!(tx.is_full()); // Still full from producer's perspective because of rx2
+
+    assert_eq!(rx2.recv().unwrap(), 10); // rx1.tail = 1. rx2.tail = 1. head = 1. min_tail = 1.
+    assert_eq!(tx.len(), 0); // Now both receivers have consumed item 10: 1 - 1 = 0
+    assert!(!tx.is_full());
+    assert!(tx.is_empty());
+
+    assert!(tx.try_send(30).is_ok()); // head = 2. min_tail(rx1,rx2) = 1. tx.len = 1.
+    assert_eq!(tx.len(), 1);
+    assert!(tx.is_full());
   }
 
   #[test]
   fn spmc_multiple_receivers() {
-    let (mut tx, mut rx1) = channel(4);
+    let (mut tx, mut rx1) = bounded(ITEMS_LOW);
     let mut rx2 = rx1.clone();
+    let mut rx3 = rx1.clone();
 
-    tx.send(1).unwrap();
-    tx.send(2).unwrap();
+    for i in 0..ITEMS_LOW {
+      tx.send(i).unwrap();
+    }
+    assert_eq!(tx.len(), ITEMS_LOW);
+    assert!(tx.is_full());
 
-    assert_eq!(rx1.recv().unwrap(), 1);
-    assert_eq!(rx2.recv().unwrap(), 1);
+    let h1 = thread::spawn(move || {
+      for i in 0..ITEMS_LOW {
+        assert_eq!(rx1.recv().unwrap(), i);
+      }
+    });
+    let h2 = thread::spawn(move || {
+      for i in 0..ITEMS_LOW {
+        assert_eq!(rx2.recv().unwrap(), i);
+      }
+    });
+    let h3 = thread::spawn(move || {
+      for i in 0..ITEMS_LOW {
+        assert_eq!(rx3.recv().unwrap(), i);
+      }
+    });
 
-    assert_eq!(rx1.recv().unwrap(), 2);
-    assert_eq!(rx2.recv().unwrap(), 2);
+    h1.join().unwrap();
+    h2.join().unwrap();
+    h3.join().unwrap();
   }
 
   #[test]
-  fn spmc_drop_receiver_unblocks_producer() {
-    let (mut tx, mut rx_fast) = channel(1);
-    let rx_slow = rx_fast.clone();
+  fn spmc_sync_slow_consumer_blocks_producer() {
+    let (mut tx, mut rx_fast) = bounded(1); // Capacity of 1
+    let mut rx_slow = rx_fast.clone();
 
     tx.send(1).unwrap();
+    assert_eq!(tx.len(), 1);
+    assert!(tx.is_full());
+
     assert_eq!(rx_fast.recv().unwrap(), 1);
+    // After rx_fast reads, tx.len() is still 1 because rx_slow hasn't read.
+    // head = 1, rx_fast.tail = 1, rx_slow.tail = 0. min_tail = 0. len = 1 - 0 = 1.
+    assert_eq!(tx.len(), 1);
+    assert!(tx.is_full());
 
     let send_handle = thread::spawn(move || {
-      // This will block, as rx_slow hasn't read item 1.
       tx.send(2).unwrap();
     });
 
-    thread::sleep(Duration::from_millis(100));
-    assert!(!send_handle.is_finished());
+    thread::sleep(SHORT_TIMEOUT);
+    assert!(!send_handle.is_finished(), "Sender should have blocked");
 
-    // Drop the slow consumer. This should unblock the producer.
-    drop(rx_slow);
+    assert_eq!(rx_slow.recv().unwrap(), 1);
+    // After rx_slow reads, tx.len() becomes 0 relative to current head (if head was 1).
+    // head = 1, rx_fast.tail = 1, rx_slow.tail = 1. min_tail = 1. len = 1 - 1 = 0.
+    // But the send_handle is trying to send item 2, so head will become 2.
+    // So, after send_handle unblocks: head = 2. min_tail = 1. len = 1.
 
     send_handle
       .join()
-      .expect("Producer should be unblocked and finish");
+      .expect("Sender panicked or was not unblocked");
+
+    assert_eq!(rx_fast.len(), 1); // Item 2 is available for rx_fast
+    assert_eq!(rx_slow.len(), 1); // Item 2 is available for rx_slow
 
     assert_eq!(rx_fast.recv().unwrap(), 2);
+    assert_eq!(rx_slow.recv().unwrap(), 2);
+
+    assert!(rx_fast.is_empty());
+    assert!(rx_slow.is_empty());
+  }
+
+  #[test]
+  fn spmc_sync_all_receivers_drop_closes_channel() {
+    let (mut tx, rx) = bounded(2);
+    let rx2 = rx.clone();
+
+    tx.send(1).unwrap();
+
+    drop(rx);
+    drop(rx2);
+
+    assert_eq!(tx.send(2), Err(SendError::Closed));
   }
 }

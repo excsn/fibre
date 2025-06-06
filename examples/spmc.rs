@@ -13,9 +13,9 @@ mod common_async;
 fn main() {
   let capacity = 2; // Small capacity to show backpressure if needed
 
-  println!("--- SPMC: Sync Producer, Sync Receivers ---");
+  println!("--- SPMC: Sync Sender, Sync Receivers ---");
   {
-    let (mut tx, rx1_orig) = spmc::channel::<String>(capacity);
+    let (mut tx, rx1_orig) = spmc::bounded::<String>(capacity);
     let mut rx1 = rx1_orig.clone(); // Keep original alive for other clones
     let mut rx2 = rx1_orig.clone();
     drop(rx1_orig); // Drop the temporary original
@@ -24,9 +24,9 @@ fn main() {
     let producer_handle = thread::spawn(move || {
       for i in 0..num_messages {
         let msg = format!("SyncSPMC-M{}", i);
-        println!("[Sync Producer] Sending: {}", msg);
+        println!("[Sync Sender] Sending: {}", msg);
         if tx.send(msg).is_err() {
-          println!("[Sync Producer] All receivers dropped.");
+          println!("[Sync Sender] All receivers dropped.");
           break;
         }
         thread::sleep(Duration::from_millis(20)); // Give receivers time
@@ -38,7 +38,7 @@ fn main() {
         match rx1.recv() {
           Ok(value) => println!("[Sync Receiver 1] Received: {}", value),
           Err(RecvError::Disconnected) => {
-            println!("[Sync Receiver 1] Producer dropped.");
+            println!("[Sync Receiver 1] Sender dropped.");
             break;
           }
         }
@@ -49,7 +49,7 @@ fn main() {
         match rx2.recv() {
           Ok(value) => println!("[Sync Receiver 2] Received: {}", value),
           Err(RecvError::Disconnected) => {
-            println!("[Sync Receiver 2] Producer dropped.");
+            println!("[Sync Receiver 2] Sender dropped.");
             break;
           }
         }
@@ -60,9 +60,9 @@ fn main() {
     receiver2_handle.join().unwrap();
   }
 
-  println!("\n--- SPMC: Async Producer, Async Receivers ---");
+  println!("\n--- SPMC: Async Sender, Async Receivers ---");
   common_async::run_async(async {
-    let (mut tx, rx1_orig) = spmc::channel_async::<String>(capacity);
+    let (mut tx, rx1_orig) = spmc::bounded_async::<String>(capacity);
     let mut rx1 = rx1_orig.clone();
     let mut rx2 = rx1_orig.clone();
     drop(rx1_orig);
@@ -71,9 +71,9 @@ fn main() {
     tokio::spawn(async move {
       for i in 0..num_messages {
         let msg = format!("AsyncSPMC-M{}", i);
-        println!("[Async Producer] Sending: {}", msg);
+        println!("[Async Sender] Sending: {}", msg);
         if tx.send(msg).await.is_err() {
-          println!("[Async Producer] All receivers dropped.");
+          println!("[Async Sender] All receivers dropped.");
           break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -85,7 +85,7 @@ fn main() {
         match rx1.recv().await {
           Ok(value) => println!("[Async Receiver 1] Received: {}", value),
           Err(RecvError::Disconnected) => {
-            println!("[Async Receiver 1] Producer dropped.");
+            println!("[Async Receiver 1] Sender dropped.");
             break;
           }
         }
@@ -96,7 +96,7 @@ fn main() {
         match rx2.recv().await {
           Ok(value) => println!("[Async Receiver 2] Received: {}", value),
           Err(RecvError::Disconnected) => {
-            println!("[Async Receiver 2] Producer dropped.");
+            println!("[Async Receiver 2] Sender dropped.");
             break;
           }
         }
@@ -106,9 +106,9 @@ fn main() {
     recv2_task.await.unwrap();
   });
 
-  println!("\n--- SPMC: Sync Producer (Thread) to Async Receivers ---");
+  println!("\n--- SPMC: Sync Sender (Thread) to Async Receivers ---");
   common_async::run_async(async {
-    let (tx_async, rx_async1_orig) = spmc::channel_async::<String>(capacity);
+    let (tx_async, rx_async1_orig) = spmc::bounded_async::<String>(capacity);
     let mut tx_sync_converted = tx_async.to_sync(); // Convert producer
     let mut rx_async1 = rx_async1_orig.clone();
     let mut rx_async2 = rx_async1_orig.clone();
@@ -118,13 +118,13 @@ fn main() {
     thread::spawn(move || {
       for i in 0..num_messages {
         let msg = format!("SyncToAsyncSPMC-M{}", i);
-        println!("[Sync Producer] Sending: {}", msg);
+        println!("[Sync Sender] Sending: {}", msg);
         if tx_sync_converted.send(msg).is_err() {
           break;
         }
         thread::sleep(Duration::from_millis(30));
       }
-      println!("[Sync Producer] Done sending.");
+      println!("[Sync Sender] Done sending.");
     });
 
     let r1 = tokio::spawn(async move {
@@ -150,9 +150,9 @@ fn main() {
     println!("[Async Receivers] Done.");
   });
 
-  println!("\n--- SPMC: Async Producer to Sync Receivers ---");
+  println!("\n--- SPMC: Async Sender to Sync Receivers ---");
   {
-    let (tx_async, rx_async1_orig) = spmc::channel_async::<String>(capacity);
+    let (tx_async, rx_async1_orig) = spmc::bounded_async::<String>(capacity);
     let mut rx_sync1 = rx_async1_orig.clone().to_sync(); // Convert receivers
     let mut rx_sync2 = rx_async1_orig.to_sync();
     let num_messages = 2;
@@ -162,13 +162,13 @@ fn main() {
       let mut tx_async_local = tx_async; // Avoid capturing the original tx_async if it's used elsewhere
       for i in 0..num_messages {
         let msg = format!("AsyncToSyncSPMC-M{}", i);
-        println!("[Async Producer] Sending: {}", msg);
+        println!("[Async Sender] Sending: {}", msg);
         if tx_async_local.send(msg).await.is_err() {
           break;
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
       }
-      println!("[Async Producer] Done sending.");
+      println!("[Async Sender] Done sending.");
     });
 
     let r1_handle = thread::spawn(move || {

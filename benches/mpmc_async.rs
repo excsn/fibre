@@ -77,7 +77,7 @@ fn benchmark_logic_mpmc_async(
     }
 
     // Create a fresh channel for this specific iteration.
-    let (main_producer, main_consumer) = mpmc::channel_async(cfg_clone.capacity);
+    let (main_producer, main_consumer) = mpmc::bounded_async(cfg_clone.capacity);
 
     let mut producer_handles: Vec<JoinHandle<()>> = Vec::with_capacity(cfg_clone.num_producers);
     let start_time = Instant::now();
@@ -151,13 +151,13 @@ fn mpmc_async_benches(c: &mut Criterion) {
       MatrixCellValue::Unsigned(128),
     ],
     vec![
-      // Axis 1: Num Producers
+      // Axis 1: Num Senders
       MatrixCellValue::Unsigned(1),
       MatrixCellValue::Unsigned(4),
       MatrixCellValue::Unsigned(core_count),
     ],
     vec![
-      // Axis 2: Num Consumers
+      // Axis 2: Num Receivers
       MatrixCellValue::Unsigned(1),
       MatrixCellValue::Unsigned(4),
       MatrixCellValue::Unsigned(core_count),

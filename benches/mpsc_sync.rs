@@ -49,7 +49,7 @@ fn benchmark_logic_mpsc_sync(
   cfg: &MpscBenchConfig,
 ) -> (BenchContext, MpscBenchState, Duration) {
   // Create a fresh channel for each iteration of the benchmark.
-  let (tx, mut rx) = mpsc::channel();
+  let (tx, mut rx) = mpsc::unbounded();
 
   let start_time = Instant::now();
 
@@ -74,7 +74,7 @@ fn benchmark_logic_mpsc_sync(
     }
     drop(tx); // Drop the original sender handle
 
-    // Consumer runs in the current scoped thread
+    // Receiver runs in the current scoped thread
     for _ in 0..cfg.total_items {
       rx.recv().unwrap();
     }
@@ -92,7 +92,7 @@ fn mpsc_sync_benches(c: &mut Criterion) {
       MatrixCellValue::Unsigned(1),          // SPSC-like scenario
       MatrixCellValue::Unsigned(4),          // MPSC scenario
       MatrixCellValue::Unsigned(core_count),
-    ], // Num Producers
+    ], // Num Senders
     vec![
       MatrixCellValue::Unsigned(100_000),
       MatrixCellValue::Unsigned(1_000_000),

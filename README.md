@@ -16,10 +16,10 @@ Fibre provides a suite of high-performance, memory-efficient sync/async channels
 
 Fibre offers a wide range of channel types, each optimized for a specific producer-consumer pattern:
 
-*   **`spsc`**: A lock-free Single-Producer, Single-Consumer ring buffer, ideal for maximum throughput in 1-to-1 communication.
-*   **`mpsc`**: A lock-free Multi-Producer, Single-Consumer channel, perfect for scenarios where many tasks need to send work to a single processing task.
-*   **`spmc`**: A "broadcast" style Single-Producer, Multi-Consumer channel where each message is cloned and delivered to every active consumer.
-*   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic.
+*   **`spsc`**: A lock-free Single-Sender, Single-Receiver ring buffer, ideal for maximum throughput in 1-to-1 communication.
+*   **`mpsc`**: A lock-free Multi-Sender, Single-Receiver channel, perfect for scenarios where many tasks need to send work to a single processing task.
+*   **`spmc`**: A "broadcast" style Single-Sender, Multi-Receiver channel where each message is cloned and delivered to every active consumer.
+*   **`mpmc`**: A flexible and robust Multi-Sender, Multi-Receiver channel for general-purpose use where producer and consumer counts are dynamic.
 *   **`oneshot`**: A channel for sending a single value once, perfect for futures and promise-style patterns.
 
 ### Hybrid Sync/Async API

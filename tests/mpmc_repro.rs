@@ -8,7 +8,7 @@ use std::time::Duration;
 
 #[test]
 fn sync_v2_spsc_contention_hang_repro() {
-  let (tx, rx) = mpmc::channel(4);
+  let (tx, rx) = mpmc::bounded(4);
   let total_items = 100_000;
 
   // A flag to signal the main thread that the test is done, to avoid a race
@@ -59,6 +59,6 @@ fn sync_v2_spsc_contention_hang_repro() {
   }
 
   // If we reach here, the consumer finished successfully. Join the threads.
-  producer_handle.join().expect("Producer panicked");
-  consumer_handle.join().expect("Consumer panicked");
+  producer_handle.join().expect("Sender panicked");
+  consumer_handle.join().expect("Receiver panicked");
 }

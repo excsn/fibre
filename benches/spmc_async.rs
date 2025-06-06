@@ -51,7 +51,7 @@ fn benchmark_logic_spmc_async(
 ) -> Pin<Box<dyn Future<Output = (BenchContext, SpmcBenchState, Duration)> + Send>> {
   let cfg_clone = cfg.clone();
   Box::pin(async move {
-    let (mut tx, rx) = spmc::channel_async(cfg_clone.capacity);
+    let (mut tx, rx) = spmc::bounded_async(cfg_clone.capacity);
     let receivers: Vec<_> = (0..cfg_clone.num_consumers).map(|_| rx.clone()).collect();
     drop(rx);
 
@@ -97,7 +97,7 @@ fn spmc_async_benches(c: &mut Criterion) {
         MatrixCellValue::Unsigned(1),
         MatrixCellValue::Unsigned(4),
         MatrixCellValue::Unsigned(core_count),
-      ], // Consumers
+      ], // Receivers
       vec![MatrixCellValue::Unsigned(1), MatrixCellValue::Unsigned(128)], // Capacity
       vec![MatrixCellValue::Unsigned(100_000)],                           // Total Items
     ],

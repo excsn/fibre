@@ -56,7 +56,7 @@ fn benchmark_logic_mpsc_async(
   let cfg_clone = cfg.clone();
   Box::pin(async move {
     // Create a fresh channel for each iteration.
-    let (tx, mut rx) = mpsc::channel_async();
+    let (tx, mut rx) = mpsc::unbounded_async();
 
     let start_time = Instant::now();
 
@@ -106,7 +106,7 @@ fn mpsc_async_benches(c: &mut Criterion) {
       MatrixCellValue::Unsigned(1),          // SPSC-like scenario
       MatrixCellValue::Unsigned(4),          // MPSC scenario
       MatrixCellValue::Unsigned(core_count), // MPSC scenario
-    ], // Num Producers
+    ], // Num Senders
     vec![
       MatrixCellValue::Unsigned(100_000),
       MatrixCellValue::Unsigned(1_000_000),

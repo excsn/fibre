@@ -19,7 +19,7 @@ mod spmc_deadlock_tests {
       iteration_idx, num_consumers, capacity, items
     );
 
-    let (mut tx, rx_orig) = spmc::channel(capacity);
+    let (mut tx, rx_orig) = spmc::bounded(capacity);
     let barrier = Arc::new(Barrier::new(num_consumers + 1));
     let mut consumer_handles = Vec::new();
 
@@ -81,7 +81,7 @@ mod spmc_deadlock_tests {
     }
     // println!("[P-Iter{}][{:?}] Finished send", iteration_idx, thread::current().id());
     drop(tx); // Signal consumers
-              // println!("[P-Iter{}][{:?}] Producer dropped", iteration_idx, thread::current().id());
+              // println!("[P-Iter{}][{:?}] Sender dropped", iteration_idx, thread::current().id());
 
     // --- Joining with overall iteration timeout ---
     let main_thread = thread::current();
@@ -103,13 +103,13 @@ mod spmc_deadlock_tests {
       // If join() blocks forever, the outer loop will eventually break.
       // This join is blocking.
       if handle.join().is_err() {
-        println!("[Main-Iter{}]: Consumer {} panicked.", iteration_idx, idx);
+        println!("[Main-Iter{}]: Receiver {} panicked.", iteration_idx, idx);
         all_threads_joined_cleanly = false;
       }
       // Check our own flag
       if !consumers_completed_work[idx].load(std::sync::atomic::Ordering::SeqCst) {
         println!(
-          "[Main-Iter{}]: Consumer {} joined but did NOT complete its work (flag false).",
+          "[Main-Iter{}]: Receiver {} joined but did NOT complete its work (flag false).",
           iteration_idx, idx
         );
         all_threads_joined_cleanly = false; // Or consider this a type of failure
@@ -121,7 +121,7 @@ mod spmc_deadlock_tests {
     if timed_out {
       // If the timeout thread already signaled
       println!(
-        "[Main-Iter{}]: Iteration TIMED OUT ({}s). Consumer join status might be incomplete.",
+        "[Main-Iter{}]: Iteration TIMED OUT ({}s). Receiver join status might be incomplete.",
         iteration_idx, iteration_timeout_secs
       );
       return false; // Indicate suspected hang

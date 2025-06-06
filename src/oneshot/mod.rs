@@ -85,7 +85,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 /// Creates a new oneshot channel, returning a `Sender` and `Receiver` pair.
-pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+pub fn oneshot<T>() -> (Sender<T>, Receiver<T>) {
   let shared = Arc::new(OneShotShared::new());
   (
     Sender {
@@ -281,8 +281,7 @@ pub struct ReceiveFuture<'a, T> {
 
 // No methods needed on ReceiveFuture itself, all logic is in poll.
 
-impl<'a, T: Unpin> Future for ReceiveFuture<'a, T> {
-  // T: Unpin is not strictly needed here as T is not stored in the Future
+impl<'a, T> Future for ReceiveFuture<'a, T> {
   type Output = Result<T, RecvError>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

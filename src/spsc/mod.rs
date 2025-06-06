@@ -1,6 +1,6 @@
 // src/spsc/mod.rs
 
-//! Single-Producer, Single-Consumer (SPSC) channels.
+//! Single-Sender, Single-Receiver (SPSC) channels.
 //!
 //! These channels are optimized for the case where there is only one sender (producer)
 //! and only one receiver (consumer). They offer the highest throughput and lowest
@@ -38,9 +38,9 @@
 //! let producer_handle = thread::spawn(move || {
 //!     for i in 0..10 {
 //!         match producer.send(format!("Sync Item {}", i)) {
-//!             Ok(()) => println!("[Sync Producer] Sent item {}", i),
+//!             Ok(()) => println!("[Sync Sender] Sent item {}", i),
 //!             Err(e) => {
-//!                 eprintln!("[Sync Producer] Send error: {:?}", e);
+//!                 eprintln!("[Sync Sender] Send error: {:?}", e);
 //!                 break;
 //!             }
 //!         }
@@ -51,9 +51,9 @@
 //! let consumer_handle = thread::spawn(move || {
 //!     for _ in 0..10 {
 //!         match consumer.recv() {
-//!             Ok(item) => println!("[Sync Consumer] Received: {}", item),
+//!             Ok(item) => println!("[Sync Receiver] Received: {}", item),
 //!             Err(e) => {
-//!                 eprintln!("[Sync Consumer] Recv error: {:?}", e);
+//!                 eprintln!("[Sync Receiver] Recv error: {:?}", e);
 //!                 break;
 //!             }
 //!         }
@@ -76,10 +76,10 @@
 //!     let producer_task = tokio::spawn(async move {
 //!         for i in 0..7 {
 //!             if let Err(e) = producer.send(format!("Async Item {}", i)).await {
-//!                 eprintln!("[Async Producer] Send error: {:?}", e);
+//!                 eprintln!("[Async Sender] Send error: {:?}", e);
 //!                 break;
 //!             }
-//!             println!("[Async Producer] Sent item {}", i);
+//!             println!("[Async Sender] Sent item {}", i);
 //!             // The producer's send future will complete when there's space.
 //!             // tokio::task::yield_now().await; // Optionally yield
 //!         }
@@ -88,9 +88,9 @@
 //!     let consumer_task = tokio::spawn(async move {
 //!         for _ in 0..7 {
 //!             match consumer.recv().await {
-//!                 Ok(item) => println!("[Async Consumer] Received: {}", item),
+//!                 Ok(item) => println!("[Async Receiver] Received: {}", item),
 //!                 Err(e) => {
-//!                     eprintln!("[Async Consumer] Recv error: {:?}", e);
+//!                     eprintln!("[Async Receiver] Recv error: {:?}", e);
 //!                     break;
 //!                 }
 //!             }
@@ -114,16 +114,16 @@ mod bounded_sync;
 // Publicly re-export the primary channel constructors and types.
 pub use bounded_sync::{
   bounded_sync,        // fn to create sync SPSC channel
-  BoundedSyncConsumer, // Sync consumer type
-  BoundedSyncProducer, // Sync producer type
+  BoundedSyncReceiver, // Sync consumer type
+  BoundedSyncSender, // Sync producer type
                        // SpscShared is intentionally not re-exported here as it's an internal detail
                        // primarily for sharing between bounded_sync and bounded_async.
 };
 
 pub use bounded_async::{
   bounded_async,            // fn to create async SPSC channel
-  AsyncBoundedSpscConsumer, // Async consumer type
-  AsyncBoundedSpscProducer, // Async producer type
+  AsyncBoundedSpscReceiver, // Async consumer type
+  AsyncBoundedSpscSender, // Async producer type
   ReceiveFuture,            // Future returned by async recv
   SendFuture,               // Future returned by async send
 };

@@ -1,5 +1,3 @@
-// src/spsc/bounded_sync.rs
-
 use crate::async_util::AtomicWaker;
 use crate::error::{RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError};
 use crate::internal::cache_padded::CachePadded;
@@ -15,7 +13,7 @@ use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
 // Import async types for conversion methods
-use super::bounded_async::{AsyncBoundedSpscConsumer, AsyncBoundedSpscProducer};
+use super::bounded_async::{AsyncBoundedSpscReceiver, AsyncBoundedSpscSender};
 use std::mem; // For mem::forget
 
 /// Internal shared state for the bounded SPSC channel, supporting both sync and async waiters.
@@ -27,12 +25,12 @@ pub struct SpscShared<T> {
   pub(crate) head: CachePadded<AtomicUsize>, // Write index (producer)
   pub(crate) tail: CachePadded<AtomicUsize>, // Read index (consumer)
 
-  // --- Producer waiting state ---
+  // --- Sender waiting state ---
   producer_parked_sync_flag: CachePadded<AtomicBool>,
   producer_thread_sync: CachePadded<UnsafeCell<Option<Thread>>>,
   pub(crate) producer_waker_async: CachePadded<AtomicWaker>,
 
-  // --- Consumer waiting state ---
+  // --- Receiver waiting state ---
   consumer_parked_sync_flag: CachePadded<AtomicBool>,
   consumer_thread_sync: CachePadded<UnsafeCell<Option<Thread>>>,
   pub(crate) consumer_waker_async: CachePadded<AtomicWaker>,
@@ -101,13 +99,13 @@ impl<T> SpscShared<T> {
   }
 
   #[inline]
-  fn len(&self, head: usize, tail: usize) -> usize {
+  pub(crate) fn current_len(&self, head: usize, tail: usize) -> usize {
     head.wrapping_sub(tail)
   }
 
   #[inline]
   pub(crate) fn is_full(&self, head: usize, tail: usize) -> bool {
-    self.len(head, tail) == self.capacity
+    self.current_len(head, tail) == self.capacity
   }
 
   #[inline]
@@ -187,26 +185,26 @@ impl<T> Drop for SpscShared<T> {
 
 /// The synchronous sending end of a bounded SPSC channel.
 #[derive(Debug)]
-pub struct BoundedSyncProducer<T> {
+pub struct BoundedSyncSender<T> {
   pub(crate) shared: Arc<SpscShared<T>>,
-  // This PhantomData makes BoundedSyncProducer<T> !Sync, which is appropriate
+  // This PhantomData makes BoundedSyncSender<T> !Sync, which is appropriate
   // as only one thread should use the producer.
   pub(crate) _phantom: PhantomData<*mut ()>,
 }
 
 /// The synchronous receiving end of a bounded SPSC channel.
 #[derive(Debug)]
-pub struct BoundedSyncConsumer<T> {
+pub struct BoundedSyncReceiver<T> {
   pub(crate) shared: Arc<SpscShared<T>>,
-  // This PhantomData makes BoundedSyncConsumer<T> !Sync.
+  // This PhantomData makes BoundedSyncReceiver<T> !Sync.
   pub(crate) _phantom: PhantomData<*mut ()>,
 }
 
-unsafe impl<T: Send> Send for BoundedSyncProducer<T> {}
-unsafe impl<T: Send> Send for BoundedSyncConsumer<T> {}
-// BoundedSyncProducer and BoundedSyncConsumer are NOT Sync due to _phantom: PhantomData<*mut ()>.
+unsafe impl<T: Send> Send for BoundedSyncSender<T> {}
+unsafe impl<T: Send> Send for BoundedSyncReceiver<T> {}
+// BoundedSyncSender and BoundedSyncReceiver are NOT Sync due to _phantom: PhantomData<*mut ()>.
 
-impl<T: Send> BoundedSyncProducer<T> {
+impl<T: Send> BoundedSyncSender<T> {
   // T: Send is important here
   /// Crate-internal constructor, used for creating from a shared core, e.g., in tests or by async part.
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
@@ -219,11 +217,11 @@ impl<T: Send> BoundedSyncProducer<T> {
   /// Converts this synchronous SPSC producer into an asynchronous one.
   ///
   /// This is a zero-cost conversion. The `Drop` implementation of the
-  /// `BoundedSyncProducer` will not be called.
-  pub fn to_async(self) -> AsyncBoundedSpscProducer<T> {
+  /// `BoundedSyncSender` will not be called.
+  pub fn to_async(self) -> AsyncBoundedSpscSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
-    mem::forget(self); // Prevent Drop of BoundedSyncProducer
-    AsyncBoundedSpscProducer::from_shared(shared) // Use async's pub(crate) constructor
+    mem::forget(self); // Prevent Drop of BoundedSyncSender
+    AsyncBoundedSpscSender::from_shared(shared) // Use async's pub(crate) constructor
   }
 
   /// Attempts to send an item into the channel without blocking.
@@ -237,7 +235,7 @@ impl<T: Send> BoundedSyncProducer<T> {
       return Err(TrySendError::Closed(item));
     }
 
-    let head = self.shared.head.load(Ordering::Relaxed); // Producer owns head updates
+    let head = self.shared.head.load(Ordering::Relaxed); // Sender owns head updates
     let tail = self.shared.tail.load(Ordering::Acquire); // Must see latest consumer progress
 
     if self.shared.is_full(head, tail) {
@@ -350,9 +348,33 @@ impl<T: Send> BoundedSyncProducer<T> {
       }
     }
   }
+
+  /// Returns the number of items currently in the channel.
+  #[inline]
+  pub fn len(&self) -> usize {
+    let head = self.shared.head.load(Ordering::Acquire);
+    let tail = self.shared.tail.load(Ordering::Acquire);
+    self.shared.current_len(head, tail)
+  }
+
+  /// Returns `true` if the channel is currently empty.
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    let head = self.shared.head.load(Ordering::Acquire);
+    let tail = self.shared.tail.load(Ordering::Acquire);
+    self.shared.is_empty(head, tail)
+  }
+
+  /// Returns `true` if the channel is currently full.
+  #[inline]
+  pub fn is_full(&self) -> bool {
+    let head = self.shared.head.load(Ordering::Acquire);
+    let tail = self.shared.tail.load(Ordering::Acquire);
+    self.shared.is_full(head, tail)
+  }
 }
 
-impl<T> Drop for BoundedSyncProducer<T> {
+impl<T> Drop for BoundedSyncSender<T> {
   fn drop(&mut self) {
     self.shared.producer_dropped.store(true, Ordering::Release);
     // Ensure the store to producer_dropped is globally visible
@@ -362,7 +384,7 @@ impl<T> Drop for BoundedSyncProducer<T> {
   }
 }
 
-impl<T: Send> BoundedSyncConsumer<T> {
+impl<T: Send> BoundedSyncReceiver<T> {
   // T: Send is important here
   /// Crate-internal constructor.
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
@@ -375,11 +397,11 @@ impl<T: Send> BoundedSyncConsumer<T> {
   /// Converts this synchronous SPSC consumer into an asynchronous one.
   ///
   /// This is a zero-cost conversion. The `Drop` implementation of the
-  /// `BoundedSyncConsumer` will not be called.
-  pub fn to_async(self) -> AsyncBoundedSpscConsumer<T> {
+  /// `BoundedSyncReceiver` will not be called.
+  pub fn to_async(self) -> AsyncBoundedSpscReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
-    mem::forget(self); // Prevent Drop of BoundedSyncConsumer
-    AsyncBoundedSpscConsumer::from_shared(shared) // Use async's pub(crate) constructor
+    mem::forget(self); // Prevent Drop of BoundedSyncReceiver
+    AsyncBoundedSpscReceiver::from_shared(shared) // Use async's pub(crate) constructor
   }
 
   /// Attempts to receive an item from the channel without blocking.
@@ -390,12 +412,12 @@ impl<T: Send> BoundedSyncConsumer<T> {
   /// - `Err(TryRecvError::Empty)` if the channel is empty but the producer is alive.
   /// - `Err(TryRecvError::Disconnected)` if the producer has been dropped and the channel is empty.
   pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-    let tail = self.shared.tail.load(Ordering::Relaxed); // Consumer owns tail updates
+    let tail = self.shared.tail.load(Ordering::Relaxed); // Receiver owns tail updates
     let head = self.shared.head.load(Ordering::Acquire); // Must see latest producer writes
 
     if self.shared.is_empty(head, tail) {
       if self.shared.producer_dropped.load(Ordering::Acquire) {
-        // Producer is gone. Re-check head to see if an item was sent just before drop.
+        // Sender is gone. Re-check head to see if an item was sent just before drop.
         let final_head = self.shared.head.load(Ordering::Acquire);
         if final_head == tail {
           // Still empty even after seeing producer_dropped
@@ -403,7 +425,7 @@ impl<T: Send> BoundedSyncConsumer<T> {
         }
         // An item was sent right before producer dropped. Fall through to read it.
         // Update `head` for the read logic below to use this `final_head`.
-        let head_for_read = final_head;
+        // let head_for_read = final_head; // Not needed, head is already final_head in this path
         let slot_idx = tail % self.shared.capacity;
         let item = unsafe { (*self.shared.buffer[slot_idx].get()).assume_init_read() };
         self
@@ -567,9 +589,33 @@ impl<T: Send> BoundedSyncConsumer<T> {
       }
     }
   }
+
+  /// Returns the number of items currently in the channel.
+  #[inline]
+  pub fn len(&self) -> usize {
+    let head = self.shared.head.load(Ordering::Acquire);
+    let tail = self.shared.tail.load(Ordering::Acquire);
+    self.shared.current_len(head, tail)
+  }
+
+  /// Returns `true` if the channel is currently empty.
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    let head = self.shared.head.load(Ordering::Acquire);
+    let tail = self.shared.tail.load(Ordering::Acquire);
+    self.shared.is_empty(head, tail)
+  }
+
+  /// Returns `true` if the channel is currently full.
+  #[inline]
+  pub fn is_full(&self) -> bool {
+    let head = self.shared.head.load(Ordering::Acquire);
+    let tail = self.shared.tail.load(Ordering::Acquire);
+    self.shared.is_full(head, tail)
+  }
 }
 
-impl<T> Drop for BoundedSyncConsumer<T> {
+impl<T> Drop for BoundedSyncReceiver<T> {
   fn drop(&mut self) {
     self.shared.consumer_dropped.store(true, Ordering::Release);
     atomic::fence(Ordering::SeqCst);
@@ -583,16 +629,16 @@ impl<T> Drop for BoundedSyncConsumer<T> {
 ///
 /// The returned producer and consumer are the sole handles to their respective
 /// ends of the channel.
-pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncProducer<T>, BoundedSyncConsumer<T>) {
+pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>) {
   let shared_core = SpscShared::new_internal(capacity);
   let shared_arc = Arc::new(shared_core);
 
   (
-    BoundedSyncProducer {
+    BoundedSyncSender {
       shared: Arc::clone(&shared_arc),
       _phantom: PhantomData,
     },
-    BoundedSyncConsumer {
+    BoundedSyncReceiver {
       shared: shared_arc,
       _phantom: PhantomData,
     },
@@ -612,6 +658,12 @@ mod tests {
     let (p, c) = bounded_sync::<i32>(1);
     assert_eq!(p.shared.capacity, 1);
     assert_eq!(c.shared.capacity, 1);
+    assert!(p.is_empty());
+    assert!(c.is_empty());
+    assert!(!p.is_full());
+    assert!(!c.is_full());
+    assert_eq!(p.len(), 0);
+    assert_eq!(c.len(), 0);
   }
 
   #[test]
@@ -623,41 +675,65 @@ mod tests {
   #[test]
   fn send_recv_single_item() {
     let (mut p, mut c) = bounded_sync(1);
+    assert!(p.is_empty());
     p.send(42i32).unwrap();
+    assert!(p.is_full());
+    assert!(!p.is_empty());
+    assert_eq!(p.len(), 1);
+    assert!(c.is_full());
+    assert!(!c.is_empty());
+    assert_eq!(c.len(), 1);
+
     assert_eq!(c.recv().unwrap(), 42);
+    assert!(p.is_empty());
+    assert!(c.is_empty());
+    assert_eq!(p.len(), 0);
+    assert_eq!(c.len(), 0);
   }
 
   #[test]
   fn try_send_full_try_recv_empty() {
     let (mut p, mut c) = bounded_sync::<i32>(1);
     p.try_send(10).unwrap();
+    assert!(p.is_full());
+    assert_eq!(p.len(), 1);
+
     match p.try_send(20) {
       Err(TrySendError::Full(val)) => assert_eq!(val, 20),
       res => panic!("Expected Full error, got {:?}", res),
     }
+    assert!(p.is_full()); // Still full
 
     assert_eq!(c.try_recv().unwrap(), 10);
+    assert!(c.is_empty());
+    assert_eq!(c.len(), 0);
+
     match c.try_recv() {
       Err(TryRecvError::Empty) => {}
       res => panic!("Expected Empty error, got {:?}", res),
     }
+    assert!(c.is_empty());
   }
 
   #[test]
   fn send_blocks_until_recv() {
     let (mut p, mut c) = bounded_sync::<i32>(1);
     p.send(1).unwrap(); // Fill channel
+    assert_eq!(p.len(), 1);
 
     let producer_thread = thread::spawn(move || {
       p.send(2).unwrap(); // This should block
+      assert_eq!(p.len(), 1); // After send, it's full again before consumer gets it
       p // Return producer to drop it in main thread, ensuring its Drop runs
     });
 
     thread::sleep(Duration::from_millis(100)); // Give producer time to block
 
     assert_eq!(c.recv().unwrap(), 1); // Unblock producer
-    let _p_returned = producer_thread.join().unwrap(); // Producer should now complete
+    assert_eq!(c.len(), 0); // Locally empty, producer might be sending
+    let _p_returned = producer_thread.join().unwrap(); // Sender should now complete
     assert_eq!(c.recv().unwrap(), 2);
+    assert_eq!(c.len(), 0);
   }
 
   #[test]
@@ -667,12 +743,14 @@ mod tests {
     let consumer_thread = thread::spawn(move || {
       let val = c.recv().unwrap(); // This should block
       assert_eq!(val, 100);
+      assert_eq!(c.len(), 0);
       c // Return consumer
     });
 
     thread::sleep(Duration::from_millis(100)); // Give consumer time to block
 
     p.send(100).unwrap(); // Unblock consumer
+    assert_eq!(p.len(), 1); // Item is in
     let _c_returned = consumer_thread.join().unwrap();
   }
 
@@ -680,8 +758,11 @@ mod tests {
   fn producer_drop_signals_consumer() {
     let (mut p, mut c) = bounded_sync::<i32>(1); // p needs to be mut to call send
     p.send(7).unwrap(); // CORRECTED: Call send on p
-    drop(p);
+    assert_eq!(p.len(), 1);
+    drop(p); // len is no longer accessible on p
+    assert_eq!(c.len(), 1);
     assert_eq!(c.recv().unwrap(), 7);
+    assert_eq!(c.len(), 0);
     match c.recv() {
       Err(RecvError::Disconnected) => {}
       Ok(v) => panic!(
@@ -694,7 +775,9 @@ mod tests {
   #[test]
   fn producer_drop_empty_signals_consumer() {
     let (p, mut c) = bounded_sync::<i32>(1);
+    assert_eq!(p.len(), 0);
     drop(p);
+    assert_eq!(c.len(), 0);
     match c.recv() {
       Err(RecvError::Disconnected) => {}
       Ok(v) => panic!(
@@ -707,7 +790,10 @@ mod tests {
   #[test]
   fn consumer_drop_signals_producer() {
     let (mut p, c) = bounded_sync::<i32>(1);
+    assert_eq!(p.len(), 0);
     drop(c);
+    // After consumer drop, len might be stale or 0.
+    // The key is that send fails.
     match p.send(1) {
       Err(SendError::Closed) => {}
       Ok(_) => panic!("Expected Closed error after consumer drop"),
@@ -731,6 +817,9 @@ mod tests {
       for i in 0..ITEMS {
         assert_eq!(c.recv().unwrap(), i);
       }
+      // After consuming all items, the channel should be empty from consumer's perspective,
+      // assuming the producer has also finished and not sent more.
+      assert!(c.is_empty());
     });
 
     producer_handle.join().unwrap();
@@ -741,6 +830,7 @@ mod tests {
   fn try_send_closed_by_consumer_drop() {
     let (mut p, c) = bounded_sync::<i32>(5);
     p.try_send(1).unwrap();
+    assert_eq!(p.len(), 1);
     drop(c);
     match p.try_send(2) {
       Err(TrySendError::Closed(val)) => assert_eq!(val, 2),
@@ -752,8 +842,11 @@ mod tests {
   fn try_recv_disconnected_by_producer_drop() {
     let (mut p, mut c) = bounded_sync::<i32>(5); // p needs to be mut
     p.try_send(10).unwrap(); // CORRECTED: Call try_send on p
+    assert_eq!(p.len(), 1);
     drop(p);
+    assert_eq!(c.len(), 1);
     assert_eq!(c.try_recv().unwrap(), 10);
+    assert_eq!(c.len(), 0);
     match c.try_recv() {
       Err(TryRecvError::Disconnected) => {}
       other => panic!("Expected TryRecvError::Disconnected, got {:?}", other),
@@ -794,15 +887,19 @@ mod tests {
       p.send(Droppable(1, drop_counter_arc.clone())).unwrap();
       p.send(Droppable(2, drop_counter_arc.clone())).unwrap();
       assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 0);
+      assert_eq!(p.len(), 2);
       drop(p);
+      assert_eq!(c.len(), 2);
 
       let d1 = c.recv().unwrap();
       assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 0);
+      assert_eq!(c.len(), 1);
       drop(d1);
       assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 1);
 
       let d2 = c.recv().unwrap();
       assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 1);
+      assert_eq!(c.len(), 0);
       drop(d2);
       assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 2);
     } // c drops here
@@ -814,18 +911,18 @@ mod tests {
       let (mut p, c) = bounded_sync::<Droppable>(2);
       p.send(Droppable(3, drop_counter_arc.clone())).unwrap();
       p.send(Droppable(4, drop_counter_arc.clone())).unwrap();
-      drop(p); // Producer drops
-      drop(c); // Consumer drops, items 3 & 4 should be dropped by SpscShared::drop
+      drop(p); // Sender drops
+      drop(c); // Receiver drops, items 3 & 4 should be dropped by SpscShared::drop
     }
     assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 2); // Items 3 and 4 dropped
 
-    // Test 3: Producer sends, then drops. Consumer drops without consuming.
+    // Test 3: Sender sends, then drops. Receiver drops without consuming.
     drop_counter_arc.store(0, AtomicOrdering::Relaxed);
     {
       let (mut p, c) = bounded_sync::<Droppable>(1);
       p.send(Droppable(5, drop_counter_arc.clone())).unwrap();
       drop(p); // Item 5 is in channel.
-      drop(c); // Consumer drops. Item 5 should be dropped by SpscShared.
+      drop(c); // Receiver drops. Item 5 should be dropped by SpscShared.
     }
     assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 1);
   }

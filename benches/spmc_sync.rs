@@ -45,7 +45,7 @@ fn benchmark_logic_spmc_sync(
   state: SpmcBenchState,
   cfg: &SpmcBenchConfig,
 ) -> (BenchContext, SpmcBenchState, Duration) {
-  let (mut tx, rx) = spmc::channel(cfg.capacity);
+  let (mut tx, rx) = spmc::bounded(cfg.capacity);
   let receivers: Vec<_> = (0..cfg.num_consumers).map(|_| rx.clone()).collect();
   drop(rx);
 
@@ -91,7 +91,7 @@ fn spmc_sync_benches(c: &mut Criterion) {
         MatrixCellValue::Unsigned(1),
         MatrixCellValue::Unsigned(4),
         MatrixCellValue::Unsigned(core_count),
-      ], // Consumers
+      ], // Receivers
       vec![MatrixCellValue::Unsigned(1), MatrixCellValue::Unsigned(128)], // Capacity
       vec![MatrixCellValue::Unsigned(100_000)],                           // Total Items
     ],

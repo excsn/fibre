@@ -13,12 +13,12 @@ use std::thread;
 
 // --- Helper Function for Sync MPMC Tests ---
 fn run_sync_mpmc_test(num_producers: usize, num_consumers: usize, items_per_producer: usize, channel_capacity: usize) {
-  let (tx, rx) = mpmc::channel(channel_capacity);
+  let (tx, rx) = mpmc::bounded(channel_capacity);
   let total_items_expected = num_producers * items_per_producer;
   let received_items_set = Arc::new(std::sync::Mutex::new(HashSet::new()));
   let received_count = Arc::new(AtomicUsize::new(0));
 
-  // --- Spawn Consumers ---
+  // --- Spawn Receivers ---
   let mut consumer_handles = Vec::new();
   for _ in 0..num_consumers {
     let rx_clone = rx.clone();
@@ -40,7 +40,7 @@ fn run_sync_mpmc_test(num_producers: usize, num_consumers: usize, items_per_prod
   }
   drop(rx); // Drop original handle
 
-  // --- Spawn Producers ---
+  // --- Spawn Senders ---
   let mut producer_handles = Vec::new();
   for p_id in 0..num_producers {
     let tx_clone = tx.clone();
@@ -55,10 +55,10 @@ fn run_sync_mpmc_test(num_producers: usize, num_consumers: usize, items_per_prod
 
   // --- Join and Assert ---
   for handle in producer_handles {
-    handle.join().expect("Producer thread panicked");
+    handle.join().expect("Sender thread panicked");
   }
   for handle in consumer_handles {
-    handle.join().expect("Consumer thread panicked");
+    handle.join().expect("Receiver thread panicked");
   }
 
   assert_eq!(received_count.load(AtomicOrdering::Relaxed), total_items_expected);
@@ -115,7 +115,7 @@ fn sync_v2_rendezvous_channel() {
 
 #[test]
 fn sync_v2_drop_producer_signals_disconnect() {
-  let (tx, rx) = mpmc::channel::<i32>(5);
+  let (tx, rx) = mpmc::bounded::<i32>(5);
   let tx2 = tx.clone();
 
   tx.send(1).unwrap();
@@ -131,7 +131,7 @@ fn sync_v2_drop_producer_signals_disconnect() {
 
 #[test]
 fn sync_v2_drop_receiver_signals_closed() {
-  let (tx, rx) = mpmc::channel::<i32>(5);
+  let (tx, rx) = mpmc::bounded::<i32>(5);
   let rx2 = rx.clone();
 
   drop(rx);
@@ -142,7 +142,7 @@ fn sync_v2_drop_receiver_signals_closed() {
 
 #[test]
 fn sync_v2_try_send_full_and_try_recv_empty() {
-  let (tx, rx) = mpmc::channel(1);
+  let (tx, rx) = mpmc::bounded(1);
   tx.send(100).unwrap();
 
   match tx.try_send(200) {

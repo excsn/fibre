@@ -11,9 +11,9 @@ use std::{
 mod common_async;
 
 fn main() {
-  println!("--- MPSC: Sync Producers, Sync Receiver ---");
+  println!("--- MPSC: Sync Senders, Sync Receiver ---");
   {
-    let (tx, mut rx) = mpsc::channel::<String>();
+    let (tx, mut rx) = mpsc::unbounded::<String>();
     let num_producers = 3;
     let messages_per_producer = 2;
     let total_messages = num_producers * messages_per_producer;
@@ -24,9 +24,9 @@ fn main() {
       thread::spawn(move || {
         for j in 0..messages_per_producer {
           let msg = format!("SyncMPSC-P{}-M{}", i, j);
-          println!("[Sync Producer {}] Sending: {}", i, msg);
+          println!("[Sync Sender {}] Sending: {}", i, msg);
           if tx_clone.send(msg).is_err() {
-            println!("[Sync Producer {}] Receiver dropped.", i);
+            println!("[Sync Sender {}] Receiver dropped.", i);
             break;
           }
           thread::sleep(Duration::from_millis(10 + i as u64 * 5));
@@ -54,9 +54,9 @@ fn main() {
     assert_eq!(received_count.load(Ordering::Relaxed), total_messages);
   }
 
-  println!("\n--- MPSC: Async Producers, Async Receiver ---");
+  println!("\n--- MPSC: Async Senders, Async Receiver ---");
   common_async::run_async(async {
-    let (tx, mut rx) = mpsc::channel_async::<String>();
+    let (tx, mut rx) = mpsc::unbounded_async::<String>();
     let num_producers = 3;
     let messages_per_producer = 2;
     let total_messages = num_producers * messages_per_producer;
@@ -67,9 +67,9 @@ fn main() {
       tokio::spawn(async move {
         for j in 0..messages_per_producer {
           let msg = format!("AsyncMPSC-P{}-M{}", i, j);
-          println!("[Async Producer {}] Sending: {}", i, msg);
+          println!("[Async Sender {}] Sending: {}", i, msg);
           if tx_clone.send(msg).await.is_err() {
-            println!("[Async Producer {}] Receiver dropped.", i);
+            println!("[Async Sender {}] Receiver dropped.", i);
             break;
           }
           tokio::time::sleep(Duration::from_millis(10 + i as u64 * 5)).await;
@@ -94,16 +94,16 @@ fn main() {
     assert_eq!(received_count.load(Ordering::Relaxed), total_messages);
   });
 
-  println!("\n--- MPSC: Sync Producers (Threads) to Async Receiver ---");
+  println!("\n--- MPSC: Sync Senders (Threads) to Async Receiver ---");
   common_async::run_async(async {
-    let (tx_async, mut rx_async) = mpsc::channel_async::<String>(); // Start with async channel
+    let (tx_async, mut rx_async) = mpsc::unbounded_async::<String>(); // Start with async channel
     let num_producers = 2;
 
     for i in 0..num_producers {
       let tx_sync_converted = tx_async.clone().to_sync(); // Convert for each thread
       thread::spawn(move || {
         let msg = format!("SyncToAsyncMPSC-P{}", i);
-        println!("[Sync Producer {}] Sending: {}", i, msg);
+        println!("[Sync Sender {}] Sending: {}", i, msg);
         if tx_sync_converted.send(msg).is_err() { /* ... */ }
       });
     }
@@ -118,9 +118,9 @@ fn main() {
     }
   });
 
-  println!("\n--- MPSC: Async Producers to Sync Receiver ---");
+  println!("\n--- MPSC: Async Senders to Sync Receiver ---");
   {
-    let (tx_async, rx_async) = mpsc::channel_async::<String>();
+    let (tx_async, rx_async) = mpsc::unbounded_async::<String>();
     let mut rx_sync = rx_async.to_sync(); // Convert receiver
     let num_producers = 2;
 
@@ -129,7 +129,7 @@ fn main() {
       // Need to run these async senders in a runtime if the main thread is sync
       common_async::block_on_tokio_task(async move {
         let msg = format!("AsyncToSyncMPSC-P{}", i);
-        println!("[Async Producer {}] Sending: {}", i, msg);
+        println!("[Async Sender {}] Sending: {}", i, msg);
         if tx_clone.send(msg).await.is_err() { /* ... */ }
       });
     }

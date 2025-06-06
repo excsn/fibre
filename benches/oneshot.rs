@@ -65,7 +65,7 @@ fn benchmark_logic_oneshot_async(
   Box::pin(async move {
     let start_time = Instant::now();
     for _ in 0..cfg_clone.num_items {
-      let (p_oneshot, mut r_oneshot) = oneshot::channel();
+      let (p_oneshot, mut r_oneshot) = oneshot::oneshot();
       p_oneshot.send(ITEM_VALUE).expect("Oneshot send failed"); // send consumes p_oneshot
       let _ = r_oneshot.recv().await.unwrap();
     }

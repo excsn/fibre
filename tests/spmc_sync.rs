@@ -6,14 +6,14 @@ use std::thread;
 
 #[test]
 fn spmc_sync_spsc_smoke() {
-  let (mut tx, mut rx) = spmc::channel(2);
+  let (mut tx, mut rx) = spmc::bounded(2);
   tx.send(10).unwrap();
   assert_eq!(rx.recv().unwrap(), 10);
 }
 
 #[test]
 fn spmc_sync_try_recv() {
-  let (mut tx, mut rx) = spmc::channel::<i32>(2);
+  let (mut tx, mut rx) = spmc::bounded::<i32>(2);
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));
   tx.send(1).unwrap();
   assert_eq!(rx.try_recv(), Ok(1));
@@ -22,7 +22,7 @@ fn spmc_sync_try_recv() {
 
 #[test]
 fn spmc_sync_multi_consumer() {
-  let (mut tx, mut rx1) = spmc::channel(ITEMS_LOW);
+  let (mut tx, mut rx1) = spmc::bounded(ITEMS_LOW);
   let mut rx2 = rx1.clone();
   let mut rx3 = rx1.clone();
 
@@ -53,7 +53,7 @@ fn spmc_sync_multi_consumer() {
 
 #[test]
 fn spmc_sync_slow_consumer_blocks_producer() {
-  let (mut tx, mut rx_fast) = spmc::channel(1); // Capacity of 1
+  let (mut tx, mut rx_fast) = spmc::bounded(1); // Capacity of 1
   let mut rx_slow = rx_fast.clone();
 
   // Fill the buffer
@@ -62,20 +62,20 @@ fn spmc_sync_slow_consumer_blocks_producer() {
   // Fast consumer reads, freeing its own slot view
   assert_eq!(rx_fast.recv().unwrap(), 1);
 
-  // Producer tries to send again. It should block because rx_slow hasn't read item 1.
+  // Sender tries to send again. It should block because rx_slow hasn't read item 1.
   let send_handle = thread::spawn(move || {
     tx.send(2).unwrap(); // This should block.
   });
 
   thread::sleep(SHORT_TIMEOUT);
-  assert!(!send_handle.is_finished(), "Producer should have blocked");
+  assert!(!send_handle.is_finished(), "Sender should have blocked");
 
   // Slow consumer finally reads, unblocking the producer
   assert_eq!(rx_slow.recv().unwrap(), 1);
 
   send_handle
     .join()
-    .expect("Producer panicked or was not unblocked");
+    .expect("Sender panicked or was not unblocked");
 
   // Both can now receive the new item
   assert_eq!(rx_fast.recv().unwrap(), 2);
@@ -84,7 +84,7 @@ fn spmc_sync_slow_consumer_blocks_producer() {
 
 #[test]
 fn spmc_sync_all_receivers_drop_closes_channel() {
-  let (mut tx, rx) = spmc::channel(2);
+  let (mut tx, rx) = spmc::bounded(2);
   let rx2 = rx.clone();
 
   tx.send(1).unwrap(); // Should succeed

@@ -1,6 +1,6 @@
 // src/mpmc/mod.rs
 
-//! A high-performance, flexible, lock-based MPMC (Multi-Producer, Multi-Consumer) channel.
+//! A high-performance, flexible, lock-based MPMC (Multi-Sender, Multi-Receiver) channel.
 //!
 //! This MPMC channel implementation is designed for both high performance and flexibility.
 //! It uses a `parking_lot::Mutex` for robust state management and supports adaptive
@@ -82,7 +82,7 @@ pub use async_impl::{ReceiveFuture, SendFuture};
 ///
 /// A capacity of `0` creates a "rendezvous" channel, where a `send` will block
 /// until a `recv` is ready to take the value.
-pub fn channel<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
   let shared = Arc::new(MpmcShared::new(capacity));
   (
     Sender {
@@ -96,14 +96,14 @@ pub fn channel<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
 ///
 /// In reality, the channel is bounded by available memory.
 pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>) {
-  channel(usize::MAX)
+  bounded(usize::MAX)
 }
 
 /// Creates a new asynchronous bounded MPMC channel.
 ///
 /// A capacity of `0` creates a "rendezvous" channel, where `send().await` will not
 /// complete until a `recv().await` is ready to take the value.
-pub fn channel_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>) {
+pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>) {
   let shared = Arc::new(MpmcShared::new(capacity));
   (
     AsyncSender {
@@ -117,7 +117,7 @@ pub fn channel_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver
 ///
 /// In reality, the channel is bounded by available memory.
 pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
-  channel_async(usize::MAX)
+  bounded_async(usize::MAX)
 }
 
 // --- Trait Implementations for Public Structs ---
@@ -177,7 +177,9 @@ impl<T: Send> Drop for Sender<T> {
     }
     // Wake waiters outside the lock to reduce contention.
     for waiter in sync_waiters {
-      waiter.done.store(true, std::sync::atomic::Ordering::Release);
+      waiter
+        .done
+        .store(true, std::sync::atomic::Ordering::Release);
       waiter.thread.unpark();
     }
     for waiter in async_waiters {
@@ -203,12 +205,18 @@ impl<T: Send> Drop for Receiver<T> {
         // we wake one waiting sender of each type. They can try again and
         // potentially find another active receiver.
         sync_waiters = guard.waiting_sync_senders.pop_front().into_iter().collect();
-        async_waiters = guard.waiting_async_senders.pop_front().into_iter().collect();
+        async_waiters = guard
+          .waiting_async_senders
+          .pop_front()
+          .into_iter()
+          .collect();
       }
     }
     // Wake waiters outside the lock.
     for waiter in sync_waiters {
-      waiter.done.store(true, std::sync::atomic::Ordering::Release);
+      waiter
+        .done
+        .store(true, std::sync::atomic::Ordering::Release);
       waiter.thread.unpark();
     }
     for waiter in async_waiters {
@@ -233,7 +241,9 @@ impl<T: Send> Drop for AsyncSender<T> {
       }
     }
     for waiter in sync_waiters {
-      waiter.done.store(true, std::sync::atomic::Ordering::Release);
+      waiter
+        .done
+        .store(true, std::sync::atomic::Ordering::Release);
       waiter.thread.unpark();
     }
     for waiter in async_waiters {
@@ -254,11 +264,17 @@ impl<T: Send> Drop for AsyncReceiver<T> {
         async_waiters = std::mem::take(&mut guard.waiting_async_senders);
       } else {
         sync_waiters = guard.waiting_sync_senders.pop_front().into_iter().collect();
-        async_waiters = guard.waiting_async_senders.pop_front().into_iter().collect();
+        async_waiters = guard
+          .waiting_async_senders
+          .pop_front()
+          .into_iter()
+          .collect();
       }
     }
     for waiter in sync_waiters {
-      waiter.done.store(true, std::sync::atomic::Ordering::Release);
+      waiter
+        .done
+        .store(true, std::sync::atomic::Ordering::Release);
       waiter.thread.unpark();
     }
     for waiter in async_waiters {
@@ -297,12 +313,35 @@ impl<T: Send> Sender<T> {
   /// This is a zero-cost conversion. The `Drop` implementation of the original
   /// `Sender` is not called.
   pub fn to_async(self) -> AsyncSender<T> {
-    // Manually take ownership of the Arc.
     let shared = unsafe { std::ptr::read(&self.shared) };
-    // Prevent the Drop impl of `self` from running, as it would
-    // incorrectly decrement the sender count.
     mem::forget(self);
     AsyncSender { shared }
+  }
+
+  /// Returns the number of items currently in the channel's buffer.
+  /// For rendezvous channels, this will usually be 0.
+  #[inline]
+  pub fn len(&self) -> usize {
+    self.shared.internal.lock().queue.len()
+  }
+
+  /// Returns `true` if the channel's buffer is empty.
+  /// For rendezvous channels, this will usually be `true`.
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
+
+  /// Returns `true` if the channel's buffer is full.
+  /// For "unbounded" channels, this will always be `false`.
+  /// For rendezvous channels (capacity 0), this will be `true` if `len()` is 0.
+  #[inline]
+  pub fn is_full(&self) -> bool {
+    if self.shared.capacity == usize::MAX {
+      false
+    } else {
+      self.len() == self.shared.capacity
+    }
   }
 }
 impl<T: Send> Receiver<T> {
@@ -341,11 +380,37 @@ impl<T: Send> Receiver<T> {
     mem::forget(self);
     AsyncReceiver { shared }
   }
+
+  /// Returns the number of items currently in the channel's buffer.
+  /// For rendezvous channels, this will usually be 0.
+  #[inline]
+  pub fn len(&self) -> usize {
+    self.shared.internal.lock().queue.len()
+  }
+
+  /// Returns `true` if the channel's buffer is empty.
+  /// For rendezvous channels, this will usually be `true`.
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
+
+  /// Returns `true` if the channel's buffer is full.
+  /// For "unbounded" channels, this will always be `false`.
+  /// For rendezvous channels (capacity 0), this will be `true` if `len()` is 0.
+  #[inline]
+  pub fn is_full(&self) -> bool {
+    if self.shared.capacity == usize::MAX {
+      false
+    } else {
+      self.len() == self.shared.capacity
+    }
+  }
 }
 
 // --- Public API Method Implementations (Async) ---
 
-impl<T: Send + Unpin> AsyncSender<T> {
+impl<T: Send> AsyncSender<T> {
   /// Sends a value into the channel asynchronously.
   ///
   /// This method returns a future that will complete once the value has been
@@ -380,9 +445,35 @@ impl<T: Send + Unpin> AsyncSender<T> {
     mem::forget(self);
     Sender { shared }
   }
+
+  /// Returns the number of items currently in the channel's buffer.
+  /// For rendezvous channels, this will usually be 0.
+  #[inline]
+  pub fn len(&self) -> usize {
+    self.shared.internal.lock().queue.len()
+  }
+
+  /// Returns `true` if the channel's buffer is empty.
+  /// For rendezvous channels, this will usually be `true`.
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
+
+  /// Returns `true` if the channel's buffer is full.
+  /// For "unbounded" channels, this will always be `false`.
+  /// For rendezvous channels (capacity 0), this will be `true` if `len()` is 0.
+  #[inline]
+  pub fn is_full(&self) -> bool {
+    if self.shared.capacity == usize::MAX {
+      false
+    } else {
+      self.len() == self.shared.capacity
+    }
+  }
 }
 
-impl<T: Send + Unpin> AsyncReceiver<T> {
+impl<T: Send> AsyncReceiver<T> {
   /// Receives a value from the channel asynchronously.
   ///
   /// This method returns a future that will complete when a value is received,
@@ -420,5 +511,31 @@ impl<T: Send + Unpin> AsyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
     Receiver { shared }
+  }
+
+  /// Returns the number of items currently in the channel's buffer.
+  /// For rendezvous channels, this will usually be 0.
+  #[inline]
+  pub fn len(&self) -> usize {
+    self.shared.internal.lock().queue.len()
+  }
+
+  /// Returns `true` if the channel's buffer is empty.
+  /// For rendezvous channels, this will usually be `true`.
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
+
+  /// Returns `true` if the channel's buffer is full.
+  /// For "unbounded" channels, this will always be `false`.
+  /// For rendezvous channels (capacity 0), this will be `true` if `len()` is 0.
+  #[inline]
+  pub fn is_full(&self) -> bool {
+    if self.shared.capacity == usize::MAX {
+      false
+    } else {
+      self.len() == self.shared.capacity
+    }
   }
 }

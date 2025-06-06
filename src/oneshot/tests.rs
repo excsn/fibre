@@ -8,7 +8,7 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[tokio::test]
 async fn send_recv_ok() {
-  let (tx, mut rx) = channel::<String>();
+  let (tx, mut rx) = oneshot::<String>();
   let message = "hello oneshot".to_string();
 
   tokio::spawn(async move {
@@ -24,7 +24,7 @@ async fn send_recv_ok() {
 
 #[tokio::test]
 async fn try_recv_before_send() {
-  let (tx, mut rx) = channel::<i32>();
+  let (tx, mut rx) = oneshot::<i32>();
   assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   drop(tx); // ensure it transitions to disconnected later
   assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
@@ -32,7 +32,7 @@ async fn try_recv_before_send() {
 
 #[tokio::test]
 async fn try_recv_after_send() {
-  let (tx, mut rx) = channel::<i32>();
+  let (tx, mut rx) = oneshot::<i32>();
   tx.send(123).expect("Send failed");
   assert_eq!(rx.try_recv().unwrap(), 123);
   // Second try_recv should indicate it's taken (effectively Empty or Disconnected if senders gone)
@@ -48,7 +48,7 @@ async fn try_recv_after_send() {
 
 #[tokio::test]
 async fn recv_after_all_senders_dropped_no_send() {
-  let (tx1, mut rx) = channel::<i32>();
+  let (tx1, mut rx) = oneshot::<i32>();
   let tx2 = tx1.clone();
   let tx3 = tx2.clone();
 
@@ -64,7 +64,7 @@ async fn recv_after_all_senders_dropped_no_send() {
 
 #[tokio::test]
 async fn send_fails_if_receiver_dropped() {
-  let (tx, rx) = channel::<String>();
+  let (tx, rx) = oneshot::<String>();
   drop(rx); // Receiver dropped
 
   let message = "won't be sent".to_string();
@@ -78,7 +78,7 @@ async fn send_fails_if_receiver_dropped() {
 
 #[tokio::test]
 async fn only_first_send_succeeds_cloned_senders() {
-  let (tx1, mut rx) = channel::<i32>();
+  let (tx1, mut rx) = oneshot::<i32>();
   let tx2 = tx1.clone();
   let tx3 = tx1.clone();
 
@@ -117,7 +117,7 @@ async fn receiver_dropped_after_send_value_is_dropped() {
 
   DROP_COUNT.store(0, AtomicOrdering::Relaxed);
   {
-    let (tx, mut rx) = channel::<DroppableVal>();
+    let (tx, mut rx) = oneshot::<DroppableVal>();
     tx.send(DroppableVal("should be dropped".to_string()))
       .expect("Send failed");
     // Value is sent, now in OneShotShared::value_slot
@@ -137,7 +137,7 @@ async fn receiver_dropped_while_sender_sending_concurrently() {
   // With current Mutex in send, this race is less likely to manifest subtly.
   // The sender will either complete send then receiver drop cleans up,
   // or sender sees receiver_dropped flag before completing send.
-  let (tx, rx) = channel::<i32>();
+  let (tx, rx) = oneshot::<i32>();
 
   let sender_task = tokio::spawn(async move {
     // Simulate some work before actual send logic hits the critical part
@@ -158,8 +158,8 @@ async fn receiver_dropped_while_sender_sending_concurrently() {
 
 #[tokio::test]
 async fn select_on_recv() {
-  let (tx1, mut rx1) = channel::<i32>();
-  let (_tx2, mut rx2) = channel::<i32>(); // This one won't receive anything
+  let (tx1, mut rx1) = oneshot::<i32>();
+  let (_tx2, mut rx2) = oneshot::<i32>(); // This one won't receive anything
 
   tokio::spawn(async move {
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -184,7 +184,7 @@ async fn select_on_recv() {
 
 #[tokio::test]
 async fn sender_clones_drop_receiver_gets_disconnected() {
-  let (tx_orig, mut rx) = channel::<()>();
+  let (tx_orig, mut rx) = oneshot::<()>();
   let mut senders = Vec::new();
   for _ in 0..5 {
     senders.push(tx_orig.clone());
@@ -202,7 +202,7 @@ async fn sender_clones_drop_receiver_gets_disconnected() {
 
 #[tokio::test]
 async fn send_consumes_sender() {
-  let (tx, mut rx) = channel::<i32>();
+  let (tx, mut rx) = oneshot::<i32>();
   // tx.send(1); // This consumes tx
   // tx.send(2); // This would be a compile error: value used after move
 
@@ -219,7 +219,7 @@ async fn send_consumes_sender() {
 
 #[tokio::test]
 async fn is_closed_and_is_sent_semantics() {
-  let (tx1, mut rx) = channel::<i32>();
+  let (tx1, mut rx) = oneshot::<i32>();
   let tx2 = tx1.clone();
 
   assert!(!tx1.is_closed()); // Receiver exists
@@ -253,7 +253,7 @@ async fn is_closed_and_is_sent_semantics() {
   assert!(rx.is_closed());
 
   // Test receiver dropped
-  let (tx3, rx2) = channel::<i32>();
+  let (tx3, rx2) = oneshot::<i32>();
   assert!(!tx3.is_closed());
   drop(rx2);
   assert!(tx3.is_closed()); // Now sender sees receiver is gone

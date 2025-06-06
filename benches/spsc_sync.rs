@@ -32,24 +32,24 @@ struct BenchContext {
 }
 
 // Sync SPSC
-trait SyncProducerSpsc: Send {
+trait SyncSenderSpsc: Send {
   fn send(&mut self, item: u64);
 }
-trait SyncConsumerSpsc: Send {
+trait SyncReceiverSpsc: Send {
   fn recv(&mut self) -> u64;
 }
 struct SpscSyncState {
-  producer: Box<dyn SyncProducerSpsc>,
-  consumer: Box<dyn SyncConsumerSpsc>,
+  producer: Box<dyn SyncSenderSpsc>,
+  consumer: Box<dyn SyncReceiverSpsc>,
 }
-struct SpscSyncProdImpl(spsc::BoundedSyncProducer<u64>);
-impl SyncProducerSpsc for SpscSyncProdImpl {
+struct SpscSyncProdImpl(spsc::BoundedSyncSender<u64>);
+impl SyncSenderSpsc for SpscSyncProdImpl {
   fn send(&mut self, item: u64) {
     self.0.send(item).unwrap();
   }
 }
-struct SpscSyncConsImpl(spsc::BoundedSyncConsumer<u64>);
-impl SyncConsumerSpsc for SpscSyncConsImpl {
+struct SpscSyncConsImpl(spsc::BoundedSyncReceiver<u64>);
+impl SyncReceiverSpsc for SpscSyncConsImpl {
   fn recv(&mut self) -> u64 {
     self.0.recv().unwrap()
   }

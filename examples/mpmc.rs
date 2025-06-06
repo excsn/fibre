@@ -17,9 +17,9 @@ fn main() {
   let messages_per_producer = 3;
   let total_messages = num_producers * messages_per_producer;
 
-  println!("--- MPMC: Sync Producers, Sync Consumers ---");
+  println!("--- MPMC: Sync Senders, Sync Receivers ---");
   {
-    let (tx, rx) = mpmc::channel::<String>(capacity);
+    let (tx, rx) = mpmc::bounded::<String>(capacity);
     let received_count = Arc::new(AtomicUsize::new(0));
     let all_sent = Arc::new(AtomicBool::new(false));
 
@@ -29,7 +29,7 @@ fn main() {
       producer_handles.push(thread::spawn(move || {
         for m_id in 0..messages_per_producer {
           let msg = format!("SyncMPMC-P{}-M{}", p_id, m_id);
-          println!("[Sync Producer {}] Sending: {}", p_id, msg);
+          println!("[Sync Sender {}] Sending: {}", p_id, msg);
           if tx_clone.send(msg).is_err() {
             break;
           }
@@ -48,7 +48,7 @@ fn main() {
         loop {
           match rx_clone.recv() {
             Ok(value) => {
-              println!("[Sync Consumer {}] Received: {}", c_id, value);
+              println!("[Sync Receiver {}] Received: {}", c_id, value);
               received_count_clone.fetch_add(1, Ordering::Relaxed);
             }
             Err(RecvError::Disconnected) => {
@@ -56,9 +56,9 @@ fn main() {
               if received_count_clone.load(Ordering::Relaxed) < total_messages
                 && !all_sent_clone.load(Ordering::Relaxed)
               {
-                println!("[Sync Consumer {}] Disconnected prematurely.", c_id);
+                println!("[Sync Receiver {}] Disconnected prematurely.", c_id);
               } else {
-                println!("[Sync Consumer {}] Disconnected (expected).", c_id);
+                println!("[Sync Receiver {}] Disconnected (expected).", c_id);
               }
               break;
             }
@@ -72,16 +72,16 @@ fn main() {
       handle.join().unwrap();
     }
     all_sent.store(true, Ordering::Relaxed); // Signal producers are done
-                                             // Note: Consumers might still be draining. Their recv loop handles disconnect.
+                                             // Note: Receivers might still be draining. Their recv loop handles disconnect.
     for handle in consumer_handles {
       handle.join().unwrap();
     }
     assert_eq!(received_count.load(Ordering::Relaxed), total_messages);
   }
 
-  println!("\n--- MPMC: Async Producers, Async Consumers ---");
+  println!("\n--- MPMC: Async Senders, Async Receivers ---");
   common_async::run_async(async {
-    let (tx, rx) = mpmc::channel_async::<String>(capacity);
+    let (tx, rx) = mpmc::bounded_async::<String>(capacity);
     let received_count = Arc::new(AtomicUsize::new(0));
 
     let mut producer_handles = Vec::new();
@@ -90,7 +90,7 @@ fn main() {
       producer_handles.push(tokio::spawn(async move {
         for m_id in 0..messages_per_producer {
           let msg = format!("AsyncMPMC-P{}-M{}", p_id, m_id);
-          println!("[Async Producer {}] Sending: {}", p_id, msg);
+          println!("[Async Sender {}] Sending: {}", p_id, msg);
           if tx_clone.send(msg).await.is_err() {
             break;
           }
@@ -106,10 +106,10 @@ fn main() {
       let received_count_clone = Arc::clone(&received_count);
       consumer_handles.push(tokio::spawn(async move {
         while let Ok(value) = rx_clone.recv().await {
-          println!("[Async Consumer {}] Received: {}", c_id, value);
+          println!("[Async Receiver {}] Received: {}", c_id, value);
           received_count_clone.fetch_add(1, Ordering::Relaxed);
         }
-        println!("[Async Consumer {}] Disconnected.", c_id);
+        println!("[Async Receiver {}] Disconnected.", c_id);
       }));
     }
     drop(rx);
@@ -123,9 +123,9 @@ fn main() {
     assert_eq!(received_count.load(Ordering::Relaxed), total_messages);
   });
 
-  println!("\n--- MPMC: Sync Producers (Threads) to Async Consumers ---");
+  println!("\n--- MPMC: Sync Senders (Threads) to Async Receivers ---");
   common_async::run_async(async {
-    let (tx_async, rx_async) = mpmc::channel_async::<String>(capacity);
+    let (tx_async, rx_async) = mpmc::bounded_async::<String>(capacity);
     let received_count = Arc::new(AtomicUsize::new(0));
 
     let mut producer_handles = Vec::new();
@@ -163,9 +163,9 @@ fn main() {
     assert_eq!(received_count.load(Ordering::Relaxed), total_messages);
   });
 
-  println!("\n--- MPMC: Async Producers to Sync Consumers ---");
+  println!("\n--- MPMC: Async Senders to Sync Receivers ---");
   {
-    let (tx_async, rx_async) = mpmc::channel_async::<String>(capacity);
+    let (tx_async, rx_async) = mpmc::bounded_async::<String>(capacity);
     let received_count = Arc::new(AtomicUsize::new(0));
     let producers_finished_count = Arc::new(AtomicUsize::new(0)); // For tracking producer completion
 
@@ -180,10 +180,10 @@ fn main() {
         common_async::block_on_tokio_task(async move {
           for m_id in 0..messages_per_producer {
             let msg = format!("AsyncToSyncMPMC-P{}-M{}", p_id, m_id);
-            println!("[Async Producer {} in OS Thread] Sending: {}", p_id, msg);
+            println!("[Async Sender {} in OS Thread] Sending: {}", p_id, msg);
             if tx_clone.send(msg).await.is_err() {
               println!(
-                "[Async Producer {} in OS Thread] Consumer side closed.",
+                "[Async Sender {} in OS Thread] Receiver side closed.",
                 p_id
               );
               break;
@@ -191,7 +191,7 @@ fn main() {
             tokio::time::sleep(Duration::from_millis(5)).await; // Small delay
           }
           producers_finished_clone.fetch_add(1, Ordering::Relaxed);
-          println!("[Async Producer {} in OS Thread] Done sending.", p_id);
+          println!("[Async Sender {} in OS Thread] Done sending.", p_id);
         });
       }));
     }
@@ -200,7 +200,7 @@ fn main() {
     // The drop order matters for MPMC disconnect logic.
     // If we drop tx_async here, the consumers might see "disconnected" too early if
     // the spawned threads haven't finished all their sends yet.
-    // A better pattern: Producers signal completion, then drop tx_async.
+    // A better pattern: Senders signal completion, then drop tx_async.
     // For simplicity here, we'll drop it after joining the OS threads.
 
     let mut consumer_handles = Vec::new();
@@ -212,15 +212,15 @@ fn main() {
                 loop {
                     match rx_sync_converted.recv() {
                         Ok(value) => {
-                            println!("[Sync Consumer {}] Received: {}", c_id, value);
+                            println!("[Sync Receiver {}] Received: {}", c_id, value);
                             received_count_clone.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(RecvError::Disconnected) => {
                             // Check if producers are actually done or if it's a premature disconnect.
                             if producers_finished_count_clone.load(Ordering::Relaxed) == num_producers {
-                                println!("[Sync Consumer {}] Disconnected (all producers finished).", c_id);
+                                println!("[Sync Receiver {}] Disconnected (all producers finished).", c_id);
                             } else {
-                                println!("[Sync Consumer {}] Disconnected (producers might not be done, or channel issue).", c_id);
+                                println!("[Sync Receiver {}] Disconnected (producers might not be done, or channel issue).", c_id);
                             }
                             break;
                         }
@@ -251,6 +251,6 @@ fn main() {
       num_producers,
       "Not all producers signaled completion"
     );
-    println!("[Main Thread] Async Producers to Sync Consumers example finished.");
+    println!("[Main Thread] Async Senders to Sync Receivers example finished.");
   }
 }
