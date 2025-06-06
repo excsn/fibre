@@ -1,5 +1,4 @@
 // src/mpmc/sync_impl.rs
-
 //! Implementation of the synchronous, blocking send and receive logic for the MPMC channel.
 
 use super::core::{SyncWaiter, WaiterData};
@@ -59,11 +58,12 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
       let mut guard = sender.shared.internal.lock();
 
       // Re-check state under lock to prevent lost wakeups.
-      // A spot may have opened up while we were preparing to park.
-      // We check for waiting receivers OR available buffer space.
-      if !guard.waiting_async_receivers.is_empty()
-        || !guard.waiting_sync_receivers.is_empty()
-        || (sender.shared.capacity > 0 && guard.queue.len() < sender.shared.capacity)
+      // An item can be sent if a receiver is waiting, or if there's buffer space.
+      if !guard.waiting_async_receivers.is_empty() // A receiver is waiting for our item.
+        || !guard.waiting_sync_receivers.is_empty() // A sync receiver is waiting.
+        || (sender.shared.capacity > 0 // It's a buffered channel...
+          && guard.queue.len() < sender.shared.capacity)
+      // ...and there is space.
       {
         // State changed. Don't park. Retrieve our item if it was for rendezvous.
         if is_rendezvous {
@@ -134,8 +134,11 @@ pub(crate) fn recv_sync<T: Send>(receiver: &Receiver<T>) -> Result<T, RecvError>
       let mut guard = receiver.shared.internal.lock();
 
       // Re-check state under lock. An item may have arrived.
-      // Check for items in the queue OR a waiting rendezvous sender.
-      if !guard.queue.is_empty() || !guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty() {
+      // An item is available if it's in the queue, or for rendezvous channels, if a sender is waiting.
+      if !guard.queue.is_empty()
+        || (receiver.shared.capacity == 0
+          && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
+      {
         continue; // Loop to retry receive.
       }
 

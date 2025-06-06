@@ -1,0 +1,29 @@
+Test Machine: Macbook M4 Pro
+
+SpmcAsync/Cons-1_Cap-1_Items-100000
+                        time:   [730.72 ms 733.66 ms 736.89 ms]
+SpmcAsync/Cons-1_Cap-128_Items-100000
+                        time:   [6.6632 ms 6.6947 ms 6.7288 ms]
+                        thrpt:  [14.861 Melem/s 14.937 Melem/s 15.008 Melem/s]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking SpmcAsync/Cons-4_Cap-1_Items-100000: Warming up for 3.0000 s
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 7.8s.
+SpmcAsync/Cons-4_Cap-1_Items-100000
+                        time:   [736.74 ms 743.25 ms 750.55 ms]
+                        thrpt:  [133.24 Kelem/s 134.54 Kelem/s 135.73 Kelem/s]
+SpmcAsync/Cons-4_Cap-128_Items-100000
+                        time:   [16.804 ms 17.340 ms 18.025 ms]
+                        thrpt:  [22.191 Melem/s 23.067 Melem/s 23.803 Melem/s]
+Benchmarking SpmcAsync/Cons-14_Cap-1_Items-100000: Warming up for 3.0000 s
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 7.7s.
+SpmcAsync/Cons-14_Cap-1_Items-100000
+                        time:   [769.34 ms 773.94 ms 780.37 ms]
+                        thrpt:  [512.58 Kelem/s 516.84 Kelem/s 519.93 Kelem/s]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+Benchmarking SpmcAsync/Cons-14_Cap-128_Items-100000: Warming up for 3.0000 s
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 6.3s or enable flat sampling.
+SpmcAsync/Cons-14_Cap-128_Items-100000
+                        time:   [111.48 ms 114.32 ms 118.29 ms]
+                        thrpt:  [11.835 Melem/s 12.246 Melem/s 12.558 Melem/s]

@@ -1,9 +1,15 @@
 Test Machine: Macbook M4 Pro
 
+b0 - Rendevous
+b1 - Capacity 1
+bn - Unbounded
+contended - core_count * 64
+
 ===== ASYNC =====
 
 async::mpmc/b0          time:   [79.352 ms 81.551 ms 84.112 ms]
                         thrpt:  [12.466 Melem/s 12.858 Melem/s 13.214 Melem/s]
+                        
 async::mpmc/b0_contended
                         time:   [65.072 ms 70.306 ms 76.104 ms]
                         thrpt:  [13.778 Melem/s 14.915 Melem/s 16.114 Melem/s]

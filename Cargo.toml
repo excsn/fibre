@@ -10,6 +10,10 @@ readme = "README.md"
 keywords = ["channel", "mpmc", "spsc", "async", "sync", "performance"]
 categories = ["concurrency", "asynchronous", "data-structures"]
 
+exclude = [
+  "/docs/"
+]
+
 [features]
 default = ["std", "fibre_telemetry"]
 std = [] # Enable if we depend on std features not in core/alloc

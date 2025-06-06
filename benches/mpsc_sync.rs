@@ -51,18 +51,26 @@ fn benchmark_logic_mpsc_sync(
   // Create a fresh channel for each iteration of the benchmark.
   let (tx, mut rx) = mpsc::channel();
 
-  let items_per_producer = cfg.total_items / cfg.num_producers;
   let start_time = Instant::now();
 
   thread::scope(|s| {
+    // Correctly distribute items, including remainder, across producers.
+    let total_items = cfg.total_items;
+    let num_producers = cfg.num_producers;
+    let base_items = total_items / num_producers;
+    let remainder = total_items % num_producers;
+
     // Spawn producers
-    for _ in 0..cfg.num_producers {
-      let tx_clone = tx.clone();
-      s.spawn(move || {
-        for _ in 0..items_per_producer {
-          tx_clone.send(ITEM_VALUE).unwrap();
-        }
-      });
+    for p_idx in 0..num_producers {
+      let items_this_producer = base_items + if p_idx < remainder { 1 } else { 0 };
+      if items_this_producer > 0 {
+        let tx_clone = tx.clone();
+        s.spawn(move || {
+          for _ in 0..items_this_producer {
+            tx_clone.send(ITEM_VALUE).unwrap();
+          }
+        });
+      }
     }
     drop(tx); // Drop the original sender handle
 

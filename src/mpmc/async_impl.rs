@@ -1,3 +1,4 @@
+// src/mpmc/async_impl.rs
 //! Implementation of the asynchronous Future-based send and receive logic.
 
 use super::core::{AsyncWaiter, WaiterData};
@@ -126,8 +127,13 @@ impl<'a, T: Send + Unpin> Future for ReceiveFuture<'a, T> {
       {
         let mut guard = self.receiver.shared.internal.lock();
 
-        // Re-check under lock. An item or a waiting sender might have appeared.
-        if !guard.queue.is_empty() || !guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()
+        // Re-check under lock. An item might have appeared.
+        // An item is available if:
+        // 1. The queue is not empty (buffered or rendezvous after hand-off)
+        // 2. It's a rendezvous channel and a sender is waiting to hand an item over.
+        if !guard.queue.is_empty()
+          || (self.receiver.shared.capacity == 0
+            && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
         {
           drop(guard);
           continue 'poll_loop; // Retry immediately.

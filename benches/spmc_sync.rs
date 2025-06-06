@@ -6,7 +6,7 @@ use bench_matrix::{
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use fibre::spmc;
 use std::{
-  sync::Barrier,
+  sync::{Arc, Barrier},
   thread::{self, available_parallelism},
   time::{Duration, Instant},
 };
@@ -46,23 +46,29 @@ fn benchmark_logic_spmc_sync(
   cfg: &SpmcBenchConfig,
 ) -> (BenchContext, SpmcBenchState, Duration) {
   let (mut tx, rx) = spmc::channel(cfg.capacity);
-  let mut receivers: Vec<_> = (0..cfg.num_consumers).map(|_| rx.clone()).collect();
+  let receivers: Vec<_> = (0..cfg.num_consumers).map(|_| rx.clone()).collect();
   drop(rx);
 
-  let barrier = Barrier::new(cfg.num_consumers + 1);
+  // FIX: Wrap the Barrier in an Arc for shared ownership.
+  let barrier = Arc::new(Barrier::new(cfg.num_consumers + 1));
 
   let start_time = Instant::now();
 
   thread::scope(|s| {
     for mut receiver in receivers {
-      s.spawn(|| {
-        barrier.wait();
+      // FIX: Clone the Arc reference for each thread.
+      let barrier_clone = Arc::clone(&barrier);
+      // The `move` is still needed for `receiver`. The closure now moves
+      // the `barrier_clone` Arc, not the original barrier.
+      s.spawn(move || {
+        barrier_clone.wait();
         for _ in 0..cfg.total_items {
           receiver.recv().unwrap();
         }
       });
     }
 
+    // The original `barrier` Arc can be used here.
     barrier.wait();
     for _ in 0..cfg.total_items {
       tx.send(ITEM_VALUE).unwrap();

@@ -58,8 +58,6 @@ fn benchmark_logic_mpsc_async(
     // Create a fresh channel for each iteration.
     let (tx, mut rx) = mpsc::channel_async();
 
-    let items_per_producer = cfg_clone.total_items / cfg_clone.num_producers;
-
     let start_time = Instant::now();
 
     let consumer_handle = tokio::spawn(async move {
@@ -69,13 +67,22 @@ fn benchmark_logic_mpsc_async(
     });
 
     let mut producer_handles = Vec::new();
-    for _ in 0..cfg_clone.num_producers {
-      let tx_clone = tx.clone();
-      producer_handles.push(tokio::spawn(async move {
-        for _ in 0..items_per_producer {
-          tx_clone.send(ITEM_VALUE).await.unwrap();
-        }
-      }));
+    // Correctly distribute items, including remainder, across producers.
+    let total_items = cfg_clone.total_items;
+    let num_producers = cfg_clone.num_producers;
+    let base_items = total_items / num_producers;
+    let remainder = total_items % num_producers;
+
+    for p_idx in 0..num_producers {
+      let items_this_producer = base_items + if p_idx < remainder { 1 } else { 0 };
+      if items_this_producer > 0 {
+        let tx_clone = tx.clone();
+        producer_handles.push(tokio::spawn(async move {
+          for _ in 0..items_this_producer {
+            tx_clone.send(ITEM_VALUE).await.unwrap();
+          }
+        }));
+      }
     }
     drop(tx);
 
