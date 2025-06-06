@@ -33,18 +33,6 @@ mod async_util;
 // Public re-exports for convenience (will grow)
 pub use error::{RecvError, SendError, TryRecvError, TrySendError};
 
-/// A prelude for easily importing common Fibre types.
-///
-/// ```
-/// use fibre::prelude::*;
-/// ```
-pub mod prelude {
-    // Re-export essential types and traits here
-    // Example:
-    // pub use crate::spsc::{Producer, Consumer};
-    // pub use crate::oneshot::{Sender as OneshotSender, Receiver as OneshotReceiver};
-}
-
 // Helper function to check if a type is Send + Sync.
 // Useful for static assertions in generic code.
 #[allow(dead_code)]
