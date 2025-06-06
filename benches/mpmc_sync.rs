@@ -1,17 +1,10 @@
-// benches/mpmc_sync.rs
-
 use bench_matrix::{criterion_runner::sync_suite::SyncBenchmarkSuite, AbstractCombination, MatrixCellValue};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::{
-  sync::{
-    atomic::{AtomicUsize, Ordering as AtomicOrdering},
-    Arc,
-  },
-  thread,
+  thread::{self, available_parallelism},
   time::{Duration, Instant},
 };
 
-// Use the new v2 module
 use fibre::mpmc as mpmc;
 
 const ITEM_VALUE: u64 = 42;
@@ -133,7 +126,7 @@ fn teardown_mpmc_sync(_ctx: BenchContext, _state: MpmcBenchState, _cfg: &MpmcBen
 
 // --- Main Benchmark Suite ---
 fn mpmc_sync_benches(c: &mut Criterion) {
-  let core_count = u64::from(available_parallelism().unwrap());
+  let core_count = usize::from(available_parallelism().unwrap()) as u64;
   let parameter_axes = vec![
     vec![
       // Axis 0: Capacity

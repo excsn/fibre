@@ -34,10 +34,6 @@ bench_matrix = "^0"
 # proptest = "1"
 
 [[bench]]
-name = "spsc"
-harness = false
-
-[[bench]]
 name = "mpmc_async"
 harness = false
 
@@ -46,7 +42,19 @@ name = "mpmc_sync"
 harness = false
 
 [[bench]]
+name = "mpsc_async"
+harness = false
+
+[[bench]]
+name = "mpsc_sync"
+harness = false
+
+[[bench]]
 name = "oneshot"
+harness = false
+
+[[bench]]
+name = "spsc"
 harness = false
 
 # Optional: For faster compile times during development

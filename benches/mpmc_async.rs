@@ -141,7 +141,7 @@ fn teardown_mpmc_async(
 
 // --- Main Benchmark Suite ---
 fn mpmc_async_benches(c: &mut Criterion) {
-  let core_count = u64::from(available_parallelism().unwrap());
+  let core_count = usize::from(available_parallelism().unwrap()) as u64;
   let rt = Runtime::new().expect("Failed to create Tokio runtime for MPMC v2 async benchmarks");
   let parameter_axes = vec![
     vec![

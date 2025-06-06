@@ -1,10 +1,8 @@
-// tests/mpmc_async.rs
-
 mod common;
 use common::*;
 
-use fibre::error::{RecvError, SendError, TrySendError};
-use fibre::mpmc as mpmc; // Use the new v2 module
+use fibre::error::{RecvError, SendError};
+use fibre::mpmc as mpmc;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};

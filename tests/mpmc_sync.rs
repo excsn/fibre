@@ -1,12 +1,10 @@
-// tests/mpmc_sync.rs
-
 // Common constants for tests can be shared.
-// We assume a `tests/common/mod.rs` exists like in the other tests.
+
 mod common;
 use common::*;
 
-use fibre::error::{RecvError, RecvErrorTimeout, SendError, TrySendError, TryRecvError};
-use fibre::mpmc as mpmc; // Use the new v2 module
+use fibre::error::{RecvError, SendError, TrySendError, TryRecvError};
+use fibre::mpmc as mpmc;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
