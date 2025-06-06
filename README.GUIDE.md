@@ -23,11 +23,11 @@ This guide provides detailed examples and an overview of the core concepts and A
 
 Fibre's main philosophy is to provide the right tool for the job. Instead of using a general-purpose MPMC channel for all tasks, you can choose a specialized implementation that is algorithmically optimized for your use case, leading to better performance and lower overhead.
 
-*   **SPSC (Single-Sender, Single-Receiver):** The fastest pattern. Use when one thread/task sends to exactly one other thread/task. Implemented with a lock-free ring buffer.
-*   **MPSC (Multi-Sender, Single-Receiver):** Many threads/tasks send to one receiver. Great for collecting results or distributing work to a single processor. Implemented with a lock-free linked list.
-*   **SPMC (Single-Sender, Multi-Receiver):** One thread/task broadcasts the same message to many receivers. Each consumer gets a clone of the message. Implemented with a specialized ring buffer that tracks individual consumer progress.
-*   **MPMC (Multi-Sender, Multi-Receiver):** The most flexible pattern, allowing many-to-many communication. Implemented with a `parking_lot::Mutex` for robust state management and support for mixed sync/async waiters.
-*   **Oneshot:** A channel for sending a single value, once, from one of potentially many senders to a single receiver.
+*   **SPSC (Single-Sender, Single-Receiver):** The fastest pattern for 1-to-1 communication. Implemented with a lock-free ring buffer. It's bounded and requires `T: Send`.
+*   **MPSC (Multi-Sender, Single-Receiver):** Many threads/tasks send to one receiver. Great for collecting results or distributing work to a single processor. Implemented with a lock-free linked list and is unbounded. Requires `T: Send`.
+*   **SPMC (Single-Sender, Multi-Receiver):** One thread/task broadcasts the same message to many receivers. Each consumer gets a clone of the message. Implemented with a specialized ring buffer that tracks individual consumer progress. It's bounded and requires `T: Send + Clone`.
+*   **MPMC (Multi-Sender, Multi-Receiver):** The most flexible pattern, allowing many-to-many communication. Implemented with a `parking_lot::Mutex` for robust state management and support for mixed sync/async waiters. Supports bounded (including rendezvous) and "unbounded" (memory-limited) capacities. Requires `T: Send`.
+*   **Oneshot:** A channel for sending a single value, once, from one of potentially many senders to a single receiver. Requires `T: Send`.
 
 ### Hybrid Sync/Async Model
 
@@ -35,7 +35,7 @@ The `mpmc`, `mpsc`, `spmc`, and `spsc` channels support full interoperability be
 
 ### Sender/Receiver Handles
 
-All channels are interacted with via sender and receiver handles (e.g., `Sender`, `Receiver`, `Sender`, `Receiver`). These handles control access to the channel and manage its lifetime. When all senders for a channel are dropped, the channel becomes "disconnected" from the perspective of the receiver. When all receivers are dropped, the channel becomes "closed" from the perspective of the sender.
+All channels are interacted with via sender and receiver handles (e.g., `Sender`, `Receiver`, `AsyncSender`, `AsyncReceiver`; SPSC uses `BoundedSyncSender`, etc.). These handles control access to the channel and manage its lifetime. When all senders for a channel are dropped, the channel becomes "disconnected" from the perspective of the receiver. When all receivers are dropped, the channel becomes "closed" from the perspective of the sender.
 
 ## Quick Start Examples
 
@@ -106,7 +106,7 @@ use tokio::task;
 
 #[tokio::main]
 async fn main() {
-    let (tx, mut rx) = mpsc::channel_async();
+    let (tx, mut rx) = mpsc::unbounded_async(); // MPSC is unbounded
     let num_producers = 3;
     let items_per_producer = 5;
 
@@ -168,82 +168,85 @@ fn main() {
 
 ## API by Channel Type
 
-_(Note: `T` must generally be `Send`. Specific trait bounds like `Clone` is noted.)_
+_(Note: `T` must generally be `Send`. Specific trait bounds like `Clone` are noted.)_
 
 ### Module: `fibre::mpmc`
 
 A flexible channel for many-to-many communication.
 
 *   **Constructors:**
-    *   `pub fn channel<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)`: Creates a bounded, synchronous channel. `capacity = 0` creates a rendezvous channel.
-    *   `pub fn channel_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates a bounded, asynchronous channel. `capacity = 0` for rendezvous.
+    *   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)`: Creates a bounded, synchronous channel. `capacity = 0` creates a rendezvous channel.
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates a bounded, asynchronous channel. `capacity = 0` for rendezvous.
     *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`: Creates an "unbounded" synchronous channel.
     *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates an "unbounded" asynchronous channel.
 *   **Handles:**
     *   `Sender<T: Send>` (`Clone`) and `Receiver<T: Send>` (`Clone`).
     *   `AsyncSender<T: Send>` (`Clone`) and `AsyncReceiver<T: Send>` (`Clone`).
-*   **Key Methods:**
-    *   `Sender::send(&self, item: T) -> Result<(), SendError>`
-    *   `Sender::try_send(&self, item: T) -> Result<(), TrySendError<T>>`
-    *   `Sender::to_async(self) -> AsyncSender<T>`
-    *   `Receiver::recv(&self) -> Result<T, RecvError>`
-    *   `Receiver::try_recv(&self) -> Result<T, TryRecvError>`
-    *   `Receiver::to_async(self) -> AsyncReceiver<T>`
-    *   `AsyncSender::send(&self, item: T) -> SendFuture<'_, T>`
-    *   `AsyncSender::try_send(&self, item: T) -> Result<(), TrySendError<T>>`
-    *   `AsyncSender::to_sync(self) -> Sender<T>`
-    *   `AsyncReceiver::recv(&self) -> ReceiveFuture<'_, T>`
-    *   `AsyncReceiver::try_recv(&self) -> Result<T, TryRecvError>`
-    *   `AsyncReceiver::to_sync(self) -> Receiver<T>`
-    *   All handles: `is_closed(&self)` (for senders), `is_closed(&self)` (for receivers), `capacity(&self) -> Option<usize>`.
+*   **Key Methods (All handles unless specified):**
+    *   `send(...)`: (Sync `Sender`, Async `AsyncSender` returns `SendFuture`)
+    *   `try_send(&self, item: T) -> Result<(), TrySendError<T>>`
+    *   `recv(...)`: (Sync `Receiver`, Async `AsyncReceiver` returns `ReceiveFuture`)
+    *   `try_recv(&self) -> Result<T, TryRecvError>`
+    *   `is_closed(&self) -> bool` (Meaning depends on sender/receiver context)
+    *   `capacity(&self) -> Option<usize>`
+    *   `len(&self) -> usize`
+    *   `is_empty(&self) -> bool`
+    *   `is_full(&self) -> bool`
+    *   `to_async(self) -> ...` (On sync handles)
+    *   `to_sync(self) -> ...` (On async handles)
 
 ### Module: `fibre::mpsc`
 
-An optimized lock-free channel for many-to-one communication.
+An optimized lock-free channel for many-to-one communication (unbounded).
 
 *   **Constructors:**
-    *   `pub fn channel<T: Send>() -> (Sender<T>, Receiver<T>)`: Creates a synchronous MPSC channel.
-    *   `pub fn channel_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates an asynchronous MPSC channel.
+    *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`: Creates a synchronous MPSC channel.
+    *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates an asynchronous MPSC channel.
 *   **Handles:**
     *   `Sender<T: Send>` (sync, `Clone`) and `Receiver<T: Send>` (sync, `!Clone`).
     *   `AsyncSender<T: Send>` (async, `Clone`) and `AsyncReceiver<T: Send>` (async, `!Clone`).
 *   **Key Methods:**
     *   `Sender::send(&self, value: T) -> Result<(), SendError>`
+    *   `Sender::len(&self) -> usize`
     *   `Sender::to_async(self) -> AsyncSender<T>`
     *   `Receiver::recv(&mut self) -> Result<T, RecvError>`
     *   `Receiver::try_recv(&mut self) -> Result<T, TryRecvError>`
+    *   `Receiver::len(&self) -> usize`
+    *   `Receiver::is_empty(&self) -> bool`
     *   `Receiver::to_async(self) -> AsyncReceiver<T>`
     *   `AsyncSender::send(&self, value: T) -> SendFuture<'_, T>`
+    *   `AsyncSender::len(&self) -> usize`
     *   `AsyncSender::to_sync(self) -> Sender<T>`
     *   `AsyncReceiver::recv(&mut self) -> RecvFuture<'_, T>`
     *   `AsyncReceiver::try_recv(&mut self) -> Result<T, TryRecvError>`
+    *   `AsyncReceiver::len(&self) -> usize`
+    *   `AsyncReceiver::is_empty(&self) -> bool`
     *   `AsyncReceiver::to_sync(self) -> Receiver<T>`
 
 ### Module: `fibre::spmc`
 
-A broadcast-style channel for one-to-many communication. `T` must be `Send + Clone`.
+A broadcast-style channel for one-to-many communication (bounded). `T` must be `Send + Clone`.
 
 *   **Constructors:**
-    *   `pub fn channel<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>)`: Creates a synchronous SPMC channel. Panics if capacity is 0.
-    *   `pub fn channel_async<T: Send + Clone>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates an asynchronous SPMC channel. Panics if capacity is 0.
+    *   `pub fn bounded<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>)`: Creates a synchronous SPMC channel. Panics if capacity is 0.
+    *   `pub fn bounded_async<T: Send + Clone>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates an asynchronous SPMC channel. Panics if capacity is 0.
 *   **Handles:**
     *   `Sender<T: Send + Clone>` (sync, `!Clone`) and `Receiver<T: Send + Clone>` (sync, `Clone`).
     *   `AsyncSender<T: Send + Clone>` (async, `!Clone`) and `AsyncReceiver<T: Send + Clone>` (async, `Clone`).
-*   **Key Methods:**
-    *   `Sender::send(&mut self, value: T) -> Result<(), SendError>`
-    *   `Sender::to_async(self) -> AsyncSender<T>`
-    *   `Receiver::recv(&mut self) -> Result<T, RecvError>`
-    *   `Receiver::try_recv(&mut self) -> Result<T, TryRecvError>`
-    *   `Receiver::to_async(self) -> AsyncReceiver<T>`
-    *   `AsyncSender::send(&mut self, value: T) -> SendFuture<'_, T>`
-    *   `AsyncSender::to_sync(self) -> Sender<T>`
-    *   `AsyncReceiver::recv(&mut self) -> RecvFuture<'_, T>`
-    *   `AsyncReceiver::try_recv(&mut self) -> Result<T, TryRecvError>`
-    *   `AsyncReceiver::to_sync(self) -> Receiver<T>`
+*   **Key Methods (All handles unless specified):**
+    *   `send(&mut self, ...)`: (Sync `Sender`, Async `AsyncSender` returns `SendFuture`)
+    *   `try_send(&mut self, value: T) -> Result<(), TrySendError<T>>`
+    *   `recv(&mut self, ...)`: (Sync `Receiver`, Async `AsyncReceiver` returns `ReceiveFuture`)
+    *   `try_recv(&mut self) -> Result<T, TryRecvError>`
+    *   `len(&self) -> usize` (For `Sender`, it's `head - min_tail`; for `Receiver`, it's items available for *this* receiver)
+    *   `is_empty(&self) -> bool`
+    *   `is_full(&self) -> bool`
+    *   `to_async(self) -> ...` (On sync handles)
+    *   `to_sync(self) -> ...` (On async handles)
 
 ### Module: `fibre::spsc`
 
-A high-performance lock-free channel for one-to-one communication. `T` must be `Send`.
+A high-performance lock-free channel for one-to-one communication (bounded). `T` must be `Send`.
 
 *   **Constructors:**
     *   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)`: Creates a bounded, synchronous SPSC channel. Panics if capacity is 0.
@@ -251,27 +254,25 @@ A high-performance lock-free channel for one-to-one communication. `T` must be `
 *   **Handles:**
     *   `BoundedSyncSender<T: Send>` (`!Clone`) and `BoundedSyncReceiver<T: Send>` (`!Clone`).
     *   `AsyncBoundedSpscSender<T: Send>` (`!Clone`) and `AsyncBoundedSpscReceiver<T: Send>` (`!Clone`).
-*   **Key Methods:**
-    *   `BoundedSyncSender::send(&mut self, item: T) -> Result<(), SendError>`
-    *   `BoundedSyncSender::try_send(&mut self, item: T) -> Result<(), TrySendError<T>>`
-    *   `BoundedSyncSender::to_async(self) -> AsyncBoundedSpscSender<T>`
-    *   `BoundedSyncReceiver::recv(&mut self) -> Result<T, RecvError>`
-    *   `BoundedSyncReceiver::try_recv(&mut self) -> Result<T, TryRecvError>`
+*   **Key Methods (All handles unless specified):**
+    *   `send(...)`: (Sync `BoundedSyncSender` takes `&mut self`, Async `AsyncBoundedSpscSender` takes `&self` and returns `SendFuture`)
+    *   `try_send(...)`: (Sync `BoundedSyncSender` takes `&mut self`, Async `AsyncBoundedSpscSender` takes `&self`)
+    *   `recv(...)`: (Sync `BoundedSyncReceiver` takes `&mut self`, Async `AsyncBoundedSpscReceiver` takes `&self` and returns `ReceiveFuture`)
+    *   `try_recv(...)`: (Sync `BoundedSyncReceiver` takes `&mut self`, Async `AsyncBoundedSpscReceiver` takes `&self`)
     *   `BoundedSyncReceiver::recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
-    *   `BoundedSyncReceiver::to_async(self) -> AsyncBoundedSpscReceiver<T>`
-    *   `AsyncBoundedSpscSender::send(&self, item: T) -> SendFuture<'_, T>`
-    *   `AsyncBoundedSpscSender::try_send(&self, item: T) -> Result<(), TrySendError<T>>`
-    *   `AsyncBoundedSpscSender::to_sync(self) -> BoundedSyncSender<T>`
-    *   `AsyncBoundedSpscReceiver::recv(&self) -> ReceiveFuture<'_, T>`
-    *   `AsyncBoundedSpscReceiver::try_recv(&self) -> Result<T, TryRecvError>`
-    *   `AsyncBoundedSpscReceiver::to_sync(self) -> BoundedSyncReceiver<T>`
+    *   `len(&self) -> usize`
+    *   `is_empty(&self) -> bool`
+    *   `is_full(&self) -> bool`
+    *   `to_async(self) -> ...` (On sync handles)
+    *   `to_sync(self) -> ...` (On async handles)
+    *   Async `SendFuture` requires `T: Unpin + Send`.
 
 ### Module: `fibre::oneshot`
 
-A channel for sending a single value once.
+A channel for sending a single value once. `T` must be `Send`.
 
 *   **Constructors:**
-    *   `pub fn channel<T>() -> (Sender<T>, Receiver<T>)`: Creates a oneshot channel.
+    *   `pub fn oneshot<T>() -> (Sender<T>, Receiver<T>)`: Creates a oneshot channel.
 *   **Handles:**
     *   `Sender<T>` (`Clone`) and `Receiver<T>` (`!Clone`).
 *   **Key Methods:**

@@ -355,7 +355,7 @@ impl<T: Send> Receiver<T> {
     self.shared.try_recv_core()
   }
   /// Returns `true` if the channel is empty and all senders have been dropped.
-  pub fn is_disconnected(&self) -> bool {
+  pub fn is_closed(&self) -> bool {
     let guard = self.shared.internal.lock();
     guard.sender_count == 0
       && guard.queue.is_empty()
@@ -487,7 +487,7 @@ impl<T: Send> AsyncReceiver<T> {
     self.shared.try_recv_core()
   }
   /// Returns `true` if the channel is empty and all senders have been dropped.
-  pub fn is_disconnected(&self) -> bool {
+  pub fn is_closed(&self) -> bool {
     let guard = self.shared.internal.lock();
     guard.sender_count == 0
       && guard.queue.is_empty()

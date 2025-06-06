@@ -16,11 +16,11 @@ Fibre provides a suite of high-performance, memory-efficient sync/async channels
 
 Fibre offers a wide range of channel types, each optimized for a specific producer-consumer pattern:
 
-*   **`spsc`**: A lock-free Single-Sender, Single-Receiver ring buffer, ideal for maximum throughput in 1-to-1 communication.
-*   **`mpsc`**: A lock-free Multi-Sender, Single-Receiver channel, perfect for scenarios where many tasks need to send work to a single processing task.
-*   **`spmc`**: A "broadcast" style Single-Sender, Multi-Receiver channel where each message is cloned and delivered to every active consumer.
-*   **`mpmc`**: A flexible and robust Multi-Sender, Multi-Receiver channel for general-purpose use where producer and consumer counts are dynamic.
-*   **`oneshot`**: A channel for sending a single value once, perfect for futures and promise-style patterns.
+*   **`spsc`**: A lock-free Single-Producer, Single-Consumer ring buffer, ideal for maximum throughput in 1-to-1 communication. Bounded. Requires `T: Send`.
+*   **`mpsc`**: A lock-free Multi-Producer, Single-Consumer channel, perfect for scenarios where many tasks need to send work to a single processing task. Unbounded. Requires `T: Send`.
+*   **`spmc`**: A "broadcast" style Single-Producer, Multi-Consumer channel where each message is cloned and delivered to every active consumer. Bounded. Requires `T: Send + Clone`.
+*   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic. Supports bounded (including rendezvous) and "unbounded" capacities. Requires `T: Send`.
+*   **`oneshot`**: A channel for sending a single value once, perfect for futures and promise-style patterns. Requires `T: Send`.
 
 ### Hybrid Sync/Async API
 
@@ -28,7 +28,18 @@ A standout feature is the ability to seamlessly mix synchronous and asynchronous
 
 ### Performance-Oriented Design
 
-Performance is a primary goal. Fibre uses proven, high-performance algorithms for each channel type, including lock-free data structures and cache-line padding on critical atomic data to minimize contention and maximize throughput on multi-core systems.
+Performance is a primary goal. Fibre uses proven, high-performance algorithms for each channel type, including:
+*   Lock-free ring buffers for SPSC.
+*   Lock-free linked lists for MPSC.
+*   A specialized ring buffer for SPMC that tracks individual consumer progress, ensuring backpressure from the slowest consumer.
+*   High-performance `parking_lot::Mutex` for MPMC.
+*   Cache-line padding on critical atomic data to minimize false sharing and maximize throughput on multi-core systems.
+
+### Ergonomic and Safe
+
+*   **Clear Error Handling:** Descriptive error types (`TrySendError<T>`, `RecvError`, etc.) that allow for value recovery on send failures.
+*   **Drop Safety:** Channels correctly signal disconnection or closure when senders/receivers are dropped, and any buffered items are properly deallocated.
+*   **Thread Safety:** Each channel type enforces appropriate `Send` and `Sync` bounds, ensuring correct concurrent usage. For example, SPSC and MPSC consumer handles are `!Sync` as they are designed for single-threaded consumption.
 
 ## Installation
 
@@ -36,7 +47,7 @@ Add Fibre to your project by including it in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fibre = "^0" # Replace with the latest version
+fibre = "^0" # Replace with the latest version from crates.io
 ```
 
 Or by using the command line:
