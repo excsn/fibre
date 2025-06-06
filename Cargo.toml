@@ -54,6 +54,14 @@ name = "oneshot"
 harness = false
 
 [[bench]]
+name = "spmc_async"
+harness = false
+
+[[bench]]
+name = "spmc_sync"
+harness = false
+
+[[bench]]
 name = "spsc"
 harness = false
 
