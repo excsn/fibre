@@ -8,7 +8,7 @@ Fibre provides a suite of high-performance, memory-efficient sync/async channels
 
 ## Note
 
-`fibre` is in BETA.
+`fibre` is in BETA. The API is generally stable, but minor breaking changes may occur before version 1.0 as feedback is incorporated and improvements are made.
 
 ## Key Features
 
@@ -24,7 +24,7 @@ Fibre offers a wide range of channel types, each optimized for a specific produc
 
 ### Hybrid Sync/Async API
 
-A standout feature is the ability to seamlessly mix synchronous and asynchronous code. You can create a synchronous `Sender` and an asynchronous `AsyncReceiver` (or any other combination) from the same MPSC, SPMC, or MPMC channel. This is enabled by zero-cost `to_sync()` and `to_async()` conversion methods on the channel handles, providing maximum flexibility for integrating into different codebases and runtimes.
+A standout feature is the ability to seamlessly mix synchronous and asynchronous code. You can create a synchronous `Sender` and an asynchronous `AsyncReceiver` (or any other combination) from the same SPSC, MPSC, SPMC, or MPMC channel. This is enabled by zero-cost `to_sync()` and `to_async()` conversion methods on the channel handles, providing maximum flexibility for integrating into different codebases and runtimes.
 
 ### Performance-Oriented Design
 
@@ -36,7 +36,7 @@ Add Fibre to your project by including it in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fibre = "0.1.0"
+fibre = "^0" # Replace with the latest version
 ```
 
 Or by using the command line:
@@ -55,5 +55,5 @@ The full API reference is available on **[docs.rs](https://docs.rs/fibre)**.
 
 ## License
 
-This library is distributed under the terms of both the MIT License and the Apache License (Version 2.0).
-
+This library is distributed under the terms of the **Mozilla Public License Version 2.0 (MPL-2.0)**.
+You can find a copy of the license in the [LICENSE](./LICENSE) file or at [https://opensource.org/licenses/MPL-2.0](https://opensource.org/licenses/MPL-2.0).

@@ -1,6 +1,6 @@
 [package]
 name = "fibre"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Excerion Sun <dev@excsn.com>"]
 description = "High-performance, memory-efficient sync/async channels built for real-time, low-overhead communication in concurrent Rust applications."
@@ -21,15 +21,11 @@ alloc = [] # Enable if we use alloc-only features (e.g. Box, Vec from alloc crat
 fibre_telemetry = ["dep:tokio"]
 
 [dependencies]
-# We'll add these as we implement features:
-futures-core = { version = "^0.3", default-features = false, features = ["alloc", "std"] } # For Waker, Future, Stream
-parking_lot = "^0.12"
-# crossbeam-utils = "0.8" # For CachePadded, maybe other utilities
-doublejump = "^1"
-
-# If using futures-util's AtomicWaker directly:
-futures-util = { version = "^0.3", default-features = false, features = ["alloc", "std"] } # "std" for AtomicWaker usually
 lazy_static = "^1"
+
+futures-core = { version = "^0.3", default-features = false, features = ["alloc", "std"] }
+futures-util = { version = "^0.3", default-features = false, features = ["alloc", "std"] }
+parking_lot = "^0.12"
 tokio = { version = "1", features = ["full"], optional = true }
 
 [dev-dependencies]

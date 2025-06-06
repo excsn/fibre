@@ -223,15 +223,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43da5946c66ffcc7745f48db692ffbb10a83bfe0afd96235c5c2a4fb23994929"
 
 [[package]]
-name = "doublejump"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "667ef0891dd87515a6b6eca5638f89216790f6be306489b5ca8f251bc7845c40"
-dependencies = [
- "rand",
-]
-
-[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -239,11 +230,10 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "fibre"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bench_matrix",
  "criterion",
- "doublejump",
  "futures-core",
  "futures-util",
  "lazy_static",
