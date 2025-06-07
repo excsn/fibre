@@ -1,5 +1,8 @@
 // src/spsc/bounded_async.rs
 
+use futures_core::Stream;
+use futures_util::StreamExt;
+
 use super::bounded_sync::{BoundedSyncReceiver, BoundedSyncSender, SpscShared};
 use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
 
@@ -23,7 +26,6 @@ pub struct AsyncBoundedSpscSender<T> {
 #[derive(Debug)]
 pub struct AsyncBoundedSpscReceiver<T> {
   pub(crate) shared: Arc<SpscShared<T>>,
-  _phantom: PhantomData<T>, // T is not directly owned but logically associated
 }
 
 unsafe impl<T: Send> Send for AsyncBoundedSpscSender<T> {}
@@ -80,7 +82,6 @@ impl<T> AsyncBoundedSpscReceiver<T> {
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
     Self {
       shared,
-      _phantom: PhantomData,
     }
   }
 
@@ -135,7 +136,6 @@ pub fn bounded_async<T: Send>(
     },
     AsyncBoundedSpscReceiver {
       shared: shared_arc,
-      _phantom: PhantomData,
     },
   )
 }
@@ -267,8 +267,8 @@ impl<T: Send> AsyncBoundedSpscReceiver<T> {
   /// The returned future will complete with `Ok(T)` when an item is received,
   /// or `Err(RecvError::Disconnected)` if the producer has been dropped and
   /// the channel is empty.
-  pub fn recv(&self) -> ReceiveFuture<'_, T> {
-    ReceiveFuture::new(&self.shared)
+  pub async fn recv(&mut self) -> Result<T, RecvError> {
+    self.next().await.ok_or(RecvError::Disconnected)
   }
 
   /// Attempts to receive an item from the channel without blocking (asynchronously).
@@ -322,22 +322,10 @@ impl<T> Drop for AsyncBoundedSpscReceiver<T> {
   }
 }
 
-#[must_use = "futures do nothing unless you .await or poll them"]
-pub struct ReceiveFuture<'a, T> {
-  shared: &'a Arc<SpscShared<T>>,
-}
+impl<T: Send> Stream for AsyncBoundedSpscReceiver<T> {
+    type Item = T;
 
-impl<'a, T> ReceiveFuture<'a, T> {
-  fn new(shared: &'a Arc<SpscShared<T>>) -> Self {
-    ReceiveFuture { shared }
-  }
-}
-
-impl<'a, T: Send> Future for ReceiveFuture<'a, T> {
-  // Added Send bound for T
-  type Output = Result<T, RecvError>;
-
-  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     let shared = &*self.shared;
 
     loop {
@@ -349,7 +337,7 @@ impl<'a, T: Send> Future for ReceiveFuture<'a, T> {
         let item = unsafe { (*shared.buffer[slot_idx].get()).assume_init_read() };
         shared.tail.store(tail.wrapping_add(1), Ordering::Release);
         shared.wake_producer();
-        return Poll::Ready(Ok(item));
+        return Poll::Ready(Some(item));
       }
 
       if shared.producer_dropped.load(Ordering::Acquire) {
@@ -359,7 +347,7 @@ impl<'a, T: Send> Future for ReceiveFuture<'a, T> {
         let final_head = shared.head.load(Ordering::Acquire);
         if final_head == tail {
           // Still empty after re-read head
-          return Poll::Ready(Err(RecvError::Disconnected));
+          return Poll::Ready(None);
         }
         // Item is available (final_head > tail), loop to pick it up.
         // The waker registration below is for the *next* item if this one is consumed.
@@ -413,7 +401,7 @@ mod tests {
 
   #[tokio::test]
   async fn async_send_recv_single_item() {
-    let (p, c) = bounded_async(1);
+    let (p, mut c) = bounded_async(1);
     p.send(42i32).await.unwrap();
     assert_eq!(p.len(), 1);
     assert!(!p.is_empty());
@@ -430,7 +418,7 @@ mod tests {
 
   #[tokio::test]
   async fn async_try_send_full_try_recv_empty() {
-    let (p, c) = bounded_async::<i32>(1);
+    let (p, mut c) = bounded_async::<i32>(1);
     assert_eq!(p.len(), 0);
     p.try_send(10).unwrap();
     assert_eq!(p.len(), 1);
@@ -546,7 +534,7 @@ mod tests {
 
   #[tokio::test]
   async fn async_consumer_drop_signals_producer() {
-    let (p, c) = bounded_async::<i32>(1);
+    let (p, mut c) = bounded_async::<i32>(1);
     drop(c);
     match p.send(1).await {
       Err(SendError::Closed) => {}
@@ -728,7 +716,7 @@ mod tests {
   // Test to ensure try_recv correctly returns Disconnected
   #[tokio::test]
   async fn async_try_recv_disconnected() {
-    let (p, mut c) = bounded_async::<i32>(1);
+    let (p, c) = bounded_async::<i32>(1);
     p.try_send(1).unwrap();
     assert_eq!(c.try_recv().unwrap(), 1); // Consume the item
     assert!(c.is_empty());

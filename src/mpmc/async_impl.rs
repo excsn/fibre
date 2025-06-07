@@ -1,9 +1,11 @@
 // src/mpmc/async_impl.rs
 //! Implementation of the asynchronous Future-based send and receive logic.
 
+use futures_core::Stream;
+
 use super::core::{AsyncWaiter, WaiterData};
 use super::{AsyncReceiver, AsyncSender};
-use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
+use crate::error::{SendError, TryRecvError, TrySendError};
 
 use core::marker::PhantomPinned;
 use std::future::Future;
@@ -97,45 +99,30 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
   }
 }
 
-// --- ReceiveFuture ---
+impl<T: Send> Stream for AsyncReceiver<T> {
+  type Item = T;
 
-/// A future that completes when a value has been received from the MPMC channel.
-#[must_use = "futures do nothing unless you .await or poll them"]
-#[derive(Debug)]
-pub struct ReceiveFuture<'a, T: Send> {
-  receiver: &'a AsyncReceiver<T>,
-}
-
-impl<'a, T: Send> ReceiveFuture<'a, T> {
-  pub(super) fn new(receiver: &'a AsyncReceiver<T>) -> Self {
-    Self { receiver }
-  }
-}
-
-impl<'a, T: Send> Future for ReceiveFuture<'a, T> {
-  type Output = Result<T, RecvError>;
-
-  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     'poll_loop: loop {
       // --- Phase 1: Try to receive without parking ---
-      match self.receiver.shared.try_recv_core() {
+      match self.shared.try_recv_core() {
         Ok(item) => {
-          return Poll::Ready(Ok(item));
+          return Poll::Ready(Some(item));
         }
-        Err(TryRecvError::Disconnected) => return Poll::Ready(Err(RecvError::Disconnected)),
+        Err(TryRecvError::Disconnected) => return Poll::Ready(None),
         Err(TryRecvError::Empty) => { /* Proceed to park */ }
       }
 
       // --- Phase 2: Lock, re-check, and commit to parking ---
       {
-        let mut guard = self.receiver.shared.internal.lock();
+        let mut guard = self.shared.internal.lock();
 
         // Re-check under lock. An item might have appeared.
         // An item is available if:
         // 1. The queue is not empty (buffered or rendezvous after hand-off)
         // 2. It's a rendezvous channel and a sender is waiting to hand an item over.
         if !guard.queue.is_empty()
-          || (self.receiver.shared.capacity == 0
+          || (self.shared.capacity == 0
             && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
         {
           drop(guard);
@@ -143,7 +130,7 @@ impl<'a, T: Send> Future for ReceiveFuture<'a, T> {
         }
 
         if guard.sender_count == 0 {
-          return Poll::Ready(Err(RecvError::Disconnected));
+          return Poll::Ready(None);
         }
 
         // Safe to park.

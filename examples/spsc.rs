@@ -82,7 +82,7 @@ fn main() {
     let (mut tx_s, rx_s) = spsc::bounded_sync::<String>(capacity);
 
     // Convert the receiver to async
-    let rx_a = rx_s.to_async();
+    let mut rx_a = rx_s.to_async();
     // tx_s remains sync and is moved to the thread
 
     let sender_thread = thread::spawn(move || {

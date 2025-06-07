@@ -23,7 +23,7 @@ async fn run_async_mpmc_test(
   // --- Spawn Receivers ---
   let mut consumer_handles = Vec::new();
   for _ in 0..num_consumers {
-    let rx_clone = rx.clone();
+    let mut rx_clone = rx.clone();
     let received_set_clone = Arc::clone(&received_items_set);
     let received_count_clone = Arc::clone(&received_count);
 

@@ -102,7 +102,7 @@ fn main() {
 
     let mut consumer_handles = Vec::new();
     for c_id in 0..num_consumers {
-      let rx_clone = rx.clone();
+      let mut rx_clone = rx.clone();
       let received_count_clone = Arc::clone(&received_count);
       consumer_handles.push(tokio::spawn(async move {
         while let Ok(value) = rx_clone.recv().await {
@@ -144,7 +144,7 @@ fn main() {
 
     let mut consumer_handles = Vec::new();
     for c_id in 0..num_consumers {
-      let rx_clone = rx_async.clone();
+      let mut rx_clone = rx_async.clone();
       let received_count_clone = Arc::clone(&received_count);
       consumer_handles.push(tokio::spawn(async move {
         while let Ok(value) = rx_clone.recv().await {

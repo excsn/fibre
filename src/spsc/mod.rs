@@ -124,7 +124,6 @@ pub use bounded_async::{
   bounded_async,            // fn to create async SPSC channel
   AsyncBoundedSpscReceiver, // Async consumer type
   AsyncBoundedSpscSender, // Async producer type
-  ReceiveFuture,            // Future returned by async recv
   SendFuture,               // Future returned by async send
 };
 

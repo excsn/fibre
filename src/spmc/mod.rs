@@ -111,8 +111,8 @@ use std::mem;
 // No need to import Arc here if it's only used by ring_buffer types.
 mod ring_buffer;
 
-pub use crate::error::{RecvError, SendError, TryRecvError, TrySendError}; // Added TrySendError
-pub use ring_buffer::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender};
+pub use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
+pub use ring_buffer::{AsyncReceiver, AsyncSender, Receiver, SendFuture, Sender};
 
 // --- Constructors ---
 

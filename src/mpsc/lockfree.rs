@@ -1,5 +1,8 @@
 // src/mpsc/lockfree.rs
 
+use futures_core::Stream;
+use futures_util::StreamExt;
+
 use crate::async_util::AtomicWaker;
 use crate::error::{RecvError, SendError, TryRecvError};
 use crate::internal::cache_padded::CachePadded;
@@ -350,8 +353,9 @@ impl<T: Send> AsyncReceiver<T> {
   pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
     self.shared.try_recv_internal()
   }
-  pub fn recv(&mut self) -> RecvFuture<'_, T> {
-    RecvFuture { consumer: self }
+
+  pub async fn recv(&mut self) -> Result<T, RecvError> {
+    self.next().await.ok_or(RecvError::Disconnected)
   }
 
   /// Returns the approximate number of items currently in the channel.
@@ -414,46 +418,40 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
   }
 }
 
-#[must_use = "futures do nothing unless you .await or poll them"]
-pub struct RecvFuture<'a, T: Send> {
-  consumer: &'a mut AsyncReceiver<T>,
-}
+impl<T: Send> Stream for AsyncReceiver<T> {
+  type Item = T;
 
-impl<'a, T: Send> Future for RecvFuture<'a, T> {
-  type Output = Result<T, RecvError>;
-  fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     loop {
       // Loop to handle state changes after waker registration
-      match self.consumer.shared.try_recv_internal() {
-        Ok(value) => return Poll::Ready(Ok(value)),
-        Err(TryRecvError::Disconnected) => return Poll::Ready(Err(RecvError::Disconnected)),
+      match self.shared.try_recv_internal() {
+        Ok(value) => return Poll::Ready(Some(value)),
+        Err(TryRecvError::Disconnected) => return Poll::Ready(None),
         Err(TryRecvError::Empty) => {
           // Queue is empty. Register the waker.
-          self.consumer.shared.consumer_waker.register(cx.waker());
+          self.shared.consumer_waker.register(cx.waker());
 
           // Critical re-check to prevent lost wakeups.
           // This ensures that if an item arrived *between* the first try_recv_internal
           // and the waker registration, we pick it up.
-          match self.consumer.shared.try_recv_internal() {
+          match self.shared.try_recv_internal() {
             Ok(value) => {
               // Item became available. Waker was registered but we got the value. Fine.
-              return Poll::Ready(Ok(value));
+              return Poll::Ready(Some(value));
             }
             Err(TryRecvError::Disconnected) => {
               // Became disconnected.
-              return Poll::Ready(Err(RecvError::Disconnected));
+              return Poll::Ready(None);
             }
             Err(TryRecvError::Empty) => {
               // Still empty. Check if all senders are gone *after* confirming empty.
-              if self.consumer.shared.sender_count.load(Ordering::Acquire) == 0 {
+              if self.shared.sender_count.load(Ordering::Acquire) == 0 {
                 // Re-check queue one last time if all senders are gone,
                 // as a sender might have sent an item then immediately updated sender_count.
-                match self.consumer.shared.try_recv_internal() {
-                  Ok(value) => return Poll::Ready(Ok(value)),
-                  Err(TryRecvError::Disconnected) => {
-                    return Poll::Ready(Err(RecvError::Disconnected))
-                  }
-                  Err(TryRecvError::Empty) => return Poll::Ready(Err(RecvError::Disconnected)), // All senders gone and still empty
+                match self.shared.try_recv_internal() {
+                  Ok(value) => return Poll::Ready(Some(value)),
+                  Err(TryRecvError::Disconnected) => return Poll::Ready(None),
+                  Err(TryRecvError::Empty) => return Poll::Ready(None), // All senders gone and still empty
                 }
               }
               // Senders still active, waker is registered. It's safe to park.

@@ -1,355 +1,277 @@
-# `fibre` API Reference
+# Usage Guide: `fibre`
 
-## Introduction & Core Concepts
+This guide provides detailed examples and an overview of the core concepts and APIs in the `fibre` library.
 
-Fibre is a high-performance concurrency library for Rust, providing a suite of channel types optimized for various communication patterns. It is designed with a focus on performance, memory efficiency, and ergonomic APIs for both synchronous and asynchronous programming.
+### Table of Contents
 
-### Core Architectural Principles
+*   [Core Concepts](#core-concepts)
+*   [Quick Start Examples](#quick-start-examples)
+    *   [MPMC Sync Example](#mpmc-sync-example)
+    *   [MPSC Async Stream Example](#mpsc-async-stream-example)
+    *   [SPSC Hybrid Example](#spsc-hybrid-example)
+*   [API by Channel Type](#api-by-channel-type)
+    *   [Module: `fibre::mpmc`](#module-fibrempmc)
+    *   [Module: `fibre::mpsc`](#module-fibrempsc)
+    *   [Module: `fibre::spmc`](#module-fibrespmc)
+    *   [Module: `fibre::spsc`](#module-fibrespsc)
+    *   [Module: `fibre::oneshot`](#module-fibreoneshot)
+*   [Error Handling](#error-handling)
 
-*   **Specialized Implementations:** Instead of a single general-purpose channel, Fibre provides distinct implementations for SPSC (Single-Sender, Single-Receiver), MPSC, SPMC, MPMC, and Oneshot patterns. This allows developers to choose the most efficient algorithm for their specific use case.
-*   **Hybrid Sync/Async Operation:** A key feature of the MPSC, SPMC, MPMC, and SPSC channels is their ability to support mixed-paradigm usage. A synchronous handle (e.g., `mpmc::Sender`) can communicate with an asynchronous handle (`mpmc::AsyncReceiver`) on the same channel. This is facilitated by zero-cost `to_sync()` and `to_async()` conversion methods on the handles.
-*   **Performance Focus:** The library uses high-performance algorithms, including lock-free ring buffers (SPSC), lock-free linked lists (MPSC), a ring-buffer based approach for SPMC, and high-performance mutexes from `parking_lot` (MPMC). The use of cache-line padding on critical atomic variables further minimizes contention in multi-core scenarios.
-*   **Idiomatic Error Handling:** All fallible operations return a `Result`, and the error types are designed to be descriptive and ergonomic. For instance, `TrySendError<T>` returns the item that failed to be sent, preventing data loss.
+## Core Concepts
 
-### Primary Handles
+### Specialized Channels
 
-Interaction with the library is primarily through sender and receiver handles, which are created by top-level functions in each module (e.g., `fibre::mpmc::bounded()`).
+Fibre's main philosophy is to provide the right tool for the job. Instead of using a general-purpose MPMC channel for all tasks, you can choose a specialized implementation that is algorithmically optimized for your use case, leading to better performance and lower overhead.
 
-*   **`Sender` / `AsyncSender`:** These handles are used to send data into a channel. Depending on the channel type, they may be clonable to allow for multiple producers.
-*   **`Receiver` / `AsyncReceiver`:** These handles are used to receive data from a channel. Depending on the channel type, they may be clonable to allow for multiple consumers.
-*   Specific SPSC types are `BoundedSyncSender`, `BoundedSyncReceiver`, `AsyncBoundedSpscSender`, `AsyncBoundedSpscReceiver`.
+*   **SPSC (Single-Sender, Single-Receiver):** The fastest pattern for 1-to-1 communication. Implemented with a lock-free ring buffer. It's bounded and requires `T: Send`.
+*   **MPSC (Multi-Sender, Single-Receiver):** Many threads/tasks send to one receiver. Great for collecting results or distributing work to a single processor. Implemented with a lock-free linked list and is unbounded. Requires `T: Send`.
+*   **SPMC (Single-Sender, Multi-Receiver):** One thread/task broadcasts the same message to many receivers. Each consumer gets a clone of the message. Implemented with a specialized ring buffer that tracks individual consumer progress. It's bounded and requires `T: Send + Clone`.
+*   **MPMC (Multi-Sender, Multi-Receiver):** The most flexible pattern, allowing many-to-many communication. Implemented with a `parking_lot::Mutex` for robust state management and support for mixed sync/async waiters. Supports bounded (including rendezvous) and "unbounded" (memory-limited) capacities. Requires `T: Send`.
+*   **Oneshot:** A channel for sending a single value, once, from one of potentially many senders to a single receiver. Requires `T: Send`.
 
----
+### Hybrid Sync/Async Model
+
+The `mpmc`, `mpsc`, `spmc`, and `spsc` channels support full interoperability between synchronous and asynchronous code. Every sender and receiver handle has a `to_sync()` or `to_async()` method that performs a zero-cost conversion. This allows you to, for example, have producers running in standard OS threads (`std::thread`) sending data to a consumer running in a Tokio task, all on the same channel.
+
+### Sender/Receiver Handles & The `Stream` Trait
+
+All channels are interacted with via sender and receiver handles (e.g., `Sender`, `Receiver`, `AsyncSender`, `AsyncReceiver`; SPSC uses `BoundedSyncSender`, etc.). These handles control access to the channel and manage its lifetime. When all senders for a channel are dropped, the channel becomes "disconnected" from the perspective of the receiver. When all receivers are dropped, the channel becomes "closed" from the perspective of the sender.
+
+**A key feature of all asynchronous receiver types (`AsyncReceiver`, etc.) is that they implement the `futures::Stream` trait.** This allows them to be used with the rich set of combinators provided by `futures::StreamExt`, such as `next()`, `map()`, `filter()`, `for_each`, and `collect()`.
+
+## Quick Start Examples
+
+### MPMC Sync Example
+
+A simple many-to-many example using standard threads.
+
+```rust
+use fibre::mpmc;
+use std::thread;
+
+fn main() {
+    let (tx, rx) = mpmc::bounded(4); // Bounded channel with capacity 4
+    let num_producers = 2;
+    let items_per_producer = 5;
+    let mut handles = Vec::new();
+
+    // Spawn producers
+    for i in 0..num_producers {
+        let tx_clone = tx.clone();
+        handles.push(thread::spawn(move || {
+            for j in 0..items_per_producer {
+                let msg = format!("Sender {} says: {}", i, j);
+                if tx_clone.send(msg).is_err() {
+                    eprintln!("Sender {}: Receiver dropped!", i);
+                    break;
+                }
+            }
+        }));
+    }
+    drop(tx); // Drop the original sender
+
+    // Spawn consumers (or receive in main thread)
+    let mut consumer_handles = Vec::new();
+    let num_consumers = 2; // Example with multiple consumers
+    for c_id in 0..num_consumers {
+        let rx_clone = rx.clone();
+        consumer_handles.push(thread::spawn(move || {
+            loop {
+                match rx_clone.recv() {
+                    Ok(received) => println!("Receiver {}: Got: {}", c_id, received),
+                    Err(_) => { // Disconnected
+                        println!("Receiver {}: Channel disconnected.", c_id);
+                        break;
+                    }
+                }
+            }
+        }));
+    }
+    drop(rx); // Drop original receiver
+
+    for handle in handles { // Sender handles
+        handle.join().unwrap();
+    }
+    for handle in consumer_handles {
+        handle.join().unwrap();
+    }
+}
+```
+
+### MPSC Async Stream Example
+
+An example with multiple asynchronous producers sending to a single consumer task, which processes items using the `Stream` API.
+
+```rust
+use fibre::mpsc;
+use tokio::task;
+use futures_util::StreamExt; // Import the StreamExt trait for .next()
+
+#[tokio::main]
+async fn main() {
+    let (tx, mut rx) = mpsc::unbounded_async(); // MPSC is unbounded
+    let num_producers = 3;
+    let items_per_producer = 5;
+
+    // Spawn async producers
+    for i in 0..num_producers {
+        let tx_clone = tx.clone();
+        task::spawn(async move {
+            for j in 0..items_per_producer {
+                if tx_clone.send((i, j)).await.is_err() {
+                    eprintln!("Async Sender {}: Receiver dropped!", i);
+                    break;
+                }
+            }
+        });
+    }
+    drop(tx); // Signal to the consumer that all producers are potentially done after their work
+
+    // The single consumer receives all the work using a while-let loop on the stream
+    let mut total = 0;
+    while let Some(msg) = rx.next().await {
+        println!("Received: {:?}", msg);
+        total += 1;
+    }
+    assert_eq!(total, num_producers * items_per_producer);
+    println!("MPSC async stream example finished.");
+}
+```
+
+### SPSC Hybrid Example
+
+An example demonstrating a synchronous producer sending to an asynchronous consumer.
+
+```rust
+use fibre::spsc;
+use std::thread;
+use tokio::runtime::Runtime;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Start with an async channel, then convert the producer to sync
+        let (p_async, mut c_async) = spsc::bounded_async::<String>(2);
+        let mut p_sync = p_async.to_sync(); // Convert producer to sync
+
+        let producer_thread = thread::spawn(move || {
+            p_sync.send("Hello from sync thread!".to_string()).unwrap();
+            p_sync.send("Goodbye from sync thread!".to_string()).unwrap();
+            // p_sync is dropped here, consumer will see Disconnected after messages
+        });
+
+        println!("Async consumer received: {}", c_async.recv().await.unwrap());
+        println!("Async consumer received: {}", c_async.recv().await.unwrap());
+        assert!(matches!(c_async.recv().await, Err(fibre::error::RecvError::Disconnected)));
+
+        producer_thread.join().unwrap();
+    });
+}
+```
+
+## API by Channel Type
+
+_(Note: `T` must generally be `Send`. Specific trait bounds like `Clone` are noted.)_
+
+### Module: `fibre::mpmc`
+
+A flexible channel for many-to-many communication.
+
+*   **Constructors:**
+    *   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)`: Creates a bounded, synchronous channel. `capacity = 0` creates a rendezvous channel.
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates a bounded, asynchronous channel. `capacity = 0` for rendezvous.
+    *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`: Creates an "unbounded" synchronous channel.
+    *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates an "unbounded" asynchronous channel.
+*   **Handles:**
+    *   `Sender<T: Send>` (`Clone`) and `Receiver<T: Send>` (`Clone`).
+    *   `AsyncSender<T: Send>` (`Clone`) and `AsyncReceiver<T: Send>` (`Clone`). `AsyncReceiver` implements `futures::Stream`.
+*   **Key Methods:**
+    *   `send(...)`
+    *   `try_send(&self, item: T) -> Result<(), TrySendError<T>>`
+    *   `recv(...)`: For `AsyncReceiver`, signature is `pub async fn recv(&mut self) -> Result<T, RecvError>`.
+    *   `try_recv(&self) -> Result<T, TryRecvError>`
+    *   `to_async(self) -> ...` / `to_sync(self) -> ...`
+
+### Module: `fibre::mpsc`
+
+An optimized lock-free channel for many-to-one communication (unbounded).
+
+*   **Constructors:**
+    *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`
+    *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`
+*   **Handles:**
+    *   `Sender<T: Send>` (sync, `Clone`) and `Receiver<T: Send>` (sync, `!Clone`).
+    *   `AsyncSender<T: Send>` (async, `Clone`) and `AsyncReceiver<T: Send>` (async, `!Clone`). `AsyncReceiver` implements `futures::Stream`.
+*   **Key Methods:**
+    *   `Sender::send(&self, value: T) -> Result<(), SendError>`
+    *   `Receiver::recv(&mut self) -> Result<T, RecvError>`
+    *   `AsyncSender::send(...) -> SendFuture`
+    *   `AsyncReceiver::recv(&mut self) -> impl Future<Output = Result<T, RecvError>>`
+
+### Module: `fibre::spmc`
+
+A broadcast-style channel for one-to-many communication (bounded). `T` must be `Send + Clone`.
+
+*   **Constructors:**
+    *   `pub fn bounded<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>)` (Panics if capacity is 0).
+    *   `pub fn bounded_async<T: Send + Clone>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (Panics if capacity is 0).
+*   **Handles:**
+    *   `Sender<T: Send + Clone>` (sync, `!Clone`) and `Receiver<T: Send + Clone>` (sync, `Clone`).
+    *   `AsyncSender<T: Send + Clone>` (async, `!Clone`) and `AsyncReceiver<T: Send + Clone>` (async, `Clone`). `AsyncReceiver` implements `futures::Stream`.
+*   **Key Methods:**
+    *   `send(&mut self, ...)`
+    *   `try_send(&mut self, ...)`
+    *   `recv(&mut self, ...)`: For `AsyncReceiver`, signature is `pub async fn recv(&mut self) -> Result<T, RecvError>`.
+
+### Module: `fibre::spsc`
+
+A high-performance lock-free channel for one-to-one communication (bounded). `T` must be `Send`.
+
+*   **Constructors:**
+    *   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (Panics if capacity is 0).
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncBoundedSpscSender<T>, AsyncBoundedSpscReceiver<T>)` (Panics if capacity is 0).
+*   **Handles:**
+    *   `BoundedSyncSender<T: Send>` (`!Clone`) and `BoundedSyncReceiver<T: Send>` (`!Clone`).
+    *   `AsyncBoundedSpscSender<T: Send>` (`!Clone`) and `AsyncBoundedSpscReceiver<T: Send>` (`!Clone`). `AsyncBoundedSpscReceiver` implements `futures::Stream`.
+*   **Key Methods:**
+    *   `send(...)`
+    *   `try_send(...)`
+    *   `recv(...)`: For `AsyncBoundedSpscReceiver`, signature is `pub async fn recv(&mut self) -> Result<T, RecvError>`.
+    *   `BoundedSyncReceiver::recv_timeout(...)`
+
+### Module: `fibre::oneshot`
+
+A channel for sending a single value once. `T` must be `Send`.
+
+*   **Constructors:**
+    *   `pub fn oneshot<T: Send>() -> (Sender<T>, Receiver<T>)`
+*   **Handles:**
+    *   `Sender<T>` (`Clone`) and `Receiver<T>` (`!Clone`). `Receiver` implements `futures::Stream` of at most one item.
+*   **Key Methods:**
+    *   `Sender::send(self, value: T) -> Result<(), TrySendError<T>>`
+    *   `Receiver::recv(&mut self) -> impl Future<Output = Result<T, RecvError>>`
 
 ## Error Handling
 
-The library uses a set of descriptive enum-based errors for fallible operations. All blocking or potentially failing operations return a standard `Result<T, E>`.
+Fibre uses a clear set of error enums to signal the result of channel operations.
 
-### Enum `error::TrySendError<T>`
+*   **`TrySendError<T>`:** Returned from `try_send`.
+    *   `Full(T)`: The channel is full. The unsent item is returned.
+    *   `Closed(T)`: The receiver was dropped. The unsent item is returned.
+    *   `Sent(T)`: (Oneshot only) A value was already sent.
+    *   Use `.into_inner()` to recover the value.
 
-Returned by non-blocking `try_send` operations.
+*   **`SendError`:** Returned from blocking/async `send`.
+    *   `Closed`: The receiver was dropped.
+    *   `Sent`: (Oneshot only) A value was already sent.
 
-*   **Variants:**
-    *   `Full(T)`: The channel is full and cannot accept more items. The unsent item is returned.
-    *   `Closed(T)`: The channel is closed because all receivers have been dropped. The unsent item is returned.
-    *   `Sent(T)`: (Oneshot channels only) A value has already been sent on this channel. The unsent item is returned.
-*   **Methods:**
-    *   `pub fn into_inner(self) -> T`: Consumes the error, returning the inner value that failed to be sent.
-
-### Enum `error::SendError`
-
-Returned by blocking or asynchronous `send` operations.
-
-*   **Variants:**
-    *   `Closed`: The channel is closed because all receivers have been dropped.
-    *   `Sent`: (Oneshot channels only) A value has already been sent on this channel.
-
-### Enum `error::TryRecvError`
-
-Returned by non-blocking `try_recv` operations.
-
-*   **Variants:**
+*   **`TryRecvError`:** Returned from `try_recv`.
     *   `Empty`: The channel is currently empty but not disconnected.
-    *   `Disconnected`: The channel is empty, and all senders have been dropped.
+    *   `Disconnected`: The channel is empty and all senders have been dropped.
 
-### Enum `error::RecvError`
+*   **`RecvError`:** Returned from blocking/async `recv`.
+    *   `Disconnected`: The channel is empty and all senders have been dropped.
 
-Returned by blocking or asynchronous `recv` operations.
-
-*   **Variants:**
-    *   `Disconnected`: The channel is empty, and all senders have been dropped.
-
-### Enum `error::RecvErrorTimeout`
-
-Returned by `recv_timeout` operations (e.g., in SPSC).
-
-*   **Variants:**
-    *   `Disconnected`: The channel is empty, and all senders have been dropped.
-    *   `Timeout`: The timeout elapsed before an item could be received.
-
-### Struct `error::CloseError`
-
-Returned when attempting to close an already closed channel. (Currently not used by any public channel API but defined for future use).
-
----
-
-## API Reference by Module
-
-### Module `mpmc` (Multi-Sender, Multi-Receiver)
-
-A flexible, lock-based channel where many producers can send to many consumers. Supports both bounded and "unbounded" (memory-limited) capacities, as well as rendezvous channels (capacity 0). `T` must be `Send`.
-
-#### **Functions**
-
-*   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)`
-    *   Creates a new synchronous, bounded MPMC channel. A `capacity` of 0 creates a rendezvous channel.
-*   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`
-    *   Creates a new synchronous, "unbounded" MPMC channel (uses `usize::MAX` capacity internally).
-*   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`
-    *   Creates a new asynchronous, bounded MPMC channel. A `capacity` of 0 creates a rendezvous channel.
-*   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`
-    *   Creates a new asynchronous, "unbounded" MPMC channel (uses `usize::MAX` capacity internally).
-
-#### **Struct `mpmc::Sender<T: Send>`**
-
-A synchronous sending handle. It is `Clone`.
-
-*   `pub fn send(&self, item: T) -> Result<(), SendError>`
-*   `pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>>`
-*   `pub fn is_closed(&self) -> bool`
-*   `pub fn capacity(&self) -> Option<usize>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_async(self) -> AsyncSender<T>`
-
-#### **Struct `mpmc::Receiver<T: Send>`**
-
-A synchronous receiving handle. It is `Clone`.
-
-*   `pub fn recv(&self) -> Result<T, RecvError>`
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn is_closed(&self) -> bool`
-*   `pub fn capacity(&self) -> Option<usize>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_async(self) -> AsyncReceiver<T>`
-
-#### **Struct `mpmc::AsyncSender<T: Send>`**
-
-An asynchronous sending handle. It is `Clone`.
-
-*   `pub fn send(&self, item: T) -> SendFuture<'_, T>`
-*   `pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>>`
-*   `pub fn is_closed(&self) -> bool`
-*   `pub fn capacity(&self) -> Option<usize>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_sync(self) -> Sender<T>`
-
-#### **Struct `mpmc::AsyncReceiver<T: Send>`**
-
-An asynchronous receiving handle. It is `Clone`.
-
-*   `pub fn recv(&self) -> ReceiveFuture<'_, T>`
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn is_closed(&self) -> bool`
-*   `pub fn capacity(&self) -> Option<usize>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_sync(self) -> Receiver<T>`
-
-#### **Future Types**
-
-*   `pub struct SendFuture<'a, T: Send>` implements `Future<Output = Result<(), SendError>>`.
-*   `pub struct ReceiveFuture<'a, T: Send>` implements `Future<Output = Result<T, RecvError>>`.
-
----
-
-### Module `mpsc` (Multi-Sender, Single-Receiver)
-
-A highly optimized lock-free channel where many producers can send to a single consumer. This channel is unbounded. `T` must be `Send`.
-
-#### **Functions**
-
-*   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`
-*   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`
-
-#### **Struct `mpsc::Sender<T: Send>`**
-
-A synchronous sending handle. It is `Clone`.
-
-*   `pub fn send(&self, value: T) -> Result<(), SendError>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn to_async(self) -> AsyncSender<T>`
-
-#### **Struct `mpsc::Receiver<T: Send>`**
-
-A synchronous receiving handle. It is not `Clone`.
-
-*   `pub fn recv(&mut self) -> Result<T, RecvError>`
-*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn to_async(self) -> AsyncReceiver<T>`
-
-#### **Struct `mpsc::AsyncSender<T: Send>`**
-
-An asynchronous sending handle. It is `Clone`.
-
-*   `pub fn send(&self, value: T) -> SendFuture<'_, T>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn to_sync(self) -> Sender<T>`
-
-#### **Struct `mpsc::AsyncReceiver<T: Send>`**
-
-An asynchronous receiving handle. It is not `Clone`.
-
-*   `pub fn recv(&mut self) -> RecvFuture<'_, T>`
-*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn to_sync(self) -> Receiver<T>`
-
-#### **Future Types**
-
-*   `pub struct SendFuture<'a, T: Send>` implements `Future<Output = Result<(), SendError>>`.
-*   `pub struct RecvFuture<'a, T: Send>` implements `Future<Output = Result<T, RecvError>>`.
-
----
-
-### Module `spmc` (Single-Sender, Multi-Receiver)
-
-A "broadcast" channel where a single producer sends messages to many consumers. Each message is cloned for each consumer. This channel is bounded. `T` must be `Send + Clone`.
-
-#### **Functions**
-
-*   `pub fn bounded<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>)`
-    *   Panics if `capacity` is 0.
-*   `pub fn bounded_async<T: Send + Clone>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`
-    *   Panics if `capacity` is 0.
-
-#### **Struct `spmc::Sender<T: Send + Clone>`**
-
-A synchronous sending handle. It is not `Clone`.
-
-*   `pub fn send(&mut self, value: T) -> Result<(), SendError>`
-*   `pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_async(self) -> AsyncSender<T>`
-
-#### **Struct `spmc::Receiver<T: Send + Clone>`**
-
-A synchronous receiving handle. It is `Clone`.
-
-*   `pub fn recv(&mut self) -> Result<T, RecvError>`
-*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_async(self) -> AsyncReceiver<T>`
-
-#### **Struct `spmc::AsyncSender<T: Send + Clone>`**
-
-An asynchronous sending handle. It is not `Clone`.
-
-*   `pub fn send(&mut self, value: T) -> SendFuture<'_, T>`
-*   `pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_sync(self) -> Sender<T>`
-
-#### **Struct `spmc::AsyncReceiver<T: Send + Clone>`**
-
-An asynchronous receiving handle. It is `Clone`.
-
-*   `pub fn recv(&mut self) -> RecvFuture<'_, T>`
-*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_sync(self) -> Receiver<T>`
-
-#### **Future Types**
-
-*   `pub struct SendFuture<'a, T: Send + Clone>` implements `Future<Output = Result<(), SendError>>`.
-*   `pub struct RecvFuture<'a, T: Send + Clone>` implements `Future<Output = Result<T, RecvError>>`.
-
----
-
-### Module `spsc` (Single-Sender, Single-Receiver)
-
-The fastest channel type, optimized for 1-to-1 communication using a lock-free ring buffer. This channel is bounded. `T` must be `Send`.
-
-#### **Functions**
-
-*   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)`
-    *   Panics if `capacity` is 0.
-*   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncBoundedSpscSender<T>, AsyncBoundedSpscReceiver<T>)`
-    *   Panics if `capacity` is 0.
-
-#### **Struct `spsc::BoundedSyncSender<T: Send>`**
-
-A synchronous sending handle. It is not `Clone`.
-
-*   `pub fn send(&mut self, item: T) -> Result<(), SendError>`
-*   `pub fn try_send(&mut self, item: T) -> Result<(), TrySendError<T>>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_async(self) -> AsyncBoundedSpscSender<T>`
-
-#### **Struct `spsc::BoundedSyncReceiver<T: Send>`**
-
-A synchronous receiving handle. It is not `Clone`.
-
-*   `pub fn recv(&mut self) -> Result<T, RecvError>`
-*   `pub fn recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
-*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_async(self) -> AsyncBoundedSpscReceiver<T>`
-
-#### **Struct `spsc::AsyncBoundedSpscSender<T: Send>`**
-
-An asynchronous sending handle. It is not `Clone`.
-
-*   `pub fn send(&self, item: T) -> SendFuture<'_, T>`
-*   `pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_sync(self) -> BoundedSyncSender<T>`
-
-#### **Struct `spsc::AsyncBoundedSpscReceiver<T: Send>`**
-
-An asynchronous receiving handle. It is not `Clone`.
-
-*   `pub fn recv(&self) -> ReceiveFuture<'_, T>`
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_sync(self) -> BoundedSyncReceiver<T>`
-
-#### **Future Types**
-
-*   `pub struct SendFuture<'a, T: Unpin + Send>` implements `Future<Output = Result<(), SendError>>`.
-*   `pub struct ReceiveFuture<'a, T: Send>` implements `Future<Output = Result<T, RecvError>>`.
-
----
-
-### Module `oneshot`
-
-A channel for sending a single value from one of potentially many senders to a single receiver. `T` must be `Send`.
-
-#### **Functions**
-
-*   `pub fn oneshot<T>() -> (Sender<T>, Receiver<T>)` (Note: `T` is implicitly `Send` due to `Arc<OneShotShared<T>>` usage, where `OneShotShared` has `unsafe impl<T:Send> Send`.)
-
-#### **Struct `oneshot::Sender<T>`**
-
-The sending side of a oneshot channel. It is `Clone`.
-
-*   `pub fn send(self, value: T) -> Result<(), TrySendError<T>>`
-*   `pub fn is_closed(&self) -> bool`
-*   `pub fn is_sent(&self) -> bool`
-
-#### **Struct `oneshot::Receiver<T>`**
-
-The receiving side of a oneshot channel. It is not `Clone` (due to `_phantom_not_sync` and `recv` taking `&mut self`).
-
-*   `pub fn recv(&mut self) -> ReceiveFuture<'_, T>`
-*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
-*   `pub fn is_closed(&self) -> bool`
-
-#### **Future Types**
-
-*   `pub struct ReceiveFuture<'a, T>` implements `Future<Output = Result<T, RecvError>>`.
+*   **`RecvErrorTimeout`:** Returned from `recv_timeout`.
+    *   `Timeout`: The operation timed out before a value was received.
+    *   `Disconnected`: The channel became disconnected during the wait.

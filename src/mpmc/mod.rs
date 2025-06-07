@@ -74,7 +74,8 @@ pub struct AsyncReceiver<T: Send> {
 }
 
 // Re-export the futures for the public API, allowing users to `await` on sends/receives.
-pub use async_impl::{ReceiveFuture, SendFuture};
+pub use async_impl::SendFuture;
+use futures_util::StreamExt;
 
 // --- Channel Constructors ---
 
@@ -161,8 +162,8 @@ impl<T: Send> Clone for AsyncReceiver<T> {
 // Drop (Sync)
 impl<T: Send> Drop for Sender<T> {
   fn drop(&mut self) {
-    let mut sync_waiters;
-    let mut async_waiters;
+    let sync_waiters;
+    let async_waiters;
     {
       let mut guard = self.shared.internal.lock();
       guard.sender_count -= 1;
@@ -190,8 +191,8 @@ impl<T: Send> Drop for Sender<T> {
 
 impl<T: Send> Drop for Receiver<T> {
   fn drop(&mut self) {
-    let mut sync_waiters;
-    let mut async_waiters;
+    let sync_waiters;
+    let async_waiters;
     {
       let mut guard = self.shared.internal.lock();
       guard.receiver_count -= 1;
@@ -228,8 +229,8 @@ impl<T: Send> Drop for Receiver<T> {
 // Drop (Async) - Logic is identical to Sync drops.
 impl<T: Send> Drop for AsyncSender<T> {
   fn drop(&mut self) {
-    let mut sync_waiters;
-    let mut async_waiters;
+    let sync_waiters;
+    let async_waiters;
     {
       let mut guard = self.shared.internal.lock();
       guard.sender_count -= 1;
@@ -254,8 +255,8 @@ impl<T: Send> Drop for AsyncSender<T> {
 
 impl<T: Send> Drop for AsyncReceiver<T> {
   fn drop(&mut self) {
-    let mut sync_waiters;
-    let mut async_waiters;
+    let sync_waiters;
+    let async_waiters;
     {
       let mut guard = self.shared.internal.lock();
       guard.receiver_count -= 1;
@@ -344,16 +345,19 @@ impl<T: Send> Sender<T> {
     }
   }
 }
+
 impl<T: Send> Receiver<T> {
   /// Receives a value from the channel, blocking the current thread until a value
   /// is received or the channel is disconnected.
   pub fn recv(&self) -> Result<T, RecvError> {
     sync_impl::recv_sync(self)
   }
+
   /// Attempts to receive a value from the channel without blocking.
   pub fn try_recv(&self) -> Result<T, TryRecvError> {
     self.shared.try_recv_core()
   }
+
   /// Returns `true` if the channel is empty and all senders have been dropped.
   pub fn is_closed(&self) -> bool {
     let guard = self.shared.internal.lock();
@@ -423,10 +427,12 @@ impl<T: Send> AsyncSender<T> {
   pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>> {
     self.shared.try_send_core(item)
   }
+
   /// Returns `true` if all receivers have been dropped, meaning the channel is closed.
   pub fn is_closed(&self) -> bool {
     self.shared.internal.lock().receiver_count == 0
   }
+  
   /// Returns the capacity of the channel. `None` for unbounded channels.
   pub fn capacity(&self) -> Option<usize> {
     if self.shared.capacity == usize::MAX {
@@ -478,8 +484,8 @@ impl<T: Send> AsyncReceiver<T> {
   ///
   /// This method returns a future that will complete when a value is received,
   /// or when the channel becomes disconnected.
-  pub fn recv(&self) -> ReceiveFuture<'_, T> {
-    async_impl::ReceiveFuture::new(self)
+  pub async fn recv(&mut self) -> Result<T, RecvError> {
+    self.next().await.ok_or(RecvError::Disconnected)
   }
 
   /// Attempts to receive a value from the channel without blocking (or awaiting).

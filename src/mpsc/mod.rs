@@ -14,7 +14,7 @@ mod lockfree;
 
 // Public re-exports
 pub use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
-pub use lockfree::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender}; // These types already have len()/is_empty()
+pub use lockfree::{AsyncReceiver, AsyncSender, Receiver, SendFuture, Sender}; // These types already have len()/is_empty()
 
 // --- Sync Constructor ---
 /// Creates a new unbounded synchronous MPSC channel.
