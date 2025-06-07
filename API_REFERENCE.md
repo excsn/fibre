@@ -1,3 +1,7 @@
+Of course. Based on the detailed code analysis and the test results, here is the updated API reference documentation. The changes correct inaccuracies in method signatures, clarify the behavior of the `Stream` trait, and ensure the guide accurately reflects the library's robust and consistent API.
+
+---
+
 # Usage Guide: `fibre`
 
 This guide provides detailed examples and an overview of the core concepts and APIs in the `fibre` library.
@@ -37,7 +41,7 @@ The `mpmc`, `mpsc`, `spmc`, and `spsc` channels support full interoperability be
 
 All channels are interacted with via sender and receiver handles (e.g., `Sender`, `Receiver`, `AsyncSender`, `AsyncReceiver`; SPSC uses `BoundedSyncSender`, etc.). These handles control access to the channel and manage its lifetime. When all senders for a channel are dropped, the channel becomes "disconnected" from the perspective of the receiver. When all receivers are dropped, the channel becomes "closed" from the perspective of the sender.
 
-**A key feature of all asynchronous receiver types (`AsyncReceiver`, etc.) is that they implement the `futures::Stream` trait.** This allows them to be used with the rich set of combinators provided by `futures::StreamExt`, such as `next()`, `map()`, `filter()`, `for_each`, and `collect()`.
+**A key feature of all multi-item asynchronous receiver types (`mpmc::AsyncReceiver`, `mpsc::AsyncReceiver`, etc.) is that they implement the `futures::Stream` trait.** This allows them to be used with the rich set of combinators provided by `futures::StreamExt`, such as `next()`, `map()`, `filter()`, `for_each`, and `collect()`. The `oneshot::Receiver` is an exception, as it yields at most one item and is used by awaiting its `.recv()` future directly.
 
 ## Quick Start Examples
 
@@ -152,7 +156,7 @@ fn main() {
     rt.block_on(async {
         // Start with an async channel, then convert the producer to sync
         let (p_async, c_async) = spsc::bounded_async::<String>(2);
-        let mut p_sync = p_async.to_sync(); // Convert producer to sync
+        let p_sync = p_async.to_sync(); // Convert producer to sync
 
         let producer_thread = thread::spawn(move || {
             p_sync.send("Hello from sync thread!".to_string()).unwrap();
@@ -186,11 +190,11 @@ A flexible channel for many-to-many communication.
     *   `Sender<T: Send>` (`Clone`) and `Receiver<T: Send>` (`Clone`).
     *   `AsyncSender<T: Send>` (`Clone`) and `AsyncReceiver<T: Send>` (`Clone`). `AsyncReceiver` implements `futures::Stream`.
 *   **Key Methods:**
-    *   `send(...)`
+    *   `send(...)`: Sync sends block, async sends return a `Future`.
     *   `try_send(&self, item: T) -> Result<(), TrySendError<T>>`
-    *   `recv(&self) -> ReceiveFuture`: Returns a future that can be awaited.
+    *   `recv(...)`: Sync receives block, async receives return a `Future`.
     *   `try_recv(&self) -> Result<T, TryRecvError>`
-    *   `to_async(self) -> ...` / `to_sync(self) -> ...`
+    *   `to_async(self)` / `to_sync(self)`
 
 ### Module: `fibre::mpsc`
 
@@ -203,10 +207,10 @@ An optimized lock-free channel for many-to-one communication (unbounded).
     *   `Sender<T: Send>` (sync, `Clone`) and `Receiver<T: Send>` (sync, `!Clone`).
     *   `AsyncSender<T: Send>` (async, `Clone`) and `AsyncReceiver<T: Send>` (async, `!Clone`). `AsyncReceiver` implements `futures::Stream`.
 *   **Key Methods:**
-    *   `Sender::send(&self, ...)`
-    *   `Receiver::recv(&mut self, ...)`
-    *   `AsyncSender::send(...) -> SendFuture`
-    *   `AsyncReceiver::recv(&self) -> RecvFuture`: Returns a future that can be awaited.
+    *   `Sender::send(&self, ...)`: Non-blocking.
+    *   `AsyncSender::send(...)`: Returns a `Future` that completes immediately.
+    *   `Receiver::recv(&self, ...)`: Blocks if channel is empty.
+    *   `AsyncReceiver::recv(&self, ...)`: Returns a `Future` that completes when an item is available.
 
 ### Module: `fibre::spmc`
 
@@ -216,12 +220,13 @@ A broadcast-style channel for one-to-many communication (bounded). `T` must be `
     *   `pub fn bounded<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>)` (Panics if capacity is 0).
     *   `pub fn bounded_async<T: Send + Clone>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (Panics if capacity is 0).
 *   **Handles:**
-    *   `Sender<T: Send + Clone>` (sync, `!Clone`) and `Receiver<T: Send + Clone>` (sync, `Clone`).
-    *   `AsyncSender<T: Send + Clone>` (async, `!Clone`) and `AsyncReceiver<T: Send + Clone>` (async, `Clone`). `AsyncReceiver` implements `futures::Stream`.
+    *   `Sender<T: Send + Clone>` (sync, `!Clone`, `send` takes `&self`)
+    *   `Receiver<T: Send + Clone>` (sync, `Clone`)
+    *   `AsyncSender<T: Send + Clone>` (async, `!Clone`, `send` takes `&self`)
+    *   `AsyncReceiver<T: Send + Clone>` (async, `Clone`). `AsyncReceiver` implements `futures::Stream`.
 *   **Key Methods:**
-    *   `send(&mut self, ...)`
-    *   `try_send(&mut self, ...)`
-    *   `recv(&mut self) -> RecvFuture`: Returns a future that can be awaited.
+    *   `send(&self, ...)`: Blocks if any consumer is slow and its buffer view is full. Async version returns a `Future`.
+    *   `recv(&self, ...)`: Blocks if the consumer's view of the buffer is empty. Async version returns a `Future`.
 
 ### Module: `fibre::spsc`
 
@@ -234,9 +239,9 @@ A high-performance lock-free channel for one-to-one communication (bounded). `T`
     *   `BoundedSyncSender<T: Send>` (`!Clone`) and `BoundedSyncReceiver<T: Send>` (`!Clone`).
     *   `AsyncBoundedSpscSender<T: Send>` (`!Clone`) and `AsyncBoundedSpscReceiver<T: Send>` (`!Clone`). `AsyncBoundedSpscReceiver` implements `futures::Stream`.
 *   **Key Methods:**
-    *   `send(...)`
+    *   `send(...)`: Sync sends block, async sends return a `Future`.
     *   `try_send(...)`
-    *   `recv(&self) -> ReceiveFuture`: Returns a future that can be awaited.
+    *   `recv(...)`: Sync receives block, async receives return a `Future`.
     *   `BoundedSyncReceiver::recv_timeout(...)`
 
 ### Module: `fibre::oneshot`
@@ -246,10 +251,10 @@ A channel for sending a single value once. `T` must be `Send`.
 *   **Constructors:**
     *   `pub fn oneshot<T: Send>() -> (Sender<T>, Receiver<T>)`
 *   **Handles:**
-    *   `Sender<T>` (`Clone`) and `Receiver<T>` (`!Clone`). `Receiver` implements `futures::Stream` of at most one item.
+    *   `Sender<T>` (`Clone`) and `Receiver<T>` (`!Clone`).
 *   **Key Methods:**
-    *   `Sender::send(self, ...)`
-    *   `Receiver::recv(&mut self) -> ReceiveFuture`: Returns a future that can be awaited.
+    *   `Sender::send(self, ...)`: Consumes the sender.
+    *   `Receiver::recv(&self)`: Returns a `Future` that completes when the value is sent or the channel is disconnected.
 
 ## Error Handling
 

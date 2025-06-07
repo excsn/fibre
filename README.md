@@ -26,6 +26,44 @@ Fibre offers a wide range of channel types, each optimized for a specific produc
 
 A standout feature is the ability to seamlessly mix synchronous and asynchronous code. You can create a synchronous `Sender` and an asynchronous `AsyncReceiver` (or any other combination) from the same SPSC, MPSC, SPMC, or MPMC channel. This is enabled by zero-cost `to_sync()` and `to_async()` conversion methods on the channel handles, providing maximum flexibility for integrating into different codebases and runtimes.
 
+### Consistent and Ergonomic API
+
+One of the core design goals of `fibre` is API consistency. A developer should not have to re-learn methods for each channel type. All channels share a common set of methods with consistent semantics, allowing for predictable and ergonomic use.
+
+**API Parity Overview**
+
+The following tables summarize the consistent API surface across all channel senders and receivers.
+
+**Sender API**
+
+| Method | MPMC Sender | MPSC Sender | SPMC Sender | SPSC Sender | Oneshot Sender |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `send()`/`send().await` | ✅ | ✅ | ✅ | ✅ | ✅ (Consumes self) |
+| `try_send()` | ✅ | ❌ ¹ | ✅ | ✅ | ❌ (send is try) |
+| `close()` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `is_closed()` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `len()` | ✅ | ✅ | ✅ | ✅ | N/A |
+| `is_empty()` | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `is_full()` | ✅ | N/A | ✅ | ✅ | N/A |
+| `capacity()` | ✅ | N/A | ✅ | ✅ | N/A |
+| `clone()` | ✅ | ✅ | ❌ | ❌ | ✅ |
+
+**Receiver API**
+
+| Method | MPMC Receiver | MPSC Receiver | SPMC Receiver | SPSC Receiver | Oneshot Receiver |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `recv()`/`recv().await` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `try_recv()` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `close()` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `is_closed()` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `len()` | ✅ | ✅ | ✅ | ✅ | N/A |
+| `is_empty()` | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `is_full()` | ✅ | N/A | ✅ | ✅ | N/A |
+| `capacity()` | ✅ | N/A | ✅ | ✅ | N/A |
+| `clone()` | ✅ | ❌ | ✅ | ❌ | ❌ |
+
+*¹ `try_send` is not provided for MPSC as `send` is already lock-free and non-blocking. Differences in clonability are by design based on producer/consumer counts.*
+
 ### Performance-Oriented Design
 
 Performance is a primary goal. Fibre uses proven, high-performance algorithms for each channel type, including:
@@ -37,8 +75,8 @@ Performance is a primary goal. Fibre uses proven, high-performance algorithms fo
 
 ### Ergonomic and Safe
 
-*   **Clear Error Handling:** Descriptive error types (`TrySendError<T>`, `RecvError`, etc.) that allow for value recovery on send failures.
-*   **Drop Safety:** Channels correctly signal disconnection or closure when senders/receivers are dropped, and any buffered items are properly deallocated.
+*   **Explicit Lifecycle Control:** All channel handles provide an idempotent `close()` method as an explicit alternative to `drop`, giving developers fine-grained control over the channel lifecycle.
+*   **Clear Error Handling & Drop Safety:** Descriptive error types (`TrySendError<T>`, `RecvError`, `CloseError`) allow for value recovery and clear error reporting. Channels correctly signal disconnection when handles are dropped or explicitly closed, and any buffered items are properly deallocated.
 *   **Thread Safety:** Each channel type enforces appropriate `Send` and `Sync` bounds, ensuring correct concurrent usage. For example, SPSC and MPSC consumer handles are `!Sync` as they are designed for single-threaded consumption.
 
 ## Installation
@@ -47,7 +85,7 @@ Add Fibre to your project by including it in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fibre = "^0" # Replace with the latest version from crates.io
+fibre = "0.3.0" # Replace with the latest version
 ```
 
 Or by using the command line:

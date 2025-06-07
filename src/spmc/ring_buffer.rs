@@ -1,10 +1,9 @@
 // src/spmc/ring_buffer.rs
 
 use futures_core::Stream;
-use futures_util::StreamExt;
 
 use crate::async_util::AtomicWaker;
-use crate::error::{RecvError, SendError, TryRecvError, TrySendError}; // Added TrySendError
+use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
 use crate::internal::cache_padded::CachePadded;
 use crate::sync_util;
 use crate::telemetry;
@@ -23,7 +22,7 @@ use std::thread::{self, Thread};
 
 // --- Telemetry Constants (unchanged) ---
 const LOC_P_SEND: &str = "Sender::send";
-const LOC_P_TRY_SEND: &str = "Sender::try_send"; // New location for try_send
+const LOC_P_TRY_SEND: &str = "Sender::try_send";
 const LOC_C_RECV: &str = "Receiver::recv";
 const LOC_C_TRY_RECV: &str = "try_recv_internal";
 const LOC_WAKEP: &str = "SpmcShared::wake_producer";
@@ -32,7 +31,7 @@ const LOC_SYNCWAKER: &str = "sync_waker";
 const EVT_P_ENTER_LOOP: &str = "P:EnterLoop";
 const EVT_P_GOT_MIN_TAIL: &str = "P:GotMinTail";
 const EVT_P_BUFFER_FULL: &str = "P:BufferFull";
-const EVT_P_TRY_SEND_FULL: &str = "P:TrySendFull"; // New event for try_send
+const EVT_P_TRY_SEND_FULL: &str = "P:TrySendFull";
 const EVT_P_ARM_PARK: &str = "P:ArmPark";
 const EVT_P_RECHECK_PASS: &str = "P:RecheckPass";
 const EVT_P_RECHECK_SPACE: &str = "P:RecheckSpace";
@@ -259,8 +258,6 @@ impl<T: Send + Clone> SpmcShared<T> {
     }
   }
 
-  /// Internal try_send logic used by both sync and async senders.
-  /// Does not handle parking.
   fn try_send_internal(&self, value: T) -> Result<(), TrySendError<T>> {
     let current_head_idx = unsafe { *self.head.get() };
     let min_tail_idx;
@@ -273,7 +270,7 @@ impl<T: Send + Clone> SpmcShared<T> {
           EVT_P_NO_CONSUMERS,
           None,
         );
-        return Err(TrySendError::Closed(value)); // No consumers
+        return Err(TrySendError::Closed(value));
       }
       min_tail_idx = tails_guard
         .list
@@ -293,10 +290,9 @@ impl<T: Send + Clone> SpmcShared<T> {
           current_head_idx, min_tail_idx, self.capacity
         )),
       );
-      return Err(TrySendError::Full(value)); // Buffer full due to slowest consumer
+      return Err(TrySendError::Full(value));
     }
 
-    // Buffer has space
     let slot_idx = current_head_idx % self.capacity;
     let slot = &self.buffer[slot_idx];
 
@@ -307,7 +303,7 @@ impl<T: Send + Clone> SpmcShared<T> {
       Some(format!("slot_idx:{}", slot_idx)),
     );
     unsafe {
-      (*slot.value.get()).write(value); // value is consumed here or on error path
+      (*slot.value.get()).write(value);
       slot
         .sequence
         .store(2 * current_head_idx + 1, Ordering::Release);
@@ -350,25 +346,29 @@ impl<T: Send + Clone> SpmcShared<T> {
 #[derive(Debug)]
 pub struct Sender<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
+  pub(crate) closed: AtomicBool,
 }
 unsafe impl<T: Send + Clone> Send for Sender<T> {}
 
 #[derive(Debug)]
 pub struct AsyncSender<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
+  pub(crate) closed: AtomicBool,
 }
 unsafe impl<T: Send + Clone> Send for AsyncSender<T> {}
 
 #[derive(Debug)]
 pub struct Receiver<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
-  pub(crate) tail: Arc<AtomicUsize>, // This receiver's current read index (logical, unbounded)
+  pub(crate) tail: Arc<AtomicUsize>,
+  pub(crate) closed: AtomicBool,
 }
 
 #[derive(Debug)]
 pub struct AsyncReceiver<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
   pub(crate) tail: Arc<AtomicUsize>,
+  pub(crate) closed: AtomicBool,
 }
 
 pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>) {
@@ -384,10 +384,12 @@ pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (Sender<T>, Recei
   (
     Sender {
       shared: Arc::clone(&shared),
+      closed: AtomicBool::new(false),
     },
     Receiver {
       shared,
       tail: initial_tail,
+      closed: AtomicBool::new(false),
     },
   )
 }
@@ -418,7 +420,7 @@ fn try_recv_internal<T: Send + Clone>(
     Ok(value)
   } else {
     if shared.producer_dropped.load(Ordering::Acquire) {
-      let head = unsafe { *shared.head.get() }; // Producer is dropped, head won't change
+      let head = unsafe { *shared.head.get() };
       if current_tail_val >= head {
         telemetry::log_event(
           Some(current_tail_val),
@@ -463,12 +465,10 @@ fn poll_recv_internal<T: Send + Clone>(
 
       slot.wakers.lock().unwrap().push(cx.waker().clone());
 
-      // Critical re-check after registering waker
       match try_recv_internal(shared, tail) {
         Ok(value) => Poll::Ready(Ok(value)),
         Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
         Err(TryRecvError::Empty) => {
-          // Still empty, check producer_dropped before returning Pending.
           if shared.producer_dropped.load(Ordering::Acquire) {
             let head = unsafe { *shared.head.get() };
             if tail.load(Ordering::Relaxed) >= head {
@@ -484,10 +484,16 @@ fn poll_recv_internal<T: Send + Clone>(
 
 impl<T: Send + Clone> Receiver<T> {
   pub fn try_recv(&self) -> Result<T, TryRecvError> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TryRecvError::Disconnected);
+    }
     try_recv_internal(&self.shared, &self.tail)
   }
 
   pub fn recv(&self) -> Result<T, RecvError> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(RecvError::Disconnected);
+    }
     let consumer_name = thread::current().name().unwrap_or("?").to_string();
     loop {
       match try_recv_internal(&self.shared, &self.tail) {
@@ -518,11 +524,9 @@ impl<T: Send + Clone> Receiver<T> {
             }
             Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
             Err(TryRecvError::Empty) => {
-              // Still empty, check producer_dropped before parking
               if self.shared.producer_dropped.load(Ordering::Acquire) {
                 let head = unsafe { *self.shared.head.get() };
                 if self.tail.load(Ordering::Relaxed) >= head {
-                  // Remove waker as we are not parking
                   slot
                     .wakers
                     .lock()
@@ -556,24 +560,45 @@ impl<T: Send + Clone> Receiver<T> {
     }
   }
 
-  /// Returns the number of items available for this specific receiver to consume.
+  pub fn is_closed(&self) -> bool {
+    self.shared.producer_dropped.load(Ordering::Acquire) && self.is_empty()
+  }
+
+  pub fn capacity(&self) -> usize {
+    self.shared.capacity
+  }
+
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&self) {
+    drop_receiver_internal(&self.shared, &self.tail)
+  }
+
   #[inline]
   pub fn len(&self) -> usize {
-    let head = unsafe { *self.shared.head.get() }; // Relaxed is fine for producer's head if only it writes
-    let tail = self.tail.load(Ordering::Acquire); // Acquire to see latest writes to sequence numbers
+    let head = unsafe { *self.shared.head.get() };
+    let tail = self.tail.load(Ordering::Acquire);
     head.saturating_sub(tail)
   }
 
-  /// Returns `true` if there are no items currently available for this receiver.
   #[inline]
   pub fn is_empty(&self) -> bool {
     let head = unsafe { *self.shared.head.get() };
     let tail = self.tail.load(Ordering::Acquire);
-    tail >= head // if tail == head, it's empty. if tail > head (should not happen in correct logic), also empty.
+    tail >= head
   }
 
-  /// Returns `true` if this receiver has `capacity` items buffered for it.
-  /// This means the producer might be blocked by this receiver if it tries to send more.
   #[inline]
   pub fn is_full(&self) -> bool {
     self.len() == self.shared.capacity
@@ -582,6 +607,9 @@ impl<T: Send + Clone> Receiver<T> {
 
 impl<T: Send + Clone> AsyncReceiver<T> {
   pub fn try_recv(&self) -> Result<T, TryRecvError> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TryRecvError::Disconnected);
+    }
     try_recv_internal(&self.shared, &self.tail)
   }
 
@@ -589,7 +617,31 @@ impl<T: Send + Clone> AsyncReceiver<T> {
     RecvFuture { receiver: self }
   }
 
-  /// Returns the number of items available for this specific receiver to consume.
+  pub fn is_closed(&self) -> bool {
+    self.shared.producer_dropped.load(Ordering::Acquire) && self.is_empty()
+  }
+
+  pub fn capacity(&self) -> usize {
+    self.shared.capacity
+  }
+
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&self) {
+    drop_receiver_internal(&self.shared, &self.tail)
+  }
+
   #[inline]
   pub fn len(&self) -> usize {
     let head = unsafe { *self.shared.head.get() };
@@ -597,7 +649,6 @@ impl<T: Send + Clone> AsyncReceiver<T> {
     head.saturating_sub(tail)
   }
 
-  /// Returns `true` if there are no items currently available for this receiver.
   #[inline]
   pub fn is_empty(&self) -> bool {
     let head = unsafe { *self.shared.head.get() };
@@ -605,41 +656,45 @@ impl<T: Send + Clone> AsyncReceiver<T> {
     tail >= head
   }
 
-  /// Returns `true` if this receiver has `capacity` items buffered for it.
   #[inline]
   pub fn is_full(&self) -> bool {
     self.len() == self.shared.capacity
   }
 }
 
-fn clone_receiver_internal<T: Send + Clone>(
-  shared: &Arc<SpmcShared<T>>,
-  current_consumer_tail: &Arc<AtomicUsize>,
-) -> Arc<AtomicUsize> {
-  let new_tail_val = current_consumer_tail.load(Ordering::Acquire);
-  let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
-  shared
-    .tails
-    .lock()
-    .unwrap()
-    .list
-    .push(Arc::clone(&new_consumer_tail));
-  new_consumer_tail
-}
-
 impl<T: Send + Clone> Clone for Receiver<T> {
   fn clone(&self) -> Self {
+    let new_tail_val = self.tail.load(Ordering::Acquire);
+    let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
+    self
+      .shared
+      .tails
+      .lock()
+      .unwrap()
+      .list
+      .push(Arc::clone(&new_consumer_tail));
     Self {
       shared: Arc::clone(&self.shared),
-      tail: clone_receiver_internal(&self.shared, &self.tail),
+      tail: new_consumer_tail,
+      closed: AtomicBool::new(false),
     }
   }
 }
 impl<T: Send + Clone> Clone for AsyncReceiver<T> {
   fn clone(&self) -> Self {
+    let new_tail_val = self.tail.load(Ordering::Acquire);
+    let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
+    self
+      .shared
+      .tails
+      .lock()
+      .unwrap()
+      .list
+      .push(Arc::clone(&new_consumer_tail));
     Self {
       shared: Arc::clone(&self.shared),
-      tail: clone_receiver_internal(&self.shared, &self.tail),
+      tail: new_consumer_tail,
+      closed: AtomicBool::new(false),
     }
   }
 }
@@ -655,27 +710,33 @@ fn drop_receiver_internal<T: Send + Clone>(shared: &SpmcShared<T>, tail_arc: &Ar
 
 impl<T: Send + Clone> Drop for Receiver<T> {
   fn drop(&mut self) {
-    drop_receiver_internal(&self.shared, &self.tail)
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
+    }
   }
 }
 impl<T: Send + Clone> Drop for AsyncReceiver<T> {
   fn drop(&mut self) {
-    drop_receiver_internal(&self.shared, &self.tail)
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
+    }
   }
 }
 
 impl<T: Send + Clone> Sender<T> {
-  /// Attempts to send a value into the channel without blocking.
-  ///
-  /// If the channel is full (due to the slowest consumer not keeping up),
-  /// this method will return `Err(TrySendError::Full(value))`.
-  /// If there are no active consumers, it returns `Err(TrySendError::Closed(value))`.
-  pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>> {
+  pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TrySendError::Closed(value));
+    }
     self.shared.try_send_internal(value)
   }
 
-  pub fn send(&mut self, value: T) -> Result<(), SendError> {
-    let mut current_item = Some(value); // Use Option to manage the item across parking attempts
+  pub fn send(&self, value: T) -> Result<(), SendError> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(SendError::Closed);
+    }
+
+    let mut current_item = Some(value);
 
     loop {
       let item_to_send = current_item
@@ -683,22 +744,16 @@ impl<T: Send + Clone> Sender<T> {
         .expect("Item should always exist at start of send loop");
       match self.shared.try_send_internal(item_to_send) {
         Ok(()) => return Ok(()),
-        Err(TrySendError::Closed(returned_item)) => {
-          // try_send_internal returns Closed only if no consumers.
-          // This maps directly to SendError::Closed for the blocking send.
-          // Ensure item is dropped if not returned by SendError (which it isn't)
-          drop(returned_item);
+        Err(TrySendError::Closed(_)) => {
           return Err(SendError::Closed);
         }
         Err(TrySendError::Full(returned_item)) => {
-          current_item = Some(returned_item); // Put item back for next attempt
-                                              // Buffer is full, need to park.
+          current_item = Some(returned_item);
         }
-        Err(TrySendError::Sent(_)) => unreachable!("SPMC try_send should not return Sent"),
+        Err(TrySendError::Sent(_)) => unreachable!(),
       }
 
-      // --- Parking logic ---
-      let current_head_idx = unsafe { *self.shared.head.get() }; // For telemetry
+      let current_head_idx = unsafe { *self.shared.head.get() };
       telemetry::log_event(Some(current_head_idx), LOC_P_SEND, EVT_P_BUFFER_FULL, None);
       telemetry::increment_counter(LOC_P_SEND, CTR_P_PARK_ATTEMPTS);
 
@@ -706,7 +761,6 @@ impl<T: Send + Clone> Sender<T> {
       *self.shared.producer_thread.lock().unwrap() = Some(thread::current());
       self.shared.producer_parked.store(true, Ordering::Release);
 
-      // Critical re-check after arming
       let min_tail_recheck;
       {
         let tails_guard = self.shared.tails.lock().unwrap();
@@ -719,7 +773,6 @@ impl<T: Send + Clone> Sender<T> {
           );
           self.shared.producer_parked.store(false, Ordering::Relaxed);
           self.shared.producer_thread.lock().unwrap().take();
-          // Drop current_item if it holds a value
           drop(current_item.take());
           return Err(SendError::Closed);
         }
@@ -738,7 +791,6 @@ impl<T: Send + Clone> Sender<T> {
       );
 
       if unsafe { *self.shared.head.get() } - min_tail_recheck < self.shared.capacity {
-        // Check current head again
         telemetry::log_event(Some(current_head_idx), LOC_P_SEND, EVT_P_RECHECK_PASS, None);
         if self
           .shared
@@ -761,7 +813,7 @@ impl<T: Send + Clone> Sender<T> {
             None,
           );
         }
-        continue; // Retry send immediately
+        continue;
       }
 
       telemetry::log_event(
@@ -778,62 +830,35 @@ impl<T: Send + Clone> Sender<T> {
         EVT_P_UNPARKED,
         None,
       );
-      // After unparking, loop to retry the send. current_item still holds the item.
     }
   }
 
-  /// Returns the number of items currently considered "in-flight" by the producer.
-  /// This is `head - min_tail_of_all_consumers`.
-  #[inline]
-  pub fn len(&self) -> usize {
-    let head = unsafe { *self.shared.head.get() };
-    let tails_guard = self.shared.tails.lock().unwrap();
-    if tails_guard.list.is_empty() {
-      return 0;
-    }
-    let min_tail = tails_guard
-      .list
-      .iter()
-      .map(|t_arc| t_arc.load(Ordering::Acquire))
-      .min()
-      .unwrap_or(head); // If somehow list becomes empty concurrently, treat as 0 length
-    head.saturating_sub(min_tail)
+  pub fn is_closed(&self) -> bool {
+    self.shared.tails.lock().unwrap().list.is_empty()
   }
 
-  /// Returns `true` if the channel is effectively empty from the producer's view
-  /// (i.e., `head == min_tail`).
-  #[inline]
-  pub fn is_empty(&self) -> bool {
-    self.len() == 0
+  pub fn capacity(&self) -> usize {
+    self.shared.capacity
   }
 
-  /// Returns `true` if the channel is full from the producer's perspective
-  /// (i.e., `head - min_tail == capacity`).
-  #[inline]
-  pub fn is_full(&self) -> bool {
-    self.len() == self.shared.capacity
-  }
-}
-
-impl<T: Send + Clone> AsyncSender<T> {
-  /// Attempts to send a value into the channel without blocking (asynchronously).
-  ///
-  /// If the channel is full (due to the slowest consumer not keeping up),
-  /// this method will return `Err(TrySendError::Full(value))`.
-  /// If there are no active consumers, it returns `Err(TrySendError::Closed(value))`.
-  pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>> {
-    self.shared.try_send_internal(value)
-  }
-
-  pub fn send(&mut self, value: T) -> SendFuture<'_, T> {
-    SendFuture {
-      producer: self,
-      value: Some(value),
-      _phantom: PhantomPinned,
+  pub fn close(&mut self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
     }
   }
 
-  /// Returns the number of items currently considered "in-flight" by the producer.
+  fn close_internal(&mut self) {
+    self.shared.producer_dropped.store(true, Ordering::Release);
+    self.shared.wake_all_consumers_from_slots();
+  }
+
   #[inline]
   pub fn len(&self) -> usize {
     let head = unsafe { *self.shared.head.get() };
@@ -850,13 +875,80 @@ impl<T: Send + Clone> AsyncSender<T> {
     head.saturating_sub(min_tail)
   }
 
-  /// Returns `true` if the channel is effectively empty from the producer's view.
   #[inline]
   pub fn is_empty(&self) -> bool {
     self.len() == 0
   }
 
-  /// Returns `true` if the channel is full from the producer's perspective.
+  #[inline]
+  pub fn is_full(&self) -> bool {
+    self.len() == self.shared.capacity
+  }
+}
+
+impl<T: Send + Clone> AsyncSender<T> {
+  pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TrySendError::Closed(value));
+    }
+    self.shared.try_send_internal(value)
+  }
+
+  pub fn send(&self, value: T) -> SendFuture<'_, T> {
+    SendFuture {
+      producer: self,
+      value: Some(value),
+      _phantom: PhantomPinned,
+    }
+  }
+
+  pub fn is_closed(&self) -> bool {
+    self.shared.tails.lock().unwrap().list.is_empty()
+  }
+
+  pub fn capacity(&self) -> usize {
+    self.shared.capacity
+  }
+
+  pub fn close(&mut self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&mut self) {
+    self.shared.producer_dropped.store(true, Ordering::Release);
+    self.shared.wake_all_consumers_from_slots();
+  }
+
+  #[inline]
+  pub fn len(&self) -> usize {
+    let head = unsafe { *self.shared.head.get() };
+    let tails_guard = self.shared.tails.lock().unwrap();
+    if tails_guard.list.is_empty() {
+      return 0;
+    }
+    let min_tail = tails_guard
+      .list
+      .iter()
+      .map(|t_arc| t_arc.load(Ordering::Acquire))
+      .min()
+      .unwrap_or(head);
+    head.saturating_sub(min_tail)
+  }
+
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
+
   #[inline]
   pub fn is_full(&self) -> bool {
     self.len() == self.shared.capacity
@@ -865,21 +957,23 @@ impl<T: Send + Clone> AsyncSender<T> {
 
 impl<T: Send + Clone> Drop for Sender<T> {
   fn drop(&mut self) {
-    self.shared.producer_dropped.store(true, Ordering::Release);
-    self.shared.wake_all_consumers_from_slots();
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
+    }
   }
 }
 
 impl<T: Send + Clone> Drop for AsyncSender<T> {
   fn drop(&mut self) {
-    self.shared.producer_dropped.store(true, Ordering::Release);
-    self.shared.wake_all_consumers_from_slots();
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
+    }
   }
 }
 
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T: Send + Clone> {
-  producer: &'a mut AsyncSender<T>,
+  producer: &'a AsyncSender<T>,
   value: Option<T>,
   _phantom: PhantomPinned,
 }
@@ -889,28 +983,29 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
+    if this.producer.closed.load(Ordering::Relaxed) {
+      return Poll::Ready(Err(SendError::Closed));
+    }
     let shared = &this.producer.shared;
 
     loop {
       let item_to_send = match this.value.take() {
         Some(v) => v,
-        None => return Poll::Ready(Ok(())), // Already completed or value taken
+        None => return Poll::Ready(Ok(())), // Already completed
       };
 
       match shared.try_send_internal(item_to_send) {
         Ok(()) => return Poll::Ready(Ok(())),
-        Err(TrySendError::Closed(returned_item)) => {
-          drop(returned_item);
+        Err(TrySendError::Closed(_)) => {
           return Poll::Ready(Err(SendError::Closed));
         }
         Err(TrySendError::Full(returned_item)) => {
-          this.value = Some(returned_item); // Put it back
-                                            // Buffer is full, register waker and check again.
+          this.value = Some(returned_item);
         }
         Err(TrySendError::Sent(_)) => unreachable!(),
       }
 
-      let current_head_idx = unsafe { *shared.head.get() }; // For telemetry
+      let current_head_idx = unsafe { *shared.head.get() };
       telemetry::log_event(
         Some(current_head_idx),
         "AsyncP::poll",
@@ -920,12 +1015,11 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
       telemetry::increment_counter("AsyncP::poll", CTR_P_PARK_ATTEMPTS);
       shared.producer_waker.register(cx.waker());
 
-      // Critical re-check after registering waker
       let min_tail_recheck;
       {
         let tails_guard = shared.tails.lock().unwrap();
         if tails_guard.list.is_empty() {
-          this.value = None; // Drop the value
+          this.value = None;
           telemetry::log_event(
             Some(current_head_idx),
             "AsyncP::poll",
@@ -948,7 +1042,6 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
         Some(format!("min_tail_recheck:{}", min_tail_recheck)),
       );
 
-      // Check current head again before deciding to return Pending
       if unsafe { *shared.head.get() } - min_tail_recheck < shared.capacity {
         telemetry::log_event(
           Some(current_head_idx),
@@ -956,7 +1049,6 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
           EVT_P_RECHECK_PASS,
           None,
         );
-        // Loop again to attempt the send with the value still in self.value
         continue;
       }
       return Poll::Pending;
@@ -973,9 +1065,10 @@ pub struct RecvFuture<'a, T: Send + Clone> {
 impl<'a, T: Send + Clone> Future for RecvFuture<'a, T> {
   type Output = Result<T, RecvError>;
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    
-    let receiver = &self.receiver;
-    poll_recv_internal(&receiver.shared, &receiver.tail, cx)
+    if self.receiver.closed.load(Ordering::Relaxed) {
+      return Poll::Ready(Err(RecvError::Disconnected));
+    }
+    poll_recv_internal(&self.receiver.shared, &self.receiver.tail, cx)
   }
 }
 
@@ -983,11 +1076,13 @@ impl<T: Send + Clone> Stream for AsyncReceiver<T> {
   type Item = T;
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-    // Delegate to the internal poll function and map the Result to an Option.
+    if self.closed.load(Ordering::Relaxed) {
+      return Poll::Ready(None);
+    }
     let receiver = self.get_mut();
     match poll_recv_internal(&receiver.shared, &receiver.tail, cx) {
       Poll::Ready(Ok(value)) => Poll::Ready(Some(value)),
-      Poll::Ready(Err(_)) => Poll::Ready(None), // Disconnected
+      Poll::Ready(Err(_)) => Poll::Ready(None),
       Poll::Pending => Poll::Pending,
     }
   }

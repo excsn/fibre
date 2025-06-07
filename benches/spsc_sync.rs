@@ -33,7 +33,7 @@ struct BenchContext {
 
 // Sync SPSC
 trait SyncSenderSpsc: Send {
-  fn send(&mut self, item: u64);
+  fn send(&self, item: u64);
 }
 trait SyncReceiverSpsc: Send {
   fn recv(&self) -> u64;
@@ -44,7 +44,7 @@ struct SpscSyncState {
 }
 struct SpscSyncProdImpl(spsc::BoundedSyncSender<u64>);
 impl SyncSenderSpsc for SpscSyncProdImpl {
-  fn send(&mut self, item: u64) {
+  fn send(&self, item: u64) {
     self.0.send(item).unwrap();
   }
 }

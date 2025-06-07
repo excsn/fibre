@@ -73,45 +73,13 @@
 //! handle1.join().unwrap();
 //! handle2.join().unwrap();
 //! ```
-//!
-//! ### Mixed Sync/Async Usage
-//!
-//! ```
-//! use fibre::spmc;
-//! use std::thread;
-//! use std::time::Duration;
-//!
-//! # async fn run() {
-//! // Create an async channel.
-//! let (producer_async, mut receiver_async) = spmc::bounded_async(1);
-//!
-//! // Convert the async producer to a sync one for use in a standard thread.
-//! let mut producer_sync = producer_async.to_sync();
-//!
-//! // A standard thread produces a message.
-//! let producer_handle = thread::spawn(move || {
-//!     thread::sleep(Duration::from_millis(50));
-//!     println!("[Sync Thread] Sending message...");
-//!     producer_sync.send(123).unwrap();
-//! });
-//!
-//! // The async receiver awaits the message.
-//! println!("[Async Task] Waiting for message...");
-//! let value = receiver_async.recv().await.unwrap();
-//! assert_eq!(value, 123);
-//! println!("[Async Task] Received: {}", value);
-//!
-//! producer_handle.join().unwrap();
-//! # }
-//! # tokio::runtime::Runtime::new().unwrap().block_on(run());
-//! ```
 
-use std::marker::PhantomData;
 use std::mem;
+use std::sync::atomic::AtomicBool;
 // No need to import Arc here if it's only used by ring_buffer types.
 mod ring_buffer;
 
-pub use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
+pub use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
 pub use ring_buffer::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender};
 
 // --- Constructors ---
@@ -141,8 +109,6 @@ pub fn bounded_async<T: Send + Clone>(capacity: usize) -> (AsyncSender<T>, Async
 }
 
 // --- Conversion Methods ---
-// These are defined on the types in ring_buffer.rs and are available
-// because we re-export Sender, AsyncSender, Receiver, AsyncReceiver.
 
 impl<T: Send + Clone> Sender<T> {
   /// Converts this synchronous `Sender` into an asynchronous `AsyncSender`.
@@ -155,9 +121,9 @@ impl<T: Send + Clone> Sender<T> {
     mem::forget(self);
     AsyncSender {
       shared,
+      closed: AtomicBool::new(false),
     }
   }
-  // len(), is_empty(), is_full(), try_send() are inherited from ring_buffer::Sender
 }
 
 impl<T: Send + Clone> AsyncSender<T> {
@@ -171,9 +137,9 @@ impl<T: Send + Clone> AsyncSender<T> {
     mem::forget(self);
     Sender {
       shared,
+      closed: AtomicBool::new(false),
     }
   }
-  // len(), is_empty(), is_full(), try_send() are inherited from ring_buffer::AsyncSender
 }
 
 impl<T: Send + Clone> Receiver<T> {
@@ -185,9 +151,12 @@ impl<T: Send + Clone> Receiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     let tail = unsafe { std::ptr::read(&self.tail) };
     mem::forget(self);
-    AsyncReceiver { shared, tail }
+    AsyncReceiver {
+      shared,
+      tail,
+      closed: AtomicBool::new(false),
+    }
   }
-  // len(), is_empty(), is_full() are inherited from ring_buffer::Receiver
 }
 
 impl<T: Send + Clone> AsyncReceiver<T> {
@@ -199,9 +168,12 @@ impl<T: Send + Clone> AsyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     let tail = unsafe { std::ptr::read(&self.tail) };
     mem::forget(self);
-    Receiver { shared, tail }
+    Receiver {
+      shared,
+      tail,
+      closed: AtomicBool::new(false),
+    }
   }
-  // len(), is_empty(), is_full() are inherited from ring_buffer::AsyncReceiver
 }
 
 #[cfg(test)]
@@ -219,7 +191,7 @@ mod tests {
 
   #[test]
   fn spmc_single_recv() {
-    let (mut tx, mut rx) = bounded(2);
+    let (mut tx, rx) = bounded(2);
     assert_eq!(tx.len(), 0);
     assert!(tx.is_empty());
     assert!(!tx.is_full());
@@ -242,8 +214,8 @@ mod tests {
 
   #[test]
   fn spmc_multiple_receivers_len_checks() {
-    let (mut tx, mut rx1) = bounded(4);
-    let mut rx2 = rx1.clone();
+    let (mut tx, rx1) = bounded(4);
+    let rx2 = rx1.clone();
 
     assert_eq!(tx.len(), 0);
     assert!(tx.is_empty());
@@ -288,8 +260,8 @@ mod tests {
 
   #[test]
   fn spmc_sync_try_send() {
-    let (mut tx, mut rx1) = bounded(1);
-    let mut rx2 = rx1.clone(); // Keep another receiver
+    let (mut tx, rx1) = bounded(1);
+    let rx2 = rx1.clone(); // Keep another receiver
 
     assert!(tx.try_send(10).is_ok()); // head = 1. min_tail(rx1,rx2) = 0. tx.len = 1.
     assert_eq!(tx.len(), 1);
@@ -317,9 +289,9 @@ mod tests {
 
   #[test]
   fn spmc_multiple_receivers() {
-    let (mut tx, mut rx1) = bounded(ITEMS_LOW);
-    let mut rx2 = rx1.clone();
-    let mut rx3 = rx1.clone();
+    let (mut tx, rx1) = bounded(ITEMS_LOW);
+    let rx2 = rx1.clone();
+    let rx3 = rx1.clone();
 
     for i in 0..ITEMS_LOW {
       tx.send(i).unwrap();
@@ -350,8 +322,8 @@ mod tests {
 
   #[test]
   fn spmc_sync_slow_consumer_blocks_producer() {
-    let (mut tx, mut rx_fast) = bounded(1); // Capacity of 1
-    let mut rx_slow = rx_fast.clone();
+    let (mut tx, rx_fast) = bounded(1); // Capacity of 1
+    let rx_slow = rx_fast.clone();
 
     tx.send(1).unwrap();
     assert_eq!(tx.len(), 1);
@@ -394,12 +366,58 @@ mod tests {
   fn spmc_sync_all_receivers_drop_closes_channel() {
     let (mut tx, rx) = bounded(2);
     let rx2 = rx.clone();
+    assert_eq!(tx.capacity(), 2);
+    assert_eq!(rx.capacity(), 2);
 
     tx.send(1).unwrap();
 
     drop(rx);
     drop(rx2);
 
+    assert!(tx.is_closed());
     assert_eq!(tx.send(2), Err(SendError::Closed));
+  }
+
+  #[test]
+  fn spmc_close_and_is_closed() {
+    // --- Test producer closing ---
+  let (mut tx, rx) = bounded(2);
+  tx.send(10).unwrap();
+  assert!(!tx.is_closed());
+  assert!(!rx.is_closed());
+
+  tx.close().unwrap();
+  assert_eq!(tx.close(), Err(CloseError)); // Idempotent
+  assert_eq!(tx.send(20), Err(SendError::Closed));
+
+  // After the producer is closed, the receiver can still drain the buffer.
+  assert_eq!(rx.recv().unwrap(), 10);
+
+  // The next recv will fail, confirming the channel is now disconnected.
+  assert_eq!(rx.recv(), Err(RecvError::Disconnected));
+  
+  // After the failed recv, is_closed is definitively true.
+  assert!(rx.is_closed()); // Now empty and producer is gone
+
+  // --- Test receiver closing ---
+  // (This part of the test would have run if the first part didn't panic)
+  let (mut tx, rx1) = bounded(2);
+  let rx2 = rx1.clone();
+  tx.send(1).unwrap();
+
+  // Close one receiver
+  rx1.close().unwrap();
+  assert_eq!(rx1.close(), Err(CloseError)); // Idempotent
+  assert_eq!(rx1.recv(), Err(RecvError::Disconnected)); // Closed handle
+  assert!(!tx.is_closed()); // Other receiver still active
+
+  // Close the second receiver
+  assert_eq!(rx2.recv().unwrap(), 1); // Can still recv
+  rx2.close().unwrap();
+  assert_eq!(rx2.recv(), Err(RecvError::Disconnected));
+
+  // Now the sender should see it's closed
+  assert!(tx.is_closed());
+  assert_eq!(tx.send(2), Err(SendError::Closed));
   }
 }

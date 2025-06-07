@@ -7,14 +7,14 @@ use tokio::sync::Barrier;
 
 #[tokio::test]
 async fn spmc_async_spsc_smoke() {
-  let (mut tx, mut rx) = spmc::bounded_async(2);
+  let (mut tx, rx) = spmc::bounded_async(2);
   tx.send(10).await.unwrap();
   assert_eq!(rx.recv().await.unwrap(), 10);
 }
 
 #[tokio::test]
 async fn spmc_async_try_recv() {
-  let (mut tx, mut rx) = spmc::bounded_async::<i32>(2);
+  let (mut tx, rx) = spmc::bounded_async::<i32>(2);
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));
   tx.send(1).await.unwrap();
   assert_eq!(rx.try_recv(), Ok(1));
@@ -23,9 +23,9 @@ async fn spmc_async_try_recv() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn spmc_async_multi_consumer() {
-  let (mut tx, mut rx1) = spmc::bounded_async(ITEMS_LOW);
-  let mut rx2 = rx1.clone();
-  let mut rx3 = rx1.clone();
+  let (mut tx, rx1) = spmc::bounded_async(ITEMS_LOW);
+  let rx2 = rx1.clone();
+  let rx3 = rx1.clone();
 
   let barrier = Arc::new(Barrier::new(4));
 
@@ -69,8 +69,8 @@ async fn spmc_async_multi_consumer() {
 
 #[tokio::test]
 async fn spmc_async_slow_consumer_blocks_producer() {
-  let (mut tx, mut rx_fast) = spmc::bounded_async(1);
-  let mut rx_slow = rx_fast.clone();
+  let (mut tx, rx_fast) = spmc::bounded_async(1);
+  let rx_slow = rx_fast.clone();
 
   tx.send(1).await.unwrap();
   assert_eq!(rx_fast.recv().await.unwrap(), 1);

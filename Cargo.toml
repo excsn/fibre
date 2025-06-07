@@ -15,9 +15,7 @@ exclude = [
 ]
 
 [features]
-default = ["std"]
-std = [] # Enable if we depend on std features not in core/alloc
-alloc = [] # Enable if we use alloc-only features (e.g. Box, Vec from alloc crate)
+default = []
 fibre_telemetry = ["dep:tokio"]
 
 [dependencies]

@@ -1,5 +1,4 @@
-// examples/mpmc_examples.rs
-use fibre::error::{RecvError, SendError};
+use fibre::error::RecvError;
 use fibre::mpmc;
 use std::{
   sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -102,7 +101,7 @@ fn main() {
 
     let mut consumer_handles = Vec::new();
     for c_id in 0..num_consumers {
-      let mut rx_clone = rx.clone();
+      let rx_clone = rx.clone();
       let received_count_clone = Arc::clone(&received_count);
       consumer_handles.push(tokio::spawn(async move {
         while let Ok(value) = rx_clone.recv().await {
@@ -143,11 +142,11 @@ fn main() {
     drop(tx_async); // Drop original async sender after cloning for producers
 
     let mut consumer_handles = Vec::new();
-    for c_id in 0..num_consumers {
-      let mut rx_clone = rx_async.clone();
+    for _c_id in 0..num_consumers {
+      let rx_clone = rx_async.clone();
       let received_count_clone = Arc::clone(&received_count);
       consumer_handles.push(tokio::spawn(async move {
-        while let Ok(value) = rx_clone.recv().await {
+        while let Ok(_value) = rx_clone.recv().await {
           received_count_clone.fetch_add(1, Ordering::Relaxed);
         }
       }));

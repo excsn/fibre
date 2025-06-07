@@ -1,9 +1,11 @@
-use crate::error::{RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError};
+use crate::error::{
+  CloseError, RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError,
+};
 use crate::spsc::shared::SpscShared;
 use crate::sync_util;
 
 use std::marker::PhantomData;
-use std::sync::atomic::{self, Ordering};
+use std::sync::atomic::{self, AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self};
 use std::time::{Duration, Instant};
@@ -16,6 +18,7 @@ use std::mem; // For mem::forget
 #[derive(Debug)]
 pub struct BoundedSyncSender<T> {
   pub(crate) shared: Arc<SpscShared<T>>,
+  pub(crate) closed: AtomicBool,
   // This PhantomData makes BoundedSyncSender<T> !Sync, which is appropriate
   // as only one thread should use the producer.
   pub(crate) _phantom: PhantomData<*mut ()>,
@@ -25,6 +28,7 @@ pub struct BoundedSyncSender<T> {
 #[derive(Debug)]
 pub struct BoundedSyncReceiver<T> {
   pub(crate) shared: Arc<SpscShared<T>>,
+  pub(crate) closed: AtomicBool,
   // This PhantomData makes BoundedSyncReceiver<T> !Sync.
   pub(crate) _phantom: PhantomData<*mut ()>,
 }
@@ -32,12 +36,22 @@ pub struct BoundedSyncReceiver<T> {
 unsafe impl<T: Send> Send for BoundedSyncSender<T> {}
 unsafe impl<T: Send> Send for BoundedSyncReceiver<T> {}
 
+// Methods that do not require T: Send
+impl<T> BoundedSyncSender<T> {
+  fn close_internal(&self) {
+    self.shared.producer_dropped.store(true, Ordering::Release);
+    atomic::fence(Ordering::SeqCst);
+    self.shared.wake_consumer();
+  }
+}
+
+// Methods that require T: Send for the channel to be usable
 impl<T: Send> BoundedSyncSender<T> {
-  // T: Send is important here
   /// Crate-internal constructor, used for creating from a shared core, e.g., in tests or by async part.
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
     Self {
       shared,
+      closed: AtomicBool::new(false),
       _phantom: PhantomData,
     }
   }
@@ -58,33 +72,30 @@ impl<T: Send> BoundedSyncSender<T> {
   ///
   /// - `Err(TrySendError::Full(item))` if the channel is full.
   /// - `Err(TrySendError::Closed(item))` if the consumer has been dropped.
-  pub fn try_send(&mut self, item: T) -> Result<(), TrySendError<T>> {
+  pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TrySendError::Closed(item));
+    }
     if self.shared.consumer_dropped.load(Ordering::Acquire) {
       return Err(TrySendError::Closed(item));
     }
 
-    let head = self.shared.head.load(Ordering::Relaxed); // Sender owns head updates
-    let tail = self.shared.tail.load(Ordering::Acquire); // Must see latest consumer progress
+    let head = self.shared.head.load(Ordering::Relaxed);
+    let tail = self.shared.tail.load(Ordering::Acquire);
 
     if self.shared.is_full(head, tail) {
       return Err(TrySendError::Full(item));
     }
 
-    // Write the item
     let slot_idx = head % self.shared.capacity;
     unsafe {
-      // Get a mutable pointer to the UnsafeCell's content
-      let slot_ptr = self.shared.buffer[slot_idx].get();
-      // Write the item into the MaybeUninit memory
-      (*slot_ptr).write(item);
+      (*self.shared.buffer[slot_idx].get()).write(item);
     }
-    // Publish the write by advancing head. Release ensures prior write is visible.
     self
       .shared
       .head
       .store(head.wrapping_add(1), Ordering::Release);
 
-    // Notify the consumer
     self.shared.wake_consumer();
     Ok(())
   }
@@ -94,7 +105,10 @@ impl<T: Send> BoundedSyncSender<T> {
   /// # Errors
   ///
   /// - `Err(SendError::Closed)` if the consumer has been dropped.
-  pub fn send(&mut self, mut item: T) -> Result<(), SendError> {
+  pub fn send(&self, mut item: T) -> Result<(), SendError> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(SendError::Closed);
+    }
     loop {
       if self.shared.consumer_dropped.load(Ordering::Acquire) {
         return Err(SendError::Closed);
@@ -103,22 +117,16 @@ impl<T: Send> BoundedSyncSender<T> {
       match self.try_send(item) {
         Ok(()) => return Ok(()),
         Err(TrySendError::Full(returned_item)) => {
-          item = returned_item; // Keep the item for the next attempt
+          item = returned_item;
 
-          // Prepare to park
           unsafe {
-            // This is safe because producer is !Sync, so no other thread accesses this field.
             *self.shared.producer_thread_sync.get() = Some(thread::current());
           }
-          // Release ensures that the store to producer_thread_sync is visible before
-          // consumer checks producer_parked_sync_flag.
           self
             .shared
             .producer_parked_sync_flag
             .store(true, Ordering::Release);
 
-          // Critical re-check to prevent lost wakeups
-          // Must re-load head and tail *after* setting the parked flag.
           let head_after_flag_set = self.shared.head.load(Ordering::Relaxed);
           let tail_after_flag_set = self.shared.tail.load(Ordering::Acquire);
 
@@ -126,30 +134,22 @@ impl<T: Send> BoundedSyncSender<T> {
             .shared
             .is_full(head_after_flag_set, tail_after_flag_set)
             || self.shared.consumer_dropped.load(Ordering::Acquire)
-          // Also check if consumer dropped
           {
-            // Channel became not full or consumer dropped while we were setting up to park.
-            // Try to un-set the parked flag.
             if self
               .shared
               .producer_parked_sync_flag
               .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
               .is_ok()
             {
-              // Successfully un-set, clear the thread handle.
               unsafe {
                 *self.shared.producer_thread_sync.get() = None;
               }
             }
-            // Loop again to retry send or handle closed.
             continue;
           }
 
-          // Actually park
           sync_util::park_thread();
 
-          // After unparking, ensure the flag is cleared if it was still set by us.
-          // This handles spurious wakeups or cases where waker clears flag before we run.
           if self
             .shared
             .producer_parked_sync_flag
@@ -166,15 +166,39 @@ impl<T: Send> BoundedSyncSender<T> {
               }
             }
           }
-          // Loop to retry send.
         }
         Err(TrySendError::Closed(_returned_item)) => {
-          // try_send can return Closed if consumer dropped. Propagate as SendError::Closed.
           return Err(SendError::Closed);
         }
         Err(TrySendError::Sent(_)) => unreachable!("SPSC try_send should not return Sent variant"),
       }
     }
+  }
+
+  /// Closes the sending end of the channel.
+  /// This is an explicit alternative to `drop`. If the channel is not already
+  /// closed, this will signal to the receiver that no more messages will be sent.
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  /// Returns `true` if the receiver has been dropped.
+  pub fn is_closed(&self) -> bool {
+    self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire)
+  }
+
+  /// Returns the total capacity of the channel.
+  pub fn capacity(&self) -> usize {
+    self.shared.capacity
   }
 
   /// Returns the number of items currently in the channel.
@@ -204,20 +228,28 @@ impl<T: Send> BoundedSyncSender<T> {
 
 impl<T> Drop for BoundedSyncSender<T> {
   fn drop(&mut self) {
-    self.shared.producer_dropped.store(true, Ordering::Release);
-    // Ensure the store to producer_dropped is globally visible
-    // before the wake can cause the consumer to read it.
-    atomic::fence(Ordering::SeqCst);
-    self.shared.wake_consumer();
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
+    }
   }
 }
 
+// Methods that do not require T: Send
+impl<T> BoundedSyncReceiver<T> {
+  fn close_internal(&self) {
+    self.shared.consumer_dropped.store(true, Ordering::Release);
+    atomic::fence(Ordering::SeqCst);
+    self.shared.wake_producer();
+  }
+}
+
+// Methods that require T: Send for the channel to be usable
 impl<T: Send> BoundedSyncReceiver<T> {
-  // T: Send is important here
   /// Crate-internal constructor.
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
     Self {
       shared,
+      closed: AtomicBool::new(false),
       _phantom: PhantomData,
     }
   }
@@ -228,8 +260,8 @@ impl<T: Send> BoundedSyncReceiver<T> {
   /// `BoundedSyncReceiver` will not be called.
   pub fn to_async(self) -> AsyncBoundedSpscReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
-    mem::forget(self); // Prevent Drop of BoundedSyncReceiver
-    AsyncBoundedSpscReceiver::from_shared(shared) // Use async's pub(crate) constructor
+    mem::forget(self);
+    AsyncBoundedSpscReceiver::from_shared(shared)
   }
 
   /// Attempts to receive an item from the channel without blocking.
@@ -240,27 +272,24 @@ impl<T: Send> BoundedSyncReceiver<T> {
   /// - `Err(TryRecvError::Empty)` if the channel is empty but the producer is alive.
   /// - `Err(TryRecvError::Disconnected)` if the producer has been dropped and the channel is empty.
   pub fn try_recv(&self) -> Result<T, TryRecvError> {
-    let tail = self.shared.tail.load(Ordering::Relaxed); // Receiver owns tail updates
-    let head = self.shared.head.load(Ordering::Acquire); // Must see latest producer writes
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TryRecvError::Disconnected);
+    }
+    let tail = self.shared.tail.load(Ordering::Relaxed);
+    let head = self.shared.head.load(Ordering::Acquire);
 
     if self.shared.is_empty(head, tail) {
       if self.shared.producer_dropped.load(Ordering::Acquire) {
-        // Sender is gone. Re-check head to see if an item was sent just before drop.
         let final_head = self.shared.head.load(Ordering::Acquire);
         if final_head == tail {
-          // Still empty even after seeing producer_dropped
           return Err(TryRecvError::Disconnected);
         }
-        // An item was sent right before producer dropped. Fall through to read it.
-        // Update `head` for the read logic below to use this `final_head`.
-        // let head_for_read = final_head; // Not needed, head is already final_head in this path
         let slot_idx = tail % self.shared.capacity;
         let item = unsafe { (*self.shared.buffer[slot_idx].get()).assume_init_read() };
         self
           .shared
           .tail
           .store(tail.wrapping_add(1), Ordering::Release);
-        // wake_producer is less critical if producer_dropped, but good for consistency.
         self.shared.wake_producer();
         return Ok(item);
       } else {
@@ -268,16 +297,12 @@ impl<T: Send> BoundedSyncReceiver<T> {
       }
     }
 
-    // If not empty initially:
     let slot_idx = tail % self.shared.capacity;
     let item = unsafe { (*self.shared.buffer[slot_idx].get()).assume_init_read() };
-    // Publish the read by advancing tail. Release ensures prior read is done.
     self
       .shared
       .tail
       .store(tail.wrapping_add(1), Ordering::Release);
-
-    // Notify the producer that space is available
     self.shared.wake_producer();
     Ok(item)
   }
@@ -288,11 +313,13 @@ impl<T: Send> BoundedSyncReceiver<T> {
   ///
   /// - `Err(RecvError::Disconnected)` if the producer has been dropped and the channel is empty.
   pub fn recv(&self) -> Result<T, RecvError> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(RecvError::Disconnected);
+    }
     loop {
       match self.try_recv() {
         Ok(item) => return Ok(item),
         Err(TryRecvError::Empty) => {
-          // Prepare to park
           unsafe {
             *self.shared.consumer_thread_sync.get() = Some(thread::current());
           }
@@ -301,15 +328,13 @@ impl<T: Send> BoundedSyncReceiver<T> {
             .consumer_parked_sync_flag
             .store(true, Ordering::Release);
 
-          // Critical re-check
           let head_after_flag_set = self.shared.head.load(Ordering::Acquire);
-          let tail_after_flag_set = self.shared.tail.load(Ordering::Relaxed); // Tail doesn't change concurrently
+          let tail_after_flag_set = self.shared.tail.load(Ordering::Relaxed);
 
           if !self
             .shared
             .is_empty(head_after_flag_set, tail_after_flag_set)
             || self.shared.producer_dropped.load(Ordering::Acquire)
-          // Also check if producer dropped
           {
             if self
               .shared
@@ -349,22 +374,20 @@ impl<T: Send> BoundedSyncReceiver<T> {
   }
 
   /// Receives an item from the channel, blocking for at most `timeout` duration.
-  /// (This is a placeholder, actual timeout logic needs implementation)
   pub fn recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvErrorTimeout> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(RecvErrorTimeout::Disconnected);
+    }
     let start_time = Instant::now();
     loop {
       match self.try_recv() {
         Ok(item) => return Ok(item),
         Err(TryRecvError::Empty) => {
-          if start_time.elapsed() >= timeout {
+          let elapsed = start_time.elapsed();
+          if elapsed >= timeout {
             return Err(RecvErrorTimeout::Timeout);
           }
-          // Simplified parking for timeout example. Real implementation would be more nuanced.
-          // This will park for the *remaining* duration or less.
-          let remaining_timeout = timeout.saturating_sub(start_time.elapsed());
-          if remaining_timeout.is_zero() {
-            return Err(RecvErrorTimeout::Timeout);
-          }
+          let remaining_timeout = timeout - elapsed;
 
           unsafe {
             *self.shared.consumer_thread_sync.get() = Some(thread::current());
@@ -390,10 +413,10 @@ impl<T: Send> BoundedSyncReceiver<T> {
                 *self.shared.consumer_thread_sync.get() = None;
               }
             }
-            continue; // Loop to retry or handle disconnect
+            continue;
           }
 
-          sync_util::park_thread_timeout(remaining_timeout); // Park with timeout
+          sync_util::park_thread_timeout(remaining_timeout);
 
           if self
             .shared
@@ -411,11 +434,37 @@ impl<T: Send> BoundedSyncReceiver<T> {
               }
             }
           }
-          // After park_timeout, loop to re-check or timeout.
         }
         Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
       }
     }
+  }
+
+  /// Closes the receiving end of the channel.
+  /// This is an explicit alternative to `drop`. If the channel is not already
+  /// closed, this will signal to the sender that the channel is closed.
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  /// Returns `true` if the producer has been dropped and the channel is empty.
+  pub fn is_closed(&self) -> bool {
+    self.closed.load(Ordering::Relaxed)
+      || (self.shared.producer_dropped.load(Ordering::Acquire) && self.is_empty())
+  }
+
+  /// Returns the total capacity of the channel.
+  pub fn capacity(&self) -> usize {
+    self.shared.capacity
   }
 
   /// Returns the number of items currently in the channel.
@@ -445,9 +494,9 @@ impl<T: Send> BoundedSyncReceiver<T> {
 
 impl<T> Drop for BoundedSyncReceiver<T> {
   fn drop(&mut self) {
-    self.shared.consumer_dropped.store(true, Ordering::Release);
-    atomic::fence(Ordering::SeqCst);
-    self.shared.wake_producer();
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
+    }
   }
 }
 
@@ -464,10 +513,12 @@ pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedS
   (
     BoundedSyncSender {
       shared: Arc::clone(&shared_arc),
+      closed: AtomicBool::new(false),
       _phantom: PhantomData,
     },
     BoundedSyncReceiver {
       shared: shared_arc,
+      closed: AtomicBool::new(false),
       _phantom: PhantomData,
     },
   )
@@ -476,10 +527,7 @@ pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedS
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::{
-    thread,
-    time::Duration,
-  };
+  use std::{thread, time::Duration};
 
   #[test]
   fn create_channel() {
@@ -584,19 +632,16 @@ mod tests {
 
   #[test]
   fn producer_drop_signals_consumer() {
-    let (mut p, mut c) = bounded_sync::<i32>(1); // p needs to be mut to call send
-    p.send(7).unwrap(); // CORRECTED: Call send on p
+    let (mut p, mut c) = bounded_sync::<i32>(1);
+    p.send(7).unwrap();
     assert_eq!(p.len(), 1);
-    drop(p); // len is no longer accessible on p
+    drop(p);
     assert_eq!(c.len(), 1);
     assert_eq!(c.recv().unwrap(), 7);
     assert_eq!(c.len(), 0);
     match c.recv() {
       Err(RecvError::Disconnected) => {}
-      Ok(v) => panic!(
-        "Expected Disconnected error after producer drop, got Ok({:?})",
-        v
-      ),
+      Ok(v) => panic!("Expected Disconnected error, got Ok({:?})", v),
     }
   }
 
@@ -608,10 +653,7 @@ mod tests {
     assert_eq!(c.len(), 0);
     match c.recv() {
       Err(RecvError::Disconnected) => {}
-      Ok(v) => panic!(
-        "Expected Disconnected error for empty chan, got Ok({:?})",
-        v
-      ),
+      Ok(v) => panic!("Expected Disconnected error, got Ok({:?})", v),
     }
   }
 
@@ -620,8 +662,6 @@ mod tests {
     let (mut p, c) = bounded_sync::<i32>(1);
     assert_eq!(p.len(), 0);
     drop(c);
-    // After consumer drop, len might be stale or 0.
-    // The key is that send fails.
     match p.send(1) {
       Err(SendError::Closed) => {}
       Ok(_) => panic!("Expected Closed error after consumer drop"),
@@ -645,8 +685,6 @@ mod tests {
       for i in 0..ITEMS {
         assert_eq!(c.recv().unwrap(), i);
       }
-      // After consuming all items, the channel should be empty from consumer's perspective,
-      // assuming the producer has also finished and not sent more.
       assert!(c.is_empty());
     });
 
@@ -668,8 +706,8 @@ mod tests {
 
   #[test]
   fn try_recv_disconnected_by_producer_drop() {
-    let (mut p, mut c) = bounded_sync::<i32>(5); // p needs to be mut
-    p.try_send(10).unwrap(); // CORRECTED: Call try_send on p
+    let (mut p, mut c) = bounded_sync::<i32>(5);
+    p.try_send(10).unwrap();
     assert_eq!(p.len(), 1);
     drop(p);
     assert_eq!(c.len(), 1);
@@ -686,10 +724,7 @@ mod tests {
     drop(p);
     match c.try_recv() {
       Err(TryRecvError::Disconnected) => {}
-      other => panic!(
-        "Expected TryRecvError::Disconnected for empty, got {:?}",
-        other
-      ),
+      other => panic!("Expected TryRecvError::Disconnected, got {:?}", other),
     }
   }
 
@@ -698,17 +733,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
     #[derive(Debug)]
-    struct Droppable(usize, Arc<AtomicUsize>); // Give it an ID and shared counter
+    struct Droppable(usize, Arc<AtomicUsize>);
     impl Drop for Droppable {
       fn drop(&mut self) {
-        // println!("Dropping Droppable({})", self.0);
         self.1.fetch_add(1, AtomicOrdering::Relaxed);
       }
     }
 
     let drop_counter_arc = Arc::new(AtomicUsize::new(0));
-
-    // Test 1: Items consumed
     drop_counter_arc.store(0, AtomicOrdering::Relaxed);
     {
       let (mut p, mut c) = bounded_sync::<Droppable>(2);
@@ -730,27 +762,25 @@ mod tests {
       assert_eq!(c.len(), 0);
       drop(d2);
       assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 2);
-    } // c drops here
-    assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 2); // Should not change after c drops
+    }
+    assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 2);
 
-    // Test 2: Items left in channel when SpscShared drops
     drop_counter_arc.store(0, AtomicOrdering::Relaxed);
     {
       let (mut p, c) = bounded_sync::<Droppable>(2);
       p.send(Droppable(3, drop_counter_arc.clone())).unwrap();
       p.send(Droppable(4, drop_counter_arc.clone())).unwrap();
-      drop(p); // Sender drops
-      drop(c); // Receiver drops, items 3 & 4 should be dropped by SpscShared::drop
+      drop(p);
+      drop(c);
     }
-    assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 2); // Items 3 and 4 dropped
+    assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 2);
 
-    // Test 3: Sender sends, then drops. Receiver drops without consuming.
     drop_counter_arc.store(0, AtomicOrdering::Relaxed);
     {
       let (mut p, c) = bounded_sync::<Droppable>(1);
       p.send(Droppable(5, drop_counter_arc.clone())).unwrap();
-      drop(p); // Item 5 is in channel.
-      drop(c); // Receiver drops. Item 5 should be dropped by SpscShared.
+      drop(p);
+      drop(c);
     }
     assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 1);
   }
@@ -793,5 +823,35 @@ mod tests {
       c.recv_timeout(Duration::from_millis(50)),
       Err(RecvErrorTimeout::Disconnected)
     ));
+  }
+
+  #[test]
+  fn new_spsc_apis_capacity_close_is_closed() {
+    let (mut p, c) = bounded_sync::<i32>(5);
+    assert_eq!(p.capacity(), 5);
+    assert_eq!(c.capacity(), 5);
+    assert!(!p.is_closed());
+    assert!(!c.is_closed());
+
+    // Close the sender
+    p.close().unwrap();
+    assert!(p.is_closed());
+    assert_eq!(p.close(), Err(CloseError)); // Idempotent
+    assert_eq!(p.send(1), Err(SendError::Closed)); // Cannot send on closed handle
+
+    // Receiver should see the channel is now closed
+    assert!(c.is_closed());
+    assert_eq!(c.recv(), Err(RecvError::Disconnected));
+
+    // Test receiver closing
+    let (p, c) = bounded_sync::<i32>(5);
+    c.close().unwrap();
+    assert!(c.is_closed());
+    assert_eq!(c.close(), Err(CloseError));
+    assert_eq!(c.recv(), Err(RecvError::Disconnected));
+
+    // Sender should see the channel is now closed
+    assert!(p.is_closed());
+    assert_eq!(p.send(1), Err(SendError::Closed));
   }
 }

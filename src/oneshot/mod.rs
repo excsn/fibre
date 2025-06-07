@@ -16,7 +16,7 @@
 //! use std::thread;
 //!
 //! // Basic usage
-//! let (tx, mut rx) = oneshot::channel::<String>();
+//! let (tx, rx) = oneshot::channel::<String>();
 //!
 //! tokio::runtime::Runtime::new().unwrap().block_on(async {
 //!     tokio::spawn(async move {
@@ -25,7 +25,7 @@
 //!         if let Err(TrySendError::Sent(val_returned)) = tx.send("Hello from oneshot!".to_string()) {
 //!             println!("Failed to send, value already sent: {}", val_returned);
 //!         } else {
-//!             println!("Value sent successfully or receiver dropped.");
+//!             // Send was successful, or receiver was dropped.
 //!         }
 //!     });
 //!
@@ -41,7 +41,7 @@
 //! use fibre::oneshot;
 //! use fibre::error::RecvError;
 //!
-//! let (tx1, mut rx) = oneshot::channel::<i32>();
+//! let (tx1, rx) = oneshot::channel::<i32>();
 //! let tx2 = tx1.clone();
 //!
 //! tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -70,17 +70,17 @@
 //! ```
 
 // Re-export relevant errors.
-pub use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
+pub use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
 
 mod core; // Internal implementation details
 
 use self::core::{OneShotShared, STATE_SENT, STATE_TAKEN}; // Import shared state and constants
 
-use ::core::sync::atomic::Ordering;
 use std::fmt; // For Sender/Receiver Debug impls
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -90,9 +90,11 @@ pub fn oneshot<T>() -> (Sender<T>, Receiver<T>) {
   (
     Sender {
       shared: Arc::clone(&shared),
+      closed: AtomicBool::new(false),
     },
     Receiver {
       shared,
+      closed: AtomicBool::new(false),
       _phantom_not_sync: PhantomData, // Receiver often not Sync if recv() takes &mut self
     },
   )
@@ -105,14 +107,14 @@ pub fn oneshot<T>() -> (Sender<T>, Receiver<T>) {
 /// (e.g., from different tasks or in a loop until success/failure), clone the `Sender`.
 pub struct Sender<T> {
   shared: Arc<OneShotShared<T>>,
-  // No PhantomData needed if send() takes self by value, making the Sender instance itself Send.
-  // If send took &self and T wasn't Send, then T:Send on impl would handle it.
+  closed: AtomicBool,
 }
 
 impl<T> fmt::Debug for Sender<T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("Sender")
       .field("shared", &self.shared) // OneShotShared is Debug
+      .field("closed", &self.closed.load(Ordering::Relaxed))
       .finish()
   }
 }
@@ -120,16 +122,18 @@ impl<T> fmt::Debug for Sender<T> {
 /// The receiving side of a oneshot channel.
 pub struct Receiver<T> {
   shared: Arc<OneShotShared<T>>,
+  closed: AtomicBool,
   // Used to make Receiver !Sync by default, as recv() takes &mut self
   // to modify internal future state implicitly or if Receiver held state.
-  // If ReceiveFuture only borrows `shared`, Receiver could be Sync.
-  // For now, typical pattern is !Sync for receiver ends that spawn futures.
   _phantom_not_sync: PhantomData<*mut ()>,
 }
 
 impl<T> fmt::Debug for Receiver<T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    f.debug_struct("Receiver").field("shared", &self.shared).finish()
+    f.debug_struct("Receiver")
+      .field("shared", &self.shared)
+      .field("closed", &self.closed.load(Ordering::Relaxed))
+      .finish()
   }
 }
 
@@ -139,30 +143,60 @@ impl<T> Sender<T> {
   ///
   /// This method consumes the `Sender` instance. If the send is successful,
   /// the value is delivered to the `Receiver`. If a value has already been
-  /// sent by another `Sender` clone, or if the `Receiver` has been dropped,
-  //  this operation will fail, and the original `value` will be returned
-  //  within the [`TrySendError`].
+  /// sent by another `Sender` clone, if the `Receiver` has been dropped,
+  /// or if this handle was explicitly closed, this operation will fail.
+  /// The original `value` will be returned within the [`TrySendError`].
   ///
-  /// This is a non-blocking operation in terms of waiting for the receiver,
-  /// but it may involve a brief lock on an internal mutex.
+  /// This is a non-blocking operation in terms of waiting for the receiver.
   pub fn send(self, value: T) -> Result<(), TrySendError<T>> {
+    // Check if this specific handle was explicitly closed.
+    if self.closed.load(Ordering::Relaxed) {
+      // The Drop impl will not run close_internal again because the flag is set.
+      return Err(TrySendError::Closed(value));
+    }
     // The actual send logic is in OneShotShared.
-    // self is consumed, its Arc ref count will be decremented by Rust when it goes out of scope.
-    // The Drop impl for Sender will handle the sender_count correctly.
-    let result = self.shared.send(value);
-    // `self` is dropped implicitly after this function, `Sender::drop` is called.
-    result
+    // `self` is consumed, and its Drop impl will be called implicitly after this.
+    self.shared.send(value)
+  }
+
+  /// Closes this `Sender` handle.
+  ///
+  /// This is an explicit alternative to `drop`. It signals that this handle
+  /// will not be used to send a value. If this is the last `Sender` handle,
+  /// the channel will become disconnected, and the `Receiver` will be notified.
+  ///
+  /// This operation is idempotent.
+  ///
+  /// # Errors
+  ///
+  /// Returns `Err(CloseError)` if this handle has already been closed.
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  /// The internal logic for closing/dropping a sender handle.
+  fn close_internal(&self) {
+    self.shared.decrement_senders();
   }
 
   /// Checks if the oneshot channel's `Receiver` has been dropped.
   pub fn is_closed(&self) -> bool {
-    self.shared.receiver_dropped.load(std::sync::atomic::Ordering::Acquire)
+    self.shared.receiver_dropped.load(Ordering::Acquire)
   }
 
   /// Checks if a value has already been successfully sent on this channel
   /// (by any `Sender` clone).
   pub fn is_sent(&self) -> bool {
-    let state = self.shared.state.load(std::sync::atomic::Ordering::Acquire);
+    let state = self.shared.state.load(Ordering::Acquire);
     state == STATE_SENT || state == STATE_TAKEN
   }
 }
@@ -172,13 +206,16 @@ impl<T> Clone for Sender<T> {
     self.shared.increment_senders();
     Sender {
       shared: Arc::clone(&self.shared),
+      closed: AtomicBool::new(false),
     }
   }
 }
 
 impl<T> Drop for Sender<T> {
   fn drop(&mut self) {
-    self.shared.decrement_senders();
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
+    }
   }
 }
 
@@ -186,65 +223,58 @@ impl<T> Drop for Sender<T> {
 impl<T> Receiver<T> {
   /// Waits asynchronously for the value to be sent on the channel.
   ///
-  /// This method takes `&mut self` because polling a future often involves
-  /// modifying state associated with the object that created the future (even if
-  /// that state is within the `Arc<OneShotShared>`). It returns a [`ReceiveFuture`].
+  /// This returns a future that resolves to the sent value or an error if the
+  /// channel is disconnected.
   pub fn recv(&self) -> ReceiveFuture<'_, T> {
     ReceiveFuture {
       receiver_shared: &self.shared,
-    } // Pass Arc by reference
+      closed_flag: &self.closed,
+    }
   }
 
   /// Attempts to receive a value non-blockingly.
   ///
   /// Returns:
   /// - `Ok(T)` if a value is immediately available.
-  /// - `Err(TryRecvError::Empty)` if no value has been sent yet but senders may still exist
-  ///   or the value is currently being written.
+  /// - `Err(TryRecvError::Empty)` if no value has been sent yet.
   /// - `Err(TryRecvError::Disconnected)` if no value was sent and all senders have dropped,
-  ///   or if the receiver was already closed.
+  ///   or if this receiver handle was explicitly closed.
   pub fn try_recv(&self) -> Result<T, TryRecvError> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TryRecvError::Disconnected);
+    }
     self.shared.try_recv()
   }
 
-  /// Checks if the channel is definitively closed from the receiver's perspective.
+  /// Closes the receiving end of the channel.
   ///
-  /// This means either:
-  /// 1. A value has already been successfully sent and taken.
-  /// 2. No value was sent, and all senders have dropped (so no value will ever be sent).
-  /// 3. The channel was explicitly marked as closed (e.g., receiver dropped early, then senders tried).
-  pub fn is_closed(&self) -> bool {
-    let state = self.shared.state.load(std::sync::atomic::Ordering::Acquire);
-
-    if state == core::STATE_TAKEN || state == core::STATE_CLOSED {
-      return true; // Value taken or channel explicitly closed. No more activity.
+  /// This is an explicit alternative to `drop`. After this is called, any future
+  /// send attempts will fail. If a value was already sent but not yet received,
+  /// it will be dropped.
+  ///
+  /// This operation is idempotent.
+  ///
+  /// # Errors
+  ///
+  /// Returns `Err(CloseError)` if this handle has already been closed.
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
     }
-
-    // If state is EMPTY or WRITING or SENT (but not yet taken)
-    // it's only "closed" if all senders are also gone.
-    if self.shared.sender_count.load(std::sync::atomic::Ordering::Acquire) == 0 {
-      // If senders are gone, and state is EMPTY or WRITING, then it's closed (no value will come).
-      // If senders are gone, and state is SENT, it's not "closed" yet because the value is pending.
-      // The `Receiver::drop` handles cleaning up a SENT value if receiver is dropped.
-      // The `ReceiveFuture` handles transitioning SENT to TAKEN or Disconnected.
-      // So, for is_closed(), if senders are gone:
-      //  - if EMPTY or WRITING: true (will become Disconnected)
-      //  - if SENT: false (value is there to be taken)
-      //  - if TAKEN/CLOSED: true (already handled above)
-      return state == core::STATE_EMPTY || state == core::STATE_WRITING;
-    }
-
-    false // Senders exist, and state is not yet TAKEN or definitively CLOSED.
   }
-}
 
-impl<T> Drop for Receiver<T> {
-  fn drop(&mut self) {
+  /// The internal logic for closing/dropping a receiver handle.
+  fn close_internal(&self) {
     self.shared.mark_receiver_dropped();
 
-    // If a value was sent (STATE_SENT) but never taken by this receiver,
-    // we must ensure it's dropped.
-    // Attempt to transition from SENT to TAKEN to "claim" the value for dropping.
+    // If a value was sent (STATE_SENT) but never taken, we must drop it.
     if self
       .shared
       .state
@@ -257,79 +287,75 @@ impl<T> Drop for Receiver<T> {
       .is_ok()
     {
       // We successfully claimed the value for cleanup.
-      // Lock the mutex and take the value to drop it.
-      let mut guard = self.shared.value_slot.lock().unwrap_or_else(|e| e.into_inner());
+      let mut guard = self
+        .shared
+        .value_slot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
       if let Some(mut mu_value) = guard.take() {
         unsafe {
-          // Manually drop the MaybeUninit<T>'s content
           mu_value.assume_init_drop();
         }
       }
     }
-    // If state was not STATE_SENT (e.g., EMPTY, WRITING, already TAKEN, or CLOSED),
-    // there's nothing for this Receiver's Drop to clean from value_slot related to a SENT value.
+  }
+
+  /// Checks if the channel is definitively closed from the receiver's perspective.
+  ///
+  /// This means either a value has been taken, or no value will ever be sent.
+  pub fn is_closed(&self) -> bool {
+    let state = self.shared.state.load(Ordering::Acquire);
+
+    if state == core::STATE_TAKEN || state == core::STATE_CLOSED {
+      return true;
+    }
+
+    if self.shared.sender_count.load(Ordering::Acquire) == 0 {
+      // Senders are gone. If state is EMPTY, no value will come.
+      // If state is SENT, a value is still pending.
+      return state == core::STATE_EMPTY || state == core::STATE_WRITING;
+    }
+
+    false
+  }
+}
+
+impl<T> Drop for Receiver<T> {
+  fn drop(&mut self) {
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
+    }
   }
 }
 
 // --- ReceiveFuture ---
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct ReceiveFuture<'a, T> {
-  // The future borrows the Arc from the Receiver.
-  // This ensures the shared state outlives the future.
+  // The future borrows the Arc and closed flag from the Receiver.
   receiver_shared: &'a Arc<OneShotShared<T>>,
+  closed_flag: &'a AtomicBool,
 }
-
-// No methods needed on ReceiveFuture itself, all logic is in poll.
 
 impl<'a, T> Future for ReceiveFuture<'a, T> {
   type Output = Result<T, RecvError>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    // self.receiver_shared is &'a Arc<OneShotShared<T>>
-    // We need &OneShotShared to call poll_recv.
-    // The Arc itself can be dereferenced.
+    // Check if the receiver handle was explicitly closed.
+    if self.closed_flag.load(Ordering::Relaxed) {
+      return Poll::Ready(Err(RecvError::Disconnected));
+    }
+
     let shared_ref: &OneShotShared<T> = &*self.receiver_shared;
     shared_ref.poll_recv(cx)
   }
 }
 
-// Making types Send/Sync if T is Send
-// Sender<T> can be Send if T is Send (because Arc<OneShotShared<T>> is Send if OneShotShared<T> is Send).
-// Sender<T> can be Sync because its methods (clone, send) are safe for &Sender<T> if OneShotShared is Sync.
-// `send` takes `self` by value, so no &self mutation issues. `clone` is &self.
+// --- Send/Sync Implementations ---
 unsafe impl<T: Send> Send for Sender<T> {}
-unsafe impl<T: Send> Sync for Sender<T> {} // Safe because Arc provides shared ownership, and OneShotShared is Sync.
+unsafe impl<T: Send> Sync for Sender<T> {}
 
-// Receiver<T> can be Send if T is Send.
-// Receiver<T> is often not Sync if recv() takes &mut self, but our recv() returns a future
-// that borrows from &mut self.
-// However, if ReceiveFuture takes &'a Arc<...>, then Receiver::recv can be &self.
-// Let's make Receiver::recv take &self for better ergonomics, and ReceiveFuture handles the borrow.
-// If Receiver::recv() takes &self, then Receiver can be Sync.
 unsafe impl<T: Send> Send for Receiver<T> {}
-unsafe impl<T: Send> Sync for Receiver<T> {} // If recv() takes &self and future logic is sound.
-
-// Re-adjust Receiver::recv if Receiver is to be Sync
-impl<T> Receiver<T> {
-  // If Receiver is Sync, recv should take &self.
-  // The ReceiveFuture will borrow the Arc from &self.
-  // pub fn recv(&self) -> ReceiveFuture<'_, T> { // Takes &self for Sync
-  //     ReceiveFuture { receiver_shared: &self.shared }
-  // }
-  // Keeping it as &mut self for now as it's a common pattern if the future
-  // conceptually "uses up" the receive attempt from that receiver instance,
-  // even if the state is in Arc. If it's &mut self, Receiver is not Sync.
-  // Let's stick to &mut self for Receiver::recv to be conservative about future state.
-  // This means Receiver<T> is Send but not Sync.
-  // The _phantom_not_sync helps enforce this.
-}
-
-// If Receiver::recv takes &mut self, then Receiver<T> is not Sync.
-// The _phantom_not_sync in Receiver struct makes it !Sync correctly.
-// If we change recv to take &self, then Receiver could be Sync.
-// The `unsafe impl Sync for Receiver` above would be incorrect if recv() is &mut self.
-// Let's remove `unsafe impl Sync for Receiver` for now.
-// unsafe impl<T: Send> Sync for Receiver<T> {} // REMOVE THIS if recv is &mut self.
+// Receiver is !Sync due to the PhantomData field.
 
 #[cfg(test)]
 mod tests;

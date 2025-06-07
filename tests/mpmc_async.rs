@@ -23,7 +23,7 @@ async fn run_async_mpmc_test(
   // --- Spawn Receivers ---
   let mut consumer_handles = Vec::new();
   for _ in 0..num_consumers {
-    let mut rx_clone = rx.clone();
+    let rx_clone = rx.clone();
     let received_set_clone = Arc::clone(&received_items_set);
     let received_count_clone = Arc::clone(&received_count);
 
@@ -85,7 +85,7 @@ async fn async_v2_mp_mc_contention() {
 
 #[tokio::test]
 async fn async_v2_unbounded_channel() {
-  let (tx, mut rx) = mpmc::unbounded_async();
+  let (tx, rx) = mpmc::unbounded_async();
   let num_items = 5000;
 
   let producer = tokio::spawn(async move {
@@ -111,7 +111,7 @@ async fn async_v2_rendezvous_channel() {
 
 #[tokio::test]
 async fn async_v2_drop_producer_signals_disconnect() {
-  let (tx, mut rx) = mpmc::bounded_async::<i32>(5);
+  let (tx, rx) = mpmc::bounded_async::<i32>(5);
   let tx2 = tx.clone();
 
   tx.send(1).await.unwrap();
@@ -138,8 +138,8 @@ async fn async_v2_drop_receiver_signals_closed() {
 
 #[tokio::test]
 async fn async_v2_select_compatibility() {
-  let (tx1, mut rx1) = mpmc::bounded_async(1);
-  let (tx2, mut rx2) = mpmc::bounded_async(1);
+  let (tx1, rx1) = mpmc::bounded_async(1);
+  let (tx2, rx2) = mpmc::bounded_async(1);
 
   tokio::spawn(async move {
     tokio::time::sleep(SHORT_TIMEOUT).await;
