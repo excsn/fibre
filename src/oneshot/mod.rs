@@ -78,7 +78,6 @@ use self::core::{OneShotShared, STATE_SENT, STATE_TAKEN}; // Import shared state
 
 use std::fmt; // For Sender/Receiver Debug impls
 use std::future::Future;
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -95,7 +94,6 @@ pub fn oneshot<T>() -> (Sender<T>, Receiver<T>) {
     Receiver {
       shared,
       closed: AtomicBool::new(false),
-      _phantom_not_sync: PhantomData, // Receiver often not Sync if recv() takes &mut self
     },
   )
 }
@@ -123,9 +121,6 @@ impl<T> fmt::Debug for Sender<T> {
 pub struct Receiver<T> {
   shared: Arc<OneShotShared<T>>,
   closed: AtomicBool,
-  // Used to make Receiver !Sync by default, as recv() takes &mut self
-  // to modify internal future state implicitly or if Receiver held state.
-  _phantom_not_sync: PhantomData<*mut ()>,
 }
 
 impl<T> fmt::Debug for Receiver<T> {
