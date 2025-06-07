@@ -1,22 +1,18 @@
-// src/mpsc/lockfree.rs
-
-use futures_core::Stream;
-use futures_util::StreamExt;
-
 use crate::async_util::AtomicWaker;
 use crate::error::{RecvError, SendError, TryRecvError};
 use crate::internal::cache_padded::CachePadded;
 use crate::sync_util;
 
 use core::marker::PhantomPinned;
+use futures_util::stream::Stream;
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::ptr;
-use std::sync::atomic::{self, AtomicBool, AtomicPtr, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex}; // <--- ADDED Mutex
 use std::task::{Context, Poll};
 use std::thread::{self, Thread};
 
@@ -34,9 +30,10 @@ pub(crate) struct MpscShared<T> {
   // --- Receiver waiting state ---
   // Sync waiter fields
   consumer_parked: AtomicBool,
-  consumer_thread: UnsafeCell<Option<Thread>>,
+  consumer_thread: Mutex<Option<Thread>>, // <--- CORRECTED: Use a Mutex to prevent data races.
   // Async waiter field
   consumer_waker: AtomicWaker,
+  receiver_dropped: AtomicBool,
 
   sender_count: AtomicUsize,
   pub(crate) current_len: AtomicUsize, // New: for tracking approximate length
@@ -75,8 +72,9 @@ impl<T: Send> MpscShared<T> {
       head: CachePadded::new(AtomicPtr::new(stub_ptr)),
       tail: CachePadded::new(UnsafeCell::new(stub_ptr)),
       consumer_parked: AtomicBool::new(false),
-      consumer_thread: UnsafeCell::new(None),
+      consumer_thread: Mutex::new(None), // <--- CORRECTED
       consumer_waker: AtomicWaker::new(),
+      receiver_dropped: AtomicBool::new(false),
       sender_count: AtomicUsize::new(1),
       current_len: AtomicUsize::new(0),
     }
@@ -85,21 +83,25 @@ impl<T: Send> MpscShared<T> {
   /// Wakes the consumer if it is parked, whether synchronously or asynchronously.
   #[inline]
   fn wake_consumer(&self) {
-    // Wake the sync consumer if it's parked.
-    if self.consumer_parked.load(Ordering::Relaxed) {
-      atomic::fence(Ordering::Acquire);
-      if self
-        .consumer_parked
-        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-        .is_ok()
-      {
-        if let Some(thread_handle) = unsafe { (*self.consumer_thread.get()).take() } {
-          sync_util::unpark_thread(&thread_handle);
-        }
-      }
-    }
-    // Always wake the async waker. It's cheap and handles its own state.
+    // Always wake the async waker. It handles its own state and is cheap.
     self.consumer_waker.wake();
+
+    // For the synchronous consumer:
+    // Attempt to transition `consumer_parked` from `true` to `false`.
+    // If successful, this thread takes responsibility for unparking.
+    if self
+      .consumer_parked
+      .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+      .is_ok()
+    {
+      // <--- CORRECTED: Lock mutex to safely access the thread handle.
+      // Successfully acquired the "right to unpark" by setting flag to false.
+      if let Some(thread_handle) = self.consumer_thread.lock().unwrap().take() {
+        // Unpark the thread. It's fine to do this after the lock is released.
+        sync_util::unpark_thread(&thread_handle);
+      }
+      // If thread_handle was None, it's a logic error, but we've prevented a data race.
+    }
   }
 
   /// The core non-blocking receive logic, used by both sync and async consumers.
@@ -123,17 +125,57 @@ impl<T: Send> MpscShared<T> {
       }
     }
   }
+
+  // ADD THIS NEW, INTERNAL POLLING FUNCTION
+  pub(crate) fn poll_recv_internal(&self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
+    loop {
+      match self.try_recv_internal() {
+        Ok(value) => return Poll::Ready(Ok(value)),
+        Err(TryRecvError::Disconnected) => return Poll::Ready(Err(RecvError::Disconnected)),
+        Err(TryRecvError::Empty) => {
+          // Queue is empty. Register the waker.
+          self.consumer_waker.register(cx.waker());
+
+          // Critical re-check to prevent lost wakeups.
+          match self.try_recv_internal() {
+            Ok(value) => return Poll::Ready(Ok(value)),
+            Err(TryRecvError::Disconnected) => return Poll::Ready(Err(RecvError::Disconnected)),
+            Err(TryRecvError::Empty) => {
+              // Still empty. Check if all senders are gone *after* confirming empty.
+              if self.sender_count.load(Ordering::Acquire) == 0 {
+                // Re-check queue one last time if all senders are gone
+                match self.try_recv_internal() {
+                  Ok(value) => return Poll::Ready(Ok(value)),
+                  _ => return Poll::Ready(Err(RecvError::Disconnected)),
+                }
+              }
+              // Senders still active, waker is registered. It's safe to park.
+              return Poll::Pending;
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 impl<T> Drop for MpscShared<T> {
   fn drop(&mut self) {
-    let mut current_node_ptr = *self.tail.get_mut();
-    while !current_node_ptr.is_null() {
-      let node_box = unsafe { Box::from_raw(current_node_ptr) };
-      // If node_box.value contains Some(T), it will be dropped here.
-      // current_len is not decremented here as it's an approximate count and
-      // the shared state is being destroyed.
-      current_node_ptr = node_box.next.load(Ordering::Relaxed);
+    // Now that sends are blocked by `receiver_dropped` before this can run,
+    // we can safely clean up the list.
+    let mut current_ptr = unsafe { (*(*self.tail.get_mut())).next.load(Ordering::Relaxed) };
+    while !current_ptr.is_null() {
+      let node = unsafe { Box::from_raw(current_ptr) };
+      current_ptr = node.next.load(Ordering::Relaxed);
+      // node and its value are dropped here
+    }
+
+    // Finally, drop the stub node itself.
+    let stub_ptr = *self.tail.get_mut();
+    if !stub_ptr.is_null() {
+      unsafe {
+        drop(Box::from_raw(stub_ptr));
+      }
     }
   }
 }
@@ -150,18 +192,11 @@ pub struct AsyncSender<T: Send> {
 
 // Common logic for both producer types
 fn send_internal<T: Send>(shared: &Arc<MpscShared<T>>, value: T) -> Result<(), SendError> {
-  // Check if consumer has dropped before attempting to send.
-  // This is a best-effort check; consumer could drop after this check but before node is linked.
-  // MPSC typically allows sends even if consumer is gone; the items queue up and are dropped
-  // when MpscShared drops. However, for API consistency with other channel types,
-  // we can return SendError::Closed if sender_count > 0 but consumer is known to be gone.
-  // For MPSC, the `sender_count` is for senders. The "closed" state for senders
-  // is usually when *they* cannot send (e.g. oneshot).
-  // Here, the primary error is receiver dropping. MPSC doesn't have a direct "receiver_dropped" flag.
-  // The MPSC contract usually means senders can send until they all drop,
-  // and the receiver gets Disconnected then.
-  // For now, MPSC send will succeed unless it's a shared error, not typically returning SendError::Closed.
-  // If we wanted to detect a dropped receiver and fail sends, MpscShared would need a consumer_dropped flag.
+  if shared.receiver_dropped.load(Ordering::Acquire) {
+    // The receiver is gone or being dropped, so we can't send.
+    // This check prevents us from modifying the queue during receiver cleanup.
+    return Err(SendError::Closed);
+  }
 
   let new_node = Box::new(Node {
     next: AtomicPtr::new(ptr::null_mut()),
@@ -245,13 +280,11 @@ impl<T: Send> Drop for AsyncSender<T> {
 #[derive(Debug)]
 pub struct Receiver<T: Send> {
   pub(crate) shared: Arc<MpscShared<T>>,
-  pub(crate) _phantom: PhantomData<*mut ()>, // Makes it !Sync
 }
 unsafe impl<T: Send> Send for Receiver<T> {}
 #[derive(Debug)]
 pub struct AsyncReceiver<T: Send> {
   pub(crate) shared: Arc<MpscShared<T>>,
-  pub(crate) _phantom: PhantomData<*mut ()>, // Makes it !Sync
 }
 unsafe impl<T: Send> Send for AsyncReceiver<T> {}
 
@@ -266,14 +299,13 @@ impl<T: Send> Receiver<T> {
         Ok(value) => return Ok(value),
         Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
         Err(TryRecvError::Empty) => {
-          unsafe {
-            *self.shared.consumer_thread.get() = Some(thread::current());
-          }
+          // <--- START CORRECTION
+          // Lock the mutex to store the current thread's handle.
+          *self.shared.consumer_thread.lock().unwrap() = Some(thread::current());
           self.shared.consumer_parked.store(true, Ordering::Release);
+          // ---> END CORRECTION
 
           // Critical re-check to prevent lost wakeups.
-          // If an item arrived (or channel disconnected) between try_recv and parking setup,
-          // we must handle it without parking.
           if let Ok(value) = self.try_recv() {
             // Item became available. Try to unarm parking.
             if self
@@ -282,10 +314,10 @@ impl<T: Send> Receiver<T> {
               .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
               .is_ok()
             {
-              // Successfully un-armed. Clear the thread handle.
-              unsafe {
-                *self.shared.consumer_thread.get() = None;
-              }
+              // <--- START CORRECTION
+              // Successfully un-armed. Clear the thread handle under a lock.
+              *self.shared.consumer_thread.lock().unwrap() = None;
+              // ---> END CORRECTION
             }
             return Ok(value);
           }
@@ -301,9 +333,9 @@ impl<T: Send> Receiver<T> {
                 .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
               {
-                unsafe {
-                  *self.shared.consumer_thread.get() = None;
-                }
+                // <--- START CORRECTION
+                *self.shared.consumer_thread.lock().unwrap() = None;
+                // ---> END CORRECTION
               }
               return Err(RecvError::Disconnected);
             }
@@ -320,9 +352,9 @@ impl<T: Send> Receiver<T> {
             .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
           {
-            unsafe {
-              *self.shared.consumer_thread.get() = None;
-            }
+            // <--- START CORRECTION
+            *self.shared.consumer_thread.lock().unwrap() = None;
+            // ---> END CORRECTION
           }
         }
       }
@@ -353,9 +385,8 @@ impl<T: Send> AsyncReceiver<T> {
   pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
     self.shared.try_recv_internal()
   }
-
-  pub async fn recv(&mut self) -> Result<T, RecvError> {
-    self.next().await.ok_or(RecvError::Disconnected)
+  pub fn recv(&self) -> RecvFuture<'_, T> {
+    RecvFuture { consumer: self }
   }
 
   /// Returns the approximate number of items currently in the channel.
@@ -380,15 +411,18 @@ impl<T: Send> AsyncReceiver<T> {
 // items remaining in the queue are also dropped to prevent memory leaks.
 impl<T: Send> Drop for Receiver<T> {
   fn drop(&mut self) {
+    // 1. Signal to all producers that the receiver is gone.
+    //    This must happen *before* we start modifying the queue.
+    self.shared.receiver_dropped.store(true, Ordering::Release);
     // Drain the queue. try_recv_internal handles decrementing current_len.
     while self.shared.try_recv_internal().is_ok() {
       // Keep draining
     }
-    // Any remaining nodes in the MpscShared list (stub node) will be cleaned by MpscShared::drop
   }
 }
 impl<T: Send> Drop for AsyncReceiver<T> {
   fn drop(&mut self) {
+    self.shared.receiver_dropped.store(true, Ordering::Release);
     // Drain the queue
     while self.shared.try_recv_internal().is_ok() {
       // Keep draining
@@ -418,48 +452,26 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
   }
 }
 
+#[must_use = "futures do nothing unless you .await or poll them"]
+pub struct RecvFuture<'a, T: Send> {
+  consumer: &'a AsyncReceiver<T>,
+}
+
+impl<'a, T: Send> Future for RecvFuture<'a, T> {
+  type Output = Result<T, RecvError>;
+  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    self.consumer.shared.poll_recv_internal(cx)
+  }
+}
+
 impl<T: Send> Stream for AsyncReceiver<T> {
   type Item = T;
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-    loop {
-      // Loop to handle state changes after waker registration
-      match self.shared.try_recv_internal() {
-        Ok(value) => return Poll::Ready(Some(value)),
-        Err(TryRecvError::Disconnected) => return Poll::Ready(None),
-        Err(TryRecvError::Empty) => {
-          // Queue is empty. Register the waker.
-          self.shared.consumer_waker.register(cx.waker());
-
-          // Critical re-check to prevent lost wakeups.
-          // This ensures that if an item arrived *between* the first try_recv_internal
-          // and the waker registration, we pick it up.
-          match self.shared.try_recv_internal() {
-            Ok(value) => {
-              // Item became available. Waker was registered but we got the value. Fine.
-              return Poll::Ready(Some(value));
-            }
-            Err(TryRecvError::Disconnected) => {
-              // Became disconnected.
-              return Poll::Ready(None);
-            }
-            Err(TryRecvError::Empty) => {
-              // Still empty. Check if all senders are gone *after* confirming empty.
-              if self.shared.sender_count.load(Ordering::Acquire) == 0 {
-                // Re-check queue one last time if all senders are gone,
-                // as a sender might have sent an item then immediately updated sender_count.
-                match self.shared.try_recv_internal() {
-                  Ok(value) => return Poll::Ready(Some(value)),
-                  Err(TryRecvError::Disconnected) => return Poll::Ready(None),
-                  Err(TryRecvError::Empty) => return Poll::Ready(None), // All senders gone and still empty
-                }
-              }
-              // Senders still active, waker is registered. It's safe to park.
-              return Poll::Pending;
-            }
-          }
-        }
-      }
+    match self.shared.poll_recv_internal(cx) {
+      Poll::Ready(Ok(value)) => Poll::Ready(Some(value)),
+      Poll::Ready(Err(_)) => Poll::Ready(None),
+      Poll::Pending => Poll::Pending,
     }
   }
 }

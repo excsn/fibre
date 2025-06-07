@@ -189,7 +189,7 @@ impl<T> Receiver<T> {
   /// This method takes `&mut self` because polling a future often involves
   /// modifying state associated with the object that created the future (even if
   /// that state is within the `Arc<OneShotShared>`). It returns a [`ReceiveFuture`].
-  pub fn recv(&mut self) -> ReceiveFuture<'_, T> {
+  pub fn recv(&self) -> ReceiveFuture<'_, T> {
     ReceiveFuture {
       receiver_shared: &self.shared,
     } // Pass Arc by reference
@@ -203,7 +203,7 @@ impl<T> Receiver<T> {
   ///   or the value is currently being written.
   /// - `Err(TryRecvError::Disconnected)` if no value was sent and all senders have dropped,
   ///   or if the receiver was already closed.
-  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&self) -> Result<T, TryRecvError> {
     self.shared.try_recv()
   }
 

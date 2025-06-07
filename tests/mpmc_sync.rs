@@ -3,8 +3,8 @@
 mod common;
 use common::*;
 
-use fibre::error::{RecvError, SendError, TrySendError, TryRecvError};
-use fibre::mpmc as mpmc;
+use fibre::error::{RecvError, SendError, TryRecvError, TrySendError};
+use fibre::mpmc;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -12,7 +12,12 @@ use std::sync::Arc;
 use std::thread;
 
 // --- Helper Function for Sync MPMC Tests ---
-fn run_sync_mpmc_test(num_producers: usize, num_consumers: usize, items_per_producer: usize, channel_capacity: usize) {
+fn run_sync_mpmc_test(
+  num_producers: usize,
+  num_consumers: usize,
+  items_per_producer: usize,
+  channel_capacity: usize,
+) {
   let (tx, rx) = mpmc::bounded(channel_capacity);
   let total_items_expected = num_producers * items_per_producer;
   let received_items_set = Arc::new(std::sync::Mutex::new(HashSet::new()));
@@ -61,8 +66,14 @@ fn run_sync_mpmc_test(num_producers: usize, num_consumers: usize, items_per_prod
     handle.join().expect("Receiver thread panicked");
   }
 
-  assert_eq!(received_count.load(AtomicOrdering::Relaxed), total_items_expected);
-  assert_eq!(received_items_set.lock().unwrap().len(), total_items_expected);
+  assert_eq!(
+    received_count.load(AtomicOrdering::Relaxed),
+    total_items_expected
+  );
+  assert_eq!(
+    received_items_set.lock().unwrap().len(),
+    total_items_expected
+  );
 }
 
 // --- Sync MPMC Test Cases ---

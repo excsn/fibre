@@ -24,6 +24,9 @@
 
 pub use crate::error::{RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError};
 
+// Re-export the futures for the public API, allowing users to `await` on sends/receives.
+pub use async_impl::{RecvFuture as RecvFuture, SendFuture,};
+
 mod async_impl;
 mod backoff;
 mod core;
@@ -72,10 +75,6 @@ pub struct AsyncSender<T: Send> {
 pub struct AsyncReceiver<T: Send> {
   shared: Arc<MpmcShared<T>>,
 }
-
-// Re-export the futures for the public API, allowing users to `await` on sends/receives.
-pub use async_impl::SendFuture;
-use futures_util::StreamExt;
 
 // --- Channel Constructors ---
 
@@ -484,8 +483,8 @@ impl<T: Send> AsyncReceiver<T> {
   ///
   /// This method returns a future that will complete when a value is received,
   /// or when the channel becomes disconnected.
-  pub async fn recv(&mut self) -> Result<T, RecvError> {
-    self.next().await.ok_or(RecvError::Disconnected)
+  pub fn recv(&self) -> RecvFuture<'_, T> {
+    async_impl::RecvFuture::new(self)
   }
 
   /// Attempts to receive a value from the channel without blocking (or awaiting).

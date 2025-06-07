@@ -1,10 +1,8 @@
-// src/spsc/bounded_async.rs
-
 use futures_core::Stream;
-use futures_util::StreamExt;
 
-use super::bounded_sync::{BoundedSyncReceiver, BoundedSyncSender, SpscShared};
+use super::bounded_sync::{BoundedSyncReceiver, BoundedSyncSender};
 use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
+use crate::spsc::shared::SpscShared;
 
 use core::marker::PhantomPinned;
 use std::future::Future;
@@ -19,7 +17,6 @@ use std::task::{Context, Poll};
 #[derive(Debug)]
 pub struct AsyncBoundedSpscSender<T> {
   pub(crate) shared: Arc<SpscShared<T>>,
-  _phantom: PhantomData<T>, // T is not directly owned but logically associated
 }
 
 // --- Async Receiver ---
@@ -39,7 +36,6 @@ impl<T> AsyncBoundedSpscSender<T> {
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
     Self {
       shared,
-      _phantom: PhantomData,
     }
   }
 
@@ -80,9 +76,7 @@ impl<T> AsyncBoundedSpscSender<T> {
 impl<T> AsyncBoundedSpscReceiver<T> {
   /// Crate-internal constructor for tests or other channel types.
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
-    Self {
-      shared,
-    }
+    Self { shared }
   }
 
   /// Converts this asynchronous SPSC consumer into a synchronous one.
@@ -132,11 +126,8 @@ pub fn bounded_async<T: Send>(
   (
     AsyncBoundedSpscSender {
       shared: Arc::clone(&shared_arc),
-      _phantom: PhantomData,
     },
-    AsyncBoundedSpscReceiver {
-      shared: shared_arc,
-    },
+    AsyncBoundedSpscReceiver { shared: shared_arc },
   )
 }
 
@@ -267,8 +258,9 @@ impl<T: Send> AsyncBoundedSpscReceiver<T> {
   /// The returned future will complete with `Ok(T)` when an item is received,
   /// or `Err(RecvError::Disconnected)` if the producer has been dropped and
   /// the channel is empty.
-  pub async fn recv(&mut self) -> Result<T, RecvError> {
-    self.next().await.ok_or(RecvError::Disconnected)
+  pub fn recv(&self) -> ReceiveFuture<'_, T> {
+    // This is already correct and doesn't need to change.
+    ReceiveFuture::new(&self.shared)
   }
 
   /// Attempts to receive an item from the channel without blocking (asynchronously).
@@ -322,52 +314,37 @@ impl<T> Drop for AsyncBoundedSpscReceiver<T> {
   }
 }
 
+#[must_use = "futures do nothing unless you .await or poll them"]
+pub struct ReceiveFuture<'a, T> {
+  shared: &'a Arc<SpscShared<T>>,
+}
+
+impl<'a, T> ReceiveFuture<'a, T> {
+  fn new(shared: &'a Arc<SpscShared<T>>) -> Self {
+    ReceiveFuture { shared }
+  }
+}
+
+// MODIFY the Future impl for ReceiveFuture
+impl<'a, T: Send> Future for ReceiveFuture<'a, T> {
+  type Output = Result<T, RecvError>;
+
+  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    // The logic is now just a single call to the internal polling function.
+    self.shared.poll_recv_internal(cx)
+  }
+}
+
+// ADD THIS NEW STREAM IMPLEMENTATION
 impl<T: Send> Stream for AsyncBoundedSpscReceiver<T> {
-    type Item = T;
+  type Item = T;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-    let shared = &*self.shared;
-
-    loop {
-      let tail = shared.tail.load(Ordering::Relaxed);
-      let head = shared.head.load(Ordering::Acquire);
-
-      if !shared.is_empty(head, tail) {
-        let slot_idx = tail % shared.capacity;
-        let item = unsafe { (*shared.buffer[slot_idx].get()).assume_init_read() };
-        shared.tail.store(tail.wrapping_add(1), Ordering::Release);
-        shared.wake_producer();
-        return Poll::Ready(Some(item));
-      }
-
-      if shared.producer_dropped.load(Ordering::Acquire) {
-        // Re-read head after producer_dropped.
-        // This is crucial: if an item was sent just before producer_dropped became true,
-        // and we haven't seen that head update yet, we might incorrectly return Disconnected.
-        let final_head = shared.head.load(Ordering::Acquire);
-        if final_head == tail {
-          // Still empty after re-read head
-          return Poll::Ready(None);
-        }
-        // Item is available (final_head > tail), loop to pick it up.
-        // The waker registration below is for the *next* item if this one is consumed.
-        // But since an item became available, we should re-loop to consume it.
-        // This path (producer_dropped is true, but item appears on re-check)
-        // means we should prioritize consuming the item.
-        continue;
-      }
-
-      shared.consumer_waker_async.register(cx.waker());
-
-      // Re-check after registration
-      let head_after_register = shared.head.load(Ordering::Acquire);
-      if !shared.is_empty(head_after_register, tail)
-        || shared.producer_dropped.load(Ordering::Acquire)
-      {
-        continue;
-      }
-
-      return Poll::Pending;
+  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    // Delegate to the internal poll function and map the Result to an Option.
+    match self.shared.poll_recv_internal(cx) {
+      Poll::Ready(Ok(value)) => Poll::Ready(Some(value)),
+      Poll::Ready(Err(_)) => Poll::Ready(None), // Disconnected
+      Poll::Pending => Poll::Pending,
     }
   }
 }

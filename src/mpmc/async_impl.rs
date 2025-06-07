@@ -6,6 +6,7 @@ use futures_core::Stream;
 use super::core::{AsyncWaiter, WaiterData};
 use super::{AsyncReceiver, AsyncSender};
 use crate::error::{SendError, TryRecvError, TrySendError};
+use crate::RecvError;
 
 use core::marker::PhantomPinned;
 use std::future::Future;
@@ -99,48 +100,36 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
   }
 }
 
+/// A future that completes when a value has been received from the MPMC channel.
+#[must_use = "futures do nothing unless you .await or poll them"]
+#[derive(Debug)]
+pub struct RecvFuture<'a, T: Send> {
+  receiver: &'a AsyncReceiver<T>,
+}
+
+impl<'a, T: Send> RecvFuture<'a, T> {
+  pub(super) fn new(receiver: &'a AsyncReceiver<T>) -> Self {
+    Self { receiver }
+  }
+}
+
+impl<'a, T: Send> Future for RecvFuture<'a, T> {
+  type Output = Result<T, RecvError>;
+
+  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    self.receiver.shared.poll_recv_internal(cx)
+  }
+}
+
 impl<T: Send> Stream for AsyncReceiver<T> {
   type Item = T;
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-    'poll_loop: loop {
-      // --- Phase 1: Try to receive without parking ---
-      match self.shared.try_recv_core() {
-        Ok(item) => {
-          return Poll::Ready(Some(item));
-        }
-        Err(TryRecvError::Disconnected) => return Poll::Ready(None),
-        Err(TryRecvError::Empty) => { /* Proceed to park */ }
-      }
-
-      // --- Phase 2: Lock, re-check, and commit to parking ---
-      {
-        let mut guard = self.shared.internal.lock();
-
-        // Re-check under lock. An item might have appeared.
-        // An item is available if:
-        // 1. The queue is not empty (buffered or rendezvous after hand-off)
-        // 2. It's a rendezvous channel and a sender is waiting to hand an item over.
-        if !guard.queue.is_empty()
-          || (self.shared.capacity == 0
-            && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
-        {
-          drop(guard);
-          continue 'poll_loop; // Retry immediately.
-        }
-
-        if guard.sender_count == 0 {
-          return Poll::Ready(None);
-        }
-
-        // Safe to park.
-        let waiter = AsyncWaiter {
-          waker: cx.waker().clone(),
-          data: None, // Receivers never hold data.
-        };
-        guard.waiting_async_receivers.push_back(waiter);
-        return Poll::Pending;
-      }
+    // Delegate to the internal poll function and map the Result to an Option.
+    match self.shared.poll_recv_internal(cx) {
+      Poll::Ready(Ok(value)) => Poll::Ready(Some(value)),
+      Poll::Ready(Err(_)) => Poll::Ready(None), // Disconnected
+      Poll::Pending => Poll::Pending,
     }
   }
 }

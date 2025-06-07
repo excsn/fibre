@@ -112,7 +112,7 @@ use std::mem;
 mod ring_buffer;
 
 pub use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
-pub use ring_buffer::{AsyncReceiver, AsyncSender, Receiver, SendFuture, Sender};
+pub use ring_buffer::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender};
 
 // --- Constructors ---
 
@@ -155,7 +155,6 @@ impl<T: Send + Clone> Sender<T> {
     mem::forget(self);
     AsyncSender {
       shared,
-      _phantom: PhantomData,
     }
   }
   // len(), is_empty(), is_full(), try_send() are inherited from ring_buffer::Sender
@@ -172,7 +171,6 @@ impl<T: Send + Clone> AsyncSender<T> {
     mem::forget(self);
     Sender {
       shared,
-      _phantom: PhantomData,
     }
   }
   // len(), is_empty(), is_full(), try_send() are inherited from ring_buffer::AsyncSender

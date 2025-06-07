@@ -105,7 +105,7 @@ fn mpsc_async_benches(c: &mut Criterion) {
     vec![
       MatrixCellValue::Unsigned(1),          // SPSC-like scenario
       MatrixCellValue::Unsigned(4),          // MPSC scenario
-      MatrixCellValue::Unsigned(core_count), // MPSC scenario
+      MatrixCellValue::Unsigned(core_count),
     ], // Num Senders
     vec![
       MatrixCellValue::Unsigned(100_000),

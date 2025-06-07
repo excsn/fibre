@@ -151,7 +151,7 @@ fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Start with an async channel, then convert the producer to sync
-        let (p_async, mut c_async) = spsc::bounded_async::<String>(2);
+        let (p_async, c_async) = spsc::bounded_async::<String>(2);
         let mut p_sync = p_async.to_sync(); // Convert producer to sync
 
         let producer_thread = thread::spawn(move || {
@@ -178,17 +178,17 @@ _(Note: `T` must generally be `Send`. Specific trait bounds like `Clone` are not
 A flexible channel for many-to-many communication.
 
 *   **Constructors:**
-    *   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)`: Creates a bounded, synchronous channel. `capacity = 0` creates a rendezvous channel.
-    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates a bounded, asynchronous channel. `capacity = 0` for rendezvous.
-    *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`: Creates an "unbounded" synchronous channel.
-    *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`: Creates an "unbounded" asynchronous channel.
+    *   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)`
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`
+    *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`
+    *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`
 *   **Handles:**
     *   `Sender<T: Send>` (`Clone`) and `Receiver<T: Send>` (`Clone`).
     *   `AsyncSender<T: Send>` (`Clone`) and `AsyncReceiver<T: Send>` (`Clone`). `AsyncReceiver` implements `futures::Stream`.
 *   **Key Methods:**
     *   `send(...)`
     *   `try_send(&self, item: T) -> Result<(), TrySendError<T>>`
-    *   `recv(...)`: For `AsyncReceiver`, signature is `pub async fn recv(&mut self) -> Result<T, RecvError>`.
+    *   `recv(&self) -> ReceiveFuture`: Returns a future that can be awaited.
     *   `try_recv(&self) -> Result<T, TryRecvError>`
     *   `to_async(self) -> ...` / `to_sync(self) -> ...`
 
@@ -203,10 +203,10 @@ An optimized lock-free channel for many-to-one communication (unbounded).
     *   `Sender<T: Send>` (sync, `Clone`) and `Receiver<T: Send>` (sync, `!Clone`).
     *   `AsyncSender<T: Send>` (async, `Clone`) and `AsyncReceiver<T: Send>` (async, `!Clone`). `AsyncReceiver` implements `futures::Stream`.
 *   **Key Methods:**
-    *   `Sender::send(&self, value: T) -> Result<(), SendError>`
-    *   `Receiver::recv(&mut self) -> Result<T, RecvError>`
+    *   `Sender::send(&self, ...)`
+    *   `Receiver::recv(&mut self, ...)`
     *   `AsyncSender::send(...) -> SendFuture`
-    *   `AsyncReceiver::recv(&mut self) -> impl Future<Output = Result<T, RecvError>>`
+    *   `AsyncReceiver::recv(&self) -> RecvFuture`: Returns a future that can be awaited.
 
 ### Module: `fibre::spmc`
 
@@ -221,7 +221,7 @@ A broadcast-style channel for one-to-many communication (bounded). `T` must be `
 *   **Key Methods:**
     *   `send(&mut self, ...)`
     *   `try_send(&mut self, ...)`
-    *   `recv(&mut self, ...)`: For `AsyncReceiver`, signature is `pub async fn recv(&mut self) -> Result<T, RecvError>`.
+    *   `recv(&mut self) -> RecvFuture`: Returns a future that can be awaited.
 
 ### Module: `fibre::spsc`
 
@@ -236,7 +236,7 @@ A high-performance lock-free channel for one-to-one communication (bounded). `T`
 *   **Key Methods:**
     *   `send(...)`
     *   `try_send(...)`
-    *   `recv(...)`: For `AsyncBoundedSpscReceiver`, signature is `pub async fn recv(&mut self) -> Result<T, RecvError>`.
+    *   `recv(&self) -> ReceiveFuture`: Returns a future that can be awaited.
     *   `BoundedSyncReceiver::recv_timeout(...)`
 
 ### Module: `fibre::oneshot`
@@ -248,8 +248,8 @@ A channel for sending a single value once. `T` must be `Send`.
 *   **Handles:**
     *   `Sender<T>` (`Clone`) and `Receiver<T>` (`!Clone`). `Receiver` implements `futures::Stream` of at most one item.
 *   **Key Methods:**
-    *   `Sender::send(self, value: T) -> Result<(), TrySendError<T>>`
-    *   `Receiver::recv(&mut self) -> impl Future<Output = Result<T, RecvError>>`
+    *   `Sender::send(self, ...)`
+    *   `Receiver::recv(&mut self) -> ReceiveFuture`: Returns a future that can be awaited.
 
 ## Error Handling
 

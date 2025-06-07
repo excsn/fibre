@@ -350,14 +350,12 @@ impl<T: Send + Clone> SpmcShared<T> {
 #[derive(Debug)]
 pub struct Sender<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
-  pub(crate) _phantom: PhantomData<*const ()>, // Makes it !Sync
 }
 unsafe impl<T: Send + Clone> Send for Sender<T> {}
 
 #[derive(Debug)]
 pub struct AsyncSender<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
-  pub(crate) _phantom: PhantomData<*const ()>, // Makes it !Sync
 }
 unsafe impl<T: Send + Clone> Send for AsyncSender<T> {}
 
@@ -386,7 +384,6 @@ pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (Sender<T>, Recei
   (
     Sender {
       shared: Arc::clone(&shared),
-      _phantom: PhantomData,
     },
     Receiver {
       shared,
@@ -451,12 +448,46 @@ fn try_recv_internal<T: Send + Clone>(
   }
 }
 
+fn poll_recv_internal<T: Send + Clone>(
+  shared: &SpmcShared<T>,
+  tail: &AtomicUsize,
+  cx: &mut Context<'_>,
+) -> Poll<Result<T, RecvError>> {
+  match try_recv_internal(shared, tail) {
+    Ok(value) => Poll::Ready(Ok(value)),
+    Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
+    Err(TryRecvError::Empty) => {
+      let current_tail_val = tail.load(Ordering::Relaxed);
+      let slot_idx = current_tail_val % shared.capacity;
+      let slot = &shared.buffer[slot_idx];
+
+      slot.wakers.lock().unwrap().push(cx.waker().clone());
+
+      // Critical re-check after registering waker
+      match try_recv_internal(shared, tail) {
+        Ok(value) => Poll::Ready(Ok(value)),
+        Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
+        Err(TryRecvError::Empty) => {
+          // Still empty, check producer_dropped before returning Pending.
+          if shared.producer_dropped.load(Ordering::Acquire) {
+            let head = unsafe { *shared.head.get() };
+            if tail.load(Ordering::Relaxed) >= head {
+              return Poll::Ready(Err(RecvError::Disconnected));
+            }
+          }
+          Poll::Pending
+        }
+      }
+    }
+  }
+}
+
 impl<T: Send + Clone> Receiver<T> {
-  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&self) -> Result<T, TryRecvError> {
     try_recv_internal(&self.shared, &self.tail)
   }
 
-  pub fn recv(&mut self) -> Result<T, RecvError> {
+  pub fn recv(&self) -> Result<T, RecvError> {
     let consumer_name = thread::current().name().unwrap_or("?").to_string();
     loop {
       match try_recv_internal(&self.shared, &self.tail) {
@@ -550,12 +581,12 @@ impl<T: Send + Clone> Receiver<T> {
 }
 
 impl<T: Send + Clone> AsyncReceiver<T> {
-  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&self) -> Result<T, TryRecvError> {
     try_recv_internal(&self.shared, &self.tail)
   }
-  
-  pub async fn recv(&mut self) -> Result<T, RecvError> {
-    self.next().await.ok_or(RecvError::Disconnected)
+
+  pub fn recv(&self) -> RecvFuture<'_, T> {
+    RecvFuture { receiver: self }
   }
 
   /// Returns the number of items available for this specific receiver to consume.
@@ -933,62 +964,31 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
   }
 }
 
+#[must_use = "futures do nothing unless you .await or poll them"]
+#[derive(Debug)]
+pub struct RecvFuture<'a, T: Send + Clone> {
+  receiver: &'a AsyncReceiver<T>,
+}
+
+impl<'a, T: Send + Clone> Future for RecvFuture<'a, T> {
+  type Output = Result<T, RecvError>;
+  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    
+    let receiver = &self.receiver;
+    poll_recv_internal(&receiver.shared, &receiver.tail, cx)
+  }
+}
+
 impl<T: Send + Clone> Stream for AsyncReceiver<T> {
-    type Item = T;
+  type Item = T;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-    let future_self = self.get_mut();
-    let consumer_name = format!(
-      "C_AsyncFuture(tail:{})",
-      future_self.tail.load(Ordering::Relaxed)
-    );
-
-    match try_recv_internal(&future_self.shared, &future_self.tail) {
-      Ok(value) => Poll::Ready(Some(value)),
-      Err(TryRecvError::Empty) => {
-        let current_tail_val = future_self.tail.load(Ordering::Relaxed);
-        let slot_idx = current_tail_val % future_self.shared.capacity;
-        let slot = &future_self.shared.buffer[slot_idx];
-
-        telemetry::log_event(
-          Some(current_tail_val),
-          &consumer_name,
-          EVT_C_REG_WAKER,
-          Some(format!("slot_idx:{}", slot_idx)),
-        );
-        slot.wakers.lock().unwrap().push(cx.waker().clone());
-
-        match try_recv_internal(&future_self.shared, &future_self.tail) {
-          Ok(value) => {
-            telemetry::log_event(
-              Some(current_tail_val),
-              &consumer_name,
-              EVT_C_GOT_ON_RECHECK,
-              None,
-            );
-            Poll::Ready(Some(value))
-          }
-          Err(TryRecvError::Empty) => {
-            // Still empty, check producer_dropped before returning Pending
-            if future_self
-              .shared
-              .producer_dropped
-              .load(Ordering::Acquire)
-            {
-              let head = unsafe { *future_self.shared.head.get() };
-              if future_self.tail.load(Ordering::Relaxed) >= head {
-                // Remove waker if not parking
-                // This is tricky because the waker is cloned into the slot's Vec.
-                // For simplicity, let it be; a spurious wake is okay.
-                return Poll::Ready(None);
-              }
-            }
-            Poll::Pending
-          }
-          Err(TryRecvError::Disconnected) => Poll::Ready(None),
-        }
-      }
-      Err(TryRecvError::Disconnected) => Poll::Ready(None),
+  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    // Delegate to the internal poll function and map the Result to an Option.
+    let receiver = self.get_mut();
+    match poll_recv_internal(&receiver.shared, &receiver.tail, cx) {
+      Poll::Ready(Ok(value)) => Poll::Ready(Some(value)),
+      Poll::Ready(Err(_)) => Poll::Ready(None), // Disconnected
+      Poll::Pending => Poll::Pending,
     }
   }
 }

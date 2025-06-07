@@ -3,7 +3,7 @@ mod spmc_deadlock_tests {
   use fibre::spmc;
   use std::sync::{Arc, Barrier, Condvar, Mutex as StdMutex}; // StdMutex for Condvar
   use std::thread;
-  use std::time::{Duration, Instant};
+  use std::time::Duration;
 
   const ITEM_VALUE: u64 = 42;
 

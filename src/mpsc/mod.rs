@@ -14,7 +14,7 @@ mod lockfree;
 
 // Public re-exports
 pub use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
-pub use lockfree::{AsyncReceiver, AsyncSender, Receiver, SendFuture, Sender}; // These types already have len()/is_empty()
+pub use lockfree::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender}; // These types already have len()/is_empty()
 
 // --- Sync Constructor ---
 /// Creates a new unbounded synchronous MPSC channel.
@@ -25,7 +25,6 @@ pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>) {
   };
   let consumer = Receiver {
     shared,
-    _phantom: PhantomData,
   };
   (producer, consumer)
 }
@@ -39,7 +38,6 @@ pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
   };
   let consumer = AsyncReceiver {
     shared,
-    _phantom: PhantomData,
   };
   (producer, consumer)
 }
@@ -66,7 +64,6 @@ impl<T: Send> Receiver<T> {
     mem::forget(self);
     AsyncReceiver {
       shared,
-      _phantom: PhantomData,
     }
   }
 
@@ -91,7 +88,6 @@ impl<T: Send> AsyncReceiver<T> {
     mem::forget(self);
     Receiver {
       shared,
-      _phantom: PhantomData,
     }
   }
 

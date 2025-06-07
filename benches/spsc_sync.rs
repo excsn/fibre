@@ -36,7 +36,7 @@ trait SyncSenderSpsc: Send {
   fn send(&mut self, item: u64);
 }
 trait SyncReceiverSpsc: Send {
-  fn recv(&mut self) -> u64;
+  fn recv(&self) -> u64;
 }
 struct SpscSyncState {
   producer: Box<dyn SyncSenderSpsc>,
@@ -50,7 +50,7 @@ impl SyncSenderSpsc for SpscSyncProdImpl {
 }
 struct SpscSyncConsImpl(spsc::BoundedSyncReceiver<u64>);
 impl SyncReceiverSpsc for SpscSyncConsImpl {
-  fn recv(&mut self) -> u64 {
+  fn recv(&self) -> u64 {
     self.0.recv().unwrap()
   }
 }

@@ -22,7 +22,10 @@
 //!     buffer). Async waiters are generally prioritized as they are lower overhead to wake.
 
 use crate::error::{TryRecvError, TrySendError};
+use crate::RecvError;
 use parking_lot::Mutex;
+use core::future::PollFn;
+use core::task::{Context, Poll};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -217,6 +220,48 @@ impl<T: Send> MpmcShared<T> {
 
     // --- Fallback: Channel is not disconnected but is temporarily empty ---
     Err(TryRecvError::Empty)
+  }
+
+  pub(crate) fn poll_recv_internal(&self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
+    'poll_loop: loop {
+      // --- Phase 1: Try to receive without parking ---
+      match self.try_recv_core() {
+        Ok(item) => {
+          return Poll::Ready(Ok(item));
+        }
+        Err(TryRecvError::Disconnected) => return Poll::Ready(Err(RecvError::Disconnected)),
+        Err(TryRecvError::Empty) => { /* Proceed to park */ }
+      }
+
+      // --- Phase 2: Lock, re-check, and commit to parking ---
+      {
+        let mut guard = self.internal.lock();
+
+        // Re-check under lock. An item might have appeared.
+        // An item is available if:
+        // 1. The queue is not empty (buffered or rendezvous after hand-off)
+        // 2. It's a rendezvous channel and a sender is waiting to hand an item over.
+        if !guard.queue.is_empty()
+          || (self.capacity == 0
+            && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
+        {
+          drop(guard);
+          continue 'poll_loop; // Retry immediately.
+        }
+
+        if guard.sender_count == 0 {
+          return Poll::Ready(Err(RecvError::Disconnected));
+        }
+
+        // Safe to park.
+        let waiter = AsyncWaiter {
+          waker: cx.waker().clone(),
+          data: None, // Receivers never hold data.
+        };
+        guard.waiting_async_receivers.push_back(waiter);
+        return Poll::Pending;
+      }
+    }
   }
 }
 
