@@ -295,69 +295,64 @@ impl<T: Send> Receiver<T> {
   }
   pub fn recv(&mut self) -> Result<T, RecvError> {
     loop {
+      // First attempt to receive. This is the hot path.
       match self.try_recv() {
         Ok(value) => return Ok(value),
         Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
         Err(TryRecvError::Empty) => {
-          // <--- START CORRECTION
-          // Lock the mutex to store the current thread's handle.
-          *self.shared.consumer_thread.lock().unwrap() = Some(thread::current());
-          self.shared.consumer_parked.store(true, Ordering::Release);
-          // ---> END CORRECTION
+          // Queue is empty, prepare to park.
+        }
+      }
 
-          // Critical re-check to prevent lost wakeups.
-          if let Ok(value) = self.try_recv() {
-            // Item became available. Try to unarm parking.
-            if self
-              .shared
-              .consumer_parked
-              .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-              .is_ok()
-            {
-              // <--- START CORRECTION
-              // Successfully un-armed. Clear the thread handle under a lock.
-              *self.shared.consumer_thread.lock().unwrap() = None;
-              // ---> END CORRECTION
-            }
-            return Ok(value);
-          }
-          // Check for disconnection again after setting parked flag
-          if self.shared.sender_count.load(Ordering::Acquire) == 0 {
-            let tail_ptr = unsafe { *self.shared.tail.get() };
-            let next_ptr = unsafe { (*tail_ptr).next.load(Ordering::Acquire) };
-            if next_ptr.is_null() {
-              // Still empty
-              if self
-                .shared
-                .consumer_parked
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-              {
-                // <--- START CORRECTION
-                *self.shared.consumer_thread.lock().unwrap() = None;
-                // ---> END CORRECTION
-              }
-              return Err(RecvError::Disconnected);
-            }
-            // Item appeared, loop to get it
-          }
+      // --- Parking Logic ---
+      // Prepare for parking by setting the thread handle and flag.
+      *self.shared.consumer_thread.lock().unwrap() = Some(thread::current());
+      self.shared.consumer_parked.store(true, Ordering::Release);
 
-          sync_util::park_thread();
-
-          // After unparking, clear the flag if it was still set by us.
-          // This handles spurious wakeups or cases where waker clears flag before we run.
+      // **CRITICAL RE-CHECK** after arming the park.
+      // This is the only re-check needed. By calling the full try_recv, we avoid race conditions.
+      match self.try_recv() {
+        Ok(value) => {
+          // A value arrived before we parked. Disarm and return the value.
           if self
             .shared
             .consumer_parked
             .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
           {
-            // <--- START CORRECTION
             *self.shared.consumer_thread.lock().unwrap() = None;
-            // ---> END CORRECTION
+          }
+          return Ok(value);
+        }
+        Err(TryRecvError::Disconnected) => {
+          // Channel became disconnected. Disarm and return error.
+          if self
+            .shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *self.shared.consumer_thread.lock().unwrap() = None;
+          }
+          return Err(RecvError::Disconnected);
+        }
+        Err(TryRecvError::Empty) => {
+          // Still empty. It is now safe to park.
+          sync_util::park_thread();
+
+          // After waking up, disarm the parker state just in case of a spurious wakeup.
+          // The waker already set the flag to false, but this handles other cases.
+          if self
+            .shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *self.shared.consumer_thread.lock().unwrap() = None;
           }
         }
       }
+      // Loop back to the top to try receiving again.
     }
   }
 

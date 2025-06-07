@@ -1,6 +1,6 @@
 [package]
 name = "fibre"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 authors = ["Excerion Sun <dev@excsn.com>"]
 description = "High-performance, memory-efficient sync/async channels built for real-time, low-overhead communication in concurrent Rust applications."
