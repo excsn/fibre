@@ -39,7 +39,7 @@ The following tables summarize the consistent API surface across all channel sen
 | Method | MPMC Sender | MPSC Sender | SPMC Sender | SPSC Sender | Oneshot Sender |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | `send()`/`send().await` | ✅ | ✅ | ✅ | ✅ | ✅ (Consumes self) |
-| `try_send()` | ✅ | ❌ ¹ | ✅ | ✅ | ❌ (send is try) |
+| `try_send()` | ✅ | ✅ ¹ | ✅ | ✅ | ❌ (send is try) |
 | `close()` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `is_closed()` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `len()` | ✅ | ✅ | ✅ | ✅ | N/A |

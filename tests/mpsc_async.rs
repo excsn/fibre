@@ -14,6 +14,36 @@ fn mpsc_sync_spsc_smoke() {
 }
 
 #[test]
+fn mpsc_sync_try_send() {
+  let (tx, mut rx) = mpsc::unbounded::<i32>();
+
+  // Successful try_send
+  assert_eq!(tx.try_send(10), Ok(()));
+  assert_eq!(rx.recv().unwrap(), 10);
+
+  // Drop the receiver to close the channel
+  drop(rx);
+
+  // try_send on a closed channel should fail and return the value
+  match tx.try_send(20) {
+    Err(fibre::error::TrySendError::Closed(val)) => assert_eq!(val, 20),
+    other => panic!("Expected TrySendError::Closed, got {:?}", other),
+  }
+
+  // Also check async sender
+  let (tx_async, rx_async) = mpsc::unbounded_async::<i32>();
+  assert_eq!(tx_async.try_send(30), Ok(()));
+  let mut rx_async_recv = rx_async.to_sync(); // use sync recv for simplicity
+  assert_eq!(rx_async_recv.recv().unwrap(), 30);
+
+  drop(rx_async_recv);
+  match tx_async.try_send(40) {
+    Err(fibre::error::TrySendError::Closed(val)) => assert_eq!(val, 40),
+    other => panic!("Expected TrySendError::Closed, got {:?}", other),
+  }
+}
+
+#[test]
 fn mpsc_sync_try_recv() {
   let (tx, mut rx) = mpsc::unbounded::<i32>();
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));

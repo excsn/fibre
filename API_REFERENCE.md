@@ -208,7 +208,9 @@ An optimized lock-free channel for many-to-one communication (unbounded).
     *   `AsyncSender<T: Send>` (async, `Clone`) and `AsyncReceiver<T: Send>` (async, `!Clone`). `AsyncReceiver` implements `futures::Stream`.
 *   **Key Methods:**
     *   `Sender::send(&self, ...)`: Non-blocking.
+    *   `Sender::try_send(&self, item: T) -> Result<(), TrySendError<T>>`
     *   `AsyncSender::send(...)`: Returns a `Future` that completes immediately.
+    *   `AsyncSender::try_send(&self, item: T) -> Result<(), TrySendError<T>>`
     *   `Receiver::recv(&self, ...)`: Blocks if channel is empty.
     *   `AsyncReceiver::recv(&self, ...)`: Returns a `Future` that completes when an item is available.
 

@@ -1,7 +1,7 @@
 use crate::async_util::AtomicWaker;
 use crate::error::{CloseError, RecvError, SendError, TryRecvError};
 use crate::internal::cache_padded::CachePadded;
-use crate::sync_util;
+use crate::{sync_util, TrySendError};
 
 use core::marker::PhantomPinned;
 use futures_util::stream::Stream;
@@ -173,9 +173,9 @@ pub struct AsyncSender<T: Send> {
 }
 
 // Common logic for both producer types
-fn send_internal<T: Send>(shared: &Arc<MpscShared<T>>, value: T) -> Result<(), SendError> {
+fn send_internal<T: Send>(shared: &Arc<MpscShared<T>>, value: T) -> Result<(), T> {
   if shared.receiver_dropped.load(Ordering::Acquire) {
-    return Err(SendError::Closed);
+    return Err(value);
   }
 
   let new_node = Box::new(Node {
@@ -199,7 +199,24 @@ impl<T: Send> Sender<T> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(SendError::Closed);
     }
-    send_internal(&self.shared, value)
+    send_internal(&self.shared, value).map_err(|_| SendError::Closed)
+  }
+
+  /// Attempts to send a value on this channel without blocking.
+  ///
+  /// This method will either send the value immediately or return an error if
+  /// the channel is disconnected. As this MPSC channel is unbounded, it will
+  /// never be full.
+  ///
+  /// # Errors
+  ///
+  /// - `Err(TrySendError::Closed(value))` - The receiver has been dropped, or
+  ///   this specific sender handle was closed via `close()`.
+  pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TrySendError::Closed(value));
+    }
+    send_internal(&self.shared, value).map_err(TrySendError::Closed)
   }
 
   pub fn is_closed(&self) -> bool {
@@ -251,6 +268,23 @@ impl<T: Send> AsyncSender<T> {
       value: Some(value),
       _phantom: PhantomPinned,
     }
+  }
+
+  /// Attempts to send a value on this channel without blocking.
+  ///
+  /// This method will either send the value immediately or return an error if
+  /// the channel is disconnected. As this MPSC channel is unbounded, it will
+  /// never be full.
+  ///
+  /// # Errors
+  ///
+  /// - `Err(TrySendError::Closed(value))` - The receiver has been dropped, or
+  ///   this specific sender handle was closed via `close()`.
+  pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TrySendError::Closed(value));
+    }
+    send_internal(&self.shared, value).map_err(TrySendError::Closed)
   }
 
   pub fn is_closed(&self) -> bool {
@@ -351,7 +385,7 @@ impl<T: Send> Receiver<T> {
     }
     self.shared.try_recv_internal()
   }
-  
+
   pub fn recv(&self) -> Result<T, RecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(RecvError::Disconnected);
@@ -527,7 +561,7 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
       .value
       .take()
       .expect("SendFuture polled after completion");
-    Poll::Ready(send_internal(&this.producer.shared, value))
+    Poll::Ready(send_internal(&this.producer.shared, value).map_err(|_| SendError::Closed))
   }
 }
 

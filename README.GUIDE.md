@@ -215,7 +215,7 @@ An optimized lock-free channel for many-to-one communication (unbounded).
 *   **Handles:**
     *   `Sender<T: Send>` (`Clone`) and `Receiver<T: Send>` (`!Clone`).
     *   `AsyncSender<T: Send>` (`Clone`) and `AsyncReceiver<T: Send>` (`!Clone`). `AsyncReceiver` implements `futures::Stream`.
-*   **Key Methods:** `send`, `recv`, `close`, `is_closed`, and conversions. `Sender::is_empty()` is provided but is a non-guaranteed approximation.
+*   **Key Methods:** `send`, `try_send`, `recv`, `close`, `is_closed`, and conversions. `Sender::is_empty()` is provided but is a non-guaranteed approximation.
 
 ### Module: `fibre::spmc`
 
