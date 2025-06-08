@@ -39,7 +39,7 @@ The following tables summarize the consistent API surface across all channel sen
 | Method | MPMC Sender | MPSC Sender | SPMC Sender | SPSC Sender | Oneshot Sender |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | `send()`/`send().await` | ✅ | ✅ | ✅ | ✅ | ✅ (Consumes self) |
-| `try_send()` | ✅ | ✅ ¹ | ✅ | ✅ | ❌ (send is try) |
+| `try_send()` | ✅ | ✅ | ✅ | ✅ | ❌ (send is try) |
 | `close()` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `is_closed()` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `len()` | ✅ | ✅ | ✅ | ✅ | N/A |
@@ -61,8 +61,6 @@ The following tables summarize the consistent API surface across all channel sen
 | `is_full()` | ✅ | N/A | ✅ | ✅ | N/A |
 | `capacity()` | ✅ | N/A | ✅ | ✅ | N/A |
 | `clone()` | ✅ | ❌ | ✅ | ❌ | ❌ |
-
-*¹ `try_send` is not provided for MPSC as `send` is already lock-free and non-blocking. Differences in clonability are by design based on producer/consumer counts.*
 
 ### Performance-Oriented Design
 
