@@ -11,23 +11,36 @@ mod bounded_async;
 mod bounded_sync;
 mod unbounded;
 
+use crate::coord::CapacityGate;
+
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use crate::coord::CapacityGate;
-// Public re-exports
+// --- Public re-exports ---
 pub use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
-pub use unbounded::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender};
+
+pub use unbounded::{
+  AsyncReceiver as UnboundedAsyncReceiver, AsyncSender as UnboundedAsyncSender,
+  Receiver as UnboundedReceiver, RecvFuture as UnboundedRecvFuture,
+  SendFuture as UnboundedSendFuture, Sender as UnboundedSender,
+};
+
+pub use bounded_async::{
+  AsyncReceiver as BoundedAsyncReceiver, AsyncSender as BoundedAsyncSender,
+  RecvFuture as BoundedRecvFuture, SendFuture as BoundedSendFuture,
+};
+
+pub use bounded_sync::{Receiver as BoundedReceiver, Sender as BoundedSender};
 
 // --- Unbounded Constructors ---
 /// Creates a new unbounded synchronous MPSC channel.
-pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>) {
+pub fn unbounded<T: Send>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
   let shared = Arc::new(unbounded::MpscShared::new());
-  let producer = Sender {
+  let producer = UnboundedSender {
     shared: Arc::clone(&shared),
     closed: AtomicBool::new(false),
   };
-  let consumer = Receiver {
+  let consumer = UnboundedReceiver {
     shared,
     closed: AtomicBool::new(false),
   };
@@ -35,13 +48,13 @@ pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>) {
 }
 
 /// Creates a new unbounded asynchronous MPSC channel.
-pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
+pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>) {
   let shared = Arc::new(unbounded::MpscShared::new());
-  let producer = AsyncSender {
+  let producer = UnboundedAsyncSender {
     shared: Arc::clone(&shared),
     closed: AtomicBool::new(false),
   };
-  let consumer = AsyncReceiver {
+  let consumer = UnboundedAsyncReceiver {
     shared,
     closed: AtomicBool::new(false),
   };
@@ -51,19 +64,17 @@ pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
 // --- Bounded Constructors ---
 
 /// Creates a new bounded synchronous MPSC channel with a given capacity.
-pub fn bounded<T: Send>(
-  capacity: usize,
-) -> (bounded_sync::Sender<T>, bounded_sync::Receiver<T>) {
+pub fn bounded<T: Send>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
   let shared = Arc::new(bounded_sync::BoundedMpscShared {
     gate: Arc::new(CapacityGate::new(capacity)),
     channel: Arc::new(unbounded::MpscShared::new()),
   });
 
-  let sender = bounded_sync::Sender {
+  let sender = BoundedSender {
     shared: shared.clone(),
     closed: AtomicBool::new(false),
   };
-  let receiver = bounded_sync::Receiver {
+  let receiver = BoundedReceiver {
     shared,
     closed: AtomicBool::new(false),
   };
@@ -72,22 +83,17 @@ pub fn bounded<T: Send>(
 }
 
 /// Creates a new bounded asynchronous MPSC channel with a given capacity.
-pub fn bounded_async<T: Send>(
-  capacity: usize,
-) -> (
-  bounded_async::AsyncSender<T>,
-  bounded_async::AsyncReceiver<T>,
-) {
+pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>) {
   let shared = Arc::new(bounded_sync::BoundedMpscShared {
     gate: Arc::new(CapacityGate::new(capacity)),
     channel: Arc::new(unbounded::MpscShared::new()),
   });
 
-  let sender = bounded_async::AsyncSender {
+  let sender = BoundedAsyncSender {
     shared: shared.clone(),
     closed: AtomicBool::new(false),
   };
-  let receiver = bounded_async::AsyncReceiver {
+  let receiver = BoundedAsyncReceiver {
     shared,
     closed: AtomicBool::new(false),
   };
@@ -265,7 +271,6 @@ mod tests {
     assert_eq!(tx.send(1), Err(SendError::Closed));
   }
 }
-
 
 #[cfg(test)]
 mod bounded_tests;

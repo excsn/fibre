@@ -5,7 +5,7 @@
 use super::bounded_sync::{BoundedMessage, BoundedMpscShared, Permit, Receiver, Sender};
 use crate::error::{RecvError, SendError, TrySendError};
 use crate::mpsc::unbounded;
-use crate::TryRecvError;
+use crate::{CloseError, TryRecvError};
 use futures_core::Stream;
 
 use std::future::Future;
@@ -82,6 +82,37 @@ impl<T: Send> AsyncSender<T> {
     }
   }
 
+  /// Closes this sender handle.
+  ///
+  /// This is an explicit alternative to `drop`. If this is the last sender handle,
+  /// the channel will become disconnected from the receiver's perspective.
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&self) {
+    if self
+      .shared
+      .channel
+      .sender_count
+      .fetch_sub(1, Ordering::AcqRel)
+      == 1
+    {
+      self.shared.channel.wake_consumer();
+      // Also wake the gate in case the receiver is waiting on a rendezvous
+      self.shared.gate.release();
+    }
+  }
+
   /// Returns `true` if the receiver has been dropped.
   pub fn is_closed(&self) -> bool {
     self.shared.channel.receiver_dropped.load(Ordering::Acquire)
@@ -121,17 +152,7 @@ impl<T: Send> AsyncSender<T> {
 impl<T: Send> Drop for AsyncSender<T> {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
-      if self
-        .shared
-        .channel
-        .sender_count
-        .fetch_sub(1, Ordering::AcqRel)
-        == 1
-      {
-        self.shared.channel.wake_consumer();
-        // Also wake the gate in case the receiver is waiting on a rendezvous
-        self.shared.gate.release();
-      }
+      self.close_internal();
     }
   }
 }
@@ -157,6 +178,32 @@ impl<T: Send> AsyncReceiver<T> {
       self.shared.gate.release();
     }
     self.shared.channel.try_recv_internal().map(|msg| msg.value)
+  }
+
+  /// Closes the receiving end of the channel.
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&self) {
+    self
+      .shared
+      .channel
+      .receiver_dropped
+      .store(true, Ordering::Release);
+    // Drain using the internal method to unblock senders.
+    while self.shared.channel.try_recv_internal().is_ok() {}
+    // Also wake the gate in case a sender is waiting on a rendezvous
+    self.shared.gate.release();
   }
 
   /// Returns `true` if all senders have been dropped and the channel is empty.
@@ -199,15 +246,7 @@ impl<T: Send> AsyncReceiver<T> {
 impl<T: Send> Drop for AsyncReceiver<T> {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
-      self
-        .shared
-        .channel
-        .receiver_dropped
-        .store(true, Ordering::Release);
-      // Drain using the internal method to unblock senders.
-      while self.shared.channel.try_recv_internal().is_ok() {}
-      // Also wake the gate in case a sender is waiting on a rendezvous
-      self.shared.gate.release();
+      self.close_internal();
     }
   }
 }

@@ -3,7 +3,7 @@
 //! The core implementation and synchronous API for the bounded MPSC channel.
 
 use crate::coord::CapacityGate;
-use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
+use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
 use crate::mpsc::unbounded;
 use crate::sync_util;
 
@@ -135,6 +135,38 @@ impl<T: Send> Sender<T> {
     Ok(())
   }
 
+  /// Closes this sender handle.
+  ///
+  /// This is an explicit alternative to `drop`. If this is the last sender handle,
+  /// the channel will become disconnected from the receiver's perspective.
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&self) {
+    if self
+      .shared
+      .channel
+      .sender_count
+      .fetch_sub(1, Ordering::AcqRel)
+      == 1
+    {
+      // This was the last sender, wake the consumer to signal disconnection.
+      self.shared.channel.wake_consumer();
+      // Also wake the gate in case the receiver is waiting on a rendezvous
+      self.shared.gate.release();
+    }
+  }
+
   /// Clones this sender.
   ///
   /// A bounded MPSC channel can have multiple producers.
@@ -190,18 +222,7 @@ impl<T: Send> Sender<T> {
 impl<T: Send> Drop for Sender<T> {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
-      if self
-        .shared
-        .channel
-        .sender_count
-        .fetch_sub(1, Ordering::AcqRel)
-        == 1
-      {
-        // This was the last sender, wake the consumer to signal disconnection.
-        self.shared.channel.wake_consumer();
-        // Also wake the gate in case the receiver is waiting on a rendezvous
-        self.shared.gate.release();
-      }
+      self.close_internal();
     }
   }
 }
@@ -289,6 +310,36 @@ impl<T: Send> Receiver<T> {
     self.shared.channel.try_recv_internal().map(|msg| msg.value)
   }
 
+  /// Closes the receiving end of the channel.
+  ///
+  /// This is an explicit alternative to `drop`. After this is called, any
+  /// `send` attempts will fail. Any buffered items are drained and dropped.
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&self) {
+    self
+      .shared
+      .channel
+      .receiver_dropped
+      .store(true, Ordering::Release);
+    // Drain the channel using the internal recv function to bypass the `self.closed` check.
+    // This ensures any buffered items (and their permits) are dropped, unblocking senders.
+    while self.shared.channel.try_recv_internal().is_ok() {}
+    // Also wake the gate in case a sender is waiting on a rendezvous
+    self.shared.gate.release();
+  }
+
   /// Returns `true` if all senders have been dropped and the channel is empty.
   pub fn is_closed(&self) -> bool {
     let chan = &self.shared.channel;
@@ -329,16 +380,7 @@ impl<T: Send> Receiver<T> {
 impl<T: Send> Drop for Receiver<T> {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
-      self
-        .shared
-        .channel
-        .receiver_dropped
-        .store(true, Ordering::Release);
-      // Drain the channel using the internal recv function to bypass the `self.closed` check.
-      // This ensures any buffered items (and their permits) are dropped, unblocking senders.
-      while self.shared.channel.try_recv_internal().is_ok() {}
-      // Also wake the gate in case a sender is waiting on a rendezvous
-      self.shared.gate.release();
+      self.close_internal();
     }
   }
 }

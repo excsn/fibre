@@ -181,16 +181,16 @@ An optimized channel for multiple producers and one consumer.
 
 *   **Struct `bounded_sync::Sender<T: Send>`**: A cloneable, sync handle for the bounded channel.
     *   `send(&self, value: T) -> Result<(), SendError>`: Blocks if full.
-    *   Methods: `try_send`, `clone`, `is_closed`, `len`, `is_empty`, `capacity`, `is_full`, `to_async`.
+    *   Methods: `try_send`, `clone`, `is_closed`, `close`, `len`, `is_empty`, `capacity`, `is_full`, `to_async`.
 *   **Struct `bounded_sync::Receiver<T: Send>`**: A non-cloneable, sync handle.
     *   `recv(&self) -> Result<T, RecvError>`: Blocks if empty.
-    *   Methods: `try_recv`, `is_closed`, `len`, `is_empty`, `capacity`, `is_full`, `to_async`.
+    *   Methods: `try_recv`, `is_closed`, `close`, `len`, `is_empty`, `capacity`, `is_full`, `to_async`.
 *   **Struct `bounded_async::AsyncSender<T: Send>`**: A cloneable, async handle.
     *   `send(&self, value: T) -> SendFuture<'_, T>`: Returns a future that waits for capacity.
-    *   Methods: `try_send`, `clone`, `is_closed`, `len`, `is_empty`, `capacity`, `is_full`, `to_sync`.
+    *   Methods: `try_send`, `clone`, `is_closed`, `close`, `len`, `is_empty`, `capacity`, `is_full`, `to_sync`.
 *   **Struct `bounded_async::AsyncReceiver<T: Send>`**: A non-cloneable, async handle. Implements `futures::Stream`.
     *   `recv(&self) -> RecvFuture<'_, T>`: Returns a future that waits for an item.
-    *   Methods: `try_recv`, `is_closed`, `len`, `is_empty`, `capacity`, `is_full`, `to_sync`.
+    *   Methods: `try_recv`, `is_closed`, `close`, `len`, `is_empty`, `capacity`, `is_full`, `to_sync`.
 
 ## 6. Module `fibre::spmc`
 
