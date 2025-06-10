@@ -4,6 +4,7 @@
 //! including SPSC, MPMC, MPSC, SPMC, and Oneshot. It aims for peak performance
 //! while offering both synchronous and asynchronous APIs.
 
+pub mod coord;
 pub mod error;
 
 // Channel type modules

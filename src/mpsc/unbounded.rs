@@ -29,13 +29,13 @@ pub(crate) struct MpscShared<T> {
 
   // --- Receiver waiting state ---
   // Sync waiter fields
-  consumer_parked: AtomicBool,
-  consumer_thread: Mutex<Option<Thread>>,
+  pub(crate) consumer_parked: AtomicBool,
+  pub(crate) consumer_thread: Mutex<Option<Thread>>,
   // Async waiter field
   consumer_waker: AtomicWaker,
-  receiver_dropped: AtomicBool,
+  pub(crate) receiver_dropped: AtomicBool,
 
-  sender_count: AtomicUsize,
+  pub(crate) sender_count: AtomicUsize,
   pub(crate) current_len: AtomicUsize, // New: for tracking approximate length
 }
 
@@ -82,7 +82,7 @@ impl<T: Send> MpscShared<T> {
 
   /// Wakes the consumer if it is parked, whether synchronously or asynchronously.
   #[inline]
-  fn wake_consumer(&self) {
+  pub(crate) fn wake_consumer(&self) {
     self.consumer_waker.wake();
 
     if self
@@ -166,6 +166,7 @@ pub struct Sender<T: Send> {
   pub(crate) shared: Arc<MpscShared<T>>,
   pub(crate) closed: AtomicBool,
 }
+
 #[derive(Debug)]
 pub struct AsyncSender<T: Send> {
   pub(crate) shared: Arc<MpscShared<T>>,
@@ -173,7 +174,7 @@ pub struct AsyncSender<T: Send> {
 }
 
 // Common logic for both producer types
-fn send_internal<T: Send>(shared: &Arc<MpscShared<T>>, value: T) -> Result<(), T> {
+pub(crate) fn send_internal<T: Send>(shared: &Arc<MpscShared<T>>, value: T) -> Result<(), T> {
   if shared.receiver_dropped.load(Ordering::Acquire) {
     return Err(value);
   }
@@ -259,6 +260,17 @@ impl<T: Send> Sender<T> {
   pub fn is_empty(&self) -> bool {
     self.shared.current_len.load(Ordering::Relaxed) == 0
   }
+  
+  /// Converts this synchronous `Sender` into an asynchronous `AsyncSender`.
+  pub fn to_async(self) -> AsyncSender<T> {
+    let shared = unsafe { std::ptr::read(&self.shared) };
+    std::mem::forget(self);
+    
+    AsyncSender {
+      shared,
+      closed: AtomicBool::new(false),
+    }
+  }
 }
 
 impl<T: Send> AsyncSender<T> {
@@ -326,6 +338,16 @@ impl<T: Send> AsyncSender<T> {
   /// `is_empty()` method on the `AsyncReceiver`.
   pub fn is_empty(&self) -> bool {
     self.shared.current_len.load(Ordering::Relaxed) == 0
+  }
+  
+  /// Converts this asynchronous `AsyncSender` into a synchronous `Sender`.
+  pub fn to_sync(self) -> Sender<T> {
+    let shared = unsafe { std::ptr::read(&self.shared) };
+    std::mem::forget(self);
+    Sender {
+      shared,
+      closed: AtomicBool::new(false),
+    }
   }
 }
 
@@ -474,6 +496,16 @@ impl<T: Send> Receiver<T> {
     }
     false
   }
+  /// Converts this synchronous `Receiver` into an asynchronous `AsyncReceiver`.
+  pub fn to_async(self) -> AsyncReceiver<T> {
+    let shared = unsafe { std::ptr::read(&self.shared) };
+    std::mem::forget(self);
+
+    AsyncReceiver {
+      shared,
+      closed: AtomicBool::new(false),
+    }
+  }
 }
 
 // --- Async Receiver Implementation ---
@@ -523,6 +555,16 @@ impl<T: Send> AsyncReceiver<T> {
       return next_node_ptr.is_null();
     }
     false
+  }
+
+  /// Converts this asynchronous `AsyncReceiver` into a synchronous `Receiver`.
+  pub fn to_sync(self) -> Receiver<T> {
+    let shared = unsafe { std::ptr::read(&self.shared) };
+    std::mem::forget(self);
+    Receiver {
+      shared,
+      closed: AtomicBool::new(false),
+    }
   }
 }
 

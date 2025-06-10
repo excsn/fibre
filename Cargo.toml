@@ -1,6 +1,6 @@
 [package]
 name = "fibre"
-version = "0.3.6"
+version = "0.4.0"
 edition = "2021"
 authors = ["Excerion Sun <dev@excsn.com>"]
 description = "High-performance, safe, memory-efficient sync/async channels built for real-time, low-overhead communication in concurrent Rust applications."
@@ -22,6 +22,7 @@ fibre_telemetry = ["dep:tokio"]
 lazy_static = "^1"
 
 futures-core = { version = "^0.3", default-features = false, features = ["alloc", "std"] }
+futures-intrusive = "^0.5"
 futures-util = { version = "^0.3", default-features = false, features = ["alloc", "std"] }
 parking_lot = "^0.12"
 tokio = { version = "1", features = ["full"], optional = true }

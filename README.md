@@ -17,7 +17,7 @@ Fibre provides a suite of high-performance, memory-efficient sync/async channels
 Fibre offers a wide range of channel types, each optimized for a specific producer-consumer pattern:
 
 *   **`spsc`**: A lock-free Single-Producer, Single-Consumer ring buffer, ideal for maximum throughput in 1-to-1 communication. Bounded. Requires `T: Send`.
-*   **`mpsc`**: A lock-free Multi-Producer, Single-Consumer channel, perfect for scenarios where many tasks need to send work to a single processing task. Unbounded. Requires `T: Send`.
+*   **`mpsc`**: A lock-free Multi-Producer, Single-Consumer channel, perfect for scenarios where many tasks need to send work to a single processing task. Supports both bounded and unbounded modes. Requires `T: Send`.
 *   **`spmc`**: A "broadcast" style Single-Producer, Multi-Consumer channel where each message is cloned and delivered to every active consumer. Bounded. Requires `T: Send + Clone`.
 *   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic. Supports bounded (including rendezvous) and "unbounded" capacities. Requires `T: Send`.
 *   **`oneshot`**: A channel for sending a single value once, perfect for futures and promise-style patterns. Requires `T: Send`.
@@ -39,13 +39,13 @@ The following tables summarize the consistent API surface across all channel sen
 | Method | MPMC Sender | MPSC Sender | SPMC Sender | SPSC Sender | Oneshot Sender |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | `send()`/`send().await` | ✅ | ✅ | ✅ | ✅ | ✅ (Consumes self) |
-| `try_send()` | ✅ | ✅ | ✅ | ✅ | ❌ (send is try) |
+| `try_send()` | ✅ | ✅ | ✅ | ✅ | ✅ (send is try) |
 | `close()` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `is_closed()` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `len()` | ✅ | ✅ | ✅ | ✅ | N/A |
 | `is_empty()` | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `is_full()` | ✅ | N/A | ✅ | ✅ | N/A |
-| `capacity()` | ✅ | N/A | ✅ | ✅ | N/A |
+| `is_full()` | ✅ | ✅ (bounded) | ✅ | ✅ | N/A |
+| `capacity()` | ✅ | ✅ (bounded) | ✅ | ✅ | N/A |
 | `clone()` | ✅ | ✅ | ❌ | ❌ | ✅ |
 
 **Receiver API**
@@ -58,8 +58,8 @@ The following tables summarize the consistent API surface across all channel sen
 | `is_closed()` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `len()` | ✅ | ✅ | ✅ | ✅ | N/A |
 | `is_empty()` | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `is_full()` | ✅ | N/A | ✅ | ✅ | N/A |
-| `capacity()` | ✅ | N/A | ✅ | ✅ | N/A |
+| `is_full()` | ✅ | ✅ (bounded) | ✅ | ✅ | N/A |
+| `capacity()` | ✅ | ✅ (bounded) | ✅ | ✅ | N/A |
 | `clone()` | ✅ | ❌ | ✅ | ❌ | ❌ |
 
 ### Performance-Oriented Design
@@ -68,7 +68,7 @@ Performance is a primary goal. Fibre uses proven, high-performance algorithms fo
 *   Lock-free ring buffers for SPSC.
 *   Lock-free linked lists for MPSC.
 *   A specialized ring buffer for SPMC that tracks individual consumer progress, ensuring backpressure from the slowest consumer.
-*   High-performance `parking_lot::Mutex` for MPMC.
+*   A fair, hybrid semaphore built on `parking_lot::Mutex` for MPMC and bounded MPSC channels.
 *   Cache-line padding on critical atomic data to minimize false sharing and maximize throughput on multi-core systems.
 
 ### Ergonomic and Safe

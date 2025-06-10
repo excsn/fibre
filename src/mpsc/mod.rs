@@ -7,20 +7,22 @@
 //! mixed sync/async operations, allowing, for example, a synchronous `Sender` to
 //! send to an asynchronous `AsyncReceiver`.
 
-use std::marker::PhantomData;
-use std::mem;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-mod lockfree;
+mod bounded_async;
+mod bounded_sync;
+mod unbounded;
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+use crate::coord::CapacityGate;
 // Public re-exports
 pub use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
-pub use lockfree::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender};
+pub use unbounded::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender};
 
-// --- Sync Constructor ---
+// --- Unbounded Constructors ---
 /// Creates a new unbounded synchronous MPSC channel.
 pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>) {
-  let shared = Arc::new(lockfree::MpscShared::new());
+  let shared = Arc::new(unbounded::MpscShared::new());
   let producer = Sender {
     shared: Arc::clone(&shared),
     closed: AtomicBool::new(false),
@@ -32,10 +34,9 @@ pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>) {
   (producer, consumer)
 }
 
-// --- Async Constructor ---
 /// Creates a new unbounded asynchronous MPSC channel.
 pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
-  let shared = Arc::new(lockfree::MpscShared::new());
+  let shared = Arc::new(unbounded::MpscShared::new());
   let producer = AsyncSender {
     shared: Arc::clone(&shared),
     closed: AtomicBool::new(false),
@@ -47,54 +48,51 @@ pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
   (producer, consumer)
 }
 
-// --- Conversion Methods ---
+// --- Bounded Constructors ---
 
-impl<T: Send> Sender<T> {
-  /// Converts this synchronous `Sender` into an asynchronous `AsyncSender`.
-  pub fn to_async(self) -> AsyncSender<T> {
-    let shared = unsafe { std::ptr::read(&self.shared) };
-    mem::forget(self);
-    AsyncSender {
-      shared,
-      closed: AtomicBool::new(false),
-    }
-  }
+/// Creates a new bounded synchronous MPSC channel with a given capacity.
+pub fn bounded<T: Send>(
+  capacity: usize,
+) -> (bounded_sync::Sender<T>, bounded_sync::Receiver<T>) {
+  let shared = Arc::new(bounded_sync::BoundedMpscShared {
+    gate: Arc::new(CapacityGate::new(capacity)),
+    channel: Arc::new(unbounded::MpscShared::new()),
+  });
+
+  let sender = bounded_sync::Sender {
+    shared: shared.clone(),
+    closed: AtomicBool::new(false),
+  };
+  let receiver = bounded_sync::Receiver {
+    shared,
+    closed: AtomicBool::new(false),
+  };
+
+  (sender, receiver)
 }
 
-impl<T: Send> Receiver<T> {
-  /// Converts this synchronous `Receiver` into an asynchronous `AsyncReceiver`.
-  pub fn to_async(self) -> AsyncReceiver<T> {
-    let shared = unsafe { std::ptr::read(&self.shared) };
-    mem::forget(self);
-    AsyncReceiver {
-      shared,
-      closed: AtomicBool::new(false),
-    }
-  }
-}
+/// Creates a new bounded asynchronous MPSC channel with a given capacity.
+pub fn bounded_async<T: Send>(
+  capacity: usize,
+) -> (
+  bounded_async::AsyncSender<T>,
+  bounded_async::AsyncReceiver<T>,
+) {
+  let shared = Arc::new(bounded_sync::BoundedMpscShared {
+    gate: Arc::new(CapacityGate::new(capacity)),
+    channel: Arc::new(unbounded::MpscShared::new()),
+  });
 
-impl<T: Send> AsyncSender<T> {
-  /// Converts this asynchronous `AsyncSender` into a synchronous `Sender`.
-  pub fn to_sync(self) -> Sender<T> {
-    let shared = unsafe { std::ptr::read(&self.shared) };
-    mem::forget(self);
-    Sender {
-      shared,
-      closed: AtomicBool::new(false),
-    }
-  }
-}
+  let sender = bounded_async::AsyncSender {
+    shared: shared.clone(),
+    closed: AtomicBool::new(false),
+  };
+  let receiver = bounded_async::AsyncReceiver {
+    shared,
+    closed: AtomicBool::new(false),
+  };
 
-impl<T: Send> AsyncReceiver<T> {
-  /// Converts this asynchronous `AsyncReceiver` into a synchronous `Receiver`.
-  pub fn to_sync(self) -> Receiver<T> {
-    let shared = unsafe { std::ptr::read(&self.shared) };
-    mem::forget(self);
-    Receiver {
-      shared,
-      closed: AtomicBool::new(false),
-    }
-  }
+  (sender, receiver)
 }
 
 #[cfg(test)]
@@ -267,3 +265,7 @@ mod tests {
     assert_eq!(tx.send(1), Err(SendError::Closed));
   }
 }
+
+
+#[cfg(test)]
+mod bounded_tests;
