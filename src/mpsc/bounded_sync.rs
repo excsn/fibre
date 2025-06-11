@@ -187,6 +187,10 @@ impl<T: Send> Sender<T> {
     self.shared.channel.receiver_dropped.load(Ordering::Acquire)
   }
 
+  pub fn sender_count(&self) -> usize {
+     self.shared.channel.sender_count.load(Ordering::Relaxed)
+  }
+
   /// Returns the number of messages currently in the channel.
   pub fn len(&self) -> usize {
     self.shared.channel.current_len.load(Ordering::Relaxed)
@@ -344,6 +348,10 @@ impl<T: Send> Receiver<T> {
   pub fn is_closed(&self) -> bool {
     let chan = &self.shared.channel;
     chan.sender_count.load(Ordering::Acquire) == 0 && self.is_empty()
+  }
+
+  pub fn sender_count(&self) -> usize {
+     self.shared.channel.sender_count.load(Ordering::Relaxed)
   }
 
   /// Returns the number of messages currently in the channel.

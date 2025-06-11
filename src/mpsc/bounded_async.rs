@@ -1,5 +1,3 @@
-// src/mpsc/bounded_async.rs
-
 //! The asynchronous API for the bounded MPSC channel.
 
 use super::bounded_sync::{BoundedMessage, BoundedMpscShared, Permit, Receiver, Sender};
@@ -215,6 +213,10 @@ impl<T: Send> AsyncReceiver<T> {
   /// Returns the number of messages currently in the channel.
   pub fn len(&self) -> usize {
     self.shared.channel.current_len.load(Ordering::Relaxed)
+  }
+
+  pub fn sender_count(&self) -> usize {
+     self.shared.channel.sender_count.load(Ordering::Relaxed)
   }
 
   /// Returns `true` if the channel is empty.
