@@ -243,6 +243,10 @@ impl<T: Send> Sender<T> {
     }
   }
 
+  pub fn sender_count(&self) -> usize {
+     self.shared.sender_count.load(Ordering::Relaxed)
+  }
+
   pub fn len(&self) -> usize {
     self.shared.current_len.load(Ordering::Relaxed)
   }
@@ -320,6 +324,10 @@ impl<T: Send> AsyncSender<T> {
     if self.shared.sender_count.fetch_sub(1, Ordering::AcqRel) == 1 {
       self.shared.wake_consumer();
     }
+  }
+
+  pub fn sender_count(&self) -> usize {
+     self.shared.sender_count.load(Ordering::Relaxed)
   }
 
   pub fn len(&self) -> usize {
@@ -484,6 +492,10 @@ impl<T: Send> Receiver<T> {
     }
   }
 
+  pub fn sender_count(&self) -> usize {
+     self.shared.sender_count.load(Ordering::Relaxed)
+  }
+
   pub fn len(&self) -> usize {
     self.shared.current_len.load(Ordering::Relaxed)
   }
@@ -542,6 +554,10 @@ impl<T: Send> AsyncReceiver<T> {
     while self.shared.try_recv_internal().is_ok() {
       // Keep draining
     }
+  }
+
+  pub fn sender_count(&self) -> usize {
+     self.shared.sender_count.load(Ordering::Relaxed)
   }
 
   pub fn len(&self) -> usize {
