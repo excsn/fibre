@@ -1,0 +1,79 @@
+[package]
+name = "fibre"
+version = "0.4.2"
+edition = "2021"
+authors = ["Excerion Sun <dev@excsn.com>"]
+description = "High-performance, safe, memory-efficient sync/async channels built for real-time, low-overhead communication in concurrent Rust applications."
+license = "MPL-2.0"
+repository = "https://github.com/excsn/fibre"
+readme = "README.md"
+keywords = ["channel", "mpmc", "spsc", "communication", "concurrent"]
+categories = ["concurrency", "asynchronous", "data-structures"]
+
+exclude = [
+  "/docs/"
+]
+
+[features]
+default = []
+fibre_telemetry = ["dep:tokio"]
+
+[dependencies]
+lazy_static = "^1"
+
+futures-core = { version = "^0.3", default-features = false, features = ["alloc", "std"] }
+futures-intrusive = "^0.5"
+futures-util = { version = "^0.3", default-features = false, features = ["alloc", "std"] }
+parking_lot = "^0.12"
+tokio = { version = "1", features = ["full"], optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+bench_matrix = "^0"
+tokio = { version = "1", features = ["full"] }
+serial_test = "^3"
+# proptest = "1"
+
+[[bench]]
+name = "mpmc_async"
+harness = false
+
+[[bench]]
+name = "mpmc_sync"
+harness = false
+
+[[bench]]
+name = "mpsc_async"
+harness = false
+
+[[bench]]
+name = "mpsc_sync"
+harness = false
+
+[[bench]]
+name = "oneshot"
+harness = false
+
+[[bench]]
+name = "spmc_async"
+harness = false
+
+[[bench]]
+name = "spmc_sync"
+harness = false
+
+[[bench]]
+name = "spsc_async"
+harness = false
+
+[[bench]]
+name = "spsc_sync"
+harness = false
+
+# Optional: For faster compile times during development
+[profile.dev]
+opt-level = 1
+debug = true
+
+# [profile.dev.package."*"]
+# opt-level = 3 # Compile dependencies with optimizations
