@@ -1,30 +1,39 @@
-// src/lib.rs
-
-//! High-performance, memory-efficient sync/async channels for Rust.
+//! A high-performance, concurrent, sync/async cache designed for flexibility
+//! and support for non-cloneable values.
 //!
-//! Fibre provides a suite of channel types optimized for various concurrency patterns,
-//! including SPSC, MPMC, MPSC, SPMC, and Oneshot. It aims for peak performance
-//! while offering both synchronous and asynchronous APIs.
+//! # Features
+//! - **High Concurrency**: Built with a sharded architecture to minimize lock contention.
+//! - **Sync & Async**: Provides both blocking synchronous and non-blocking `async` APIs.
+//! - **Non-Clone Support**: Stores values in an `Arc<V>`, avoiding `V: Clone` bounds.
+//! - **Rich Policies**: Time-to-Live (TTL), Time-to-Idle (TTI), and advanced
+//!   eviction strategies like TinyLFU.
+//! - **Observability**: Exposes detailed metrics for monitoring cache performance.
+//! - **Persistence**: Optional `serde` feature for saving and loading cache state.
 
-// Add the new cache module, gated by its feature flag.
-#[cfg(feature = "cache")]
-pub mod cache;
-
-pub mod coord;
+// Public modules that form the API
+pub mod builder;
+pub mod entry_api;
 pub mod error;
+pub mod handles;
+pub mod listener;
+pub mod metrics;
 
-// Channel type modules
-pub mod oneshot;
-pub mod spsc;
-pub mod mpsc;
-pub mod spmc;
-pub mod mpmc;
-pub mod telemetry;
+// Internal, crate-only modules
+mod backpressure;
+mod entry;
+mod policy;
+mod shared;
+mod store;
+mod sync;
+mod task;
+mod time;
 
-// Internal utilities - not part of public API but exposed for crate use
-mod internal;
-mod sync_util;
-mod async_util;
+#[cfg(feature = "serde")]
+pub mod snapshot;
 
-// Public re-exports for convenience (will grow)
-pub use error::{CloseError, RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError};
+// Re-export the primary user-facing types for convenience
+pub use builder::CacheBuilder;
+pub use entry_api::Entry;
+pub use handles::{AsyncCache, Cache};
+pub use listener::{EvictionListener, EvictionReason};
+pub use metrics::MetricsSnapshot;
