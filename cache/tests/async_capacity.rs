@@ -8,6 +8,7 @@ const JANITOR_WAIT_MULTIPLIER: u32 = 4; // How many tick intervals to wait
 async fn test_async_janitor_evicts_on_capacity() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(10)
+    .shards(1) 
     .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()
@@ -20,7 +21,7 @@ async fn test_async_janitor_evicts_on_capacity() {
   assert_eq!(cache.metrics().current_cost, 11);
 
   // 2. Wait for the janitor to run.
-  sleep(JANITOR_TICK * 3).await;
+  sleep(JANITOR_TICK * 4).await;
 
   // 3. Assert the cache is back to its target capacity.
   assert_eq!(cache.metrics().current_cost, 10);
@@ -36,6 +37,7 @@ async fn test_async_janitor_evicts_on_capacity() {
 async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(5)
+    .shards(1)
     .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()
@@ -62,7 +64,7 @@ async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
   );
 
   // 4. Wait for the janitor to run and evict both items.
-  sleep(JANITOR_TICK * 3).await;
+  sleep(JANITOR_TICK * 4).await;
 
   // 5. Assert the final state.
   assert_eq!(
@@ -81,6 +83,7 @@ async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
 async fn test_async_janitor_evicts_on_capacity_with_lru() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(10)
+    .shards(1)
     .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()
@@ -114,6 +117,7 @@ async fn test_async_janitor_evicts_on_capacity_with_default_tinylfu() {
   let cache_capacity = 3;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(cache_capacity)
+    .shards(1)
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()
     .unwrap();
@@ -211,6 +215,7 @@ async fn test_async_janitor_cleans_up_large_overflow() {
   let cache_capacity = 5;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(cache_capacity)
+    .shards(1)
     .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()

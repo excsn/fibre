@@ -112,10 +112,8 @@ where
         .shared
         .time_to_live
         .map(|ttl| wheel_guard.schedule(key_hash, ttl));
-      let tti_handle = self
-        .shared
-        .time_to_idle
-        .map(|tti| wheel_guard.schedule(key_hash, tti));
+      // TTI is now handled by sampling in the janitor, not by the timer wheel.
+      let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 
@@ -186,11 +184,8 @@ where
       let mut wheel_guard = wheel.lock();
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = Some(wheel_guard.schedule(key_hash, ttl));
-      // TTI is still governed by the global setting, if any.
-      let tti_handle = self
-        .shared
-        .time_to_idle
-        .map(|tti| wheel_guard.schedule(key_hash, tti));
+      // TTI is now handled by sampling in the janitor, not by the timer wheel.
+      let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 

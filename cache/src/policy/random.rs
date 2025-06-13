@@ -34,9 +34,9 @@ where
   fn on_access(&self, _info: &AccessInfo<K, V>) {}
 
   /// A random policy always admits new items. We just need to start tracking it.
-  fn on_admit(&self, info: &AccessInfo<K, V>) -> AdmissionDecision<K> {
+  fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
     let mut items = self.items.lock();
-    items.insert(info.key.clone(), info.entry.cost());
+    items.insert(key.clone(), cost);
     AdmissionDecision::Admit // Always admit.
   }
 

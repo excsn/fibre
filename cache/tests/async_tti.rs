@@ -26,10 +26,10 @@ async fn test_async_item_expires_after_tti() {
   );
 
   // Wait a little longer to give the janitor time to run and update the eviction metric.
-  sleep(JANITOR_TICK * 2).await;
+  sleep(JANITOR_TICK * 4).await;
 
   assert_eq!(
-    cache.metrics().evicted_by_ttl,
+    cache.metrics().evicted_by_tti,
     1,
     "TTI eviction metric should be updated by janitor"
   );

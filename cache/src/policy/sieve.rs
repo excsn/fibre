@@ -50,23 +50,23 @@ where
   }
 
   /// On insert, add the new item to the front of the queue with `visited = false`.
-  fn on_admit(&self, info: &AccessInfo<K, V>) -> AdmissionDecision<K> {
+  fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
     let mut order = self.order.lock();
     let mut items = self.items.lock();
 
     // A key can be re-inserted, so we remove any old instance first.
-    if items.contains_key(info.key) {
-      order.retain(|k| k != info.key);
+    if items.contains_key(key) {
+      order.retain(|k| k != key);
     }
 
     items.insert(
-      info.key.clone(),
+      key.clone(),
       SieveEntry {
-        cost: info.entry.cost(),
+        cost,
         visited: false,
       },
     );
-    order.push_front(info.key.clone());
+    order.push_front(key.clone());
 
     AdmissionDecision::Admit // SIEVE always admits new items.
   }

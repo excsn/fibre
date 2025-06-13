@@ -13,7 +13,7 @@ where
   
   fn on_access(&self, _info: &AccessInfo<K, V>) {}
 
-  fn on_admit(&self, _info: &AccessInfo<K, V>) -> AdmissionDecision<K> {
+  fn on_admit(&self, _key: &K, _cost: u64) -> AdmissionDecision<K> {
     AdmissionDecision::Admit // Always admit new items.
   }
 

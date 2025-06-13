@@ -30,7 +30,7 @@ fn test_sync_item_expires_after_tti() {
   thread::sleep(JANITOR_TICK * 2);
 
   assert_eq!(
-    cache.metrics().evicted_by_ttl,
+    cache.metrics().evicted_by_tti,
     1,
     "TTI eviction metric should be updated by janitor"
   );

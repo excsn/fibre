@@ -8,6 +8,7 @@ const JANITOR_WAIT_MULTIPLIER: u32 = 4; // How many tick intervals to wait
 fn test_sync_janitor_evicts_on_capacity() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(10)
+    .shards(1)
     .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build()
@@ -37,6 +38,7 @@ fn test_sync_janitor_evicts_on_capacity() {
 fn test_sync_insert_is_non_blocking_and_janitor_cleans_up() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(5)
+    .shards(1)
     .cache_policy(LruPolicy::new()) // Use a simple policy for predictable eviction
     .janitor_tick_interval(JANITOR_TICK)
     .build()
@@ -79,6 +81,7 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up() {
 fn test_sync_janitor_evicts_on_capacity_with_lru() { // Renamed slightly for clarity if we add more LRU tests
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(10)
+    .shards(1)
     .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build()
@@ -110,6 +113,7 @@ fn test_sync_janitor_evicts_on_capacity_with_default_tinylfu() {
   let cache_capacity = 3;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(cache_capacity)
+    .shards(1)
     // No explicit policy, should default to TinyLfu
     .janitor_tick_interval(JANITOR_TICK)
     .build()

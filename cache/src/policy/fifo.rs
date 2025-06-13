@@ -32,14 +32,14 @@ where
   fn on_access(&self, _info: &AccessInfo<K, V>) {}
 
   /// On insert, add the new item to the front of the queue.
-  fn on_admit(&self, info: &AccessInfo<K, V>) -> AdmissionDecision<K> {
+  fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
     let mut order = self.order.lock();
     let mut items = self.items.lock();
 
     // If the key already exists, do nothing. FIFO does not update on re-insert.
-    if !items.contains_key(info.key) {
-      items.insert(info.key.clone(), info.entry.cost());
-      order.push_front(info.key.clone());
+    if !items.contains_key(key) {
+      items.insert(key.clone(), cost);
+      order.push_front(key.clone());
     }
 
     AdmissionDecision::Admit // FIFO always admits.

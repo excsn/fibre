@@ -49,19 +49,19 @@ where
   }
 
   /// On insert, add the new item to the clock.
-  fn on_admit(&self, info: &AccessInfo<K, V>) -> AdmissionDecision<K> {
+  fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
     let mut order = self.order.lock();
     let mut items = self.items.lock();
 
-    if !items.contains_key(info.key) {
+    if !items.contains_key(key) {
       items.insert(
-        info.key.clone(),
+        key.clone(),
         ClockEntry {
-          cost: info.entry.cost(),
+          cost,
           referenced: false,
         },
       );
-      order.push(info.key.clone());
+      order.push(key.clone());
     }
 
     AdmissionDecision::Admit // Clock always admits.

@@ -12,6 +12,7 @@ mod lru {
   fn test_lru_eviction_logic() {
     let cache = CacheBuilder::default()
       .capacity(3)
+      .shards(1)
       .cache_policy(LruPolicy::new())
       .janitor_tick_interval(Duration::from_millis(10))
       .build()
@@ -51,6 +52,7 @@ mod fifo {
   fn test_fifo_eviction_logic() {
     let cache = CacheBuilder::default()
       .capacity(3)
+      .shards(1)
       .cache_policy(Fifo::new())
       .janitor_tick_interval(Duration::from_millis(10))
       .build()
@@ -84,6 +86,7 @@ mod sieve {
   fn test_sieve_eviction_logic() {
     let cache = CacheBuilder::default()
       .capacity(3)
+      .shards(1)
       .cache_policy(SievePolicy::new())
       .janitor_tick_interval(Duration::from_millis(10))
       .build()
@@ -118,6 +121,7 @@ mod tinylfu {
   fn build_test_cache(capacity: u64) -> fibre_cache::Cache<i32, String> {
     CacheBuilder::default()
       .capacity(capacity)
+      .shards(1)
       // The default policy for a bounded cache is TinyLfu, but we are explicit for clarity.
       .cache_policy(TinyLfuPolicy::new(capacity))
       .janitor_tick_interval(Duration::from_millis(10))
@@ -161,25 +165,23 @@ mod tinylfu {
     cache.insert(3, "three".to_string(), 1);
     assert_eq!(cache.metrics().current_cost, 3);
 
-    // Inserting a 4th item. The policy on_admit will identify one victim.
-    // The insert call processes this victim synchronously.
-    // So, current_cost = (cost_before + new_item_cost - victim_cost)
-    // current_cost = (3 + 1 - 1) = 3
+    // Inserting a 4th item will push the cache over capacity.
+    // The insert itself is non-blocking.
     cache.insert(4, "four".to_string(), 1);
     assert_eq!(
       cache.metrics().current_cost,
-      3, // Corrected from 4
-      "Cost after insert(4) and its policy-driven eviction"
+      4,
+      "Cost should be temporarily over capacity before janitor runs"
     );
 
-    // Wait for the janitor to run.
-    // Since current_cost (3) == capacity (3), janitor does nothing.
-    std::thread::sleep(Duration::from_millis(50));
+    // Wait for the janitor to run. The janitor will process the write event for key 4,
+    // which updates the policy, and then run cleanup_capacity, which calls policy.evict().
+    std::thread::sleep(std::time::Duration::from_millis(50));
 
     assert_eq!(
       cache.metrics().current_cost,
       3,
-      "Janitor should not change cost as it's at capacity"
+      "Janitor should bring cost back down to capacity"
     );
   }
 
@@ -205,33 +207,37 @@ mod tinylfu {
       cache.insert(i, i.to_string(), 1);
     }
     for i in 1..=9 {
-      cache.get(&i); // Freq(1..9) is 2, Freq(10) is 1
+      cache.get(&i); // Freq(1..9) is > 1, Freq(10) is 1
     }
     assert_eq!(cache.metrics().current_cost, 10);
 
     // 2. Insert a new item (100). This overfills the cache.
-    // Policy on_admit for item 100 will likely evict the infrequent item 10.
-    // Cost before=10. Add 100 (cost +1). Evict 10 (cost -1). Net cost = 10.
     cache.insert(100, "trigger".to_string(), 1);
     assert_eq!(
       cache.metrics().current_cost,
-      10, // Corrected from 11
-      "Cost after insert(100) and its policy-driven eviction"
+      11,
+      "Cost should be temporarily over capacity before janitor runs"
     );
 
     // 3. Wait for the janitor.
-    // Since current_cost (10) == capacity (10), janitor does nothing.
+    // Janitor sees cost 11, needs to free 1. It calls policy.evict(1).
+    // The policy will evict from the main SLRU's probationary segment.
+    // The only item in probationary is 10, so it will be the victim.
     std::thread::sleep(Duration::from_millis(50));
 
     // 4. Assert the outcome.
-    assert_eq!(cache.metrics().current_cost, 10);
+    assert_eq!(
+      cache.metrics().current_cost,
+      10,
+      "Janitor should bring cost back to capacity"
+    );
     assert!(
       cache.get(&10).is_none(),
-      "Infrequent candidate (10) should be evicted by policy"
+      "Infrequent item (10) should be evicted"
     );
     assert!(
       cache.get(&1).is_some(),
-      "Valuable victim (1) should have been protected"
+      "Hot item (1) should have been protected"
     );
     assert!(
       cache.get(&100).is_some(),
@@ -254,28 +260,36 @@ mod tinylfu {
       cache.get(&5);
     }
 
-    // 3. Insert item 11. Policy on_admit for item 11 will evict a cold item (e.g. 1).
-    // Cost before=10. Add 11 (cost +1). Evict 1 (cost -1). Net cost = 10.
+    // 3. Insert item 11. This will push the cache over capacity.
     cache.insert(11, "new".to_string(), 1);
     assert_eq!(
       cache.metrics().current_cost,
-      10, // Corrected from 11
-      "Cost after insert(11) and its policy-driven eviction"
+      11,
+      "Cost should be temporarily over capacity before janitor runs"
     );
 
-    // 4. Wait for the janitor.
-    // Since current_cost (10) == capacity (10), janitor does nothing.
+    // 4. Wait for the janitor to run. It should process the write for item 11,
+    // then evict a cold item (like 1) to bring the cost back to 10.
     std::thread::sleep(Duration::from_millis(50));
 
     // 5. Assert the outcome.
-    assert_eq!(cache.metrics().current_cost, 10);
+    assert_eq!(
+      cache.metrics().current_cost,
+      10,
+      "Janitor should bring cost back to capacity"
+    );
     assert!(
       cache.get(&5).is_some(),
       "Hot item 5 should have been protected"
     );
+
+    // The items were inserted 1..10. All went to probationary.
+    // Accessing 5 promotes it. The LRU of probationary is 1.
+    // Cleanup_capacity will ask the policy to evict, and it will evict from the main SLRU,
+    // which will choose item 1.
     assert!(
-      cache.get(&1).is_none(), // Or whichever cold item was LRU in main
-      "Weak, cold victim (e.g. 1) should be evicted by policy"
+      cache.get(&1).is_none(),
+      "Weak, cold victim (1) should be evicted by policy"
     );
     assert!(
       cache.get(&11).is_some(),
@@ -297,6 +311,7 @@ mod slru {
     // FIX 1: Configure a fast janitor so it runs quickly for the test.
     let cache = CacheBuilder::default()
       .capacity(4)
+      .shards(1)
       .cache_policy(SlruPolicy::new(4))
       .janitor_tick_interval(Duration::from_millis(10)) // Add this line
       .build()

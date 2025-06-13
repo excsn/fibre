@@ -47,7 +47,7 @@ pub trait CachePolicy<K, V>: Send + Sync {
   /// The policy can use this to decide if the new item should be admitted,
   /// potentially rejecting it to protect more valuable items. Returning `false`
   /// will cause the insertion to be aborted.
-  fn on_admit(&self, info: &AccessInfo<K, V>) -> AdmissionDecision<K>;
+  fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K>;
 
   /// Called when an item is manually invalidated or evicted due to TTL/TTI.
   /// The policy should clean up any state associated with the key.

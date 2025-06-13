@@ -1,4 +1,4 @@
-use fibre_cache::CacheBuilder;
+use fibre_cache::{builder::TimerWheelMode, CacheBuilder};
 use tokio::time::{sleep, Duration};
 
 const TINY_TTL: Duration = Duration::from_millis(150);
@@ -9,6 +9,7 @@ const SLEEP_MARGIN: Duration = Duration::from_millis(150);
 async fn test_async_item_expires_after_ttl() {
   let cache = CacheBuilder::<&str, &str>::new()
     .time_to_live(TINY_TTL)
+    .timer_mode(TimerWheelMode::HighPrecisionShortLived)
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()
     .unwrap();

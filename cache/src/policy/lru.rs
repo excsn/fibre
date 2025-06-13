@@ -29,7 +29,6 @@ where
   K: Eq + Hash + Clone + Send + Sync,
   V: Send + Sync,
 {
-
   /// When an item is accessed, move it to the front of the usage queue.
   fn on_access(&self, info: &AccessInfo<K, V>) {
     let mut order = self.order.lock();
@@ -42,13 +41,20 @@ where
   }
 
   /// When an item is inserted, it is the most recently used.
-  fn on_admit(&self, info: &AccessInfo<K, V>) -> AdmissionDecision<K> {
+  fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
     let mut order = self.order.lock();
     let mut items = self.items.lock();
 
-    // Begin tracking the new item.
-    items.insert(info.key.clone(), info.entry.cost());
-    order.push_front(info.key.clone());
+    // On admission (which can be a new insert or an update),
+    // the item becomes the most recently used.
+    // We must first remove any existing occurrence of the key in the order queue
+    // to prevent duplicates and to move it to the front.
+    if let Some(pos) = order.iter().position(|k| k == key) {
+      order.remove(pos);
+    }
+
+    items.insert(key.clone(), cost);
+    order.push_front(key.clone());
 
     AdmissionDecision::Admit // LRU always admits new items.
   }

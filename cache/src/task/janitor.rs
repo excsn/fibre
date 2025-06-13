@@ -1,6 +1,6 @@
 use crate::entry::CacheEntry;
 use crate::metrics::Metrics;
-use crate::policy::{AccessEvent, AccessInfo, CachePolicy};
+use crate::policy::{AccessEvent, AccessInfo, AdmissionDecision, CachePolicy};
 use crate::store::ShardedStore;
 use crate::task::notifier::Notification;
 use crate::task::timer::TimerWheel;
@@ -9,7 +9,6 @@ use crate::EvictionReason;
 use fibre::mpsc;
 use parking_lot::Mutex;
 use std::hash::{BuildHasher, Hash};
-use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -75,8 +74,9 @@ impl Janitor {
   {
     // First, apply all buffered access events to the eviction policy.
     Self::perform_maintenance(context);
-    // Then, clean up expired items.
-    Self::cleanup_timers(context);
+    // Then, clean up expired items from TTL and TTI.
+    Self::cleanup_ttl(context);
+    Self::cleanup_tti(context);
     // Finally, enforce capacity.
     Self::cleanup_capacity(context);
   }
@@ -88,40 +88,59 @@ impl Janitor {
     V: Send + Sync,
     H: BuildHasher + Clone + Send + Sync,
   {
-    // Create a re-usable "dummy" entry for on_admit calls.
-    // This is a safe way to create a placeholder Arc<T> when T is not Default.
-    let dummy_value: Arc<V> = unsafe {
-      let mut uninit = MaybeUninit::<V>::uninit();
-      // We never read from this, so it's okay that it's uninitialized.
-      // The policy only needs the key and cost from the AccessInfo.
-      Arc::new(uninit.assume_init())
-    };
-
     for shard in context.store.iter_shards() {
       // Drain a bounded number of events to prevent this loop from running too long.
       for _ in 0..MAINTENANCE_DRAIN_LIMIT {
         match shard.event_buffer_rx.try_recv() {
           Ok(event) => {
-            // We need to look up the entry in the map to create AccessInfo.
-            let guard = shard.map.read();
             match event {
               AccessEvent::Read(key) => {
+                // We need to look up the entry in the map to create AccessInfo.
+                let guard = shard.map.read();
                 if let Some(entry) = guard.get(&key) {
                   let info = AccessInfo { key: &key, entry };
                   context.eviction_policy.on_access(&info);
                 }
               }
               AccessEvent::Write(key, cost) => {
-                // For writes, the entry might be new. We create a dummy entry
-                // with the correct cost for the policy's on_admit method.
-                let dummy_entry = Arc::new(CacheEntry::new_with_cost(dummy_value.clone(), cost));
-                let info = AccessInfo {
-                  key: &key,
-                  entry: &dummy_entry,
-                };
-                // `on_admit` no longer returns victims directly. That logic is now
-                // handled by `cleanup_capacity`.
-                context.eviction_policy.on_admit(&info);
+                let decision = context.eviction_policy.on_admit(&key, cost);
+
+                if let AdmissionDecision::AdmitAndEvict(victims) = decision {
+                  let mut notifications_to_send = Vec::new();
+                  let mut total_cost_released = 0;
+
+                  for victim_key in victims {
+                    let victim_shard = context.store.get_shard(&victim_key);
+                    let mut guard = victim_shard.map.write_sync();
+
+                    if let Some(removed_entry) = guard.remove(&victim_key) {
+                      let victim_cost = removed_entry.cost();
+                      total_cost_released += victim_cost;
+                      context
+                        .metrics
+                        .evicted_by_capacity
+                        .fetch_add(1, Ordering::Relaxed);
+                      if context.notification_sender.is_some() {
+                        notifications_to_send.push((
+                          victim_key.clone(),
+                          removed_entry.value(),
+                          EvictionReason::Capacity,
+                        ));
+                      }
+                    }
+                  }
+
+                  context
+                    .metrics
+                    .current_cost
+                    .fetch_sub(total_cost_released, Ordering::Relaxed);
+
+                  if let Some(sender) = &context.notification_sender {
+                    for notif in notifications_to_send {
+                      let _ = sender.try_send(notif);
+                    }
+                  }
+                }
               }
             }
           }
@@ -134,8 +153,8 @@ impl Janitor {
     }
   }
 
-  /// Removes expired items based on TTL/TTI.
-  fn cleanup_timers<K, V, H>(context: &JanitorContext<K, V, H>)
+  /// Removes expired items based on TTL.
+  fn cleanup_ttl<K, V, H>(context: &JanitorContext<K, V, H>)
   where
     K: Eq + Hash + Clone + Send,
     V: Send + Sync,
@@ -168,6 +187,9 @@ impl Janitor {
       // It's more efficient to retain than to remove one-by-one.
       guard.retain(|key, entry| {
         let key_hash = crate::store::hash_key(&context.store.hasher, key);
+        // If the timer wheel fired for this item's hash, we treat it as expired.
+        // The is_expired() check is redundant and racy, as the janitor tick might
+        // run slightly before the entry's exact expiration timestamp.
         if hashes.contains(&key_hash) {
           // This entry has expired.
           context.eviction_policy.on_remove(key);
@@ -187,6 +209,52 @@ impl Janitor {
           true // Keep in map.
         }
       });
+    }
+  }
+
+  /// Removes expired items based on TTI by sampling.
+  fn cleanup_tti<K, V, H>(context: &JanitorContext<K, V, H>)
+  where
+    K: Eq + Hash + Clone + Send,
+    V: Send + Sync,
+    H: BuildHasher + Clone + Send + Sync,
+  {
+    if let Some(tti) = context.time_to_idle {
+      for shard in context.store.iter_shards() {
+        let mut guard = shard.map.write_sync();
+        let mut victims = Vec::new();
+
+        for (key, entry) in guard.iter().take(JANITOR_EXPIRE_SAMPLE_SIZE) {
+          if entry.is_expired(Some(tti)) && !entry.is_expired(None) {
+            victims.push(key.clone());
+          }
+        }
+
+        for key in victims {
+          if let Some(entry) = guard.remove(&key) {
+            context.eviction_policy.on_remove(&key);
+            context
+              .metrics
+              .evicted_by_tti
+              .fetch_add(1, Ordering::Relaxed);
+            context
+              .metrics
+              .current_cost
+              .fetch_sub(entry.cost(), Ordering::Relaxed);
+
+            // An item expired by TTI might still have a TTL timer. Cancel it.
+            if let Some(wheel) = &context.timer_wheel {
+              if let Some(handle) = &entry.ttl_timer_handle {
+                wheel.lock().cancel(handle);
+              }
+            }
+
+            if let Some(sender) = &context.notification_sender {
+              let _ = sender.try_send((key, entry.value(), EvictionReason::Expired));
+            }
+          }
+        }
+      }
     }
   }
 
@@ -212,7 +280,9 @@ impl Janitor {
         let mut guard = shard.map.write_sync();
 
         if let Some(removed_entry) = guard.remove(&key) {
-          context.eviction_policy.on_remove(&key);
+          // The policy already updated its own state when evict() was called,
+          // so we do not call on_remove() here. We just remove the entry
+          // from the primary cache storage.
           context
             .metrics
             .evicted_by_capacity

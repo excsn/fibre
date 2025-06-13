@@ -1,9 +1,9 @@
 use crate::entry::CacheEntry;
 use crate::entry_api_async::{AsyncEntry, AsyncOccupiedEntry, AsyncVacantEntry};
 use crate::loader::LoadFuture;
-use crate::policy::{AccessEvent, AccessInfo, AdmissionDecision};
+use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
-use crate::{time, Cache, Entry, EvictionReason, MetricsSnapshot};
+use crate::{time, Cache, EvictionReason, MetricsSnapshot};
 
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering;
@@ -15,7 +15,7 @@ use futures_util::future;
 #[cfg(feature = "bulk")]
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
-// --- AsyncCache Implementation ---
+// --- AsyncCache ---
 
 /// A thread-safe, asynchronous cache.
 #[derive(Debug)]
@@ -111,10 +111,8 @@ where
         .shared
         .time_to_live
         .map(|ttl| wheel_guard.schedule(key_hash, ttl));
-      let tti_handle = self
-        .shared
-        .time_to_idle
-        .map(|tti| wheel_guard.schedule(key_hash, tti));
+      // TTI is now handled by sampling in the janitor, not by the timer wheel.
+      let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 
@@ -181,14 +179,11 @@ where
 
     // Schedule this specific TTL on the timer wheel.
     if let Some(wheel) = &self.shared.timer_wheel {
-      let wheel_guard = wheel.lock();
+      let mut wheel_guard = wheel.lock();
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = Some(wheel_guard.schedule(key_hash, ttl));
-      // TTI is still governed by the global setting, if any.
-      let tti_handle = self
-        .shared
-        .time_to_idle
-        .map(|tti| wheel_guard.schedule(key_hash, tti));
+      // TTI is now handled by sampling in the janitor, not by the timer wheel.
+      let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 
@@ -499,8 +494,6 @@ where
   }
 
   /// Removes multiple entries from the cache.
-  ///
-  /// This is more efficient than calling `invalidate` in a loop.
   #[cfg(feature = "bulk")]
   pub async fn invalidate_all<I, Q>(&self, keys: I)
   where

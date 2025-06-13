@@ -1,4 +1,4 @@
-use crate::policy::{AdmissionDecision};
+use crate::policy::AdmissionDecision;
 
 use super::{AccessInfo, CachePolicy};
 
@@ -97,10 +97,7 @@ where
     }
   }
 
-  fn on_admit(&self, info: &AccessInfo<K, V>) -> AdmissionDecision<K> {
-    let key = info.key;
-    let cost = info.entry.cost();
-
+  fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
     // --- ADMISSION ---
     // ARC always admits. The core logic happens here.
 

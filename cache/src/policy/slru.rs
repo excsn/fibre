@@ -134,24 +134,11 @@ impl<K: Eq + Hash + Clone> SlruPolicy<K> {
     None
   }
 
-  /// Internal method for admitting a key with a known cost,
+  //// Internal method for admitting a key with a known cost,
   /// used when the full CacheEntry<V> isn't available or needed.
   pub(crate) fn admit_internal(&self, key: K, cost: u64) {
     let mut prob_guard = self.probationary.lock();
     let prot_guard = self.protected.lock(); // Keep lock to ensure consistency with contains check
-
-    // If item is already in the cache (prob or prot), this is effectively a
-    // "touch" or "cost update" if costs were dynamic, but SLRU on_admit
-    // is simple. Here, we just ensure it's tracked.
-    // Original SLRU on_admit:
-    // if !prot_guard.contains(&key) && !prob_guard.contains(&key) {
-    //    prob_guard.push_front(key.clone(), cost);
-    // }
-    // For an internal promotion, it's less likely to already be in probationary.
-    // If it *is* already in protected, `on_access` should have handled it.
-    // If it was in probationary and now being promoted, it would have been removed
-    // from probationary by `TinyLfu` before this call, and now added to protected.
-    // This `admit_internal` is for adding to *probationary* when promoted to main by TinyLfu.
 
     // The key was a candidate from TinyLfu's window. It's now being admitted to SLRU's
     // probationary segment.
@@ -174,13 +161,14 @@ impl<K: Eq + Hash + Clone> SlruPolicy<K> {
     let mut prob_guard = self.probationary.lock();
     let mut prot_guard = self.protected.lock();
 
+    // If it's in protected, refresh it and update its cost.
     if prot_guard.contains(key) {
-      prot_guard.move_to_front(key);
+      prot_guard.push_front(key.clone(), cost);
       return;
     }
-    if let Some(c) = prob_guard.remove(key) {
-      // Use cost from prob_guard if exists
-      prot_guard.push_front(key.clone(), c);
+    // If it's in probationary, promote it to protected with the new cost.
+    if prob_guard.remove(key).is_some() {
+      prot_guard.push_front(key.clone(), cost);
       self.maintain_capacities(&mut prob_guard, &mut prot_guard);
     }
     // If not in either, it's a new admission, which should go through admit_internal.
@@ -193,32 +181,17 @@ where
   V: Send + Sync,
 {
   fn on_access(&self, info: &AccessInfo<K, V>) {
-    let mut prob_guard = self.probationary.lock();
-    let mut prot_guard = self.protected.lock();
-
-    // If it's in protected, just refresh it and update its cost.
-    if prot_guard.contains(info.key) {
-      // Use push_front, which handles cost updates for existing items.
-      prot_guard.push_front(info.key.clone(), info.entry.cost());
-      return;
-    }
-
-    // If it's in probationary, promote it to protected with the new cost.
-    if prob_guard.remove(info.key).is_some() {
-      prot_guard.push_front(info.key.clone(), info.entry.cost());
-      // Promoting might cause overflow in protected, which triggers demotion.
-      self.maintain_capacities(&mut prob_guard, &mut prot_guard);
-    }
+    self.access_internal(info.key, info.entry.cost());
   }
 
-  fn on_admit(&self, info: &AccessInfo<K, V>) -> AdmissionDecision<K> {
+  fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
     let mut prob_guard = self.probationary.lock();
     let prot_guard = self.protected.lock();
 
     // If item is already in the cache, on_access will handle it.
     // Here we only handle new items.
-    if !prot_guard.contains(info.key) && !prob_guard.contains(info.key) {
-      prob_guard.push_front(info.key.clone(), info.entry.cost());
+    if !prot_guard.contains(key) && !prob_guard.contains(key) {
+      prob_guard.push_front(key.clone(), cost);
     }
 
     AdmissionDecision::Admit // SLRU always admits. Eviction is handled separately.
@@ -287,7 +260,7 @@ mod tests {
   fn new_item_goes_to_probationary() {
     let policy: SlruPolicy<i32> = SlruPolicy::new(10);
     let entry = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
-    policy.on_admit(&access_info_for(&1, &entry));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
 
     assert!(policy.probationary.lock().contains(&1));
     assert!(!policy.protected.lock().contains(&1));
@@ -298,7 +271,7 @@ mod tests {
   fn access_promotes_from_probationary_to_protected() {
     let policy: SlruPolicy<i32> = SlruPolicy::new(10);
     let entry = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
-    policy.on_admit(&access_info_for(&1, &entry));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
 
     policy.on_access(&access_info_for(&1, &entry));
 
@@ -311,11 +284,11 @@ mod tests {
   fn access_refreshes_item_in_protected() {
     let policy: SlruPolicy<i32> = SlruPolicy::new(10); // prob=2, prot=8
     let entry1 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
-    policy.on_admit(&access_info_for(&1, &entry1));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry1.cost());
     policy.on_access(&access_info_for(&1, &entry1)); // 1 is now in protected
 
     let entry2 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
-    policy.on_admit(&access_info_for(&2, &entry2));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &2, entry2.cost());
     policy.on_access(&access_info_for(&2, &entry2)); // 2 is now in protected, LRU of protected is 1
 
     assert_eq!(policy.protected.lock().keys.back(), Some(&1));
@@ -335,14 +308,18 @@ mod tests {
       .map(|_| Arc::new(CacheEntry::new("v".to_string(), 1, None, None)))
       .collect();
     for i in 1..=4 {
-      policy.on_admit(&access_info_for(&i, &entries[(i - 1) as usize]));
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(
+        &policy,
+        &i,
+        entries[(i - 1) as usize].cost(),
+      );
       policy.on_access(&access_info_for(&i, &entries[(i - 1) as usize]));
     }
     assert_eq!(policy.protected.lock().current_total_cost(), 4);
     assert_eq!(policy.probationary.lock().current_total_cost(), 0);
 
     // 2. Insert an item into probationary
-    policy.on_admit(&access_info_for(&5, &entries[4]));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &5, entries[4].cost());
     assert_eq!(policy.probationary.lock().current_total_cost(), 1);
 
     // 3. Access item 5 to promote it. This should cause item 1 (LRU of protected) to be demoted.
@@ -368,7 +345,11 @@ mod tests {
       .map(|_| Arc::new(CacheEntry::new("v".to_string(), 1, None, None)))
       .collect();
     for i in 1..=5 {
-      policy.on_admit(&access_info_for(&i, &entries[(i - 1) as usize]));
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(
+        &policy,
+        &i,
+        entries[(i - 1) as usize].cost(),
+      );
     }
     // Prob has [5, 4, 3, 2, 1], but capacity is 1. Protected is empty.
 
@@ -387,7 +368,11 @@ mod tests {
       .map(|_| Arc::new(CacheEntry::new("v".to_string(), 1, None, None)))
       .collect();
     for i in 1..=4 {
-      policy.on_admit(&access_info_for(&i, &entries[(i - 1) as usize]));
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(
+        &policy,
+        &i,
+        entries[(i - 1) as usize].cost(),
+      );
       policy.on_access(&access_info_for(&i, &entries[(i - 1) as usize]));
     }
     // Now protected has [4, 3, 2, 1], probationary is empty.
@@ -404,8 +389,8 @@ mod tests {
     let policy: SlruPolicy<i32> = SlruPolicy::new(10);
     let entry1 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     let entry2 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
-    policy.on_admit(&access_info_for(&1, &entry1)); // in prob
-    policy.on_admit(&access_info_for(&2, &entry2));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry1.cost()); // in prob
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &2, entry2.cost());
     policy.on_access(&access_info_for(&2, &entry2)); // in prot
 
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_remove(&policy, &1);
@@ -426,8 +411,8 @@ mod tests {
       .collect();
 
     // 1. Victim in probationary
-    policy.on_admit(&access_info_for(&1, &entries[0]));
-    policy.on_admit(&access_info_for(&2, &entries[1]));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entries[0].cost());
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &2, entries[1].cost());
     assert_eq!(
       policy.peek_lru(),
       Some(1),
@@ -481,11 +466,11 @@ mod tests {
     let entry = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
 
     // 1. Insert into probationary
-    policy.on_admit(&access_info_for(&1, &entry));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
     let prob_keys_before = policy.probationary.lock().keys.clone();
 
     // Re-inserting should do nothing
-    policy.on_admit(&access_info_for(&1, &entry));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
     let prob_keys_after = policy.probationary.lock().keys.clone();
     assert_eq!(
       prob_keys_before, prob_keys_after,
@@ -497,7 +482,7 @@ mod tests {
     let prot_keys_before = policy.protected.lock().keys.clone();
 
     // Re-inserting should still do nothing
-    policy.on_admit(&access_info_for(&1, &entry));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
     let prot_keys_after = policy.protected.lock().keys.clone();
     assert_eq!(
       prot_keys_before, prot_keys_after,
@@ -514,11 +499,15 @@ mod tests {
 
     // Fill protected
     for i in 1..=3 {
-      policy.on_admit(&access_info_for(&i, &entries[(i - 1) as usize]));
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(
+        &policy,
+        &i,
+        entries[(i - 1) as usize].cost(),
+      );
       policy.on_access(&access_info_for(&i, &entries[(i - 1) as usize]));
     }
     // Fill probationary
-    policy.on_admit(&access_info_for(&4, &entries[3]));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &4, entries[3].cost());
 
     assert_eq!(policy.probationary.lock().current_total_cost(), 1);
     assert_eq!(policy.protected.lock().current_total_cost(), 3);
@@ -546,7 +535,11 @@ mod tests {
       .map(|_| Arc::new(CacheEntry::new("v".to_string(), 1, None, None)))
       .collect();
     for i in 1..=5 {
-      policy.on_admit(&access_info_for(&i, &entries[(i - 1) as usize]));
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(
+        &policy,
+        &i,
+        entries[(i - 1) as usize].cost(),
+      );
     }
     policy.on_access(&access_info_for(&5, &entries[4])); // Promote 5
 
@@ -570,7 +563,11 @@ mod tests {
       .map(|_| Arc::new(CacheEntry::new("v".to_string(), 1, None, None)))
       .collect();
     for i in 1..=4 {
-      policy.on_admit(&access_info_for(&i, &entries[(i - 1) as usize]));
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(
+        &policy,
+        &i,
+        entries[(i - 1) as usize].cost(),
+      );
       policy.on_access(&access_info_for(&i, &entries[(i - 1) as usize]));
     }
     assert_eq!(policy.protected.lock().current_total_cost(), 4);
@@ -582,7 +579,7 @@ mod tests {
     );
 
     // 2. Insert a new item into probationary
-    policy.on_admit(&access_info_for(&5, &entries[4]));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &5, entries[4].cost());
     assert_eq!(policy.probationary.lock().current_total_cost(), 1);
 
     // 3. Act: Access the probationary item to promote it.
@@ -639,8 +636,8 @@ mod tests {
     let entry1 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     let entry2 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
 
-    policy.on_admit(&access_info_for(&1, &entry1)); // in prob
-    policy.on_admit(&access_info_for(&2, &entry2));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry1.cost()); // in prob
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &2, entry2.cost());
     policy.on_access(&access_info_for(&2, &entry2)); // in prot
 
     assert_eq!(policy.probationary.lock().current_total_cost(), 1);
