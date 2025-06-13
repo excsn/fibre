@@ -1,4 +1,4 @@
-use fibre_cache::{builder::CacheBuilder, policy::null::NullPolicy, AsyncCache, Entry};
+use fibre_cache::{builder::CacheBuilder, policy::null::NullPolicy, AsyncCache, AsyncEntry};
 use std::sync::Arc;
 
 // Helper to create a new async cache with a NullPolicy for testing.
@@ -81,7 +81,7 @@ async fn test_async_entry_api() {
   let cache = new_test_cache(100);
 
   // Test Vacant entry
-  if let Entry::Vacant(entry) = cache.entry("key1".to_string()).await {
+  if let AsyncEntry::Vacant(entry) = cache.entry("key1".to_string()).await {
     // insert is sync as it already holds the lock
     entry.insert(100, 10);
   } else {
@@ -92,7 +92,7 @@ async fn test_async_entry_api() {
   assert_eq!(cache.metrics().current_cost, 10);
 
   // Test Occupied entry
-  if let Entry::Occupied(entry) = cache.entry("key1".to_string()).await {
+  if let AsyncEntry::Occupied(entry) = cache.entry("key1".to_string()).await {
     assert_eq!(entry.key(), "key1");
     assert_eq!(*entry.get(), 100);
   } else {

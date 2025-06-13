@@ -8,14 +8,14 @@ use std::hash::Hash;
 
 /// An eviction policy that evicts the least recently used entries.
 #[derive(Debug)]
-pub struct Lru<K> {
+pub struct LruPolicy<K> {
   // A queue of keys ordered by recent use (front is most recent).
   pub(crate) order: Mutex<VecDeque<K>>,
   // A map for quick O(1) existence checks and cost lookups.
   pub(crate) items: Mutex<HashMap<K, u64>>,
 }
 
-impl<K> Lru<K> {
+impl<K> LruPolicy<K> {
   pub fn new() -> Self {
     Self {
       order: Mutex::new(VecDeque::new()),
@@ -24,7 +24,7 @@ impl<K> Lru<K> {
   }
 }
 
-impl<K, V> CachePolicy<K, V> for Lru<K>
+impl<K, V> CachePolicy<K, V> for LruPolicy<K>
 where
   K: Eq + Hash + Clone + Send + Sync,
   V: Send + Sync,

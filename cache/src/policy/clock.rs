@@ -15,7 +15,7 @@ struct ClockEntry {
 /// An eviction policy based on the Clock (or Second-Chance) algorithm.
 /// It provides an efficient approximation of LRU.
 #[derive(Debug)]
-pub struct Clock<K> {
+pub struct ClockPolicy<K> {
   // A map storing the state of each item.
   items: Mutex<HashMap<K, ClockEntry>>,
   // A vector of keys representing the circular "clock face".
@@ -24,7 +24,7 @@ pub struct Clock<K> {
   hand: Mutex<usize>,
 }
 
-impl<K> Clock<K> {
+impl<K> ClockPolicy<K> {
   pub fn new() -> Self {
     Self {
       items: Mutex::new(HashMap::new()),
@@ -34,7 +34,7 @@ impl<K> Clock<K> {
   }
 }
 
-impl<K, V> CachePolicy<K, V> for Clock<K>
+impl<K, V> CachePolicy<K, V> for ClockPolicy<K>
 where
   K: Eq + Hash + Clone + Send + Sync,
   V: Send + Sync,

@@ -2,7 +2,7 @@ use crate::error::BuildError;
 use crate::handles::{AsyncCache, Cache};
 use crate::loader::Loader;
 use crate::metrics::Metrics;
-use crate::policy::tinylfu::TinyLfu;
+use crate::policy::tinylfu::TinyLfuPolicy;
 use crate::policy::CachePolicy;
 use crate::shared::CacheShared;
 use crate::snapshot::CacheSnapshot;
@@ -226,7 +226,7 @@ impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
       stale_while_revalidate: None,
       janitor_tick_interval: None,
       timer_wheel_tick_duration: None, // Will default to 1s if not set
-      timer_wheel_size: None,    // Will default to 60 if not set
+      timer_wheel_size: None,          // Will default to 60 if not set
       listener: None,
       cache_policy: None,
       loader: None,
@@ -239,6 +239,13 @@ impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
 
 impl<K: Send, V: Send> Default for CacheBuilder<K, V, ahash::RandomState> {
   fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl<K: Send, V: Send> CacheBuilder<K, V, rapidhash::RapidRandomState> {
+  #[cfg(feature = "rapidhash")]
+  pub fn rapidhash() -> Self {
     Self::new()
   }
 }
@@ -307,7 +314,7 @@ where
       if self.capacity == u64::MAX {
         Arc::new(crate::policy::null::NullPolicy)
       } else {
-        Arc::new(TinyLfu::new(self.capacity))
+        Arc::new(TinyLfuPolicy::new(self.capacity))
       }
     });
 

@@ -1,4 +1,4 @@
-use fibre_cache::{builder::CacheBuilder, policy::lru::Lru, EvictionReason};
+use fibre_cache::{builder::CacheBuilder, policy::lru::LruPolicy, EvictionReason};
 use std::{sync::{mpsc, Arc}, thread, time::Duration};
 
 // Use std::sync::mpsc for synchronous tests. It's simpler and clearer.
@@ -19,7 +19,7 @@ fn test_sync_listener_for_capacity() {
     let (tx, rx) = mpsc::channel();
     let cache = CacheBuilder::default()
         .capacity(2)
-        .cache_policy(Lru::new())
+        .cache_policy(LruPolicy::new())
         .eviction_listener(TestListener { sender: tx })
         .build()
         .unwrap();

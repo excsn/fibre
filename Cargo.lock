@@ -283,6 +283,7 @@ dependencies = [
  "rand",
  "rand_distr",
  "rand_pcg",
+ "rapidhash",
  "rayon",
  "serde",
  "tokio",
@@ -711,6 +712,12 @@ checksum = "b48ac3f7ffaab7fac4d2376632268aa5f89abdb55f7ebf8f4d11fffccb2320f7"
 dependencies = [
  "rand_core",
 ]
+
+[[package]]
+name = "rapidhash"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9813f789f95ee4fe6b4d01834404d7cccacbc3f6c029343af910b3c2835eb9f1"
 
 [[package]]
 name = "rayon"

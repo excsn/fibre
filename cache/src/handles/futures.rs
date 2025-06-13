@@ -3,11 +3,12 @@ use crate::entry_api_async::{AsyncEntry, AsyncOccupiedEntry, AsyncVacantEntry};
 use crate::loader::LoadFuture;
 use crate::policy::{AccessEvent, AccessInfo, AdmissionDecision};
 use crate::shared::CacheShared;
-use crate::{Cache, Entry, EvictionReason, MetricsSnapshot};
+use crate::{time, Cache, Entry, EvictionReason, MetricsSnapshot};
 
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt};
 use futures_util::future;
@@ -122,6 +123,79 @@ where
     let old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
 
     // --- NEW: Cancel timers for the replaced entry ---
+    if let Some(entry) = old_entry {
+      if let Some(wheel) = &self.shared.timer_wheel {
+        let mut wheel_guard = wheel.lock();
+        if let Some(handle) = &entry.ttl_timer_handle {
+          wheel_guard.cancel(handle);
+        }
+        if let Some(handle) = &entry.tti_timer_handle {
+          wheel_guard.cancel(handle);
+        }
+      }
+      let old_cost = entry.cost();
+      self
+        .shared
+        .metrics
+        .current_cost
+        .fetch_sub(old_cost, Ordering::Relaxed);
+    }
+
+    let _ = shard
+      .event_buffer_tx
+      .try_send(AccessEvent::Write(key, cost));
+
+    self.shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
+    self
+      .shared
+      .metrics
+      .keys_admitted
+      .fetch_add(1, Ordering::Relaxed);
+    self
+      .shared
+      .metrics
+      .current_cost
+      .fetch_add(cost, Ordering::Relaxed);
+    self
+      .shared
+      .metrics
+      .total_cost_added
+      .fetch_add(cost, Ordering::Relaxed);
+  }
+
+  /// Asynchronously inserts a key-value pair into the cache with a specific cost
+  /// and Time-to-Live (TTL).
+  ///
+  /// This TTL overrides any global TTL that was configured on the cache builder.
+  pub async fn insert_with_ttl(&self, key: K, value: V, cost: u64, ttl: Duration)
+  where
+    K: Clone + Sync,
+    V: Sync,
+    H: Send + Sync,
+  {
+    // Calculate the specific expiration time for this entry.
+    let expires_at = time::now_duration().as_nanos() as u64 + ttl.as_nanos() as u64;
+
+    let mut new_cache_entry =
+      CacheEntry::new_with_custom_expiry(value, cost, expires_at, self.shared.time_to_idle);
+
+    // Schedule this specific TTL on the timer wheel.
+    if let Some(wheel) = &self.shared.timer_wheel {
+      let wheel_guard = wheel.lock();
+      let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+      let ttl_handle = Some(wheel_guard.schedule(key_hash, ttl));
+      // TTI is still governed by the global setting, if any.
+      let tti_handle = self
+        .shared
+        .time_to_idle
+        .map(|tti| wheel_guard.schedule(key_hash, tti));
+      new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
+    }
+
+    let shard = self.shared.store.get_shard(&key);
+    let mut guard = shard.map.write_async().await;
+    let old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
+
     if let Some(entry) = old_entry {
       if let Some(wheel) = &self.shared.timer_wheel {
         let mut wheel_guard = wheel.lock();

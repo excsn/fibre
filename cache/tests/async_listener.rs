@@ -1,4 +1,4 @@
-use fibre_cache::{builder::CacheBuilder, policy::lru::Lru, EvictionReason};
+use fibre_cache::{builder::CacheBuilder, policy::lru::LruPolicy, EvictionReason};
 // Use a channel that can be sent from a sync thread and received on an async task.
 use tokio::sync::mpsc;
 use std::{sync::Arc, time::Duration};
@@ -20,7 +20,7 @@ async fn test_async_listener_for_capacity() {
     let (tx, mut rx) = mpsc::channel(10);
     let cache = CacheBuilder::default()
         .capacity(2)
-        .cache_policy(Lru::new())
+        .cache_policy(LruPolicy::new())
         .eviction_listener(TestListener { sender: tx })
         .build_async()
         .unwrap();

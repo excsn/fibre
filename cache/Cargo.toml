@@ -15,6 +15,7 @@ categories = ["caching", "concurrency", "asynchronous", "data-structures", "memo
 fibre = { version = "^0", path = "../channels" }
 
 ahash = "^0.8"
+rapidhash = { version = "^1.4", optional = true }
 once_cell = "^1.17"
 
 # Core dependencies for concurrency
@@ -40,12 +41,13 @@ rand_distr = "^0.5"
 rand_pcg = "^0.9"
 
 [features]
-full = ["serde", "random", "bulk", "tokio"]
+full = ["serde", "random", "bulk", "tokio", "rapidhash"]
 default = ["full"]
 serde = ["dep:serde"]
 random = ["dep:rand"]
 bulk = ["dep:rayon"]
 tokio = ["dep:tokio"]
+rapidhash = ["dep:rapidhash"]
 
 [[bench]]
 name = "async_basic_ops"

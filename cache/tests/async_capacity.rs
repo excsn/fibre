@@ -1,4 +1,4 @@
-use fibre_cache::{builder::CacheBuilder, policy::lru::Lru};
+use fibre_cache::{builder::CacheBuilder, policy::lru::LruPolicy};
 use tokio::time::{sleep, Duration};
 
 const JANITOR_TICK: Duration = Duration::from_millis(50);
@@ -8,7 +8,7 @@ const JANITOR_WAIT_MULTIPLIER: u32 = 4; // How many tick intervals to wait
 async fn test_async_janitor_evicts_on_capacity() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(10)
-    .cache_policy(Lru::new())
+    .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()
     .unwrap();
@@ -36,7 +36,7 @@ async fn test_async_janitor_evicts_on_capacity() {
 async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(5)
-    .cache_policy(Lru::new())
+    .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()
     .unwrap();
@@ -81,7 +81,7 @@ async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
 async fn test_async_janitor_evicts_on_capacity_with_lru() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(10)
-    .cache_policy(Lru::new())
+    .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()
     .unwrap();
@@ -170,7 +170,7 @@ async fn test_async_no_eviction_if_at_capacity() {
   let cache_capacity = 5;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(cache_capacity)
-    .cache_policy(Lru::new())
+    .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()
     .unwrap();
@@ -211,7 +211,7 @@ async fn test_async_janitor_cleans_up_large_overflow() {
   let cache_capacity = 5;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(cache_capacity)
-    .cache_policy(Lru::new())
+    .cache_policy(LruPolicy::new())
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()
     .unwrap();

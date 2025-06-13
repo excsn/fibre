@@ -16,7 +16,7 @@ struct SieveEntry {
 /// An eviction policy based on the SIEVE algorithm (SImple and Efficent VEsion).
 /// It is scan-resistant and has very low overhead.
 #[derive(Debug)]
-pub struct Sieve<K> {
+pub struct SievePolicy<K> {
   // A queue of keys ordered by insertion time (front is most recent).
   order: Mutex<VecDeque<K>>,
   // A map for quick O(1) lookups of an item's state.
@@ -25,7 +25,7 @@ pub struct Sieve<K> {
   hand: Mutex<usize>,
 }
 
-impl<K> Sieve<K> {
+impl<K> SievePolicy<K> {
   pub fn new() -> Self {
     Self {
       order: Mutex::new(VecDeque::new()),
@@ -35,7 +35,7 @@ impl<K> Sieve<K> {
   }
 }
 
-impl<K, V> CachePolicy<K, V> for Sieve<K>
+impl<K, V> CachePolicy<K, V> for SievePolicy<K>
 where
   K: Eq + Hash + Clone + Send + Sync,
   V: Send + Sync,

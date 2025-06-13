@@ -60,7 +60,7 @@ fn setup_fn(
   let cfg = cfg.clone();
   Box::pin(async move {
     let load_counter = Arc::new(AtomicUsize::new(0));
-    let cache = Arc::new(
+    let cache: Arc<AsyncCache<u64, u64>> = Arc::new(
       CacheBuilder::default()
         .capacity(cfg.capacity as u64)
         .async_loader(move |key: u64| {

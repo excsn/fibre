@@ -1,4 +1,4 @@
-use super::{slru::Slru, AccessInfo, CachePolicy};
+use super::{slru::SlruPolicy, AccessInfo, CachePolicy};
 use crate::policy::slru::LruList;
 use crate::policy::AdmissionDecision;
 
@@ -8,16 +8,16 @@ use std::hash::Hash;
 /// A policy that implements the W-TinyLFU scheme described in the paper.
 /// It composes a "window" LRU cache with a "main" SLRU cache.
 #[derive(Debug)]
-pub struct TinyLfu<K: Eq + Hash + Clone> {
+pub struct TinyLfuPolicy<K: Eq + Hash + Clone> {
   sketch: cms::CountMinSketch,
   // The Window Cache (LRU, no admission policy) - ~1% of capacity
   window: Mutex<LruList<K>>,
   // The Main Cache (SLRU Policy) - ~99% of capacity
-  main: Slru<K>,
+  main: SlruPolicy<K>,
   window_target_cost: u64,
 }
 
-impl<K: Eq + Hash + Clone> TinyLfu<K> {
+impl<K: Eq + Hash + Clone> TinyLfuPolicy<K> {
   pub fn new(total_cache_cost_capacity: u64) -> Self {
     let cms_reset_threshold = (total_cache_cost_capacity * 10).max(100);
 
@@ -34,13 +34,13 @@ impl<K: Eq + Hash + Clone> TinyLfu<K> {
     Self {
       sketch: cms::CountMinSketch::new(cms_reset_threshold as usize),
       window: Mutex::new(LruList::new()),
-      main: Slru::new(main_cache_cost),
+      main: SlruPolicy::new(main_cache_cost),
       window_target_cost,
     }
   }
 }
 
-impl<K, V> CachePolicy<K, V> for TinyLfu<K>
+impl<K, V> CachePolicy<K, V> for TinyLfuPolicy<K>
 where
   K: Eq + Hash + Clone + Send + Sync + 'static,
   V: Send + Sync + 'static,
@@ -146,7 +146,7 @@ where
           let cost_to_free_from_main = new_main_slru_current_cost - main_slru_total_capacity;
           if cost_to_free_from_main > 0 {
             let (mut slru_victims, _cost_freed_by_slru) =
-              <Slru<K> as CachePolicy<K, V>>::evict(&self.main, cost_to_free_from_main);
+              <SlruPolicy<K> as CachePolicy<K, V>>::evict(&self.main, cost_to_free_from_main);
             immediate_victims.append(&mut slru_victims);
           }
         }
@@ -169,7 +169,7 @@ where
     if self.window.lock().remove(key).is_some() {
       return;
     }
-    <Slru<K> as CachePolicy<K, V>>::on_remove(&self.main, key);
+    <SlruPolicy<K> as CachePolicy<K, V>>::on_remove(&self.main, key);
   }
 
   fn evict(&self, cost_to_free: u64) -> (Vec<K>, u64) {
@@ -182,7 +182,7 @@ where
     // We could also consider evicting from the window if main is empty,
     // but typically main should be the larger pool to draw from.
     let (main_victims, main_cost_freed) =
-      <Slru<K> as CachePolicy<K, V>>::evict(&self.main, cost_to_free);
+      <SlruPolicy<K> as CachePolicy<K, V>>::evict(&self.main, cost_to_free);
 
     // If main_cost_freed is still less than cost_to_free, and window has items,
     // we might consider also taking from window's LRU.
@@ -192,7 +192,7 @@ where
 
   fn clear(&self) {
     self.window.lock().clear();
-    <Slru<K> as CachePolicy<K, V>>::clear(&self.main);
+    <SlruPolicy<K> as CachePolicy<K, V>>::clear(&self.main);
     self.sketch.clear();
   }
 }
@@ -293,7 +293,7 @@ mod tests {
 
   #[test]
   fn test_new_item_goes_to_window() {
-    let policy: TinyLfu<i32> = TinyLfu::new(101);
+    let policy: TinyLfuPolicy<i32> = TinyLfuPolicy::new(101);
     let entry = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
 
     policy.on_admit(&access_info_for(&1, &entry));
@@ -304,7 +304,7 @@ mod tests {
 
   #[test]
   fn test_window_overflow_causes_rejection() {
-    let policy: TinyLfu<i32> = TinyLfu::new(101); // window=1, main=100
+    let policy: TinyLfuPolicy<i32> = TinyLfuPolicy::new(101); // window=1, main=100
 
     // 1. Prime the main cache with a high-frequency item.
     let valuable_entry = Arc::new(CacheEntry::new("valuable".to_string(), 1, None, None));
@@ -312,11 +312,11 @@ mod tests {
       // FIX: The sketch must be primed along with the SLRU cache to simulate
       // a truly valuable item. The original test forgot this step.
       policy.sketch.increment(&100);
-      <Slru<i32> as CachePolicy<i32, String>>::on_admit(
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(
         &policy.main,
         &access_info_for(&100, &valuable_entry),
       );
-      <Slru<i32> as CachePolicy<i32, String>>::on_access(
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(
         &policy.main,
         &access_info_for(&100, &valuable_entry),
       );
@@ -332,7 +332,7 @@ mod tests {
     policy.on_admit(&access_info_for(&2, &another_entry));
 
     // Manually trigger the eviction that the cache would do to process the overflow.
-    <TinyLfu<i32> as CachePolicy<i32, String>>::evict(&policy, 0);
+    <TinyLfuPolicy<i32> as CachePolicy<i32, String>>::evict(&policy, 0);
 
     // Since item 1 (freq=1) is less frequent than item 100 (freq=5), it should be
     // rejected for promotion and simply dropped.
@@ -344,11 +344,11 @@ mod tests {
 
   #[test]
   fn test_window_overflow_causes_admission() {
-    let policy: TinyLfu<i32> = TinyLfu::new(101); // window=1, main=100
+    let policy: TinyLfuPolicy<i32> = TinyLfuPolicy::new(101); // window=1, main=100
 
     // 1. Prime the main cache with a low-frequency item.
     let weak_entry = Arc::new(CacheEntry::new("weak".to_string(), 1, None, None));
-    <Slru<i32> as CachePolicy<i32, String>>::on_admit(
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(
       &policy.main,
       &access_info_for(&100, &weak_entry),
     );
@@ -365,7 +365,7 @@ mod tests {
     policy.on_admit(&access_info_for(&2, &another_entry));
 
     // Manually trigger the eviction that the cache would do.
-    <TinyLfu<i32> as CachePolicy<i32, String>>::evict(&policy, 0);
+    <TinyLfuPolicy<i32> as CachePolicy<i32, String>>::evict(&policy, 0);
 
     // Since candidate 1 (freq=5) is more frequent than victim 100 (freq=1),
     // it should be admitted to the main cache's probationary segment.
@@ -375,7 +375,7 @@ mod tests {
   #[test]
   fn test_admission_logic_rejects_infrequent_item() {
     // Setup: TinyLfu with window=1, main=100.
-    let policy: TinyLfu<i32> = TinyLfu::new(101); // window_target_cost = 1
+    let policy: TinyLfuPolicy<i32> = TinyLfuPolicy::new(101); // window_target_cost = 1
 
     // 1. Prime the main cache with a "hot victim" (key 100).
     // let hot_victim_entry = Arc::new(CacheEntry::new("hot".to_string(), 1, None, None)); // Entry not needed for policy-only test
@@ -435,16 +435,16 @@ mod tests {
     // if the window logic doesn't free enough cost.
 
     // Setup: TinyLfu with window=1, main=100.
-    let policy: TinyLfu<i32> = TinyLfu::new(101);
+    let policy: TinyLfuPolicy<i32> = TinyLfuPolicy::new(101);
 
     // 1. Prime the main cache with two items.
     let victim1_entry = Arc::new(CacheEntry::new("v1".to_string(), 5, None, None));
     let victim2_entry = Arc::new(CacheEntry::new("v2".to_string(), 5, None, None));
-    <Slru<i32> as CachePolicy<i32, String>>::on_admit(
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(
       &policy.main,
       &access_info_for(&100, &victim1_entry),
     );
-    <Slru<i32> as CachePolicy<i32, String>>::on_admit(
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(
       &policy.main,
       &access_info_for(&101, &victim2_entry),
     );
@@ -469,7 +469,7 @@ mod tests {
     // The `cost_to_free` requirement is now 9. The function MUST continue
     // and evict from the main cache to free the remaining cost.
     let (victims, total_cost_freed) =
-      <TinyLfu<i32> as CachePolicy<i32, String>>::evict(&policy, 10);
+      <TinyLfuPolicy<i32> as CachePolicy<i32, String>>::evict(&policy, 10);
 
     // 5. Assert the outcome.
     // We expect the rejected candidate (1) AND victims from main ({100, 101}).

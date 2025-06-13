@@ -79,14 +79,14 @@ impl<K: Eq + Hash + Clone> LruList<K> {
 /// An eviction policy based on the Segmented LRU algorithm.
 /// It maintains a probationary and a protected segment to resist cache scans.
 #[derive(Debug)]
-pub struct Slru<K: Eq + Hash + Clone> {
+pub struct SlruPolicy<K: Eq + Hash + Clone> {
   pub(crate) probationary: Mutex<LruList<K>>,
   pub(crate) protected: Mutex<LruList<K>>,
   pub(crate) prob_capacity: u64,
   pub(crate) prot_capacity: u64,
 }
 
-impl<K: Eq + Hash + Clone> Slru<K> {
+impl<K: Eq + Hash + Clone> SlruPolicy<K> {
   pub fn new(capacity: u64) -> Self {
     let prob_capacity = if capacity == 0 {
       0
@@ -187,7 +187,7 @@ impl<K: Eq + Hash + Clone> Slru<K> {
   }
 }
 
-impl<K, V> CachePolicy<K, V> for Slru<K>
+impl<K, V> CachePolicy<K, V> for SlruPolicy<K>
 where
   K: Eq + Hash + Clone + Send + Sync,
   V: Send + Sync,
@@ -285,7 +285,7 @@ mod tests {
 
   #[test]
   fn new_item_goes_to_probationary() {
-    let policy: Slru<i32> = Slru::new(10);
+    let policy: SlruPolicy<i32> = SlruPolicy::new(10);
     let entry = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     policy.on_admit(&access_info_for(&1, &entry));
 
@@ -296,7 +296,7 @@ mod tests {
 
   #[test]
   fn access_promotes_from_probationary_to_protected() {
-    let policy: Slru<i32> = Slru::new(10);
+    let policy: SlruPolicy<i32> = SlruPolicy::new(10);
     let entry = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     policy.on_admit(&access_info_for(&1, &entry));
 
@@ -309,7 +309,7 @@ mod tests {
 
   #[test]
   fn access_refreshes_item_in_protected() {
-    let policy: Slru<i32> = Slru::new(10); // prob=2, prot=8
+    let policy: SlruPolicy<i32> = SlruPolicy::new(10); // prob=2, prot=8
     let entry1 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     policy.on_admit(&access_info_for(&1, &entry1));
     policy.on_access(&access_info_for(&1, &entry1)); // 1 is now in protected
@@ -328,7 +328,7 @@ mod tests {
 
   #[test]
   fn promotion_causes_demotion_when_protected_is_full() {
-    let policy: Slru<i32> = Slru::new(5); // prob=1, prot=4
+    let policy: SlruPolicy<i32> = SlruPolicy::new(5); // prob=1, prot=4
 
     // 1. Fill protected segment
     let entries: Vec<_> = (1..=5)
@@ -363,7 +363,7 @@ mod tests {
 
   #[test]
   fn evict_from_probationary_first() {
-    let policy: Slru<i32> = Slru::new(5); // prob=1, prot=4
+    let policy: SlruPolicy<i32> = SlruPolicy::new(5); // prob=1, prot=4
     let entries: Vec<_> = (1..=5)
       .map(|_| Arc::new(CacheEntry::new("v".to_string(), 1, None, None)))
       .collect();
@@ -372,7 +372,7 @@ mod tests {
     }
     // Prob has [5, 4, 3, 2, 1], but capacity is 1. Protected is empty.
 
-    let (victims, _) = <Slru<i32> as CachePolicy<i32, String>>::evict(&policy, 1);
+    let (victims, _) = <SlruPolicy<i32> as CachePolicy<i32, String>>::evict(&policy, 1);
 
     // The `evict` call first calls `maintain_capacities`, then evicts from probationary.
     // The LRU item is 1.
@@ -382,7 +382,7 @@ mod tests {
 
   #[test]
   fn evict_from_protected_if_probationary_is_empty() {
-    let policy: Slru<i32> = Slru::new(5); // prob=1, prot=4
+    let policy: SlruPolicy<i32> = SlruPolicy::new(5); // prob=1, prot=4
     let entries: Vec<_> = (1..=4)
       .map(|_| Arc::new(CacheEntry::new("v".to_string(), 1, None, None)))
       .collect();
@@ -392,7 +392,7 @@ mod tests {
     }
     // Now protected has [4, 3, 2, 1], probationary is empty.
 
-    let (victims, _) = <Slru<i32> as CachePolicy<i32, String>>::evict(&policy, 1);
+    let (victims, _) = <SlruPolicy<i32> as CachePolicy<i32, String>>::evict(&policy, 1);
 
     // LRU of protected is 1.
     assert_eq!(victims, vec![1]);
@@ -401,17 +401,17 @@ mod tests {
 
   #[test]
   fn on_remove_cleans_up_state() {
-    let policy: Slru<i32> = Slru::new(10);
+    let policy: SlruPolicy<i32> = SlruPolicy::new(10);
     let entry1 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     let entry2 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     policy.on_admit(&access_info_for(&1, &entry1)); // in prob
     policy.on_admit(&access_info_for(&2, &entry2));
     policy.on_access(&access_info_for(&2, &entry2)); // in prot
 
-    <Slru<i32> as CachePolicy<i32, String>>::on_remove(&policy, &1);
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_remove(&policy, &1);
     assert!(!policy.probationary.lock().contains(&1));
 
-    <Slru<i32> as CachePolicy<i32, String>>::on_remove(&policy, &2);
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_remove(&policy, &2);
     assert!(!policy.protected.lock().contains(&2));
 
     assert_eq!(policy.probationary.lock().current_total_cost(), 0);
@@ -420,7 +420,7 @@ mod tests {
 
   #[test]
   fn peek_lru_finds_correct_victim() {
-    let policy: Slru<i32> = Slru::new(5); // prob=1, prot=4
+    let policy: SlruPolicy<i32> = SlruPolicy::new(5); // prob=1, prot=4
     let entries: Vec<_> = (1..=2)
       .map(|_| Arc::new(CacheEntry::new("v".to_string(), 1, None, None)))
       .collect();
@@ -455,29 +455,29 @@ mod tests {
   #[test]
   fn slru_with_small_capacity_allocates_correctly() {
     // Capacity 5 -> 20% is 1. prob_cap=1, prot_cap=4.
-    let policy_5 = Slru::<i32>::new(5);
+    let policy_5 = SlruPolicy::<i32>::new(5);
     assert_eq!(policy_5.prob_capacity, 1);
     assert_eq!(policy_5.prot_capacity, 4);
 
     // Capacity 4 -> 20% is 0.8, rounds to 1. prob_cap=1, prot_cap=3.
-    let policy_4 = Slru::<i32>::new(4);
+    let policy_4 = SlruPolicy::<i32>::new(4);
     assert_eq!(policy_4.prob_capacity, 1);
     assert_eq!(policy_4.prot_capacity, 3);
 
     // Capacity 1 -> 20% is 0.2, rounds to 0, but is max(1). prob_cap=1, prot_cap=0.
-    let policy_1 = Slru::<i32>::new(1);
+    let policy_1 = SlruPolicy::<i32>::new(1);
     assert_eq!(policy_1.prob_capacity, 1);
     assert_eq!(policy_1.prot_capacity, 0);
 
     // Capacity 0 -> prob_cap=0, prot_cap=0.
-    let policy_0 = Slru::<i32>::new(0);
+    let policy_0 = SlruPolicy::<i32>::new(0);
     assert_eq!(policy_0.prob_capacity, 0);
     assert_eq!(policy_0.prot_capacity, 0);
   }
 
   #[test]
   fn reinsert_of_existing_key_is_noop() {
-    let policy: Slru<i32> = Slru::new(10);
+    let policy: SlruPolicy<i32> = SlruPolicy::new(10);
     let entry = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
 
     // 1. Insert into probationary
@@ -507,7 +507,7 @@ mod tests {
 
   #[test]
   fn evict_empties_probationary_then_protected() {
-    let policy: Slru<i32> = Slru::new(4); // prob=1, prot=3
+    let policy: SlruPolicy<i32> = SlruPolicy::new(4); // prob=1, prot=3
     let entries: Vec<_> = (1..=4)
       .map(|_| Arc::new(CacheEntry::new("v".to_string(), 1, None, None)))
       .collect();
@@ -525,7 +525,7 @@ mod tests {
 
     // Evict 3 items. Should take 1 from prob, and 2 from prot.
     // Prob victim: 4. Prot victims: 1, 2.
-    let (victims, cost_freed) = <Slru<i32> as CachePolicy<i32, String>>::evict(&policy, 3);
+    let (victims, cost_freed) = <SlruPolicy<i32> as CachePolicy<i32, String>>::evict(&policy, 3);
 
     assert_eq!(cost_freed, 3);
     assert_eq!(
@@ -541,7 +541,7 @@ mod tests {
 
   #[test]
   fn evict_more_than_total_cost_clears_everything() {
-    let policy: Slru<i32> = Slru::new(5);
+    let policy: SlruPolicy<i32> = SlruPolicy::new(5);
     let entries: Vec<_> = (1..=5)
       .map(|_| Arc::new(CacheEntry::new("v".to_string(), 1, None, None)))
       .collect();
@@ -551,7 +551,7 @@ mod tests {
     policy.on_access(&access_info_for(&5, &entries[4])); // Promote 5
 
     // Request to free a huge amount of cost
-    let (victims, cost_freed) = <Slru<i32> as CachePolicy<i32, String>>::evict(&policy, 100);
+    let (victims, cost_freed) = <SlruPolicy<i32> as CachePolicy<i32, String>>::evict(&policy, 100);
 
     assert_eq!(cost_freed, 5, "Should free the cost of all items");
     assert_eq!(victims.len(), 5, "Should evict all 5 items");
@@ -563,7 +563,7 @@ mod tests {
 
   #[test]
   fn evict_with_zero_cost_triggers_demotion() {
-    let policy: Slru<i32> = Slru::new(5); // prob=1, prot=4
+    let policy: SlruPolicy<i32> = SlruPolicy::new(5); // prob=1, prot=4
 
     // 1. Fill protected segment to its capacity of 4
     let entries: Vec<_> = (1..=5)
@@ -622,20 +622,20 @@ mod tests {
     );
 
     // 5. Calling evict(0) now should be a no-op as capacities are correct.
-    let (victims, cost_freed) = <Slru<i32> as CachePolicy<i32, String>>::evict(&policy, 0);
+    let (victims, cost_freed) = <SlruPolicy<i32> as CachePolicy<i32, String>>::evict(&policy, 0);
     assert!(victims.is_empty());
     assert_eq!(cost_freed, 0);
   }
 
   #[test]
   fn peek_lru_on_empty_returns_none() {
-    let policy: Slru<i32> = Slru::new(10);
+    let policy: SlruPolicy<i32> = SlruPolicy::new(10);
     assert!(policy.peek_lru().is_none());
   }
 
   #[test]
   fn clear_removes_all_items_from_both_segments() {
-    let policy: Slru<i32> = Slru::new(10);
+    let policy: SlruPolicy<i32> = SlruPolicy::new(10);
     let entry1 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     let entry2 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
 
@@ -646,7 +646,7 @@ mod tests {
     assert_eq!(policy.probationary.lock().current_total_cost(), 1);
     assert_eq!(policy.protected.lock().current_total_cost(), 1);
 
-    <Slru<i32> as CachePolicy<i32, String>>::clear(&policy);
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::clear(&policy);
 
     assert_eq!(policy.probationary.lock().current_total_cost(), 0);
     assert_eq!(policy.protected.lock().current_total_cost(), 0);

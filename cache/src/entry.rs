@@ -63,6 +63,24 @@ impl<V> CacheEntry<V> {
     }
   }
 
+  /// Creates a new `CacheEntry` with a specific expiration timestamp.
+  pub(crate) fn new_with_custom_expiry(
+    value: V,
+    cost: u64,
+    expires_at: u64, // Expiration time in nanoseconds since CACHE_EPOCH
+    tti: Option<Duration>,
+  ) -> Self {
+    let last_accessed = tti.map_or(0, |_| time::now_duration().as_nanos() as u64);
+    Self {
+      value: Arc::new(value),
+      cost,
+      expires_at: AtomicU64::new(expires_at),
+      last_accessed: AtomicU64::new(last_accessed),
+      ttl_timer_handle: None,
+      tti_timer_handle: None,
+    }
+  }
+
   /// Creates a new `CacheEntry` with a pre-existing value Arc and cost.
   /// Used by the janitor to create dummy entries for policy admission.
   pub(crate) fn new_with_cost(value: Arc<V>, cost: u64) -> Self {

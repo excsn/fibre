@@ -7,12 +7,12 @@ mod lru {
   use std::time::Duration;
 
   use super::*;
-  use fibre_cache::policy::lru::Lru;
+  use fibre_cache::policy::lru::LruPolicy;
   #[test]
   fn test_lru_eviction_logic() {
     let cache = CacheBuilder::default()
       .capacity(3)
-      .cache_policy(Lru::new())
+      .cache_policy(LruPolicy::new())
       .janitor_tick_interval(Duration::from_millis(10))
       .build()
       .unwrap();
@@ -78,13 +78,13 @@ mod sieve {
   use std::time::Duration;
 
   use super::*;
-  use fibre_cache::policy::sieve::Sieve;
+  use fibre_cache::policy::sieve::SievePolicy;
 
   #[test]
   fn test_sieve_eviction_logic() {
     let cache = CacheBuilder::default()
       .capacity(3)
-      .cache_policy(Sieve::new())
+      .cache_policy(SievePolicy::new())
       .janitor_tick_interval(Duration::from_millis(10))
       .build()
       .unwrap();
@@ -111,7 +111,7 @@ mod tinylfu {
   use std::time::Duration;
 
   use super::*;
-  use fibre_cache::policy::tinylfu::TinyLfu;
+  use fibre_cache::policy::tinylfu::TinyLfuPolicy;
 
   // Helper to build a test cache with a fast janitor, which is now
   // essential for testing capacity-based eviction.
@@ -119,7 +119,7 @@ mod tinylfu {
     CacheBuilder::default()
       .capacity(capacity)
       // The default policy for a bounded cache is TinyLfu, but we are explicit for clarity.
-      .cache_policy(TinyLfu::new(capacity))
+      .cache_policy(TinyLfuPolicy::new(capacity))
       .janitor_tick_interval(Duration::from_millis(10))
       .build()
       .unwrap()
@@ -289,7 +289,7 @@ mod slru {
   use std::time::Duration;
 
   use super::*;
-  use fibre_cache::policy::slru::Slru;
+  use fibre_cache::policy::slru::SlruPolicy;
 
   #[test]
   fn test_slru_promotion_and_eviction() {
@@ -297,7 +297,7 @@ mod slru {
     // FIX 1: Configure a fast janitor so it runs quickly for the test.
     let cache = CacheBuilder::default()
       .capacity(4)
-      .cache_policy(Slru::new(4))
+      .cache_policy(SlruPolicy::new(4))
       .janitor_tick_interval(Duration::from_millis(10)) // Add this line
       .build()
       .unwrap();
