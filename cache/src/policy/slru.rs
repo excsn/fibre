@@ -1,80 +1,9 @@
-use parking_lot::Mutex;
-use std::collections::{HashMap, VecDeque};
-use std::hash::Hash;
-
 use super::{AccessInfo, CachePolicy};
+use crate::policy::lru_list::LruList;
 use crate::policy::AdmissionDecision;
 
-// A self-contained, cost-based LRU list helper.
-#[derive(Debug)]
-pub(crate) struct LruList<K: Eq + Hash + Clone> {
-  pub(crate) keys: VecDeque<K>,
-  pub(crate) lookup: HashMap<K, u64>,
-  current_cost: u64,
-}
-
-impl<K: Eq + Hash + Clone> LruList<K> {
-  pub fn new() -> Self {
-    Self {
-      keys: VecDeque::new(),
-      lookup: HashMap::new(),
-      current_cost: 0,
-    }
-  }
-
-  pub fn contains(&self, key: &K) -> bool {
-    self.lookup.contains_key(key)
-  }
-
-  pub fn current_total_cost(&self) -> u64 {
-    self.current_cost
-  }
-
-  pub fn push_front(&mut self, key: K, cost: u64) {
-    if let Some(old_cost) = self.lookup.insert(key.clone(), cost) {
-      self.current_cost = self.current_cost.saturating_sub(old_cost) + cost;
-      if let Some(pos) = self.keys.iter().position(|k| k == &key) {
-        self.keys.remove(pos);
-      }
-    } else {
-      self.current_cost += cost;
-    }
-    self.keys.push_front(key);
-  }
-
-  pub fn move_to_front(&mut self, key: &K) {
-    if let Some(pos) = self.keys.iter().position(|k| k == key) {
-      if let Some(k_val) = self.keys.remove(pos) {
-        self.keys.push_front(k_val);
-      }
-    }
-  }
-
-  pub fn pop_back(&mut self) -> Option<(K, u64)> {
-    if let Some(key) = self.keys.pop_back() {
-      if let Some(cost) = self.lookup.remove(&key) {
-        self.current_cost = self.current_cost.saturating_sub(cost);
-        return Some((key, cost));
-      }
-    }
-    None
-  }
-
-  pub fn remove(&mut self, key: &K) -> Option<u64> {
-    if let Some(cost) = self.lookup.remove(key) {
-      self.keys.retain(|k| k != key);
-      self.current_cost = self.current_cost.saturating_sub(cost);
-      return Some(cost);
-    }
-    None
-  }
-
-  pub fn clear(&mut self) {
-    self.keys.clear();
-    self.lookup.clear();
-    self.current_cost = 0;
-  }
-}
+use parking_lot::Mutex;
+use std::hash::Hash;
 
 /// An eviction policy based on the Segmented LRU algorithm.
 /// It maintains a probationary and a protected segment to resist cache scans.
@@ -121,14 +50,14 @@ impl<K: Eq + Hash + Clone> SlruPolicy<K> {
   pub(crate) fn peek_lru(&self) -> Option<K> {
     let prob_guard = self.probationary.lock();
     // Prioritize evicting from the probationary segment's LRU end.
-    if let Some(key) = prob_guard.keys.back() {
-      return Some(key.clone());
+    if let Some(tail_idx) = prob_guard.tail {
+      return Some(prob_guard.nodes[tail_idx].key.clone());
     }
 
     // If probationary is empty, the victim is from the protected segment's LRU end.
     let prot_guard = self.protected.lock();
-    if let Some(key) = prot_guard.keys.back() {
-      return Some(key.clone());
+    if let Some(tail_idx) = prot_guard.tail {
+      return Some(prot_guard.nodes[tail_idx].key.clone());
     }
 
     None
@@ -291,12 +220,14 @@ mod tests {
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &2, entry2.cost());
     policy.on_access(&access_info_for(&2, &entry2)); // 2 is now in protected, LRU of protected is 1
 
-    assert_eq!(policy.protected.lock().keys.back(), Some(&1));
+    let protected_keys = policy.protected.lock().keys_as_vec();
+    assert_eq!(protected_keys.last(), Some(&1));
 
     policy.on_access(&access_info_for(&1, &entry1)); // Access 1 again
 
     // Now 2 should be the LRU of protected
-    assert_eq!(policy.protected.lock().keys.back(), Some(&2));
+    let protected_keys_after = policy.protected.lock().keys_as_vec();
+    assert_eq!(protected_keys_after.last(), Some(&2));
   }
 
   #[test]
@@ -467,11 +398,11 @@ mod tests {
 
     // 1. Insert into probationary
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
-    let prob_keys_before = policy.probationary.lock().keys.clone();
+    let prob_keys_before = policy.probationary.lock().keys_as_vec();
 
     // Re-inserting should do nothing
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
-    let prob_keys_after = policy.probationary.lock().keys.clone();
+    let prob_keys_after = policy.probationary.lock().keys_as_vec();
     assert_eq!(
       prob_keys_before, prob_keys_after,
       "Re-inserting into probationary should not change order"
@@ -479,11 +410,11 @@ mod tests {
 
     // 2. Promote to protected
     policy.on_access(&access_info_for(&1, &entry));
-    let prot_keys_before = policy.protected.lock().keys.clone();
+    let prot_keys_before = policy.protected.lock().keys_as_vec();
 
     // Re-inserting should still do nothing
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
-    let prot_keys_after = policy.protected.lock().keys.clone();
+    let prot_keys_after = policy.protected.lock().keys_as_vec();
     assert_eq!(
       prot_keys_before, prot_keys_after,
       "Re-inserting into protected should not change order"
@@ -572,8 +503,9 @@ mod tests {
     }
     assert_eq!(policy.protected.lock().current_total_cost(), 4);
     assert_eq!(policy.probationary.lock().current_total_cost(), 0);
+    let protected_keys = policy.protected.lock().keys_as_vec();
     assert_eq!(
-      policy.protected.lock().keys.back(),
+      protected_keys.last(),
       Some(&1),
       "LRU of protected is 1 initially"
     );
@@ -612,8 +544,9 @@ mod tests {
       policy.probationary.lock().contains(&1),
       "Item 1 should have been demoted to probationary"
     );
+    let protected_keys_after = policy.protected.lock().keys_as_vec();
     assert_eq!(
-      policy.protected.lock().keys.back(),
+      protected_keys_after.last(),
       Some(&2),
       "New LRU of protected should be 2"
     );
@@ -647,8 +580,8 @@ mod tests {
 
     assert_eq!(policy.probationary.lock().current_total_cost(), 0);
     assert_eq!(policy.protected.lock().current_total_cost(), 0);
-    assert!(policy.probationary.lock().keys.is_empty());
-    assert!(policy.protected.lock().keys.is_empty());
+    assert!(policy.probationary.lock().keys_as_vec().is_empty());
+    assert!(policy.protected.lock().keys_as_vec().is_empty());
     assert!(!policy.probationary.lock().contains(&1));
     assert!(!policy.protected.lock().contains(&2));
   }
@@ -661,7 +594,7 @@ mod lru_list_tests {
   #[test]
   fn new_list_is_empty() {
     let list = LruList::<i32>::new();
-    assert!(list.keys.is_empty(), "New list keys should be empty");
+    assert!(list.keys_as_vec().is_empty(), "New list keys should be empty");
     assert!(
       list.lookup.is_empty(),
       "New list lookup map should be empty"
@@ -678,19 +611,17 @@ mod lru_list_tests {
     list.push_front(10, 5);
     assert!(list.contains(&10));
     assert_eq!(list.current_total_cost(), 5);
-    assert_eq!(list.keys.len(), 1);
     assert_eq!(list.lookup.len(), 1);
-    assert_eq!(list.keys.front(), Some(&10));
-    assert_eq!(list.lookup.get(&10), Some(&5));
+    assert_eq!(list.keys_as_vec(), vec![10]);
+    assert_eq!(list.lookup.get(&10).map(|&idx| list.nodes[idx].cost), Some(5));
 
     // 2. Push second item
     list.push_front(20, 2);
     assert!(list.contains(&20));
     assert_eq!(list.current_total_cost(), 7, "Cost should be 5 + 2");
-    assert_eq!(list.keys.len(), 2);
     assert_eq!(list.lookup.len(), 2);
     assert_eq!(
-      list.keys.iter().cloned().collect::<Vec<_>>(),
+      list.keys_as_vec(),
       vec![20, 10],
       "Newest item should be at the front"
     );
@@ -702,15 +633,15 @@ mod lru_list_tests {
     list.push_front(1, 1);
     list.push_front(2, 1);
     list.push_front(3, 1);
-    assert_eq!(list.keys.iter().cloned().collect::<Vec<_>>(), vec![3, 2, 1]);
+    assert_eq!(list.keys_as_vec(), vec![3, 2, 1]);
     assert_eq!(list.current_total_cost(), 3);
 
     // Re-push '1' (the LRU item). It should move to the front. Cost is unchanged.
     list.push_front(1, 1);
     assert_eq!(list.current_total_cost(), 3, "Cost should not change");
-    assert_eq!(list.keys.len(), 3, "Length should not change");
+    assert_eq!(list.lookup.len(), 3, "Length should not change");
     assert_eq!(
-      list.keys.iter().cloned().collect::<Vec<_>>(),
+      list.keys_as_vec(),
       vec![1, 3, 2],
       "Existing item should move to front"
     );
@@ -728,12 +659,12 @@ mod lru_list_tests {
     list.push_front(1, 5);
     assert_eq!(list.current_total_cost(), 25, "Cost should be updated");
     assert_eq!(
-      list.lookup.get(&1),
-      Some(&5),
+      list.lookup.get(&1).map(|&idx| list.nodes[idx].cost),
+      Some(5),
       "Lookup cost should be new cost"
     );
     assert_eq!(
-      list.keys.iter().cloned().collect::<Vec<_>>(),
+      list.keys_as_vec(),
       vec![1, 2],
       "Order should be updated"
     );
@@ -762,9 +693,9 @@ mod lru_list_tests {
       "Cost should be reduced by popped item's cost"
     );
     assert!(!list.contains(&1), "Popped item should be removed");
-    assert_eq!(list.keys.len(), 2);
+    assert_eq!(list.lookup.len(), 2);
     assert_eq!(
-      list.keys.iter().cloned().collect::<Vec<_>>(),
+      list.keys_as_vec(),
       vec![3, 2],
       "Remaining items should be correct"
     );
@@ -778,7 +709,7 @@ mod lru_list_tests {
     let popped = list.pop_back();
     assert_eq!(popped, Some((1, 10)));
     assert_eq!(list.current_total_cost(), 0);
-    assert!(list.keys.is_empty());
+    assert!(list.keys_as_vec().is_empty());
     assert!(list.lookup.is_empty());
   }
 
@@ -803,9 +734,8 @@ mod lru_list_tests {
     // Verify state
     assert_eq!(list.current_total_cost(), 4, "Cost should be 6 - 2");
     assert!(!list.contains(&2));
-    assert_eq!(list.keys.len(), 2);
     assert_eq!(list.lookup.len(), 2);
-    assert_eq!(list.keys.iter().cloned().collect::<Vec<_>>(), vec![3, 1]);
+    assert_eq!(list.keys_as_vec(), vec![3, 1]);
   }
 
   #[test]
@@ -817,7 +747,7 @@ mod lru_list_tests {
     let removed_cost = list.remove(&99);
     assert_eq!(removed_cost, None);
     assert_eq!(list.current_total_cost(), 3, "Cost should not change");
-    assert_eq!(list.keys.len(), 2, "Length should not change");
+    assert_eq!(list.lookup.len(), 2, "Length should not change");
   }
 
   #[test]
@@ -827,11 +757,11 @@ mod lru_list_tests {
     list.push_front(2, 20);
     list.push_front(3, 30);
     assert_eq!(list.current_total_cost(), 60);
-    assert!(!list.keys.is_empty());
+    assert!(!list.keys_as_vec().is_empty());
 
     list.clear();
 
-    assert!(list.keys.is_empty());
+    assert!(list.keys_as_vec().is_empty());
     assert!(list.lookup.is_empty());
     assert_eq!(list.current_total_cost(), 0);
     assert!(!list.contains(&1));

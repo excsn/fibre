@@ -1,24 +1,21 @@
+use super::{AccessInfo, CachePolicy};
+use crate::policy::lru_list::LruList;
 use crate::policy::AdmissionDecision;
 
-use super::{AccessInfo, CachePolicy};
 use parking_lot::Mutex;
-use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 
 /// An eviction policy that evicts entries in a First-In, First-Out (FIFO) manner.
 #[derive(Debug)]
-pub struct Fifo<K> {
-  // A queue tracking the insertion order of keys.
-  order: Mutex<VecDeque<K>>,
-  // A map for quick O(1) existence checks and cost lookups.
-  items: Mutex<HashMap<K, u64>>,
+pub struct Fifo<K: Eq + Hash + Clone> {
+  // Replace the two old fields with a single, efficient list.
+  list: Mutex<LruList<K>>,
 }
 
-impl<K> Fifo<K> {
+impl<K: Eq + Hash + Clone> Fifo<K> {
   pub fn new() -> Self {
     Self {
-      order: Mutex::new(VecDeque::new()),
-      items: Mutex::new(HashMap::new()),
+      list: Mutex::new(LruList::new()),
     }
   }
 }
@@ -33,13 +30,12 @@ where
 
   /// On insert, add the new item to the front of the queue.
   fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
-    let mut order = self.order.lock();
-    let mut items = self.items.lock();
+    let mut list = self.list.lock();
 
     // If the key already exists, do nothing. FIFO does not update on re-insert.
-    if !items.contains_key(key) {
-      items.insert(key.clone(), cost);
-      order.push_front(key.clone());
+    // This preserves the "First-In" part of the name.
+    if !list.contains(key) {
+      list.push_front(key.clone(), cost);
     }
 
     AdmissionDecision::Admit // FIFO always admits.
@@ -47,30 +43,24 @@ where
 
   /// When an item is removed, stop tracking it.
   fn on_remove(&self, key: &K) {
-    let mut order = self.order.lock();
-    let mut items = self.items.lock();
-
-    if items.remove(key).is_some() {
-      order.retain(|k| k != key);
-    }
+    // This is now an O(1) operation.
+    self.list.lock().remove(key);
   }
 
   /// Evict the oldest items until enough cost is freed.
   fn evict(&self, mut cost_to_free: u64) -> (Vec<K>, u64) {
     let mut victims = Vec::new();
     let mut total_cost_freed = 0;
-    let mut order = self.order.lock();
-    let mut items = self.items.lock();
+    let mut list = self.list.lock();
 
     while cost_to_free > 0 {
-      if let Some(key) = order.pop_back() {
-        if let Some(cost) = items.remove(&key) {
-          cost_to_free = cost_to_free.saturating_sub(cost);
-          total_cost_freed += cost;
-          victims.push(key);
-        }
+      // pop_back is O(1) and correctly returns the oldest item.
+      if let Some((key, cost)) = list.pop_back() {
+        cost_to_free = cost_to_free.saturating_sub(cost);
+        total_cost_freed += cost;
+        victims.push(key);
       } else {
-        break;
+        break; // The list is empty.
       }
     }
     (victims, total_cost_freed)
@@ -78,7 +68,6 @@ where
 
   /// Clear all internal tracking.
   fn clear(&self) {
-    self.order.lock().clear();
-    self.items.lock().clear();
+    self.list.lock().clear();
   }
 }

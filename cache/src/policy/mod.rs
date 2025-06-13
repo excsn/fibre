@@ -2,6 +2,7 @@ pub mod arc;
 pub mod clock;
 pub mod fifo;
 pub mod lru;
+mod lru_list;
 pub mod null;
 pub mod random;
 pub mod sieve;

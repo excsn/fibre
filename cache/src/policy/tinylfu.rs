@@ -1,6 +1,7 @@
-use super::{slru::SlruPolicy, AccessInfo, CachePolicy};
-use crate::policy::slru::LruList;
+use super::{AccessInfo, CachePolicy};
+use crate::policy::lru_list::LruList;
 use crate::policy::AdmissionDecision;
+use super::slru::SlruPolicy;
 
 use parking_lot::Mutex;
 use std::hash::Hash;
@@ -375,10 +376,18 @@ mod tests {
     // The item should be promoted to protected in SLRU.
     assert!(!policy.main.probationary.lock().contains(&1));
     assert!(policy.main.protected.lock().contains(&1));
-    assert_eq!(
-      policy.main.protected.lock().lookup.get(&1),
-      Some(&5),
-      "Cost should be updated"
-    );
+
+    // --- Start of Corrected Code ---
+    // The test now correctly looks up the node's Index from the `lookup` map,
+    // then uses that Index to access the node in the `nodes` arena to get its cost.
+    let protected_list = policy.main.protected.lock();
+    let cost = protected_list
+      .lookup // Use the public `lookup` field for testing.
+      .get(&1)
+      .map(|&idx| protected_list.nodes[idx].cost) // Use public `nodes` field.
+      .unwrap();
+    // --- End of Corrected Code ---
+
+    assert_eq!(cost, 5, "Cost should be updated");
   }
 }
