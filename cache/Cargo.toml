@@ -15,7 +15,7 @@ categories = ["caching", "concurrency", "asynchronous", "data-structures", "memo
 fibre = { version = "^0", path = "../channels" }
 
 ahash = "^0.8"
-once_cell = "1.17"
+once_cell = "^1.17"
 
 # Core dependencies for concurrency
 parking_lot = "^0.12"
@@ -36,6 +36,9 @@ bincode = "1.3"
 futures-executor = "^0.3"
 tokio = { version = "^1", features = ["macros", "sync", "time"] }
 
+rand_distr = "^0.5"
+rand_pcg = "^0.9"
+
 [features]
 full = ["serde", "random", "bulk", "tokio"]
 default = ["full"]
@@ -50,4 +53,12 @@ harness = false
 
 [[bench]]
 name = "sync_basic_ops"
+harness = false
+
+[[bench]]
+name = "async_general"
+harness = false
+
+[[bench]]
+name = "sync_general"
 harness = false

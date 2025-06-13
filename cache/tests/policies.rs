@@ -10,7 +10,7 @@ mod lru {
   use fibre_cache::policy::lru::Lru;
   #[test]
   fn test_lru_eviction_logic() {
-    let cache = CacheBuilder::new()
+    let cache = CacheBuilder::default()
       .capacity(3)
       .cache_policy(Lru::new())
       .janitor_tick_interval(Duration::from_millis(10))
@@ -49,7 +49,7 @@ mod fifo {
   use fibre_cache::policy::fifo::Fifo;
   #[test]
   fn test_fifo_eviction_logic() {
-    let cache = CacheBuilder::new()
+    let cache = CacheBuilder::default()
       .capacity(3)
       .cache_policy(Fifo::new())
       .janitor_tick_interval(Duration::from_millis(10))
@@ -82,7 +82,7 @@ mod sieve {
 
   #[test]
   fn test_sieve_eviction_logic() {
-    let cache = CacheBuilder::new()
+    let cache = CacheBuilder::default()
       .capacity(3)
       .cache_policy(Sieve::new())
       .janitor_tick_interval(Duration::from_millis(10))
@@ -116,7 +116,7 @@ mod tinylfu {
   // Helper to build a test cache with a fast janitor, which is now
   // essential for testing capacity-based eviction.
   fn build_test_cache(capacity: u64) -> fibre_cache::Cache<i32, String> {
-    CacheBuilder::new()
+    CacheBuilder::default()
       .capacity(capacity)
       // The default policy for a bounded cache is TinyLfu, but we are explicit for clarity.
       .cache_policy(TinyLfu::new(capacity))
@@ -295,7 +295,7 @@ mod slru {
   fn test_slru_promotion_and_eviction() {
     // Capacity 4: The SLRU policy internally splits this.
     // FIX 1: Configure a fast janitor so it runs quickly for the test.
-    let cache = CacheBuilder::new()
+    let cache = CacheBuilder::default()
       .capacity(4)
       .cache_policy(Slru::new(4))
       .janitor_tick_interval(Duration::from_millis(10)) // Add this line

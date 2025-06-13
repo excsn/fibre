@@ -219,7 +219,7 @@ mod tests {
   #[test]
   fn test_sync_snapshot_and_restore() {
     // 1. Create and populate the original cache
-    let original_cache = CacheBuilder::new()
+    let original_cache = CacheBuilder::default()
       .capacity(100)
       .time_to_live(Duration::from_secs(5))
       .janitor_tick_interval(Duration::from_secs(60))
@@ -254,7 +254,7 @@ mod tests {
     let deserialized: CacheSnapshot<u32, TestValue> =
       bincode::deserialize(&serialized).expect("Deserialization failed");
 
-    let new_cache = CacheBuilder::new()
+    let new_cache = CacheBuilder::default()
       .build_from_snapshot(deserialized)
       .unwrap();
 
@@ -273,7 +273,7 @@ mod tests {
   #[tokio::test]
   async fn test_async_snapshot_and_restore() {
     // 1. Create and populate the original cache
-    let original_cache = CacheBuilder::new()
+    let original_cache = CacheBuilder::default()
       .capacity(100)
       .time_to_live(Duration::from_secs(10))
       .build_async()
@@ -300,7 +300,7 @@ mod tests {
     let deserialized: CacheSnapshot<u32, TestValue> =
       bincode::deserialize(&serialized).expect("Deserialization failed");
 
-    let new_cache = CacheBuilder::new()
+    let new_cache = CacheBuilder::default()
       .build_from_snapshot_async(deserialized)
       .unwrap();
 
@@ -311,7 +311,7 @@ mod tests {
 
   #[test]
   fn test_snapshot_excludes_expired_items() {
-    let cache = CacheBuilder::new()
+    let cache = CacheBuilder::default()
       .time_to_live(Duration::from_millis(100))
       .build()
       .unwrap();

@@ -41,7 +41,7 @@ fn extract_config(combo: &AbstractCombination) -> Result<BenchConfig, String> {
 // --- Benchmark Functions ---
 
 fn setup_fn(cfg: &BenchConfig) -> Result<(BenchContext, BenchState), String> {
-  let cache = Arc::new(CacheBuilder::new().capacity(cfg.capacity).build().unwrap());
+  let cache = Arc::new(CacheBuilder::default().capacity(cfg.capacity).build().unwrap());
 
   // 1. Pre-populate the cache with num_items *in a single thread* for a consistent start.
   for i in 0..cfg.num_items {

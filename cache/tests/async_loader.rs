@@ -10,7 +10,7 @@ use tokio::time::{sleep, Duration};
 async fn test_async_loader_basic() {
   let load_count = Arc::new(AtomicUsize::new(0));
 
-  let cache = CacheBuilder::new()
+  let cache = CacheBuilder::default()
     .capacity(10)
     .async_loader({
       let load_count = load_count.clone();
@@ -49,7 +49,7 @@ async fn test_async_loader_thundering_herd() {
   let num_tasks = 20;
 
   let cache = Arc::new(
-    CacheBuilder::new()
+    CacheBuilder::default()
       .capacity(10)
       .async_loader({
         let load_count = load_count.clone();

@@ -50,7 +50,7 @@ fn setup_fn(
   let cfg = cfg.clone();
   Box::pin(async move {
     let cache = Arc::new(
-      CacheBuilder::new()
+      CacheBuilder::default()
         .capacity(cfg.capacity)
         .build_async()
         .unwrap(),

@@ -18,7 +18,7 @@ impl fibre_cache::EvictionListener<i32, String> for TestListener {
 #[tokio::test]
 async fn test_async_listener_for_capacity() {
     let (tx, mut rx) = mpsc::channel(10);
-    let cache = CacheBuilder::new()
+    let cache = CacheBuilder::default()
         .capacity(2)
         .cache_policy(Lru::new())
         .eviction_listener(TestListener { sender: tx })
@@ -38,7 +38,7 @@ async fn test_async_listener_for_capacity() {
 #[tokio::test]
 async fn test_async_listener_for_invalidation() {
     let (tx, mut rx) = mpsc::channel(10);
-    let cache = CacheBuilder::new()
+    let cache = CacheBuilder::default()
         .eviction_listener(TestListener { sender: tx })
         .build_async()
         .unwrap();
@@ -55,7 +55,7 @@ async fn test_async_listener_for_invalidation() {
 #[tokio::test]
 async fn test_async_listener_for_ttl() {
     let (tx, mut rx) = mpsc::channel(10);
-    let cache = CacheBuilder::new()
+    let cache = CacheBuilder::default()
         .time_to_live(Duration::from_millis(100))
         .janitor_tick_interval(Duration::from_millis(10))
         .eviction_listener(TestListener { sender: tx })

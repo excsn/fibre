@@ -36,7 +36,7 @@ use std::time::Duration;
 async fn main() {
     // Build a cache that can hold up to 10,000 items.
     // Configure it with a 10-minute TTL and an async loader.
-    let cache = CacheBuilder::new()
+    let cache = CacheBuilder::default()
         .capacity(10_000)
         .time_to_live(Duration::from_secs(600))
         .async_loader(|key: String| async move {

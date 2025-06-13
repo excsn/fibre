@@ -38,6 +38,7 @@ pub mod snapshot;
 pub use builder::CacheBuilder;
 pub use entry_api::Entry;
 pub use entry_api_async::AsyncEntry;
+pub use error::BuildError;
 pub use handles::{AsyncCache, Cache};
 pub use listener::{EvictionListener, EvictionReason};
 pub use metrics::MetricsSnapshot;

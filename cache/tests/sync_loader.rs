@@ -10,7 +10,7 @@ fn test_sync_loader_basic() {
   // A counter to see how many times the loader is called.
   let load_count = Arc::new(AtomicUsize::new(0));
 
-  let cache = CacheBuilder::new()
+  let cache = CacheBuilder::default()
     .capacity(10)
     .loader({
       let load_count = load_count.clone();
@@ -53,7 +53,7 @@ fn test_sync_loader_thundering_herd() {
   let num_threads = 20;
 
   let cache = Arc::new(
-    CacheBuilder::new()
+    CacheBuilder::default()
       .capacity(10)
       .loader({
         let load_count = load_count.clone();
