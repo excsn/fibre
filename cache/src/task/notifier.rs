@@ -6,19 +6,17 @@ use std::thread::{self, JoinHandle};
 use fibre::mpsc;
 
 /// A message sent to the notifier task.
-pub(crate) type Notification<K, V> = (K, V, EvictionReason);
+pub(crate) type Notification<K, V> = (K, Arc<V>, EvictionReason);
 
 /// The background task responsible for calling user-provided eviction listeners.
-pub(crate) struct Notifier {
+pub(crate) struct Notifier<K: Send, V: Send + Sync> {
   handle: JoinHandle<()>,
-  // The sender is held here to be dropped when the Notifier is dropped,
-  // which signals the receiver to stop.
-  _sender: Box<dyn std::any::Any + Send>,
+  _sender: mpsc::BoundedSender<(K, Arc<V>, EvictionReason)>,
 }
 
-impl Notifier {
+impl <K: Send, V: Send + Sync>  Notifier<K, V> {
   /// Spawns a new notifier thread.
-  pub(crate) fn spawn<K, V>(
+  pub(crate) fn spawn(
     listener: Arc<dyn EvictionListener<K, V>>,
   ) -> (Self, mpsc::BoundedSender<Notification<K, V>>)
   where
@@ -43,7 +41,7 @@ impl Notifier {
       handle,
       // Store the sender in a Box<dyn Any> to type-erase it,
       // since Notifier itself is not generic.
-      _sender: Box::new(tx.clone()),
+      _sender: tx.clone(),
     };
 
     (notifier, tx)
@@ -54,6 +52,5 @@ impl Notifier {
     // Dropping the `_sender` inside `self` will disconnect the channel,
     // allowing the receiver thread to terminate gracefully.
     drop(self._sender);
-    let _ = self.handle.join();
   }
 }

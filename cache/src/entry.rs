@@ -15,8 +15,6 @@ pub(crate) struct CacheEntry<V> {
   pub(crate) expires_at: AtomicU64,
   /// The last access timestamp in nanoseconds. 0 means no TTI.
   pub(crate) last_accessed: AtomicU64,
-  /// A frequency counter for LFU/TinyLFU policies.
-  pub(crate) frequency: AtomicU8,
 }
 
 impl<V> CacheEntry<V> {
@@ -31,7 +29,6 @@ impl<V> CacheEntry<V> {
       cost,
       expires_at: AtomicU64::new(expires_at),
       last_accessed: AtomicU64::new(last_accessed),
-      frequency: AtomicU8::new(0),
     }
   }
 
@@ -54,7 +51,6 @@ impl<V> CacheEntry<V> {
       cost,
       expires_at: AtomicU64::new(expires_at_nanos),
       last_accessed: AtomicU64::new(last_accessed_nanos),
-      frequency: AtomicU8::new(0), // Loaded items start with zero frequency
     }
   }
 
@@ -70,27 +66,13 @@ impl<V> CacheEntry<V> {
     self.cost
   }
 
-  /// Returns the current frequency score.
-  #[inline]
-  pub(crate) fn frequency(&self) -> u8 {
-    self.frequency.load(Ordering::Relaxed)
-  }
-
-  /// Atomically increments the frequency, saturating at `u8::MAX`.
-  #[inline]
-  pub(crate) fn increment_frequency(&self) {
-    self.frequency.fetch_add(1, Ordering::Relaxed);
-  }
-
   /// Updates the last accessed timestamp to the current time.
   /// This is a cheap atomic store operation.
   #[inline]
   pub(crate) fn update_last_accessed(&self) {
-    if self.last_accessed.load(Ordering::Relaxed) > 0 {
-      self
-        .last_accessed
-        .store(time::now_duration().as_nanos() as u64, Ordering::Relaxed);
-    }
+    self
+      .last_accessed
+      .store(time::now_duration().as_nanos() as u64, Ordering::Relaxed);
   }
 
   /// Checks if the entry is expired based on its TTL or TTI.
@@ -98,17 +80,22 @@ impl<V> CacheEntry<V> {
   pub(crate) fn is_expired(&self, tti: Option<Duration>) -> bool {
     let now_nanos = time::now_duration().as_nanos() as u64;
 
+    // Check for TTL expiration.
     let expires_at = self.expires_at.load(Ordering::Relaxed);
     if expires_at > 0 && now_nanos >= expires_at {
       return true;
     }
 
+    // Check for TTI expiration.
     if let Some(time_to_idle) = tti {
       let last_accessed = self.last_accessed.load(Ordering::Relaxed);
-      if last_accessed > 0 && now_nanos >= last_accessed + time_to_idle.as_nanos() as u64 {
+      // The check `last_accessed > 0` is removed. The `Option` on `tti` is the
+      // correct guard to determine if TTI logic should run.
+      if now_nanos >= last_accessed + time_to_idle.as_nanos() as u64 {
         return true;
       }
     }
+
     false
   }
 }

@@ -10,7 +10,7 @@ use crossbeam_utils::CachePadded;
 
 /// A helper function to hash a key using a `BuildHasher`.
 #[inline]
-fn hash_key<K: Hash, H: BuildHasher>(hasher: &H, key: &K) -> u64 {
+pub(crate) fn hash_key<K: Hash, H: BuildHasher>(hasher: &H, key: &K) -> u64 {
   let mut state = hasher.build_hasher();
   key.hash(&mut state);
   state.finish()
@@ -21,8 +21,8 @@ fn hash_key<K: Hash, H: BuildHasher>(hasher: &H, key: &K) -> u64 {
 /// This design allows for high concurrency by ensuring that operations on
 /// different keys are unlikely to contend for the same lock.
 pub(crate) struct ShardedStore<K, V, H> {
-  shards: Box<[CachePadded<HybridRwLock<HashMap<K, Arc<CacheEntry<V>>, H>>>]>,
-  hasher: H,
+  pub(crate) shards: Box<[CachePadded<HybridRwLock<HashMap<K, Arc<CacheEntry<V>>, H>>>]>,
+  pub(crate) hasher: H,
 }
 
 impl<K, V, H> fmt::Debug for ShardedStore<K, V, H> {

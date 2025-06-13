@@ -8,6 +8,9 @@ pub enum BuildError {
   ZeroCapacity,
   /// The cache was configured with zero shards, which is not allowed.
   ZeroShards,
+  /// An `async_loader` was provided, but no `TaskSpawner` was configured
+  /// and the default `tokio` feature is not enabled.
+  SpawnerRequired,
 }
 
 impl fmt::Display for BuildError {
@@ -15,6 +18,10 @@ impl fmt::Display for BuildError {
     match self {
       BuildError::ZeroCapacity => write!(f, "bounded cache capacity cannot be zero"),
       BuildError::ZeroShards => write!(f, "shard count cannot be zero"),
+      BuildError::SpawnerRequired => write!(
+        f,
+        "an async loader requires a task spawner or the 'tokio' feature"
+      ),
     }
   }
 }

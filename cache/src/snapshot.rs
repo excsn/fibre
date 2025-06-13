@@ -1,23 +1,18 @@
 // This entire module is only compiled when the 'serde' feature is enabled.
 #![cfg(feature = "serde")]
-#[cfg(feature = "serde")]
+
 use crate::error::BuildError;
 use crate::time;
-#[cfg(feature = "serde")]
 use crate::CacheBuilder;
 
 use futures_util::future;
-#[cfg(feature = "serde")]
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "serde")]
 use std::hash::BuildHasher;
-#[cfg(feature = "serde")]
 use std::hash::Hash;
 use std::time::Duration;
 
 use crate::AsyncCache;
-#[cfg(feature = "serde")]
 use crate::Cache;
 
 /// An internal, serializable representation of a single cache entry.
@@ -58,14 +53,21 @@ impl<K, V> CacheSnapshot<K, V> {
   }
 }
 
+#[cfg(test)]
+impl<K, V> CacheSnapshot<K, V> {
+  /// Exposes the internal entries slice for testing purposes only.
+  pub fn test_get_entries(&self) -> &[PersistentEntry<K, V>] {
+    &self.entries
+  }
+}
+
 // --- Snapshot-based Build Method ---
 // This block is gated by `serde` and has the `DeserializeOwned` bound.
-#[cfg(feature = "serde")]
 impl<K, V, H> CacheBuilder<K, V, H>
 where
   K: Eq + Hash + Clone + Send + Sync + DeserializeOwned + 'static,
-  V: Clone + Send + Sync + DeserializeOwned+ 'static,
-  H: BuildHasher + Clone + Send + Sync+ 'static,
+  V: Clone + Send + Sync + DeserializeOwned + 'static,
+  H: BuildHasher + Clone + Send + Sync + 'static,
 {
   /// Builds a new cache and pre-populates it with entries from a snapshot.
   ///
@@ -80,10 +82,9 @@ where
     self.shards = snapshot.shards;
 
     self.validate()?;
-    let shared = self.build_shared_core(Some(snapshot));
+    let shared = self.build_shared_core(Some(snapshot))?;
     Ok(Cache { shared })
   }
-
 
   /// Builds a new cache and pre-populates it with entries from a snapshot.
   ///
@@ -98,7 +99,7 @@ where
     self.shards = snapshot.shards;
 
     self.validate()?;
-    let shared = self.build_shared_core(Some(snapshot));
+    let shared = self.build_shared_core(Some(snapshot))?;
     Ok(AsyncCache { shared })
   }
 }
@@ -198,5 +199,130 @@ where
       self.shared.capacity,
       self.shared.store.iter_shards().count(),
     )
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  #![cfg(feature = "serde")]
+
+  use crate::{builder::CacheBuilder, snapshot::CacheSnapshot};
+  use serde::{Deserialize, Serialize};
+  use std::time::Duration;
+
+  #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+  struct TestValue {
+    id: u32,
+    data: String,
+  }
+
+  #[test]
+  fn test_sync_snapshot_and_restore() {
+    // 1. Create and populate the original cache
+    let original_cache = CacheBuilder::new()
+      .capacity(100)
+      .time_to_live(Duration::from_secs(5))
+      .janitor_tick_interval(Duration::from_secs(60))
+      .build()
+      .unwrap();
+
+    original_cache.insert(
+      1,
+      TestValue {
+        id: 1,
+        data: "one".to_string(),
+      },
+      1,
+    );
+    original_cache.insert(
+      2,
+      TestValue {
+        id: 2,
+        data: "two".to_string(),
+      },
+      1,
+    );
+
+    std::thread::sleep(Duration::from_secs(1)); // Sleep for 1 sec
+
+    // 2. Create and serialize the snapshot (remaining TTL is ~4s)
+    let snapshot = original_cache.to_snapshot();
+    assert_eq!(snapshot.test_get_entries().len(), 2);
+    let serialized = bincode::serialize(&snapshot).expect("Serialization failed");
+
+    // 3. Deserialize and build a new cache from the snapshot
+    let deserialized: CacheSnapshot<u32, TestValue> =
+      bincode::deserialize(&serialized).expect("Deserialization failed");
+
+    let new_cache = CacheBuilder::new()
+      .build_from_snapshot(deserialized)
+      .unwrap();
+
+    // 4. Verify the new cache's state
+    assert_eq!(new_cache.metrics().current_cost, 2);
+    assert!(new_cache.get(&1).is_some());
+
+    // Now sleep for the remaining time + margin
+    std::thread::sleep(Duration::from_secs(5));
+    assert!(
+      new_cache.get(&1).is_none(),
+      "Item should have expired based on its original insertion time"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_async_snapshot_and_restore() {
+    // 1. Create and populate the original cache
+    let original_cache = CacheBuilder::new()
+      .capacity(100)
+      .time_to_live(Duration::from_secs(10))
+      .build_async()
+      .unwrap();
+
+    original_cache
+      .insert(
+        1,
+        TestValue {
+          id: 1,
+          data: "one".to_string(),
+        },
+        1,
+      )
+      .await;
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // 2. Create and serialize the snapshot
+    let snapshot = original_cache.to_snapshot().await;
+    let serialized = bincode::serialize(&snapshot).expect("Serialization failed");
+
+    // 3. Deserialize and build a new cache
+    let deserialized: CacheSnapshot<u32, TestValue> =
+      bincode::deserialize(&serialized).expect("Deserialization failed");
+
+    let new_cache = CacheBuilder::new()
+      .build_from_snapshot_async(deserialized)
+      .unwrap();
+
+    // 4. Verify the new cache's state
+    assert_eq!(new_cache.metrics().current_cost, 1);
+    assert_eq!(new_cache.get(&1).unwrap().id, 1);
+  }
+
+  #[test]
+  fn test_snapshot_excludes_expired_items() {
+    let cache = CacheBuilder::new()
+      .time_to_live(Duration::from_millis(100))
+      .build()
+      .unwrap();
+
+    cache.insert(1, 1, 1);
+    std::thread::sleep(Duration::from_millis(200));
+
+    let snapshot = cache.to_snapshot();
+    assert!(
+      snapshot.test_get_entries().is_empty(),
+      "Snapshot should not include expired items"
+    );
   }
 }

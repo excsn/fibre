@@ -1,121 +1,225 @@
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use crossbeam_utils::CachePadded; // <-- ADDED
+use parking_lot::{Condvar, Mutex};
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::future::Future;
+use std::hint::spin_loop;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
+use std::thread;
 
-/// A hybrid reader-writer lock that uses a fast, blocking `parking_lot::RwLock`
-/// internally but provides a non-thread-blocking `async` interface for acquiring
-/// a write lock under contention.
-#[derive(Debug, Default)]
-pub(crate) struct HybridRwLock<T> {
-  inner: RwLock<T>,
-  writer_waiters: parking_lot::Mutex<VecDeque<Waker>>,
+// --- Constants and State Representation ---
+const UNLOCKED: usize = 0;
+const WRITE_LOCKED: usize = usize::MAX;
+const SPIN_LIMIT: u32 = 100;
+
+// The internal state of our lock, protected by a Mutex for the slow path.
+#[derive(Default, Debug)]
+struct LockState {
+  async_writer_waiters: VecDeque<Waker>,
 }
+
+/// A custom, high-performance, async- and sync-aware RwLock.
+#[derive(Default, Debug)]
+pub(crate) struct HybridRwLock<T> {
+  // Wrap hot fields in CachePadded to prevent false sharing.
+  state: CachePadded<AtomicUsize>,        // <-- CHANGED
+  waiters: CachePadded<Mutex<LockState>>, // <-- CHANGED
+
+  // Condvars are less contended and don't need padding as much.
+  sync_writer_cv: Condvar,
+  sync_reader_cv: Condvar,
+  data: UnsafeCell<T>,
+}
+
+// We must manually implement Send and Sync because of UnsafeCell.
+// It is safe because we ensure exclusive access via our state logic.
+unsafe impl<T: Send> Send for HybridRwLock<T> {}
+unsafe impl<T: Send + Sync> Sync for HybridRwLock<T> {}
 
 impl<T> HybridRwLock<T> {
   pub fn new(data: T) -> Self {
     Self {
-      inner: RwLock::new(data),
-      writer_waiters: parking_lot::Mutex::new(VecDeque::new()),
-    }
-  }
-  
-  /// Acquires a write lock synchronously (blocking).
-  ///
-  /// Returns our custom hybrid guard.
-  pub fn read(&self) -> RwLockReadGuard<'_, T> {
-    self.inner.read()
-  }
-
-  pub fn write_sync(&self) -> HybridRwLockWriteGuard<'_, T> {
-    HybridRwLockWriteGuard {
-      waiters: &self.writer_waiters,
-      // The guard is created by the blocking call here.
-      guard: self.inner.write(),
+      state: CachePadded::new(AtomicUsize::new(UNLOCKED)), // <-- CHANGED
+      waiters: CachePadded::new(Mutex::new(LockState::default())), // <-- CHANGED
+      sync_writer_cv: Condvar::new(),
+      sync_reader_cv: Condvar::new(),
+      data: UnsafeCell::new(data),
     }
   }
 
-  /// Acquires a write lock asynchronously.
-  ///
-  /// This will not block the OS thread. If the lock is contended, the future
-  /// will yield until it is woken up.
+  // --- Public Read API ---
+  pub fn read(&self) -> ReadGuard<'_, T> {
+    for _ in 0..SPIN_LIMIT {
+      let s = self.state.load(Ordering::Acquire);
+      if s < WRITE_LOCKED - 1 {
+        if self
+          .state
+          .compare_exchange_weak(s, s + 1, Ordering::Acquire, Ordering::Relaxed)
+          .is_ok()
+        {
+          return ReadGuard { lock: self };
+        }
+      }
+      spin_loop();
+    }
+    self.read_slow()
+  }
+
+  #[cold]
+  fn read_slow(&self) -> ReadGuard<'_, T> {
+    let mut waiters_guard = self.waiters.lock();
+    loop {
+      let s = self.state.load(Ordering::Acquire);
+      if s < WRITE_LOCKED - 1 {
+        if self
+          .state
+          .compare_exchange_weak(s, s + 1, Ordering::Acquire, Ordering::Relaxed)
+          .is_ok()
+        {
+          return ReadGuard { lock: self };
+        }
+      } else {
+        self.sync_reader_cv.wait(&mut waiters_guard);
+      }
+    }
+  }
+
+  // --- Public Write API ---
+  pub fn write_sync(&self) -> WriteGuard<'_, T> {
+    for _ in 0..SPIN_LIMIT {
+      if self
+        .state
+        .compare_exchange(UNLOCKED, WRITE_LOCKED, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+      {
+        return WriteGuard { lock: self };
+      }
+      spin_loop();
+    }
+    self.write_sync_slow()
+  }
+
+  #[cold]
+  fn write_sync_slow(&self) -> WriteGuard<'_, T> {
+    let mut waiters_guard = self.waiters.lock();
+    loop {
+      if self
+        .state
+        .compare_exchange(UNLOCKED, WRITE_LOCKED, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+      {
+        return WriteGuard { lock: self };
+      }
+      self.sync_writer_cv.wait(&mut waiters_guard);
+    }
+  }
+
   pub fn write_async(&self) -> WriteFuture<'_, T> {
     WriteFuture { lock: self }
   }
-}
 
-/// A custom RAII guard for our hybrid write lock.
-/// Its `Drop` implementation is crucial for waking up the next pending task.
-#[derive(Debug)]
-pub(crate) struct HybridRwLockWriteGuard<'a, T> {
-  // We hold a reference to the waiters queue for the Drop impl.
-  waiters: &'a parking_lot::Mutex<VecDeque<Waker>>,
-  // The actual guard from the inner lock.
-  guard: RwLockWriteGuard<'a, T>,
-}
+  // --- Unlock Logic ---
+  fn unlock_read(&self) {
+    if self.state.fetch_sub(1, Ordering::Release) == 1 {
+      let mut waiters_guard = self.waiters.lock();
+      if let Some(waker) = waiters_guard.async_writer_waiters.pop_front() {
+        drop(waiters_guard);
+        waker.wake();
+      } else {
+        drop(waiters_guard);
+        self.sync_writer_cv.notify_one();
+      }
+    }
+  }
 
-impl<'a, T> Drop for HybridRwLockWriteGuard<'a, T> {
-  fn drop(&mut self) {
-    // The `RwLockWriteGuard` is dropped first, releasing the lock.
+  fn unlock_write(&self) {
+    self.state.store(UNLOCKED, Ordering::Release);
 
-    // Now, check if there are any waiting async tasks and wake one up.
     let mut waiters_guard = self.waiters.lock();
-    if let Some(waker) = waiters_guard.pop_front() {
+    if let Some(waker) = waiters_guard.async_writer_waiters.pop_front() {
+      drop(waiters_guard);
       waker.wake();
+    } else {
+      drop(waiters_guard);
+      self.sync_writer_cv.notify_one();
+      self.sync_reader_cv.notify_all();
     }
   }
 }
 
-// Allow the guard to be used like a normal `&mut T`.
-impl<'a, T> Deref for HybridRwLockWriteGuard<'a, T> {
+// --- Guards (RAII pattern) ---
+#[derive(Debug)]
+pub(crate) struct WriteGuard<'a, T: 'a> {
+  lock: &'a HybridRwLock<T>,
+}
+impl<T> Drop for WriteGuard<'_, T> {
+  fn drop(&mut self) {
+    self.lock.unlock_write();
+  }
+}
+impl<T> Deref for WriteGuard<'_, T> {
   type Target = T;
-  fn deref(&self) -> &Self::Target {
-    &self.guard
+  fn deref(&self) -> &T {
+    unsafe { &*self.lock.data.get() }
+  }
+}
+impl<T> DerefMut for WriteGuard<'_, T> {
+  fn deref_mut(&mut self) -> &mut T {
+    unsafe { &mut *self.lock.data.get() }
   }
 }
 
-impl<'a, T> DerefMut for HybridRwLockWriteGuard<'a, T> {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    &mut self.guard
+#[derive(Debug)]
+pub(crate) struct ReadGuard<'a, T: 'a> {
+  lock: &'a HybridRwLock<T>,
+}
+impl<T> Drop for ReadGuard<'_, T> {
+  fn drop(&mut self) {
+    self.lock.unlock_read();
+  }
+}
+impl<T> Deref for ReadGuard<'_, T> {
+  type Target = T;
+  fn deref(&self) -> &T {
+    unsafe { &*self.lock.data.get() }
   }
 }
 
-/// The `Future` returned by `HybridRwLock::write()`.
+// --- Future for Async Write Lock ---
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub(crate) struct WriteFuture<'a, T> {
   lock: &'a HybridRwLock<T>,
 }
 
 impl<'a, T> Future for WriteFuture<'a, T> {
-  type Output = HybridRwLockWriteGuard<'a, T>;
+  type Output = WriteGuard<'a, T>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    // Fast path: Try to acquire the lock without parking.
-    if let Some(guard) = self.lock.inner.try_write() {
-      return Poll::Ready(HybridRwLockWriteGuard {
-        waiters: &self.lock.writer_waiters,
-        guard,
-      });
+    if self
+      .lock
+      .state
+      .compare_exchange(UNLOCKED, WRITE_LOCKED, Ordering::Acquire, Ordering::Relaxed)
+      .is_ok()
+    {
+      return Poll::Ready(WriteGuard { lock: self.lock });
     }
 
-    // Slow path: The lock is contended. Park this task.
-    let mut waiters_guard = self.lock.writer_waiters.lock();
-
-    // It's possible the lock was released between the `try_write` call and
-    // us acquiring the waiters lock. We must re-check here to avoid a
-    // lost wakeup.
-    if let Some(guard) = self.lock.inner.try_write() {
-      return Poll::Ready(HybridRwLockWriteGuard {
-        waiters: &self.lock.writer_waiters,
-        guard,
-      });
-    }
-
-    // Still contended. Push our waker to the queue if it's not already there.
-    if !waiters_guard.iter().any(|w| w.will_wake(cx.waker())) {
-      waiters_guard.push_back(cx.waker().clone());
+    {
+      let mut waiters_guard = self.lock.waiters.lock();
+      if self
+        .lock
+        .state
+        .compare_exchange(UNLOCKED, WRITE_LOCKED, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+      {
+        return Poll::Ready(WriteGuard { lock: self.lock });
+      }
+      waiters_guard
+        .async_writer_waiters
+        .push_back(cx.waker().clone());
     }
 
     Poll::Pending

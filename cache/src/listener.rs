@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 /// Describes the reason an entry was removed from the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,5 +28,5 @@ impl fmt::Display for EvictionReason {
 /// the eviction. This happens on a dedicated background task to avoid
 /// blocking cache operations.
 pub trait EvictionListener<K, V>: Send + Sync {
-  fn on_evict(&self, key: K, value: V, reason: EvictionReason);
+  fn on_evict(&self, key: K, value: Arc<V>, reason: EvictionReason);
 }

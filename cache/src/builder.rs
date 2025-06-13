@@ -1,32 +1,40 @@
-use crate::backpressure::CostGate;
+use parking_lot::Mutex;
+
 use crate::error::BuildError;
+use crate::handles::{AsyncCache, Cache};
+use crate::loader::Loader;
+use crate::metrics::Metrics;
 use crate::policy::tinylfu::TinyLfu;
 use crate::policy::CachePolicy;
-use crate::handles::{AsyncCache, Cache};
-use crate::metrics::Metrics;
 use crate::shared::CacheShared;
 use crate::snapshot::CacheSnapshot;
 use crate::store::ShardedStore;
 use crate::task::janitor::{Janitor, JanitorContext};
 use crate::task::notifier::Notifier;
-use crate::{time, EvictionListener};
+use crate::{time, EvictionListener, TaskSpawner};
 
 use core::fmt;
+use std::future::Future;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 /// A builder for creating `Cache` and `AsyncCache` instances.
-#[derive(Clone)]
 pub struct CacheBuilder<K: Send, V: Send, H = ahash::RandomState> {
   pub(crate) capacity: u64,
   pub(crate) shards: usize,
   pub(crate) time_to_live: Option<Duration>,
   pub(crate) time_to_idle: Option<Duration>,
   pub(crate) hasher: H,
+  pub(crate) stale_while_revalidate: Option<Duration>,
+  pub(crate) janitor_tick_interval: Option<Duration>,
   listener: Option<Arc<dyn EvictionListener<K, V>>>,
+  cache_policy: Option<Arc<dyn CachePolicy<K, V>>>,
+  loader: Option<Loader<K, V>>,
+  spawner: Option<Arc<dyn TaskSpawner>>,
   _key_marker: PhantomData<K>,
   _value_marker: PhantomData<V>,
 }
@@ -78,8 +86,59 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
   }
 
   /// Sets the eviction listener for the cache.
-  pub fn eviction_listener(mut self, listener: Arc<dyn EvictionListener<K, V>>) -> Self {
-    self.listener = Some(listener);
+  pub fn eviction_listener<Listener>(mut self, listener: Listener) -> Self
+  where
+    Listener: EvictionListener<K, V> + 'static,
+  {
+    self.listener = Some(Arc::new(listener));
+    self
+  }
+
+  // In the general `impl<K, V, H> CacheBuilder` block, add this new method:
+  /// Sets a custom eviction policy for the cache.
+  ///
+  /// By default, the cache uses a `TinyLfu` policy.
+  pub fn cache_policy<Policy>(mut self, policy: Policy) -> Self
+  where
+    Policy: CachePolicy<K, V> + 'static,
+  {
+    self.cache_policy = Some(Arc::new(policy));
+    self
+  }
+
+  /// Sets the synchronous loader function for the cache.
+  ///
+  /// The provided closure is called by `get_with` when a key is not present.
+  /// It must return a tuple of `(value, cost)`.
+  pub fn loader(mut self, f: impl Fn(K) -> (V, u64) + Send + Sync + 'static) -> Self {
+    self.loader = Some(Loader::Sync(Arc::new(f)));
+    self
+  }
+
+  /// Sets the asynchronous loader function for the cache.
+  ///
+  /// The provided closure is called by `get_with` when a key is not present.
+  /// It must return a tuple of `(value, cost)`.
+  pub fn async_loader<F, Fut>(mut self, f: F) -> Self
+  where
+    F: Fn(K) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = (V, u64)> + Send + 'static,
+  {
+    let loader_fn = move |key| Box::pin(f(key)) as Pin<Box<dyn Future<Output = (V, u64)> + Send>>;
+    self.loader = Some(Loader::Async(Arc::new(loader_fn)));
+    self
+  }
+
+  pub fn spawner(mut self, spawner: Arc<dyn TaskSpawner>) -> Self {
+    self.spawner = Some(spawner);
+    self
+  }
+
+  /// Sets the tick interval for the background cleanup task (janitor).
+  /// (Primarily for testing purposes).
+  #[doc(hidden)] // Hide from public docs unless we want to make it a first-class feature
+  pub fn janitor_tick_interval(mut self, duration: Duration) -> Self {
+    self.janitor_tick_interval = Some(duration);
     self
   }
 }
@@ -94,7 +153,12 @@ impl<K: Send, V: Send> CacheBuilder<K, V, ahash::RandomState> {
       time_to_live: None,
       time_to_idle: None,
       hasher: ahash::RandomState::new(),
+      stale_while_revalidate: None,
+      janitor_tick_interval: None,
       listener: None,
+      cache_policy: None,
+      loader: None,
+      spawner: None,
       _key_marker: PhantomData,
       _value_marker: PhantomData,
     }
@@ -122,29 +186,58 @@ where
     self
   }
 
+  /// Sets a duration after an entry's TTL expires during which the cache can
+  /// still serve the stale value while asynchronously refreshing it in the
+  /// background.
+  ///
+  /// This feature requires a `loader` or `async_loader` to be configured.
+  pub fn stale_while_revalidate(mut self, duration: Duration) -> Self {
+    self.stale_while_revalidate = Some(duration);
+    self
+  }
+
   /// Builds a synchronous `Cache`.
-  pub fn build(&self) -> Result<Cache<K, V, H>, BuildError> {
+  pub fn build(mut self) -> Result<Cache<K, V, H>, BuildError> {
     self.validate()?;
-    let shared = self.build_shared_core(None);
+    let shared = self.build_shared_core(None)?;
     Ok(Cache { shared })
   }
 
   /// Builds an asynchronous `AsyncCache`.
-  pub fn build_async(&self) -> Result<AsyncCache<K, V, H>, BuildError> {
+  pub fn build_async(mut self) -> Result<AsyncCache<K, V, H>, BuildError> {
     self.validate()?;
-    let shared = self.build_shared_core(None);
+    let shared = self.build_shared_core(None)?;
     Ok(AsyncCache { shared })
   }
 
   /// Central logic to construct the shared core of the cache.
   pub(crate) fn build_shared_core(
-    &self,
+    &mut self,
     snapshot: Option<CacheSnapshot<K, V>>,
-  ) -> Arc<CacheShared<K, V, H>> {
+  ) -> Result<Arc<CacheShared<K, V, H>>, BuildError> {
+    let mut spawner = self.spawner.take();
+    if matches!(self.loader, Some(Loader::Async(_))) && spawner.is_none() {
+      #[cfg(feature = "tokio")]
+      {
+        spawner = Some(Arc::new(crate::runtime::TokioSpawner::new()));
+      }
+      #[cfg(not(feature = "tokio"))]
+      {
+        return Err(BuildError::SpawnerRequired);
+      }
+    }
+
     let store = Arc::new(ShardedStore::new(self.shards, self.hasher.clone()));
     let metrics = Arc::new(Metrics::new());
-    let cost_gate = Arc::new(CostGate::new(self.capacity));
-    let eviction_policy: Arc<dyn CachePolicy<K, V>> = Arc::new(TinyLfu::new(self.capacity));
+    let cache_policy = self.cache_policy.take().unwrap_or_else(|| {
+      // If the cache is unbounded, use a NullPolicy that does nothing.
+      // Otherwise, default to TinyLfu which is designed for bounded caches.
+      if self.capacity == u64::MAX {
+        Arc::new(crate::policy::null::NullPolicy)
+      } else {
+        Arc::new(TinyLfu::new(self.capacity))
+      }
+    });
 
     let (notifier, notification_sender) = if let Some(listener) = &self.listener {
       let (notifier, sender) = Notifier::spawn(listener.clone());
@@ -178,8 +271,7 @@ where
     let janitor_context = JanitorContext {
       store: Arc::clone(&store),
       metrics: Arc::clone(&metrics),
-      cost_gate: Arc::clone(&cost_gate),
-      eviction_policy: Arc::clone(&eviction_policy),
+      eviction_policy: Arc::clone(&cache_policy),
       capacity: self.capacity,
       time_to_idle: self.time_to_idle,
       notification_sender: notification_sender.as_ref().map(|val| val.clone()),
@@ -187,24 +279,27 @@ where
 
     let janitor =
       if self.time_to_live.is_some() || self.time_to_idle.is_some() || self.capacity != u64::MAX {
-        let tick_interval = Duration::from_secs(1);
+        let tick_interval = self.janitor_tick_interval.unwrap_or(Duration::from_secs(1));
         Some(Janitor::spawn(janitor_context, tick_interval))
       } else {
         None
       };
 
-    Arc::new(CacheShared {
+    Ok(Arc::new(CacheShared {
       store,
       metrics,
-      cost_gate,
-      eviction_policy,
+      eviction_policy: cache_policy,
       janitor,
       capacity: self.capacity,
       time_to_live: self.time_to_live,
       time_to_idle: self.time_to_idle,
+      stale_while_revalidate: self.stale_while_revalidate,
       notification_sender,
       notifier,
-    })
+      loader: self.loader.take(),
+      pending_loads: Mutex::new(Default::default()),
+      spawner,
+    }))
   }
 
   /// Validates the builder configuration.

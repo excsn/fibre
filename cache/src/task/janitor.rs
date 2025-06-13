@@ -1,6 +1,5 @@
-use crate::backpressure::CostGate;
-use crate::policy::CachePolicy;
 use crate::metrics::Metrics;
+use crate::policy::CachePolicy;
 use crate::store::ShardedStore;
 use crate::task::notifier::Notification;
 use crate::EvictionReason;
@@ -18,10 +17,9 @@ const JANITOR_SAMPLE_SIZE: usize = 10;
 
 /// A context object holding the thread-safe parts of the cache that the
 /// janitor needs to access. This avoids a circular Arc reference.
-pub(crate) struct JanitorContext<K: Send, V: Send, H> {
+pub(crate) struct JanitorContext<K: Send, V: Send + Sync, H> {
   pub(crate) store: Arc<ShardedStore<K, V, H>>,
   pub(crate) metrics: Arc<Metrics>,
-  pub(crate) cost_gate: Arc<CostGate>,
   pub(crate) eviction_policy: Arc<dyn CachePolicy<K, V>>,
   pub(crate) capacity: u64,
   pub(crate) time_to_idle: Option<Duration>,
@@ -36,10 +34,7 @@ pub(crate) struct Janitor {
 
 impl Janitor {
   /// Spawns a new janitor thread.
-  pub(crate) fn spawn<K, V, H>(
-    context: JanitorContext<K, V, H>,
-    tick_interval: Duration,
-  ) -> Self
+  pub(crate) fn spawn<K, V, H>(context: JanitorContext<K, V, H>, tick_interval: Duration) -> Self
   where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     V: Send + Sync + 'static,
@@ -55,7 +50,7 @@ impl Janitor {
           if stop_clone.load(Ordering::Relaxed) {
             return;
           }
-          thread::sleep(Duration::from_millis(100));
+          thread::sleep(tick_interval);
         }
 
         Self::cleanup(&context);
@@ -114,12 +109,10 @@ impl Janitor {
                   .metrics
                   .current_cost
                   .fetch_sub(removed_entry.cost(), Ordering::Relaxed);
-                context.cost_gate.release(removed_entry.cost());
                 context.eviction_policy.on_remove(&key);
                 if let Some(sender) = &context.notification_sender {
-                  if let Ok(value) = Arc::try_unwrap(removed_entry.value()) {
-                    let _ = sender.try_send((key.clone(), value, EvictionReason::Expired));
-                  }
+                  let _ =
+                    sender.try_send((key.clone(), removed_entry.value(), EvictionReason::Expired));
                 }
               }
             }
@@ -139,30 +132,54 @@ impl Janitor {
     let current_cost = context.metrics.current_cost.load(Ordering::Relaxed);
     if current_cost > context.capacity {
       let cost_to_free = current_cost - context.capacity;
-      let victims = context.eviction_policy.evict(cost_to_free);
+
+      // The policy returns the actual victims and their total cost.
+      let (victims, _total_cost_released) = context.eviction_policy.evict(cost_to_free);
+
+      if victims.is_empty() {
+        return;
+      }
+
+      // The fix is to separate the removal from the store (which requires shard locks)
+      // from the releasing of cost (which requires the gate lock).
+
+      // Phase 1: Remove items from the store and collect their info.
+      let mut notifications_to_send = Vec::new();
 
       for key in victims {
         let shard = context.store.get_shard(&key);
-        let mut guard = shard.write_sync();
+        let mut guard = shard.write_sync(); // Lock B
 
-        // The policy has declared this key a victim, so we remove it directly.
         if let Some(removed_entry) = guard.remove(&key) {
           context
             .metrics
             .evicted_by_capacity
             .fetch_add(1, Ordering::Relaxed);
+
+          // The policy's internal state must be updated while we have the key.
+          context.eviction_policy.on_remove(&key);
+
+          let cost = removed_entry.cost();
           context
             .metrics
             .current_cost
-            .fetch_sub(removed_entry.cost(), Ordering::Relaxed);
-          context.cost_gate.release(removed_entry.cost());
-          context.eviction_policy.on_remove(&key);
+            .fetch_sub(cost, Ordering::Relaxed);
 
-          if let Some(sender) = &context.notification_sender {
-            if let Ok(value) = Arc::try_unwrap(removed_entry.value()) {
-              let _ = sender.try_send((key.clone(), value, EvictionReason::Capacity));
-            }
+          if let Some(_) = &context.notification_sender {
+            notifications_to_send.push((
+              key.clone(),
+              removed_entry.value(),
+              EvictionReason::Capacity,
+            ));
           }
+        }
+        // Shard lock (Lock B) is released here as `guard` goes out of scope.
+      }
+
+      // Phase 3: Send notifications.
+      if let Some(sender) = &context.notification_sender {
+        for (key, value, reason) in notifications_to_send {
+          let _ = sender.try_send((key, value, reason));
         }
       }
     }
@@ -171,6 +188,5 @@ impl Janitor {
   /// Signals the janitor thread to stop and waits for it to finish.
   pub(crate) fn stop(self) {
     self.stop_flag.store(true, Ordering::Relaxed);
-    let _ = self.handle.join();
   }
 }

@@ -5,7 +5,7 @@ use std::time::Instant;
 /// A thread-safe, internal metrics collector for the cache.
 /// All fields are atomic to allow for lock-free updates.
 #[derive(Debug)]
-pub(crate) struct Metrics {
+pub struct Metrics {
   // --- Hit/Miss Ratios ---
   pub(crate) hits: AtomicU64,
   pub(crate) misses: AtomicU64,

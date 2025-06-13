@@ -17,11 +17,13 @@ pub mod error;
 pub mod handles;
 pub mod listener;
 pub mod metrics;
+pub mod runtime;
+pub mod policy;
 
 // Internal, crate-only modules
-mod backpressure;
+// mod backpressure;
 mod entry;
-mod policy;
+mod loader;
 mod shared;
 mod store;
 mod sync;
@@ -37,3 +39,4 @@ pub use entry_api::Entry;
 pub use handles::{AsyncCache, Cache};
 pub use listener::{EvictionListener, EvictionReason};
 pub use metrics::MetricsSnapshot;
+pub use runtime::TaskSpawner;

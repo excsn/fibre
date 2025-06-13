@@ -270,14 +270,20 @@ name = "fibre_cache"
 version = "0.1.0"
 dependencies = [
  "ahash",
+ "bench_matrix",
  "bincode",
+ "criterion",
  "crossbeam-utils",
  "fibre",
+ "futures-executor",
  "futures-util",
  "num_cpus",
  "once_cell",
  "parking_lot",
+ "rand",
+ "rayon",
  "serde",
+ "tokio",
 ]
 
 [[package]]
