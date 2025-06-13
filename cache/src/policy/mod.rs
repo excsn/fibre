@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 /// An event that is recorded on every access to the cache.
 /// These events are buffered and processed by a background maintenance task.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum AccessEvent<K> {
   Read(K),
   Write(K, u64), // Write events include the cost of the item.

@@ -4,9 +4,12 @@ use crate::sync::HybridRwLock;
 
 use core::fmt;
 use fibre::mpsc;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::Arc;
+
+const EVENT_BUFFER_CAPACITY: usize = 512;
 
 use crossbeam_utils::CachePadded;
 
@@ -25,6 +28,8 @@ pub(crate) struct Shard<K: Send, V, H> {
   // A bounded MPSC channel to buffer access events for the eviction policy.
   pub(crate) event_buffer_tx: mpsc::BoundedSender<AccessEvent<K>>,
   pub(crate) event_buffer_rx: mpsc::BoundedReceiver<AccessEvent<K>>,
+  // A lock to ensure only one thread performs maintenance at a time.
+  pub(crate) maintenance_lock: Mutex<()>,
 }
 
 /// A cache store that is partitioned into multiple, independently locked shards.
@@ -47,12 +52,11 @@ impl<K: Send, V, H> fmt::Debug for ShardedStore<K, V, H> {
 impl<K, V, H> ShardedStore<K, V, H>
 where
   K: Eq + Hash + Send,
-  V: Send + Sync,
+  V: Send,
   H: BuildHasher + Clone,
 {
   /// Creates a new `ShardedStore` with the specified number of shards and hasher.
   pub(crate) fn new(num_shards: usize, hasher: H) -> Self {
-    const EVENT_BUFFER_CAPACITY: usize = 128;
 
     let mut shards = Vec::with_capacity(num_shards);
     for _ in 0..num_shards {
@@ -64,6 +68,7 @@ where
         map: lock,
         event_buffer_tx: tx,
         event_buffer_rx: rx,
+        maintenance_lock: Mutex::new(()),
       };
 
       shards.push(CachePadded::new(shard));
@@ -79,7 +84,7 @@ where
   #[inline]
   pub(crate) fn get_shard(&self, key: &K) -> &Shard<K, V, H> {
     let hash = hash_key(&self.hasher, key);
-    let index = hash as usize % self.shards.len();
+    let index = hash as usize & (self.shards.len() - 1); 
     &self.shards[index]
   }
 

@@ -48,16 +48,14 @@ pub struct VacantEntry<'a, K: Send, V: Send + Sync, H> {
 
 impl<'a, K, V, H> VacantEntry<'a, K, V, H>
 where
-  K: Eq + Hash + Clone + Send + Sync,
+  K: Eq + Hash + Clone + Send,
   V: Send + Sync,
-  H: BuildHasher + Clone + Sync,
+  H: BuildHasher + Clone,
 {
   /// Gets a reference to the key that would be used to insert the value.
   pub fn key(&self) -> &K {
     &self.key
   }
-
-  //TODO Needs insert_async or async entry api
 
   /// Inserts a new value into the cache at this entry's key.
   ///

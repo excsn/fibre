@@ -1,7 +1,7 @@
 use crate::entry::CacheEntry;
 use crate::entry_api::{OccupiedEntry, VacantEntry};
 use crate::loader::LoadFuture;
-use crate::policy::{AccessEvent, AccessInfo, AdmissionDecision};
+use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
 use crate::{time, AsyncCache, Entry, EvictionReason, MetricsSnapshot};
 
@@ -397,7 +397,6 @@ where
   }
 
   // Helper function to contain the logic for triggering a refresh.
-  // This prevents code duplication between `get_with` and `get_with_async`.
   fn trigger_background_load(&self, key: &K)
   where
     K: Clone + 'static,
@@ -576,7 +575,7 @@ where
   /// background processing. The cache may be temporarily over capacity until
   /// the janitor task evicts items.
   #[cfg(feature = "bulk")]
-  pub async fn multi_insert<I>(&self, items: I)
+  pub fn multi_insert<I>(&self, items: I)
   where
     I: IntoIterator<Item = (K, V, u64)>,
   {

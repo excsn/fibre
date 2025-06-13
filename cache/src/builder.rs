@@ -219,7 +219,7 @@ impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
   pub fn new() -> Self {
     Self {
       capacity: u64::MAX,
-      shards: (num_cpus::get() * 4).max(1),
+      shards: (num_cpus::get() * 4).max(1).next_power_of_two(),
       time_to_live: None,
       time_to_idle: None,
       hasher: H::default(),

@@ -277,6 +277,7 @@ dependencies = [
  "fibre",
  "futures-executor",
  "futures-util",
+ "generational-arena",
  "num_cpus",
  "once_cell",
  "parking_lot",
@@ -387,6 +388,15 @@ dependencies = [
  "pin-project-lite",
  "pin-utils",
  "slab",
+]
+
+[[package]]
+name = "generational-arena"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "877e94aff08e743b651baaea359664321055749b398adff8740a7399af7796e7"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]

@@ -10,7 +10,12 @@ pub(crate) struct Timer {
   pub(crate) key_hash: u64,
 }
 
-pub(crate) type TimerHandle = u64; // The handle is now just the key's hash.
+// The handle is now a struct containing the hash and the wheel slot for fast lookup.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TimerHandle {
+  pub(crate) key_hash: u64,
+  slot: usize,
+}
 
 pub(crate) struct TimerWheel {
   wheel: Vec<Mutex<LinkedList<Timer>>>,
@@ -41,7 +46,8 @@ impl TimerWheel {
 
     let timer = Timer { laps, key_hash };
     self.wheel[slot].lock().push_back(timer);
-    key_hash
+
+    TimerHandle { key_hash, slot }
   }
 
   pub(crate) fn cancel(&self, handle: &TimerHandle) {
@@ -50,7 +56,7 @@ impl TimerWheel {
     // This is an acceptable trade-off for simplicity.
     for bucket in self.wheel.iter() {
       let mut list = bucket.lock();
-      if let Some(pos) = list.iter().position(|t| t.key_hash == *handle) {
+      if let Some(pos) = list.iter().position(|t| t.key_hash == handle.key_hash) {
         // `drain_filter` is unstable, so we do it manually.
         let mut rest = list.split_off(pos);
         rest.pop_front(); // Remove the element at the found position.
