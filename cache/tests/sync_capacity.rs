@@ -199,6 +199,7 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up_large_overflow() { // 
   let cache_capacity = 5;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(cache_capacity)
+    .shards(1)
     .cache_policy(LruPolicy::new()) // Use a simple policy for predictable eviction
     .janitor_tick_interval(JANITOR_TICK)
     .build()

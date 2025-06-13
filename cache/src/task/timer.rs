@@ -1,5 +1,6 @@
 use parking_lot::Mutex;
 use std::collections::LinkedList;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ pub(crate) type TimerHandle = u64; // The handle is now just the key's hash.
 
 pub(crate) struct TimerWheel {
   wheel: Vec<Mutex<LinkedList<Timer>>>,
-  current_tick: usize,
+  current_tick: AtomicUsize,
   tick_duration: Duration,
 }
 
@@ -25,15 +26,18 @@ impl TimerWheel {
     }
     Self {
       wheel,
-      current_tick: 0,
+      current_tick: AtomicUsize::new(0),
       tick_duration,
     }
   }
 
   pub(crate) fn schedule(&self, key_hash: u64, duration: Duration) -> TimerHandle {
     let ticks = (duration.as_secs_f64() / self.tick_duration.as_secs_f64()).round() as usize;
+    // Load the current tick atomically. Ordering::Relaxed is fine because we don't
+    // need to synchronize memory with other operations; we just need the value.
+    let current_tick = self.current_tick.load(Ordering::Relaxed);
     let laps = ticks / self.wheel.len();
-    let slot = (self.current_tick + ticks) % self.wheel.len();
+    let slot = (current_tick + ticks) % self.wheel.len();
 
     let timer = Timer { laps, key_hash };
     self.wheel[slot].lock().push_back(timer);
@@ -56,9 +60,12 @@ impl TimerWheel {
     }
   }
 
-  pub(crate) fn advance(&mut self) -> Vec<u64> {
-    self.current_tick = (self.current_tick + 1) % self.wheel.len();
-    let mut current_bucket = self.wheel[self.current_tick].lock();
+  pub(crate) fn advance(&self) -> Vec<u64> {
+    let tick_to_process = self.current_tick.fetch_add(1, Ordering::Relaxed);
+    let slot = tick_to_process % self.wheel.len();
+
+    // The rest of the logic can now operate on an immutable self.
+    let mut current_bucket = self.wheel[slot].lock();
 
     let mut expired_hashes = Vec::new();
     let mut still_running = LinkedList::new();

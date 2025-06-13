@@ -106,12 +106,11 @@ where
 
     // --- NEW: Schedule timers ---
     if let Some(wheel) = &self.shared.timer_wheel {
-      let mut wheel_guard = wheel.lock();
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = self
         .shared
         .time_to_live
-        .map(|ttl| wheel_guard.schedule(key_hash, ttl));
+        .map(|ttl| wheel.schedule(key_hash, ttl));
       // TTI is now handled by sampling in the janitor, not by the timer wheel.
       let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
@@ -126,12 +125,11 @@ where
     // --- NEW: Cancel timers for the replaced entry ---
     if let Some(entry) = old_entry {
       if let Some(wheel) = &self.shared.timer_wheel {
-        let mut wheel_guard = wheel.lock();
         if let Some(handle) = &entry.ttl_timer_handle {
-          wheel_guard.cancel(handle);
+          wheel.cancel(handle);
         }
         if let Some(handle) = &entry.tti_timer_handle {
-          wheel_guard.cancel(handle);
+          wheel.cancel(handle);
         }
       }
       let old_cost = entry.cost();
@@ -181,9 +179,8 @@ where
 
     // Schedule this specific TTL on the timer wheel.
     if let Some(wheel) = &self.shared.timer_wheel {
-      let mut wheel_guard = wheel.lock();
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
-      let ttl_handle = Some(wheel_guard.schedule(key_hash, ttl));
+      let ttl_handle = Some(wheel.schedule(key_hash, ttl));
       // TTI is now handled by sampling in the janitor, not by the timer wheel.
       let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
@@ -196,12 +193,11 @@ where
 
     if let Some(entry) = old_entry {
       if let Some(wheel) = &self.shared.timer_wheel {
-        let mut wheel_guard = wheel.lock();
         if let Some(handle) = &entry.ttl_timer_handle {
-          wheel_guard.cancel(handle);
+          wheel.cancel(handle);
         }
         if let Some(handle) = &entry.tti_timer_handle {
-          wheel_guard.cancel(handle);
+          wheel.cancel(handle);
         }
       }
       let old_cost = entry.cost();
@@ -276,12 +272,11 @@ where
     if let Some(entry) = guard.remove(key) {
       // --- NEW: Cancel timers ---
       if let Some(wheel) = &self.shared.timer_wheel {
-        let mut wheel_guard = wheel.lock();
         if let Some(handle) = &entry.ttl_timer_handle {
-          wheel_guard.cancel(handle);
+          wheel.cancel(handle);
         }
         if let Some(handle) = &entry.tti_timer_handle {
-          wheel_guard.cancel(handle);
+          wheel.cancel(handle);
         }
       }
 
@@ -507,7 +502,7 @@ where
   ///
   /// Returns a `HashMap` containing the keys and values that were found.
   #[cfg(feature = "bulk")]
-  pub fn get_all<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>
+  pub fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>
   where
     I: IntoIterator<Item = Q>,
     K: From<Q>,
@@ -515,10 +510,12 @@ where
   {
     // Group keys by shard index to minimize lock acquisitions.
     let mut keys_by_shard: Vec<Vec<K>> = vec![Vec::new(); self.shared.store.iter_shards().count()];
+    let mut total_reqs = 0;
     for key in keys.into_iter().map(K::from) {
       let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let index = hash as usize % keys_by_shard.len();
       keys_by_shard[index].push(key);
+      total_reqs += 1;
     }
 
     // Use Rayon to process shards in parallel.
@@ -537,9 +534,13 @@ where
         for key in shard_keys {
           if let Some(entry) = guard.get(key) {
             if !entry.is_expired(self.shared.time_to_idle) {
-              entry.update_last_accessed();
-              let info = crate::policy::AccessInfo { key, entry };
-              self.shared.eviction_policy.on_access(&info);
+              // This is a hit. Update TTI and send a Read event to the janitor.
+              if self.shared.time_to_idle.is_some() {
+                entry.update_last_accessed();
+              }
+              let _ = shard
+                .event_buffer_tx
+                .try_send(AccessEvent::Read(key.clone()));
               found.insert(key.clone(), entry.value());
             }
           }
@@ -555,7 +556,6 @@ where
     }
 
     let hits = final_map.len() as u64;
-    let total_reqs = keys_by_shard.iter().map(Vec::len).sum::<usize>() as u64;
     self
       .shared
       .metrics
@@ -572,10 +572,11 @@ where
 
   /// Inserts multiple key-value-cost triples into the cache.
   ///
-  /// This method first acquires the total cost for all items. If the cache is
-  /// not large enough, it will block until space is freed.
+  /// This operation is non-blocking and pushes write events to a queue for
+  /// background processing. The cache may be temporarily over capacity until
+  /// the janitor task evicts items.
   #[cfg(feature = "bulk")]
-  pub fn insert_all<I>(&self, items: I)
+  pub async fn multi_insert<I>(&self, items: I)
   where
     I: IntoIterator<Item = (K, V, u64)>,
   {
@@ -585,16 +586,14 @@ where
     for _ in 0..num_shards {
       items_by_shard.push(Vec::new());
     }
-    let mut total_cost = 0;
 
     for (key, value, cost) in items.into_iter() {
-      total_cost += cost;
       let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let index = hash as usize % items_by_shard.len();
       items_by_shard[index].push((key, value, cost));
     }
 
-    // Once we have capacity, insert into shards.
+    // Process shards in parallel.
     items_by_shard
       .into_par_iter()
       .enumerate()
@@ -607,16 +606,36 @@ where
         let mut guard = shard.map.write_sync();
 
         for (key, value, cost) in shard_items {
-          // Here we would call the full insert logic, including admission policy check.
-          // For simplicity, we'll inline a condensed version.
-          let entry = Arc::new(crate::entry::CacheEntry::new(
+          let mut new_cache_entry = CacheEntry::new(
             value,
             cost,
             self.shared.time_to_live,
             self.shared.time_to_idle,
-          ));
+          );
 
-          if let Some(old_entry) = guard.insert(key.clone(), entry.clone()) {
+          // Schedule timers for the new entry.
+          if let Some(wheel) = &self.shared.timer_wheel {
+            let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+            let ttl_handle = self
+              .shared
+              .time_to_live
+              .map(|ttl| wheel.schedule(key_hash, ttl));
+            let tti_handle = None; // TTI handled by janitor sampling
+            new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
+          }
+
+          // Insert and handle any replaced entry.
+          if let Some(old_entry) = guard.insert(key.clone(), Arc::new(new_cache_entry)) {
+            // Cancel timers for the replaced entry.
+            if let Some(wheel) = &self.shared.timer_wheel {
+              if let Some(handle) = &old_entry.ttl_timer_handle {
+                wheel.cancel(handle);
+              }
+              if let Some(handle) = &old_entry.tti_timer_handle {
+                wheel.cancel(handle);
+              }
+            }
+            // Adjust cost for the replaced entry.
             self
               .shared
               .metrics
@@ -624,16 +643,15 @@ where
               .fetch_sub(old_entry.cost(), std::sync::atomic::Ordering::Relaxed);
           }
 
-          self
-            .shared
-            .metrics
-            .inserts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+          // Update total cost and send write event to janitor.
           self
             .shared
             .metrics
             .current_cost
             .fetch_add(cost, std::sync::atomic::Ordering::Relaxed);
+          let _ = shard
+            .event_buffer_tx
+            .try_send(AccessEvent::Write(key, cost));
         }
       });
   }
@@ -642,7 +660,7 @@ where
   ///
   /// This is more efficient than calling `invalidate` in a loop.
   #[cfg(feature = "bulk")]
-  pub fn invalidate_all<I, Q>(&self, keys: I)
+  pub fn multi_invalidate<I, Q>(&self, keys: I)
   where
     I: IntoIterator<Item = Q>,
     K: From<Q>,
@@ -655,7 +673,7 @@ where
       keys_by_shard[index].push(key);
     }
 
-    // Can also be parallelized with Rayon.
+    // Process shards in parallel.
     keys_by_shard
       .par_iter()
       .enumerate()
@@ -669,6 +687,16 @@ where
 
         for key in shard_keys {
           if let Some(entry) = guard.remove(key) {
+            // Cancel any timers associated with the removed entry.
+            if let Some(wheel) = &self.shared.timer_wheel {
+              if let Some(handle) = &entry.ttl_timer_handle {
+                wheel.cancel(handle);
+              }
+              if let Some(handle) = &entry.tti_timer_handle {
+                wheel.cancel(handle);
+              }
+            }
+
             self.shared.eviction_policy.on_remove(key);
             self
               .shared

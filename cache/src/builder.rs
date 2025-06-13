@@ -331,10 +331,10 @@ where
         .unwrap_or(Duration::from_secs(1));
       let wheel_size = self.timer_wheel_size.unwrap_or(60);
 
-      Some(Arc::new(Mutex::new(TimerWheel::new(
+      Some(Arc::new(TimerWheel::new(
         wheel_size,
         tick_duration,
-      ))))
+      )))
     } else {
       None
     };

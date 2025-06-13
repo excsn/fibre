@@ -24,7 +24,7 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) metrics: Arc<Metrics>,
   pub(crate) eviction_policy: Arc<dyn CachePolicy<K, V>>,
   // The timer wheel for managing TTL and TTI expirations.
-  pub(crate) timer_wheel: Option<Arc<Mutex<TimerWheel>>>,
+  pub(crate) timer_wheel: Option<Arc<TimerWheel>>,
   pub(crate) janitor: Option<Janitor>,
   pub(crate) notification_sender: Option<mpsc::BoundedSender<Notification<K, V>>>,
   pub(crate) notifier: Option<Notifier<K, V>>,

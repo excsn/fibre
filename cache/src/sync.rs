@@ -1,4 +1,4 @@
-use crossbeam_utils::CachePadded; // <-- ADDED
+use crossbeam_utils::CachePadded;
 use parking_lot::{Condvar, Mutex};
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
@@ -8,7 +8,6 @@ use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
-use std::thread;
 
 // --- Constants and State Representation ---
 const UNLOCKED: usize = 0;
@@ -25,8 +24,8 @@ struct LockState {
 #[derive(Default, Debug)]
 pub(crate) struct HybridRwLock<T> {
   // Wrap hot fields in CachePadded to prevent false sharing.
-  state: CachePadded<AtomicUsize>,        // <-- CHANGED
-  waiters: CachePadded<Mutex<LockState>>, // <-- CHANGED
+  state: CachePadded<AtomicUsize>,
+  waiters: CachePadded<Mutex<LockState>>,
 
   // Condvars are less contended and don't need padding as much.
   sync_writer_cv: Condvar,
@@ -42,8 +41,8 @@ unsafe impl<T: Send + Sync> Sync for HybridRwLock<T> {}
 impl<T> HybridRwLock<T> {
   pub fn new(data: T) -> Self {
     Self {
-      state: CachePadded::new(AtomicUsize::new(UNLOCKED)), // <-- CHANGED
-      waiters: CachePadded::new(Mutex::new(LockState::default())), // <-- CHANGED
+      state: CachePadded::new(AtomicUsize::new(UNLOCKED)),
+      waiters: CachePadded::new(Mutex::new(LockState::default())),
       sync_writer_cv: Condvar::new(),
       sync_reader_cv: Condvar::new(),
       data: UnsafeCell::new(data),

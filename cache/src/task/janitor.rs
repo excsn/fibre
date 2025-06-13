@@ -25,7 +25,7 @@ pub(crate) struct JanitorContext<K: Send, V: Send + Sync, H> {
   pub(crate) store: Arc<ShardedStore<K, V, H>>,
   pub(crate) metrics: Arc<Metrics>,
   pub(crate) eviction_policy: Arc<dyn CachePolicy<K, V>>,
-  pub(crate) timer_wheel: Option<Arc<Mutex<TimerWheel>>>,
+  pub(crate) timer_wheel: Option<Arc<TimerWheel>>,
   pub(crate) capacity: u64,
   pub(crate) time_to_idle: Option<Duration>,
   pub(crate) notification_sender: Option<mpsc::BoundedSender<Notification<K, V>>>,
@@ -161,7 +161,7 @@ impl Janitor {
     H: BuildHasher + Clone + Send + Sync,
   {
     let expired_hashes = match &context.timer_wheel {
-      Some(wheel) => wheel.lock().advance(),
+      Some(wheel) => wheel.advance(),
       None => return,
     };
 
@@ -245,7 +245,7 @@ impl Janitor {
             // An item expired by TTI might still have a TTL timer. Cancel it.
             if let Some(wheel) = &context.timer_wheel {
               if let Some(handle) = &entry.ttl_timer_handle {
-                wheel.lock().cancel(handle);
+                wheel.cancel(handle);
               }
             }
 
