@@ -120,7 +120,7 @@ where
       .shared
       .store
       .iter_shards()
-      .map(|s| s.write_sync())
+      .map(|s| s.map.write_sync())
       .collect::<Vec<_>>();
 
     let mut persistent_entries = Vec::new();
@@ -166,7 +166,7 @@ where
   pub async fn to_snapshot(&self) -> CacheSnapshot<K, V> {
     // 1. Asynchronously acquire all write locks.
     let shard_guards =
-      future::join_all(self.shared.store.iter_shards().map(|s| s.write_async())).await;
+      future::join_all(self.shared.store.iter_shards().map(|s| s.map.write_async())).await;
 
     let mut persistent_entries = Vec::new();
     let now_duration = time::now_duration();

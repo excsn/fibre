@@ -1,7 +1,7 @@
 use crate::entry::CacheEntry;
 use crate::entry_api::{OccupiedEntry, VacantEntry};
 use crate::loader::LoadFuture;
-use crate::policy::{AccessInfo, AdmissionDecision};
+use crate::policy::{AccessEvent, AccessInfo, AdmissionDecision};
 use crate::shared::CacheShared;
 use crate::{AsyncCache, Entry, EvictionReason, MetricsSnapshot};
 
@@ -46,14 +46,14 @@ where
   /// and the entry is not expired. Returns `None` otherwise.
   pub fn get(&self, key: &K) -> Option<Arc<V>> {
     let shard = self.shared.store.get_shard(key);
-    let guard = shard.read();
+    let guard = shard.map.read();
 
     if let Some(entry) = guard.get(key) {
       if entry.is_expired(self.shared.time_to_idle) {
         self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
         None
       } else {
-        self.on_hit(key, entry);
+        self.on_hit(key, entry, &shard.event_buffer_tx);
         Some(entry.value())
       }
     } else {
@@ -69,7 +69,7 @@ where
   /// safe "get-or-insert" operations.
   pub fn entry(&self, key: K) -> Entry<'_, K, V, H> {
     let shard = self.shared.store.get_shard(&key);
-    let guard = shard.write_sync();
+    let guard = shard.map.write_sync();
 
     if guard.contains_key(&key) {
       Entry::Occupied(OccupiedEntry {
@@ -96,90 +96,73 @@ where
     V: Sync,
     H: Sync,
   {
-    let new_cache_entry = Arc::new(CacheEntry::new(
+    let mut new_cache_entry = CacheEntry::new(
       value,
       cost,
       self.shared.time_to_live,
       self.shared.time_to_idle,
-    ));
-    let access_info = AccessInfo {
-      key: &key,
-      entry: &new_cache_entry,
-    };
+    );
 
-    let admission_decision = self.shared.eviction_policy.on_admit(&access_info);
-    let mut victims_to_process: Option<Vec<K>> = None;
-    let mut old_entry_cost_if_replaced = 0;
-
-    // Lock the specific shard for the new item
-    let new_item_shard = self.shared.store.get_shard(&key);
-    let mut new_item_shard_guard = new_item_shard.write_sync();
-
-    match admission_decision {
-      AdmissionDecision::Admit => {
-        if let Some(old_entry) = new_item_shard_guard.insert(key.clone(), new_cache_entry) {
-          old_entry_cost_if_replaced = old_entry.cost();
-        }
-        self.shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
-        self
-          .shared
-          .metrics
-          .keys_admitted
-          .fetch_add(1, Ordering::Relaxed);
-      }
-      AdmissionDecision::Reject => {
-        self
-          .shared
-          .metrics
-          .keys_rejected
-          .fetch_add(1, Ordering::Relaxed);
-        // Do not insert, value is dropped.
-        // Important: if key ALREADY existed, Reject should probably not remove it.
-        // The current on_admit for simple policies doesn't really "reject" if exists.
-        // This needs more thought for "Reject" case if item already exists.
-        // For now, assume Reject means "don't add this new one".
-        return;
-      }
-      AdmissionDecision::AdmitAndEvict(ref victim_keys) => {
-        if let Some(old_entry) = new_item_shard_guard.insert(key.clone(), new_cache_entry) {
-          old_entry_cost_if_replaced = old_entry.cost();
-        }
-        self.shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
-        self
-          .shared
-          .metrics
-          .keys_admitted
-          .fetch_add(1, Ordering::Relaxed);
-        victims_to_process = Some(victim_keys.clone());
-      }
+    // --- NEW: Schedule timers ---
+    if let Some(wheel) = &self.shared.timer_wheel {
+      let mut wheel_guard = wheel.lock();
+      let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+      let ttl_handle = self
+        .shared
+        .time_to_live
+        .map(|ttl| wheel_guard.schedule(key_hash, ttl));
+      let tti_handle = self
+        .shared
+        .time_to_idle
+        .map(|tti| wheel_guard.schedule(key_hash, tti));
+      new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 
-    // Must update cost AFTER insert/reject decision and considering replacement
-    if old_entry_cost_if_replaced > 0 {
+    let shard = self.shared.store.get_shard(&key);
+    let mut guard = shard.map.write_sync();
+
+    // Now wrap the entry in an Arc for insertion.
+    let old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
+
+    // --- NEW: Cancel timers for the replaced entry ---
+    if let Some(entry) = old_entry {
+      if let Some(wheel) = &self.shared.timer_wheel {
+        let mut wheel_guard = wheel.lock();
+        if let Some(handle) = &entry.ttl_timer_handle {
+          wheel_guard.cancel(handle);
+        }
+        if let Some(handle) = &entry.tti_timer_handle {
+          wheel_guard.cancel(handle);
+        }
+      }
+      let old_cost = entry.cost();
       self
         .shared
         .metrics
         .current_cost
-        .fetch_sub(old_entry_cost_if_replaced, Ordering::Relaxed);
-    }
-    if !matches!(admission_decision, AdmissionDecision::Reject) {
-      self
-        .shared
-        .metrics
-        .current_cost
-        .fetch_add(cost, Ordering::Relaxed);
-      self
-        .shared
-        .metrics
-        .total_cost_added
-        .fetch_add(cost, Ordering::Relaxed);
+        .fetch_sub(old_cost, Ordering::Relaxed);
     }
 
-    drop(new_item_shard_guard); // Release lock before processing victims
+    let _ = shard
+      .event_buffer_tx
+      .try_send(AccessEvent::Write(key, cost));
 
-    if let Some(victims) = victims_to_process {
-      self.shared.process_evicted_victims(victims);
-    }
+    self.shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
+    self
+      .shared
+      .metrics
+      .keys_admitted
+      .fetch_add(1, Ordering::Relaxed);
+    self
+      .shared
+      .metrics
+      .current_cost
+      .fetch_add(cost, Ordering::Relaxed);
+    self
+      .shared
+      .metrics
+      .total_cost_added
+      .fetch_add(cost, Ordering::Relaxed);
   }
 
   /// Atomically computes a new value for a key.
@@ -190,7 +173,7 @@ where
     F: FnOnce(&mut V),
   {
     let shard = self.shared.store.get_shard(key);
-    let mut guard = shard.write_sync();
+    let mut guard = shard.map.write_sync();
 
     // 1. Get mutable access to the `Arc<CacheEntry<V>>` in the map.
     if let Some(entry_arc) = guard.get_mut(key) {
@@ -219,9 +202,20 @@ where
     V: Sync,
   {
     let shard = self.shared.store.get_shard(key);
-    let mut guard = shard.write_sync();
+    let mut guard = shard.map.write_sync();
 
     if let Some(entry) = guard.remove(key) {
+      // --- NEW: Cancel timers ---
+      if let Some(wheel) = &self.shared.timer_wheel {
+        let mut wheel_guard = wheel.lock();
+        if let Some(handle) = &entry.ttl_timer_handle {
+          wheel_guard.cancel(handle);
+        }
+        if let Some(handle) = &entry.tti_timer_handle {
+          wheel_guard.cancel(handle);
+        }
+      }
+
       self.shared.eviction_policy.on_remove(key);
       self
         .shared
@@ -250,7 +244,7 @@ where
       .shared
       .store
       .iter_shards()
-      .map(|s| s.write_sync())
+      .map(|s| s.map.write_sync())
       .collect::<Vec<_>>();
 
     // 2. Clear each shard and notify the eviction policy.
@@ -274,20 +268,20 @@ where
 
   /// Private helper method to run common logic on a cache hit.
   /// This includes updating metadata for TTI and notifying the eviction policy.
-  fn on_hit(&self, key: &K, entry: &Arc<CacheEntry<V>>) {
-    // Only update the last-accessed time if TTI is configured for this cache.
+  fn on_hit(
+    &self,
+    key: &K,
+    entry: &Arc<CacheEntry<V>>,
+    event_tx: &fibre::mpsc::BoundedSender<AccessEvent<K>>,
+  ) {
     if self.shared.time_to_idle.is_some() {
       entry.update_last_accessed();
     }
 
-    let info = AccessInfo { key, entry };
-    self.shared.eviction_policy.on_access(&info);
+    // Instead of calling the policy directly, record a read event.
+    let _ = event_tx.try_send(AccessEvent::Read(key.clone()));
 
-    self
-      .shared
-      .metrics
-      .hits
-      .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
   }
 }
 
@@ -303,11 +297,12 @@ where
     V: 'static,
   {
     // 1. Optimistic read lock.
-    if let Some(entry) = self.shared.store.get_shard(key).read().get(key) {
+    if let Some(entry) = self.shared.store.get_shard(key).map.read().get(key) {
       let expires_at_nanos = entry.expires_at.load(Ordering::Relaxed);
       if expires_at_nanos == 0 {
         // No TTL, it's a fresh hit
-        self.on_hit(key, entry);
+        let shard = self.shared.store.get_shard(key);
+        self.on_hit(key, entry, &shard.event_buffer_tx);
         return entry.value();
       }
 
@@ -315,7 +310,8 @@ where
 
       // CASE A: Fresh Hit
       if now_nanos < expires_at_nanos {
-        self.on_hit(key, entry);
+        let shard = self.shared.store.get_shard(key);
+        self.on_hit(key, entry, &shard.event_buffer_tx);
         return entry.value();
       }
 
@@ -382,7 +378,8 @@ where
       //    finished loading this value while we were waiting for the lock.
       if let Some(entry) = self.shared.raw_get(key) {
         // It was loaded by another thread. This is a HIT for us.
-        self.on_hit(key, &entry);
+        let shard = self.shared.store.get_shard(key);
+        self.on_hit(key, &entry, &shard.event_buffer_tx);
         return entry.value();
       }
 
@@ -465,7 +462,7 @@ where
         }
 
         let shard = &self.shared.store.shards[i];
-        let guard = shard.read(); // Acquire read lock
+        let guard = shard.map.read(); // Acquire read lock
         let mut found = HashMap::new();
 
         for key in shard_keys {
@@ -538,7 +535,7 @@ where
         }
 
         let shard = &self.shared.store.shards[i];
-        let mut guard = shard.write_sync();
+        let mut guard = shard.map.write_sync();
 
         for (key, value, cost) in shard_items {
           // Here we would call the full insert logic, including admission policy check.
@@ -599,7 +596,7 @@ where
         }
 
         let shard = &self.shared.store.shards[i];
-        let mut guard = shard.write_sync(); // Acquire write lock
+        let mut guard = shard.map.write_sync(); // Acquire write lock
 
         for key in shard_keys {
           if let Some(entry) = guard.remove(key) {

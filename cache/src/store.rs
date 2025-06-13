@@ -1,7 +1,9 @@
 use crate::entry::CacheEntry;
+use crate::policy::AccessEvent;
 use crate::sync::HybridRwLock;
 
 use core::fmt;
+use fibre::mpsc;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::Arc;
@@ -16,16 +18,25 @@ pub(crate) fn hash_key<K: Hash, H: BuildHasher>(hasher: &H, key: &K) -> u64 {
   state.finish()
 }
 
+/// A single, independently locked partition of the cache.
+/// It contains both the data HashMap and a buffer for access events.
+pub(crate) struct Shard<K: Send, V, H> {
+  pub(crate) map: HybridRwLock<HashMap<K, Arc<CacheEntry<V>>, H>>,
+  // A bounded MPSC channel to buffer access events for the eviction policy.
+  pub(crate) event_buffer_tx: mpsc::BoundedSender<AccessEvent<K>>,
+  pub(crate) event_buffer_rx: mpsc::BoundedReceiver<AccessEvent<K>>,
+}
+
 /// A cache store that is partitioned into multiple, independently locked shards.
 ///
 /// This design allows for high concurrency by ensuring that operations on
 /// different keys are unlikely to contend for the same lock.
-pub(crate) struct ShardedStore<K, V, H> {
-  pub(crate) shards: Box<[CachePadded<HybridRwLock<HashMap<K, Arc<CacheEntry<V>>, H>>>]>,
+pub(crate) struct ShardedStore<K: Send, V, H> {
+  pub(crate) shards: Box<[CachePadded<Shard<K, V, H>>]>,
   pub(crate) hasher: H,
 }
 
-impl<K, V, H> fmt::Debug for ShardedStore<K, V, H> {
+impl<K: Send, V, H> fmt::Debug for ShardedStore<K, V, H> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("ShardedStore")
       .field("num_shards", &self.shards.len())
@@ -35,18 +46,27 @@ impl<K, V, H> fmt::Debug for ShardedStore<K, V, H> {
 
 impl<K, V, H> ShardedStore<K, V, H>
 where
-  K: Eq + Hash,
+  K: Eq + Hash + Send,
+  V: Send + Sync,
   H: BuildHasher + Clone,
 {
   /// Creates a new `ShardedStore` with the specified number of shards and hasher.
   pub(crate) fn new(num_shards: usize, hasher: H) -> Self {
+    const EVENT_BUFFER_CAPACITY: usize = 128;
+
     let mut shards = Vec::with_capacity(num_shards);
     for _ in 0..num_shards {
-      
       let shard_map = HashMap::with_hasher(hasher.clone());
       let lock = HybridRwLock::new(shard_map);
-      
-      shards.push(CachePadded::new(lock));
+      let (tx, rx) = mpsc::bounded(EVENT_BUFFER_CAPACITY);
+
+      let shard = Shard {
+        map: lock,
+        event_buffer_tx: tx,
+        event_buffer_rx: rx,
+      };
+
+      shards.push(CachePadded::new(shard));
     }
 
     Self {
@@ -55,27 +75,16 @@ where
     }
   }
 
-  /// Returns a reference to the `RwLock` guarding the shard for a given key.
-  ///
-  /// The caller can then acquire a read or write lock on this shard.
+  /// Returns a reference to the `Shard` for a given key.
   #[inline]
-  pub(crate) fn get_shard(&self, key: &K) -> &HybridRwLock<HashMap<K, Arc<CacheEntry<V>>, H>> {
-    // Calculate the hash of the key.
+  pub(crate) fn get_shard(&self, key: &K) -> &Shard<K, V, H> {
     let hash = hash_key(&self.hasher, key);
-    // Determine the shard index using the modulo operator.
-    // This is safe because we validate that num_shards > 0 in the builder.
     let index = hash as usize % self.shards.len();
-
-    // The `CachePadded` wrapper implements `Deref`, so we can directly
-    // return a reference to the inner `RwLock`.
     &self.shards[index]
   }
 
-  /// Returns an iterator over all the shard locks.
-  /// This is useful for "stop-the-world" operations like `save()` or `clear()`.
-  pub(crate) fn iter_shards(
-    &self,
-  ) -> impl Iterator<Item = &HybridRwLock<HashMap<K, Arc<CacheEntry<V>>, H>>> {
-    self.shards.iter().map(|padded_lock| &**padded_lock)
+  /// Returns an iterator over all the shards.
+  pub(crate) fn iter_shards(&self) -> impl Iterator<Item = &Shard<K, V, H>> {
+    self.shards.iter().map(|padded_shard| &**padded_shard)
   }
 }

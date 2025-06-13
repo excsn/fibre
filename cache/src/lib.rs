@@ -13,6 +13,7 @@
 // Public modules that form the API
 pub mod builder;
 pub mod entry_api;
+pub mod entry_api_async;
 pub mod error;
 pub mod handles;
 pub mod listener;
@@ -36,6 +37,7 @@ pub mod snapshot;
 // Re-export the primary user-facing types for convenience
 pub use builder::CacheBuilder;
 pub use entry_api::Entry;
+pub use entry_api_async::AsyncEntry;
 pub use handles::{AsyncCache, Cache};
 pub use listener::{EvictionListener, EvictionReason};
 pub use metrics::MetricsSnapshot;

@@ -1,6 +1,7 @@
+use crate::task::timer::TimerHandle;
 use crate::time;
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,6 +16,10 @@ pub(crate) struct CacheEntry<V> {
   pub(crate) expires_at: AtomicU64,
   /// The last access timestamp in nanoseconds. 0 means no TTI.
   pub(crate) last_accessed: AtomicU64,
+  /// A handle to the TTL timer in the timer wheel, for cancellation.
+  pub(crate) ttl_timer_handle: Option<TimerHandle>, // We will use the key's hash for the timer
+  /// A handle to the TTI timer in the timer wheel.
+  pub(crate) tti_timer_handle: Option<TimerHandle>,
 }
 
 impl<V> CacheEntry<V> {
@@ -29,6 +34,8 @@ impl<V> CacheEntry<V> {
       cost,
       expires_at: AtomicU64::new(expires_at),
       last_accessed: AtomicU64::new(last_accessed),
+      ttl_timer_handle: None,
+      tti_timer_handle: None,
     }
   }
 
@@ -51,6 +58,21 @@ impl<V> CacheEntry<V> {
       cost,
       expires_at: AtomicU64::new(expires_at_nanos),
       last_accessed: AtomicU64::new(last_accessed_nanos),
+      ttl_timer_handle: None,
+      tti_timer_handle: None,
+    }
+  }
+
+  /// Creates a new `CacheEntry` with a pre-existing value Arc and cost.
+  /// Used by the janitor to create dummy entries for policy admission.
+  pub(crate) fn new_with_cost(value: Arc<V>, cost: u64) -> Self {
+    Self {
+      value,
+      cost,
+      expires_at: AtomicU64::new(0),
+      last_accessed: AtomicU64::new(0),
+      ttl_timer_handle: None,
+      tti_timer_handle: None,
     }
   }
 
@@ -97,5 +119,15 @@ impl<V> CacheEntry<V> {
     }
 
     false
+  }
+
+  /// Attaches timer handles to the entry after it has been created.
+  pub(crate) fn set_timer_handles(
+    &mut self,
+    ttl_handle: Option<TimerHandle>,
+    tti_handle: Option<TimerHandle>,
+  ) {
+    self.ttl_timer_handle = ttl_handle;
+    self.tti_timer_handle = tti_handle;
   }
 }

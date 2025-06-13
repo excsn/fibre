@@ -4,25 +4,25 @@ use crate::sync::WriteGuard;
 use std::hash::{BuildHasher, Hash};
 use std::sync::Arc;
 
-/// A view into a single entry in the cache, which may either be occupied or vacant.
+/// A view into a single entry in the cache from an async context, which may either be occupied or vacant.
 ///
-/// This enum is constructed by the [`Cache::entry`] method.
+/// This enum is constructed by the [`AsyncCache::entry_async`] method.
 // The lifetime 'a is the lifetime of the write guard on the shard.
-pub enum Entry<'a, K: Send, V: Send + Sync, H> {
+pub enum AsyncEntry<'a, K: Send, V: Send + Sync, H> {
   /// An occupied entry.
-  Occupied(OccupiedEntry<'a, K, V, H>),
+  Occupied(AsyncOccupiedEntry<'a, K, V, H>),
   /// A vacant entry.
-  Vacant(VacantEntry<'a, K, V, H>),
+  Vacant(AsyncVacantEntry<'a, K, V, H>),
 }
 
-/// A view into an occupied entry in a `Cache`.
-pub struct OccupiedEntry<'a, K: Send, V: Send, H> {
+/// A view into an occupied entry in an `AsyncCache`.
+pub struct AsyncOccupiedEntry<'a, K: Send, V: Send, H> {
   pub(crate) key: K,
   pub(crate) shard_guard:
     WriteGuard<'a, std::collections::HashMap<K, Arc<crate::entry::CacheEntry<V>>, H>>,
 }
 
-impl<'a, K, V: Send, H> OccupiedEntry<'a, K, V, H>
+impl<'a, K, V: Send, H> AsyncOccupiedEntry<'a, K, V, H>
 where
   K: std::cmp::Eq + Hash + Send,
   H: BuildHasher,
@@ -38,15 +38,15 @@ where
   }
 }
 
-/// A view into a vacant entry in a `Cache`.
-pub struct VacantEntry<'a, K: Send, V: Send + Sync, H> {
+/// A view into a vacant entry in an `AsyncCache`.
+pub struct AsyncVacantEntry<'a, K: Send, V: Send + Sync, H> {
   pub(crate) key: K,
   pub(crate) shared: &'a Arc<CacheShared<K, V, H>>,
   pub(crate) shard_guard:
     WriteGuard<'a, std::collections::HashMap<K, Arc<crate::entry::CacheEntry<V>>, H>>,
 }
 
-impl<'a, K, V, H> VacantEntry<'a, K, V, H>
+impl<'a, K, V, H> AsyncVacantEntry<'a, K, V, H>
 where
   K: Eq + Hash + Clone + Send + Sync,
   V: Send + Sync,
@@ -57,10 +57,10 @@ where
     &self.key
   }
 
-  //TODO Needs insert_async or async entry api
-
   /// Inserts a new value into the cache at this entry's key.
   ///
+  /// This operation is synchronous because the `AsyncVacantEntry` already holds
+  /// an exclusive lock on the shard.
   ///
   /// Returns an `Arc` pointing to the newly inserted value.
   pub fn insert(mut self, value: V, cost: u64) -> Arc<V> {
@@ -72,26 +72,16 @@ where
     ));
     let value_arc_to_return = new_cache_entry.value();
 
-    // The key is cloned once for the event and once for the map insertion.
     let key_for_event = self.key.clone();
 
-    // Insert the new entry into the hash map.
     self.shard_guard.insert(self.key, new_cache_entry);
-
-    // We must drop the guard for the current shard before any other operations
-    // that might try to lock other shards, although in this new model, we don't.
-    // It's still good practice.
     drop(self.shard_guard);
 
-    // Get the shard again to access its event buffer.
     let shard = self.shared.store.get_shard(&key_for_event);
-
-    // Record the write event for the janitor to process later.
     let _ = shard
       .event_buffer_tx
       .try_send(AccessEvent::Write(key_for_event, cost));
 
-    // Update metrics
     self
       .shared
       .metrics

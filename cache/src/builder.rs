@@ -1,5 +1,3 @@
-use parking_lot::Mutex;
-
 use crate::error::BuildError;
 use crate::handles::{AsyncCache, Cache};
 use crate::loader::Loader;
@@ -8,12 +6,14 @@ use crate::policy::tinylfu::TinyLfu;
 use crate::policy::CachePolicy;
 use crate::shared::CacheShared;
 use crate::snapshot::CacheSnapshot;
-use crate::store::ShardedStore;
+use crate::store::{hash_key, ShardedStore};
 use crate::task::janitor::{Janitor, JanitorContext};
 use crate::task::notifier::Notifier;
+use crate::task::timer::TimerWheel;
 use crate::{time, EvictionListener, TaskSpawner};
 
 use core::fmt;
+use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
@@ -21,6 +21,33 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::Mutex;
+
+/// Defines preset configurations for the cache's internal timer wheel,
+/// which manages TTL and TTI expirations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerWheelMode {
+  /// A general-purpose configuration suitable for a wide range of workloads.
+  ///
+  /// - Granularity: 1 second
+  /// - Wheel Size: 60 slots (1-minute cycle)
+  Default,
+
+  /// Optimized for caches where items have very short lifetimes (e.g., milliseconds).
+  /// Provides high-precision expiration at the cost of slightly more overhead.
+  ///
+  /// - Granularity: 10 milliseconds
+  /// - Wheel Size: 100 slots (1-second cycle)
+  HighPrecisionShortLived,
+
+  /// Optimized for caches where items have very long lifetimes (e.g., many minutes or hours).
+  /// Reduces periodic work by using a coarse granularity.
+  ///
+  /// - Granularity: 30 seconds
+  /// - Wheel Size: 120 slots (1-hour cycle)
+  LowPrecisionLongLived,
+}
 
 /// A builder for creating `Cache` and `AsyncCache` instances.
 pub struct CacheBuilder<K: Send, V: Send, H = ahash::RandomState> {
@@ -31,6 +58,8 @@ pub struct CacheBuilder<K: Send, V: Send, H = ahash::RandomState> {
   pub(crate) hasher: H,
   pub(crate) stale_while_revalidate: Option<Duration>,
   pub(crate) janitor_tick_interval: Option<Duration>,
+  timer_wheel_tick_duration: Option<Duration>,
+  timer_wheel_size: Option<usize>,
   listener: Option<Arc<dyn EvictionListener<K, V>>>,
   cache_policy: Option<Arc<dyn CachePolicy<K, V>>>,
   loader: Option<Loader<K, V>>,
@@ -141,10 +170,51 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
     self.janitor_tick_interval = Some(duration);
     self
   }
+
+  /// Sets the timer wheel configuration using a convenient preset.
+  ///
+  /// This will set both the `tick_duration` and `wheel_size` internally.
+  /// Any subsequent calls to `.timer_tick_duration()` or `.timer_wheel_size()`
+  /// will override the values set by this preset.
+  pub fn timer_mode(mut self, mode: TimerWheelMode) -> Self {
+    let (size, duration) = match mode {
+      TimerWheelMode::Default => (60, Duration::from_secs(1)),
+      TimerWheelMode::HighPrecisionShortLived => (100, Duration::from_millis(10)),
+      TimerWheelMode::LowPrecisionLongLived => (120, Duration::from_secs(30)),
+    };
+
+    self.timer_wheel_size = Some(size);
+    self.timer_wheel_tick_duration = Some(duration);
+    self
+  }
+
+  /// Sets the granularity of the timer wheel for TTL/TTI expirations.
+  ///
+  /// This is the duration that each "tick" of the wheel represents. A smaller
+  /// duration provides more precise expiration but may have slightly higher
+  /// overhead.
+  ///
+  /// Defaults to `1 second` if not set.
+  pub fn timer_tick_duration(mut self, duration: Duration) -> Self {
+    self.timer_wheel_tick_duration = Some(duration);
+    self
+  }
+
+  /// Sets the number of slots in the timer wheel for TTL/TTI expirations.
+  ///
+  /// The total cycle time of the wheel is `tick_duration * wheel_size`.
+  /// A larger wheel can accommodate longer TTLs with fewer "laps," at the
+  /// cost of slightly more memory.
+  ///
+  /// Defaults to `60` slots if not set.
+  pub fn timer_wheel_size(mut self, size: usize) -> Self {
+    self.timer_wheel_size = Some(size);
+    self
+  }
 }
 
 // --- Default Constructor ---
-impl<K: Send, V: Send> CacheBuilder<K, V, ahash::RandomState> {
+impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
   /// Creates a new `CacheBuilder` with default settings.
   pub fn new() -> Self {
     Self {
@@ -152,9 +222,11 @@ impl<K: Send, V: Send> CacheBuilder<K, V, ahash::RandomState> {
       shards: (num_cpus::get() * 4).max(1),
       time_to_live: None,
       time_to_idle: None,
-      hasher: ahash::RandomState::new(),
+      hasher: H::default(),
       stale_while_revalidate: None,
       janitor_tick_interval: None,
+      timer_wheel_tick_duration: None, // Will default to 1s if not set
+      timer_wheel_size: None,    // Will default to 60 if not set
       listener: None,
       cache_policy: None,
       loader: None,
@@ -246,25 +318,52 @@ where
       (None, None)
     };
 
+    let timer_wheel = if self.time_to_live.is_some() || self.time_to_idle.is_some() {
+      let tick_duration = self
+        .timer_wheel_tick_duration
+        .unwrap_or(Duration::from_secs(1));
+      let wheel_size = self.timer_wheel_size.unwrap_or(60);
+
+      Some(Arc::new(Mutex::new(TimerWheel::new(
+        wheel_size,
+        tick_duration,
+      ))))
+    } else {
+      None
+    };
+
     // --- Populate from Snapshot if it exists ---
     if let Some(snap) = snapshot {
       let now_duration = time::now_duration();
+      let mut total_cost = 0;
+      // Group entries by shard to minimize locking.
+      let mut entries_by_shard: Vec<HashMap<K, Arc<crate::entry::CacheEntry<V>>, H>> = (0..self
+        .shards)
+        .map(|_| HashMap::with_hasher(self.hasher.clone()))
+        .collect();
+
       for p_entry in snap.entries {
         let expires_at = p_entry.ttl_remaining.map(|ttl| now_duration + ttl);
-
-        // Directly insert into the store. This bypasses admission/eviction
-        // policies, which is correct for a cold start from a trusted source.
         let entry = crate::entry::CacheEntry::new_with_expiry(
           p_entry.value,
           p_entry.cost,
           expires_at,
           self.time_to_idle,
         );
-        let shard = store.get_shard(&p_entry.key);
-        shard.write_sync().insert(p_entry.key, Arc::new(entry));
-        metrics
-          .current_cost
-          .fetch_add(p_entry.cost, Ordering::Relaxed);
+        total_cost += p_entry.cost;
+
+        let hash = hash_key(&self.hasher, &p_entry.key);
+        let index = hash as usize % self.shards;
+        entries_by_shard[index].insert(p_entry.key, Arc::new(entry));
+      }
+      metrics.current_cost.store(total_cost, Ordering::Relaxed);
+
+      // Populate the store shard by shard.
+      for (i, entries) in entries_by_shard.into_iter().enumerate() {
+        if !entries.is_empty() {
+          let mut guard = store.shards[i].map.write_sync();
+          *guard = entries;
+        }
       }
     }
 
@@ -272,6 +371,7 @@ where
       store: Arc::clone(&store),
       metrics: Arc::clone(&metrics),
       eviction_policy: Arc::clone(&cache_policy),
+      timer_wheel: timer_wheel.as_ref().map(Clone::clone),
       capacity: self.capacity,
       time_to_idle: self.time_to_idle,
       notification_sender: notification_sender.as_ref().map(|val| val.clone()),
@@ -289,6 +389,7 @@ where
       store,
       metrics,
       eviction_policy: cache_policy,
+      timer_wheel,
       janitor,
       capacity: self.capacity,
       time_to_live: self.time_to_live,
