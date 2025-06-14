@@ -26,10 +26,10 @@ async fn test_async_janitor_evicts_on_capacity() {
   // 3. Assert the cache is back to its target capacity.
   assert_eq!(cache.metrics().current_cost, 10);
   assert!(
-    cache.get(&0).is_none(),
+    cache.get(&0).await.is_none(),
     "Key 0 should have been evicted by the janitor"
   );
-  assert!(cache.get(&10).is_some());
+  assert!(cache.get(&10).await.is_some());
   assert_eq!(cache.metrics().evicted_by_capacity, 1);
 }
 
@@ -57,9 +57,9 @@ async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
     15,
     "Cache should be temporarily over capacity"
   );
-  assert!(cache.get(&1).is_some(), "Item 1 should still be present");
+  assert!(cache.get(&1).await.is_some(), "Item 1 should still be present");
   assert!(
-    cache.get(&2).is_some(),
+    cache.get(&2).await.is_some(),
     "Item 2 should have been inserted immediately"
   );
 
@@ -72,8 +72,8 @@ async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
     0,
     "Janitor should have evicted both items to get under capacity"
   );
-  assert!(cache.get(&1).is_none(), "Item 1 should have been evicted");
-  assert!(cache.get(&2).is_none(), "Item 2 should have been evicted");
+  assert!(cache.get(&1).await.is_none(), "Item 1 should have been evicted");
+  assert!(cache.get(&2).await.is_none(), "Item 2 should have been evicted");
   assert_eq!(cache.metrics().evicted_by_capacity, 2);
 }
 
@@ -105,9 +105,9 @@ async fn test_async_janitor_evicts_on_capacity_with_lru() {
     10,
     "Cost should be 10 (capacity) after janitor"
   );
-  assert!(cache.get(&0).is_none(), "Key 0 should have been evicted");
+  assert!(cache.get(&0).await.is_none(), "Key 0 should have been evicted");
   for i in 1..=10 {
-    assert!(cache.get(&i).is_some(), "Key {} should still be present", i);
+    assert!(cache.get(&i).await.is_some(), "Key {} should still be present", i);
   }
   assert_eq!(cache.metrics().evicted_by_capacity, 1);
 }
@@ -131,8 +131,8 @@ async fn test_async_janitor_evicts_on_capacity_with_default_tinylfu() {
     "Cache should be at capacity before overflow"
   );
 
-  cache.get(&2);
-  cache.get(&3);
+  cache.get(&2).await;
+  cache.get(&3).await;
 
   cache.insert(1, 11, 2).await;
 
@@ -158,9 +158,9 @@ async fn test_async_janitor_evicts_on_capacity_with_default_tinylfu() {
     "Janitor should evict exactly one item"
   );
 
-  let item1_present = cache.get(&1).is_some();
-  let item2_present = cache.get(&2).is_some();
-  let item3_present = cache.get(&3).is_some();
+  let item1_present = cache.get(&1).await.is_some();
+  let item2_present = cache.get(&2).await.is_some();
+  let item3_present = cache.get(&3).await.is_some();
 
   assert!(item1_present, "Item 1 (high cost) should remain");
   assert_ne!(
@@ -203,7 +203,7 @@ async fn test_async_no_eviction_if_at_capacity() {
   );
   for i in 0..cache_capacity {
     assert!(
-      cache.get(&(i as i32)).is_some(),
+      cache.get(&(i as i32)).await.is_some(),
       "Key {} should still be present",
       i
     );
@@ -231,8 +231,8 @@ async fn test_async_janitor_cleans_up_large_overflow() {
     11,
     "Cache should be temporarily over capacity"
   );
-  assert!(cache.get(&1).is_some());
-  assert!(cache.get(&2).is_some());
+  assert!(cache.get(&1).await.is_some());
+  assert!(cache.get(&2).await.is_some());
   let evictions_before_janitor = cache.metrics().evicted_by_capacity;
 
   sleep(JANITOR_TICK * JANITOR_WAIT_MULTIPLIER).await;
@@ -242,8 +242,8 @@ async fn test_async_janitor_cleans_up_large_overflow() {
     0,
     "Janitor should have evicted both items"
   );
-  assert!(cache.get(&1).is_none(), "Item 1 should have been evicted");
-  assert!(cache.get(&2).is_none(), "Item 2 should have been evicted");
+  assert!(cache.get(&1).await.is_none(), "Item 1 should have been evicted");
+  assert!(cache.get(&2).await.is_none(), "Item 2 should have been evicted");
   let evictions_after_janitor = cache.metrics().evicted_by_capacity;
   assert_eq!(
     evictions_after_janitor - evictions_before_janitor,

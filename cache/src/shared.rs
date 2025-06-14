@@ -3,6 +3,7 @@ use crate::loader::{LoadFuture, Loader};
 use crate::metrics::Metrics;
 use crate::policy::{AccessEvent, CachePolicy};
 use crate::store::ShardedStore;
+use crate::sync::HybridMutex;
 use crate::task::janitor::Janitor;
 use crate::task::notifier::{Notification, Notifier};
 use crate::task::timer::TimerWheel;
@@ -34,7 +35,7 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) stale_while_revalidate: Option<Duration>,
   pub(crate) loader: Option<Loader<K, V>>,
   pub(crate) spawner: Option<Arc<dyn TaskSpawner>>,
-  pub(crate) pending_loads: Mutex<HashMap<K, Arc<LoadFuture<V>>>>,
+  pub(crate) pending_loads: HybridMutex<HashMap<K, Arc<LoadFuture<V>>>>,
 }
 
 impl<K: Send, V: Send + Sync, H> fmt::Debug for CacheShared<K, V, H> {
@@ -105,7 +106,7 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
 
           let shard = shared.store.get_shard(&key);
           {
-            let mut guard = shard.map.write_sync();
+            let mut guard = shard.map.write();
             let old_entry = guard.insert(key.clone(), new_cache_entry);
 
             // Update cost metrics immediately
@@ -182,7 +183,9 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
               .total_cost_added
               .fetch_add(cost, Ordering::Relaxed);
 
-            shared.pending_loads.lock().remove(&key);
+            {
+              shared.pending_loads.lock_async().await.remove(&key);
+            }
             future.complete(value_arc_to_return);
           }
         };

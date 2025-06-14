@@ -135,7 +135,7 @@ fn benchmark_logic(
         for op in task_ops {
           match op {
             Op::Read(key) => {
-              black_box(cache_clone.get(&key));
+              black_box(cache_clone.get(&key).await);
             }
             Op::Write(key, value) => {
               cache_clone.insert(key, value, 1).await;

@@ -17,13 +17,13 @@ async fn test_async_item_expires_after_ttl() {
   cache.insert("key", "value", 1).await;
 
   // 1. Immediately after insert, the value should be present.
-  assert!(cache.get(&"key").is_some());
+  assert!(cache.get(&"key").await.is_some());
 
   // 2. Wait for a duration longer than the TTL.
   sleep(TINY_TTL + SLEEP_MARGIN).await;
 
   // 3. The janitor should have run and removed the expired item.
-  assert!(cache.get(&"key").is_none(), "Item should have expired");
+  assert!(cache.get(&"key").await.is_none(), "Item should have expired");
 
   // 4. Verify metrics
   let metrics = cache.metrics();
@@ -49,14 +49,14 @@ async fn test_async_ttl_is_not_reset_on_access() {
   sleep(TINY_TTL / 2).await;
 
   // Access the key. This should NOT reset the TTL.
-  assert!(cache.get(&"key").is_some());
+  assert!(cache.get(&"key").await.is_some());
 
   // Wait for the second half of the TTL
   sleep(TINY_TTL / 2 + SLEEP_MARGIN).await;
 
   // The item should now be expired, as the total time since insert > TTL.
   assert!(
-    cache.get(&"key").is_none(),
+    cache.get(&"key").await.is_none(),
     "Item should have expired despite access"
   );
 }

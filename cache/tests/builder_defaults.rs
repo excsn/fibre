@@ -29,7 +29,7 @@ async fn test_unbounded_async_cache_with_tti_does_not_panic() {
   assert!(cache.is_ok());
   let cache = cache.unwrap();
   cache.insert(1, 1, 1).await;
-  assert!(cache.get(&1).is_some());
+  assert!(cache.get(&1).await.is_some());
 }
 
 #[test]

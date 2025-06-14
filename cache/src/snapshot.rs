@@ -120,7 +120,7 @@ where
       .shared
       .store
       .iter_shards()
-      .map(|s| s.map.write_sync())
+      .map(|s| s.map.write())
       .collect::<Vec<_>>();
 
     let mut persistent_entries = Vec::new();
@@ -306,7 +306,7 @@ mod tests {
 
     // 4. Verify the new cache's state
     assert_eq!(new_cache.metrics().current_cost, 1);
-    assert_eq!(new_cache.get(&1).unwrap().id, 1);
+    assert_eq!(new_cache.get(&1).await.unwrap().id, 1);
   }
 
   #[test]

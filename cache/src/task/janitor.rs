@@ -87,14 +87,84 @@ impl Janitor {
     V: Send + Sync,
     H: BuildHasher + Clone + Send + Sync,
   {
-    // The Janitor now simply iterates through shards and calls the maintenance
-    // function, acting as a sweeper for buffers that don't fill up.
+    // --- PHASE 1: Collect all victims without cross-shard locking ---
+    let mut all_victims = Vec::new();
+
     for shard in context.store.iter_shards() {
-      // We only need a read lock on the maintenance_lock to prevent another
-      // thread from doing maintenance at the same time as us.
-      // Since this is the janitor thread, we can use a blocking lock.
       let _guard = shard.maintenance_lock.lock();
-      perform_shard_maintenance(shard, context);
+
+      // Drain this shard's buffer
+      for _ in 0..MAINTENANCE_DRAIN_LIMIT {
+        match shard.event_buffer_rx.try_recv() {
+          Ok(event) => match event {
+            AccessEvent::Read(key, cost) => {
+              context.eviction_policy.on_access(&key, cost);
+            }
+            AccessEvent::Write(key, cost) => {
+              let decision = context.eviction_policy.on_admit(&key, cost);
+              if let AdmissionDecision::AdmitAndEvict(mut victims) = decision {
+                // Just collect the victims, DON'T evict yet.
+                all_victims.append(&mut victims);
+              }
+            }
+          },
+          Err(_) => break, // Buffer is empty
+        }
+      }
+    }
+
+    if all_victims.is_empty() {
+      return; // Nothing to evict, we're done.
+    }
+
+    // --- PHASE 2: Group victims and evict with a strict lock order ---
+    use std::collections::HashMap;
+    let mut victims_by_shard: HashMap<usize, Vec<K>> = HashMap::new();
+    for key in all_victims {
+      let hash = crate::store::hash_key(&context.store.hasher, &key);
+      let index = hash as usize % context.store.shards.len();
+      victims_by_shard.entry(index).or_default().push(key);
+    }
+
+    let mut total_cost_released = 0;
+    let mut notifications_to_send = Vec::new();
+
+    // Iterate by shard index to enforce lock order
+    for shard_index in 0..context.store.shards.len() {
+      if let Some(shard_victims) = victims_by_shard.get(&shard_index) {
+        let shard = &context.store.shards[shard_index];
+        let mut guard = shard.map.write(); // Lock is acquired only ONCE per shard, in order.
+
+        for key in shard_victims {
+          if let Some(removed_entry) = guard.remove(key) {
+            let cost = removed_entry.cost();
+            total_cost_released += cost;
+            context
+              .metrics
+              .evicted_by_capacity
+              .fetch_add(1, Ordering::Relaxed);
+
+            if context.notification_sender.is_some() {
+              notifications_to_send.push((
+                key.clone(),
+                removed_entry.value(),
+                EvictionReason::Capacity,
+              ));
+            }
+          }
+        }
+      }
+    }
+
+    context
+      .metrics
+      .current_cost
+      .fetch_sub(total_cost_released, Ordering::Relaxed);
+
+    if let Some(sender) = &context.notification_sender {
+      for (key, value, reason) in notifications_to_send {
+        let _ = sender.try_send((key, value, reason));
+      }
     }
   }
 
@@ -130,7 +200,7 @@ impl Janitor {
       let expired_set: HashSet<u64> = hashes.into_iter().collect();
 
       let shard = &context.store.shards[i];
-      let mut guard = shard.map.write_sync();
+      let mut guard = shard.map.write();
 
       // It's more efficient to retain than to remove one-by-one.
       guard.retain(|key, entry| {
@@ -167,7 +237,7 @@ impl Janitor {
   {
     if context.time_to_idle.is_some() {
       for shard in context.store.iter_shards() {
-        let mut guard = shard.map.write_sync();
+        let mut guard = shard.map.write();
         let mut victims = Vec::new();
 
         // We approximate random sampling by taking the first N items from the
@@ -230,43 +300,39 @@ impl Janitor {
         return;
       }
 
-      // Group victims by shard index to minimize lock acquisitions.
-      use std::collections::HashMap;
-      let mut victims_by_shard: HashMap<usize, Vec<K>> = HashMap::new();
-      for key in victims {
-        let hash = crate::store::hash_key(&context.store.hasher, &key);
-        let index = hash as usize % context.store.shards.len();
-        victims_by_shard.entry(index).or_default().push(key);
-      }
-
       let mut notifications_to_send = Vec::new();
 
-      for (shard_index, shard_victims) in victims_by_shard {
-        // let shard = context.store.get_shard(&key); // <-- No longer need to do this per key
-        let shard = &context.store.shards[shard_index];
-        let mut guard = shard.map.write_sync(); // Lock is acquired only ONCE per shard.
+      // --- START OF DEFINITIVE FIX ---
+      // Process one victim at a time. This ensures the janitor never holds
+      // more than one shard lock at once, preventing any possibility of a
+      // deadlock with insert/get operations.
+      for key in victims {
+        // Determine the shard for this specific key.
+        let shard = context.store.get_shard(&key);
 
-        for key in shard_victims {
-          if let Some(removed_entry) = guard.remove(&key) {
-            // The policy already updated its own state when evict() was called,
-            // so we do not call on_remove() here. We just remove the entry
-            // from the primary cache storage.
-            context
-              .metrics
-              .evicted_by_capacity
-              .fetch_add(1, Ordering::Relaxed);
-            if let Some(_) = &context.notification_sender {
-              notifications_to_send.push((
-                key.clone(),
-                removed_entry.value(),
-                EvictionReason::Capacity,
-              ));
-            }
+        // Acquire the lock for ONLY this shard.
+        let mut guard = shard.map.write();
+
+        // The lock is held for the shortest possible duration.
+        if let Some(removed_entry) = guard.remove(&key) {
+          context
+            .metrics
+            .evicted_by_capacity
+            .fetch_add(1, Ordering::Relaxed);
+
+          if let Some(_) = &context.notification_sender {
+            notifications_to_send.push((
+              key.clone(),
+              removed_entry.value(),
+              EvictionReason::Capacity,
+            ));
           }
         }
+        // The write lock `guard` is dropped here, before processing the next victim.
       }
-      // --- END MODIFIED LOOP ---
+      // --- END OF DEFINITIVE FIX ---
 
+      // The cost is adjusted once after all victims are processed.
       context
         .metrics
         .current_cost
@@ -283,71 +349,5 @@ impl Janitor {
   /// Signals the janitor thread to stop.
   pub(crate) fn stop(self) {
     self.stop_flag.store(true, Ordering::Relaxed);
-  }
-}
-
-/// Drains access event buffer for a single shard and applies them to the eviction policy.
-/// This is now public within the crate so other parts of the cache can call it.
-pub(crate) fn perform_shard_maintenance<K, V, H>(
-  shard: &Shard<K, V, H>,
-  context: &JanitorContext<K, V, H>,
-) where
-  K: Eq + Hash + Clone + Send,
-  V: Send + Sync,
-  H: BuildHasher + Clone + Send,
-{
-  // Drain a bounded number of events to prevent this loop from running too long.
-  for _ in 0..MAINTENANCE_DRAIN_LIMIT {
-    match shard.event_buffer_rx.try_recv() {
-      Ok(event) => match event {
-        AccessEvent::Read(key, cost) => {
-          context.eviction_policy.on_access(&key, cost);
-        }
-        AccessEvent::Write(key, cost) => {
-          let decision = context.eviction_policy.on_admit(&key, cost);
-
-          if let AdmissionDecision::AdmitAndEvict(victims) = decision {
-            let mut notifications_to_send = Vec::new();
-            let mut total_cost_released = 0;
-
-            for victim_key in victims {
-              let victim_shard = context.store.get_shard(&victim_key);
-              let mut guard = victim_shard.map.write_sync();
-
-              if let Some(removed_entry) = guard.remove(&victim_key) {
-                let victim_cost = removed_entry.cost();
-                total_cost_released += victim_cost;
-                context
-                  .metrics
-                  .evicted_by_capacity
-                  .fetch_add(1, Ordering::Relaxed);
-                if context.notification_sender.is_some() {
-                  notifications_to_send.push((
-                    victim_key.clone(),
-                    removed_entry.value(),
-                    EvictionReason::Capacity,
-                  ));
-                }
-              }
-            }
-
-            context
-              .metrics
-              .current_cost
-              .fetch_sub(total_cost_released, Ordering::Relaxed);
-
-            if let Some(sender) = &context.notification_sender {
-              for notif in notifications_to_send {
-                let _ = sender.try_send(notif);
-              }
-            }
-          }
-        }
-      },
-      Err(_) => {
-        // The buffer is empty for this shard, we are done.
-        break;
-      }
-    }
   }
 }

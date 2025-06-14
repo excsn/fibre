@@ -63,6 +63,31 @@ where
     }
   }
 
+  /// "Peeks" at a value in the cache without updating its recency or access time.
+  ///
+  /// This method will not update the entry's position in the eviction policy
+  /// (e.g., it won't be marked as recently used in an LRU cache) and will not
+  /// reset its time-to-idle timer.
+  ///
+  /// Returns a clone of the `Arc` containing the value if the key is found
+  /// and the entry is not expired. Returns `None` otherwise.
+  pub fn peek(&self, key: &K) -> Option<Arc<V>> {
+    let shard = self.shared.store.get_shard(key);
+    let guard = shard.map.read();
+
+    if let Some(entry) = guard.get(key) {
+      if entry.is_expired(self.shared.time_to_idle) {
+        // Do not update miss count for a peek
+        None
+      } else {
+        // Do not update hit count or call on_hit for a peek
+        Some(entry.value())
+      }
+    } else {
+      None
+    }
+  }
+
   /// Creates a view into a specific entry in the map, which can be vacant or occupied.
   ///
   /// This method acquires a write lock on the shard for the given key, ensuring
@@ -70,7 +95,7 @@ where
   /// safe "get-or-insert" operations.
   pub fn entry(&self, key: K) -> Entry<'_, K, V, H> {
     let shard = self.shared.store.get_shard(&key);
-    let guard = shard.map.write_sync();
+    let guard = shard.map.write();
 
     if guard.contains_key(&key) {
       Entry::Occupied(OccupiedEntry {
@@ -104,25 +129,26 @@ where
       self.shared.time_to_idle,
     );
 
-    // --- Schedule timers ---
     if let Some(wheel) = &self.shared.timer_wheel {
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = self
         .shared
         .time_to_live
         .map(|ttl| wheel.schedule(key_hash, ttl));
-      // TTI is now handled by sampling in the janitor, not by the timer wheel.
       let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 
     let shard = self.shared.store.get_shard(&key);
-    let mut guard = shard.map.write_sync();
 
-    // Now wrap the entry in an Arc for insertion.
-    let old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
+    let old_entry: Option<Arc<CacheEntry<V>>>;
+    {
+      // New scope for the guard
+      let mut guard = shard.map.write();
+      old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
+    } // `guard` (and L_shard) is released here.
 
-    // --- Cancel timers for the replaced entry ---
+    // Now that the shard lock is released, we can safely interact with other locks.
     if let Some(entry) = old_entry {
       if let Some(wheel) = &self.shared.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
@@ -171,25 +197,25 @@ where
     V: Sync,
     H: Sync,
   {
-    // Calculate the specific expiration time for this entry.
     let expires_at = time::now_duration().as_nanos() as u64 + ttl.as_nanos() as u64;
-
     let mut new_cache_entry =
       CacheEntry::new_with_custom_expiry(value, cost, expires_at, self.shared.time_to_idle);
 
-    // Schedule this specific TTL on the timer wheel.
     if let Some(wheel) = &self.shared.timer_wheel {
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = Some(wheel.schedule(key_hash, ttl));
-      // TTI is now handled by sampling in the janitor, not by the timer wheel.
       let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 
     let shard = self.shared.store.get_shard(&key);
-    let mut guard = shard.map.write_sync();
 
-    let old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
+    let old_entry: Option<Arc<CacheEntry<V>>>;
+    {
+      // New scope for the guard
+      let mut guard = shard.map.write();
+      old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
+    } // `guard` (and L_shard) is released here.
 
     if let Some(entry) = old_entry {
       if let Some(wheel) = &self.shared.timer_wheel {
@@ -238,7 +264,7 @@ where
     F: FnOnce(&mut V),
   {
     let shard = self.shared.store.get_shard(key);
-    let mut guard = shard.map.write_sync();
+    let mut guard = shard.map.write();
 
     // 1. Get mutable access to the `Arc<CacheEntry<V>>` in the map.
     if let Some(entry_arc) = guard.get_mut(key) {
@@ -267,10 +293,15 @@ where
     V: Sync,
   {
     let shard = self.shared.store.get_shard(key);
-    let mut guard = shard.map.write_sync();
 
-    if let Some(entry) = guard.remove(key) {
-      // --- Cancel timers ---
+    let removed_entry: Option<Arc<CacheEntry<V>>>;
+    {
+      // New scope for the guard
+      let mut guard = shard.map.write();
+      removed_entry = guard.remove(key);
+    } // `guard` (and L_shard) is released here.
+
+    if let Some(entry) = removed_entry {
       if let Some(wheel) = &self.shared.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
@@ -308,7 +339,7 @@ where
       .shared
       .store
       .iter_shards()
-      .map(|s| s.map.write_sync())
+      .map(|s| s.map.write())
       .collect::<Vec<_>>();
 
     // 2. Clear each shard and notify the eviction policy.
@@ -431,39 +462,37 @@ where
     V: Send + Sync + 'static,
     H: BuildHasher + Clone + Send + Sync,
   {
-    // A loop is used to handle the race condition where a value is inserted
-    // after we check but before we can insert a placeholder.
+    let mut am_leader = false;
     let future = loop {
       // 1. Lock the pending loads map to ensure only one "leader" is chosen.
       let mut pending = self.shared.pending_loads.lock();
 
-      // 2. Double-check the main cache store. Another thread might have
-      //    finished loading this value while we were waiting for the lock.
-      if let Some(entry) = self.shared.raw_get(key) {
-        // It was loaded by another thread. This is a HIT for us.
-        let shard = self.shared.store.get_shard(key);
-        self.on_hit(key, &entry, &shard.event_buffer_tx);
-        return entry.value();
-      }
-
-      // 3. Check for an existing `LoadFuture`. If another thread is already
+      // 2. Check for an existing `LoadFuture`. If another thread is already
       //    loading this key, we become a "waiter".
-      if let Some(future) = pending.get(key) {
+      //    DO NOT call self.shared.raw_get(key) here to prevent AB-BA deadlock.
+      //    The initial optimistic raw_get in get_with handles the "already cached" case.
+      if let Some(existing_future) = pending.get(key) {
         // We will get a value, so this counts as a HIT for us.
         self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
-        break future.clone();
+        am_leader = false;
+        break existing_future.clone();
       }
 
-      // 4. If we reach here, we are the "leader".
+      // 3. If we reach here, we are the "leader".
       //    This is the only time a MISS is recorded for the entire operation.
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
-      //    Create a new future, insert it as a placeholder, and spawn the loader task.
+      //    Create a new future, insert it as a placeholder.
       let new_future = Arc::new(LoadFuture::new());
       pending.insert(key.clone(), new_future.clone());
-      CacheShared::spawn_loader_task(Arc::clone(&self.shared), key.clone(), new_future.clone());
-
+      am_leader = true;
       break new_future;
-    };
+    }; // `pending` (MutexGuard for pending_loads) is dropped here.
+
+    // 4. If we became the leader, spawn the loader task.
+    //    This happens *after* the `pending_loads` lock is released.
+    if am_leader {
+      CacheShared::spawn_loader_task(Arc::clone(&self.shared), key.clone(), future.clone());
+    }
 
     // 5. All threads/tasks (leaders and waiters) wait on the same future.
     //    The synchronous version blocks the current thread until the future is completed.
@@ -602,7 +631,7 @@ where
         }
 
         let shard = &self.shared.store.shards[i];
-        let mut guard = shard.map.write_sync();
+        let mut guard = shard.map.write();
 
         for (key, value, cost) in shard_items {
           let mut new_cache_entry = CacheEntry::new(
@@ -682,7 +711,7 @@ where
         }
 
         let shard = &self.shared.store.shards[i];
-        let mut guard = shard.map.write_sync(); // Acquire write lock
+        let mut guard = shard.map.write(); // Acquire write lock
 
         for key in shard_keys {
           if let Some(entry) = guard.remove(key) {

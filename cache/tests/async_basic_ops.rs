@@ -16,10 +16,10 @@ async fn test_async_insert_and_get() {
   cache.insert("key1".to_string(), 10, 1).await;
 
   // Test get hit
-  assert_eq!(cache.get(&"key1".to_string()), Some(Arc::new(10)));
+  assert_eq!(cache.get(&"key1".to_string()).await, Some(Arc::new(10)));
 
   // Test get miss
-  assert!(cache.get(&"non-existent".to_string()).is_none());
+  assert!(cache.get(&"non-existent".to_string()).await.is_none());
 
   let metrics = cache.metrics();
   assert_eq!(metrics.inserts, 1);
@@ -40,7 +40,7 @@ async fn test_async_invalidate_and_clear() {
     !cache.invalidate(&"key1".to_string()).await,
     "Double invalidate should fail"
   );
-  assert!(cache.get(&"key1".to_string()).is_none());
+  assert!(cache.get(&"key1".to_string()).await.is_none());
   assert_eq!(cache.metrics().invalidations, 1);
   assert_eq!(
     cache.metrics().current_cost,
@@ -50,7 +50,7 @@ async fn test_async_invalidate_and_clear() {
 
   // Test clear
   cache.clear().await;
-  assert!(cache.get(&"key2".to_string()).is_none());
+  assert!(cache.get(&"key2".to_string()).await.is_none());
   assert_eq!(cache.metrics().current_cost, 0);
 }
 
@@ -58,12 +58,12 @@ async fn test_async_invalidate_and_clear() {
 async fn test_async_replacement() {
   let cache = new_test_cache(100);
   cache.insert("key1".to_string(), 10, 1).await;
-  assert_eq!(cache.get(&"key1".to_string()), Some(Arc::new(10)));
+  assert_eq!(cache.get(&"key1".to_string()).await, Some(Arc::new(10)));
   assert_eq!(cache.metrics().current_cost, 1);
 
   // Replace with new value and cost
   cache.insert("key1".to_string(), 20, 5).await;
-  assert_eq!(cache.get(&"key1".to_string()), Some(Arc::new(20)));
+  assert_eq!(cache.get(&"key1".to_string()).await, Some(Arc::new(20)));
   assert_eq!(
     cache.metrics().current_cost,
     5,
@@ -87,7 +87,7 @@ async fn test_async_entry_api() {
   } else {
     panic!("Entry should be vacant");
   }
-  assert_eq!(cache.get(&"key1".to_string()), Some(Arc::new(100)));
+  assert_eq!(cache.get(&"key1".to_string()).await, Some(Arc::new(100)));
   assert_eq!(cache.metrics().inserts, 1);
   assert_eq!(cache.metrics().current_cost, 10);
 
@@ -110,14 +110,14 @@ async fn test_async_compute() {
   // Test successful compute
   let was_computed = cache.compute(&"key1".to_string(), |v| *v *= 2).await;
   assert!(was_computed);
-  assert_eq!(cache.get(&"key1".to_string()), Some(Arc::new(100)));
+  assert_eq!(cache.get(&"key1".to_string()).await, Some(Arc::new(100)));
   assert_eq!(cache.metrics().updates, 1);
 
   // Test failed compute (due to another Arc existing)
-  let external_arc = cache.get(&"key1".to_string()).unwrap();
+  let external_arc = cache.get(&"key1".to_string()).await.unwrap();
   let was_computed_again = cache.compute(&"key1".to_string(), |v| *v *= 2).await;
   assert!(!was_computed_again);
-  assert_eq!(cache.get(&"key1".to_string()), Some(Arc::new(100))); // Value is unchanged
+  assert_eq!(cache.get(&"key1".to_string()).await, Some(Arc::new(100))); // Value is unchanged
   assert_eq!(cache.metrics().updates, 1); // Metric is unchanged
   drop(external_arc);
 

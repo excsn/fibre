@@ -111,7 +111,7 @@ fn benchmark_logic(
         match op_type.as_str() {
           "GetHit" | "GetMiss" => {
             for key in &task_keys {
-              black_box(cache_clone.get(key));
+              black_box(cache_clone.get(key).await);
             }
           }
           "Insert" => {

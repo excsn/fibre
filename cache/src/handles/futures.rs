@@ -42,24 +42,58 @@ where
   }
 
   /// Retrieves a value from the cache.
-  pub fn get(&self, key: &K) -> Option<Arc<V>> {
+  pub async fn get(&self, key: &K) -> Option<Arc<V>> {
     let shard = self.shared.store.get_shard(key);
-    let guard = shard.map.read();
+    let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
+    let value_arc_opt: Option<Arc<V>>;
+
+    // Scope for the ReadGuard
+    {
+      let guard = shard.map.read_async().await;
+      if let Some(entry_in_guard) = guard.get(key) {
+        if entry_in_guard.is_expired(self.shared.time_to_idle) {
+          entry_arc_opt = None;
+          value_arc_opt = None;
+        } else {
+          // Clone necessary info while guard is active
+          entry_arc_opt = Some(entry_in_guard.clone());
+          value_arc_opt = Some(entry_in_guard.value());
+        }
+      } else {
+        entry_arc_opt = None;
+        value_arc_opt = None;
+      }
+    } // guard is dropped here, HL_S_ReadLock released
+
+    if let Some(entry_arc) = entry_arc_opt {
+      // Call on_hit *after* guard is dropped
+      self.on_hit(key, &entry_arc, &shard.event_buffer_tx);
+      value_arc_opt
+    } else {
+      self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
+      None
+    }
+  }
+
+  /// "Peeks" at a value in the cache without updating its recency or access time.
+  ///
+  /// This method will not update the entry's position in the eviction policy
+  /// (e.g., it won't be marked as recently used in an LRU cache) and will not
+  /// reset its time-to-idle timer.
+  ///
+  /// Returns a clone of the `Arc` containing the value if the key is found
+  /// and the entry is not expired. Returns `None` otherwise.
+  pub async fn peek(&self, key: &K) -> Option<Arc<V>> {
+    let shard = self.shared.store.get_shard(key);
+    let guard = shard.map.read_async().await;
 
     if let Some(entry) = guard.get(key) {
       if entry.is_expired(self.shared.time_to_idle) {
-        // The janitor will clean this up eventually. For now, treat as a miss.
-        // An active approach would be to acquire a write lock here and remove,
-        // but that can lead to lock escalation and performance degradation.
-        // A passive "read-only" check is faster.
-        self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
         None
       } else {
-        self.on_hit(key, entry, &shard.event_buffer_tx);
         Some(entry.value())
       }
     } else {
-      self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
       None
     }
   }
@@ -103,23 +137,25 @@ where
       self.shared.time_to_idle,
     );
 
-    // --- Schedule timers ---
     if let Some(wheel) = &self.shared.timer_wheel {
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = self
         .shared
         .time_to_live
         .map(|ttl| wheel.schedule(key_hash, ttl));
-      // TTI is now handled by sampling in the janitor, not by the timer wheel.
       let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 
     let shard = self.shared.store.get_shard(&key);
-    let mut guard = shard.map.write_async().await;
-    let old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
 
-    // --- Cancel timers for the replaced entry ---
+    let old_entry: Option<Arc<CacheEntry<V>>>;
+    {
+      // New scope for the guard
+      let mut guard = shard.map.write_async().await;
+      old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
+    } // `guard` (and L_shard) is released here.
+
     if let Some(entry) = old_entry {
       if let Some(wheel) = &self.shared.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
@@ -169,24 +205,25 @@ where
     V: Sync,
     H: Send + Sync,
   {
-    // Calculate the specific expiration time for this entry.
     let expires_at = time::now_duration().as_nanos() as u64 + ttl.as_nanos() as u64;
-
     let mut new_cache_entry =
       CacheEntry::new_with_custom_expiry(value, cost, expires_at, self.shared.time_to_idle);
 
-    // Schedule this specific TTL on the timer wheel.
     if let Some(wheel) = &self.shared.timer_wheel {
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = Some(wheel.schedule(key_hash, ttl));
-      // TTI is now handled by sampling in the janitor, not by the timer wheel.
       let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 
     let shard = self.shared.store.get_shard(&key);
-    let mut guard = shard.map.write_async().await;
-    let old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
+
+    let old_entry: Option<Arc<CacheEntry<V>>>;
+    {
+      // New scope for the guard
+      let mut guard = shard.map.write_async().await;
+      old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
+    } // `guard` (and L_shard) is released here.
 
     if let Some(entry) = old_entry {
       if let Some(wheel) = &self.shared.timer_wheel {
@@ -257,10 +294,15 @@ where
     V: Sync,
   {
     let shard = self.shared.store.get_shard(key);
-    let mut guard = shard.map.write_async().await;
 
-    if let Some(entry) = guard.remove(key) {
-      // --- Cancel timers ---
+    let removed_entry: Option<Arc<CacheEntry<V>>>;
+    {
+      // New scope for the guard
+      let mut guard = shard.map.write_async().await;
+      removed_entry = guard.remove(key);
+    } // `guard` (and L_shard) is released here.
+
+    if let Some(entry) = removed_entry {
       if let Some(wheel) = &self.shared.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
@@ -377,9 +419,7 @@ where
         let shared = Arc::clone(&self.shared);
         async move {
           let shard = &shared.store.shards[i];
-          // Our read lock is sync, which is fine to use in an async context
-          // as it's not expected to block for long.
-          let guard = shard.map.read();
+          let guard = shard.map.read_async().await;
           let mut found = HashMap::new();
 
           for key in shard_keys {
@@ -465,9 +505,7 @@ where
             // Schedule timers for the new entry.
             if let Some(wheel) = &shared.timer_wheel {
               let key_hash = crate::store::hash_key(&shared.store.hasher, &key);
-              let ttl_handle = shared
-                .time_to_live
-                .map(|ttl| wheel.schedule(key_hash, ttl));
+              let ttl_handle = shared.time_to_live.map(|ttl| wheel.schedule(key_hash, ttl));
               let tti_handle = None; // TTI handled by janitor sampling
               new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
             }
@@ -574,7 +612,6 @@ where
   ///
   /// This method provides thundering herd protection, ensuring that if multiple
   /// tasks request a missing key simultaneously, the loader function is only
-
   /// executed once.
   pub async fn get_with(&self, key: &K) -> Arc<V>
   where
@@ -582,31 +619,78 @@ where
     V: Send + Sync + 'static, // V: Clone needed for the &LoadFuture Future impl
     H: BuildHasher + Clone + Send + Sync,
   {
-    // 1. Optimistic read lock (this is sync and fast).
-    if let Some(entry) = self.shared.store.get_shard(key).map.read().get(key) {
-      let expires_at_nanos = entry.expires_at.load(Ordering::Relaxed);
-      if expires_at_nanos == 0 {
-        let shard = self.shared.store.get_shard(key);
-        self.on_hit(key, entry, &shard.event_buffer_tx); // on_hit needs to be on AsyncCache too
-        return entry.value();
-      }
+    let shard_ref = self.shared.store.get_shard(key); // Keep a ref to shard for event_tx later
 
-      let now_nanos = crate::time::now_duration().as_nanos() as u64;
+    // 1. Optimistic read lock
+    let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
+    let value_to_return_opt: Option<Arc<V>>;
+    let mut is_stale_hit = false;
 
-      // CASE A: Fresh Hit
-      if now_nanos < expires_at_nanos {
-        let shard = self.shared.store.get_shard(key);
-        self.on_hit(key, entry, &shard.event_buffer_tx);
-        return entry.value();
-      }
+    // Scope for the ReadGuard
+    {
+      let guard = shard_ref.map.read_async().await;
+      if let Some(entry_in_guard) = guard.get(key) {
+        let expires_at_nanos = entry_in_guard.expires_at.load(Ordering::Relaxed);
 
-      // CASE B: Stale Hit
-      if let Some(grace_period) = self.shared.stale_while_revalidate {
-        if now_nanos < expires_at_nanos + grace_period.as_nanos() as u64 {
-          self.trigger_background_load(key);
-          return entry.value();
+        if expires_at_nanos == 0 {
+          // No TTL, always fresh if present
+          if entry_in_guard.is_expired(self.shared.time_to_idle) {
+            // Check TTI
+            entry_arc_opt = None;
+            value_to_return_opt = None;
+          } else {
+            entry_arc_opt = Some(entry_in_guard.clone());
+            value_to_return_opt = Some(entry_in_guard.value());
+          }
+        } else {
+          // Entry has a TTL
+          let now_nanos = crate::time::now_duration().as_nanos() as u64;
+          if now_nanos < expires_at_nanos {
+            // CASE A: Fresh Hit
+            if entry_in_guard.is_expired(self.shared.time_to_idle) {
+              // Double check TTI
+              entry_arc_opt = None;
+              value_to_return_opt = None;
+            } else {
+              entry_arc_opt = Some(entry_in_guard.clone());
+              value_to_return_opt = Some(entry_in_guard.value());
+            }
+          } else if let Some(grace_period) = self.shared.stale_while_revalidate {
+            // CASE B: Stale Hit possible
+            if now_nanos < expires_at_nanos + grace_period.as_nanos() as u64 {
+              // Stale but within grace. Return stale, trigger background refresh.
+              entry_arc_opt = Some(entry_in_guard.clone()); // Stale entry
+              value_to_return_opt = Some(entry_in_guard.value()); // Stale value
+              is_stale_hit = true;
+              // trigger_background_load will be called later, after guard drops
+            } else {
+              // Fully expired past grace
+              entry_arc_opt = None;
+              value_to_return_opt = None;
+            }
+          } else {
+            // Expired, no SWR
+            entry_arc_opt = None;
+            value_to_return_opt = None;
+          }
         }
+      } else {
+        // Not in map
+        entry_arc_opt = None;
+        value_to_return_opt = None;
       }
+    } // guard is dropped here, HL_S_ReadLock released
+
+    if let Some(value_to_return) = value_to_return_opt {
+      // This was a hit (either fresh or stale that can be returned)
+      if let Some(ref entry_arc) = entry_arc_opt {
+        // Should always be Some if value_to_return_opt is Some
+        self.on_hit(key, entry_arc, &shard_ref.event_buffer_tx);
+      }
+      if is_stale_hit {
+        self.trigger_background_load(key);
+      }
+      return value_to_return;
     }
 
     // CASE C: Miss or fully expired.
@@ -638,36 +722,37 @@ where
     V: Send + Sync + 'static,
     H: BuildHasher + Clone + Send + Sync,
   {
+    let mut am_leader = false;
     let future = loop {
       // 1. Lock the pending loads map. Note: This is a sync mutex lock,
       //    which is acceptable here because it should be held for a very
       //    short duration (a few hashmap lookups).
-      let mut pending = self.shared.pending_loads.lock();
+      let mut pending = self.shared.pending_loads.lock_async().await;
 
-      // 2. Double-check the main cache store.
-      if let Some(entry) = self.shared.raw_get(key) {
-        // A value was loaded by another task. This is a HIT for us.
-        let shard = self.shared.store.get_shard(key);
-        self.on_hit(key, &entry, &shard.event_buffer_tx);
-        return entry.value();
-      }
-
-      // 3. Check for an existing `LoadFuture`.
-      if let Some(future) = pending.get(key) {
+      // 2. Check for an existing `LoadFuture`.
+      //    DO NOT call self.shared.raw_get(key) here to prevent AB-BA deadlock.
+      //    The initial optimistic raw_get in get_with handles the "already cached" case.
+      if let Some(existing_future) = pending.get(key) {
         // We will get a value, so this counts as a HIT for us.
         self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
-        break future.clone();
+        am_leader = false;
+        break existing_future.clone();
       }
 
-      // 4. We are the "leader". This is the ONLY time a MISS is recorded.
+      // 3. We are the "leader". This is the ONLY time a MISS is recorded.
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
-      // Spawn the loader task.
+      // Create a new future, insert it.
       let new_future = Arc::new(LoadFuture::new());
       pending.insert(key.clone(), new_future.clone());
-      CacheShared::spawn_loader_task(Arc::clone(&self.shared), key.clone(), new_future.clone());
-
+      am_leader = true;
       break new_future;
-    };
+    }; // `pending` (MutexGuard for pending_loads) is dropped here.
+
+    // 4. If we became the leader, spawn the loader task.
+    //    This happens *after* the `pending_loads` lock is released.
+    if am_leader {
+      CacheShared::spawn_loader_task(Arc::clone(&self.shared), key.clone(), future.clone());
+    }
 
     // 5. All async tasks wait on the same future.
     //    `.await` will poll the future, registering the waker and suspending

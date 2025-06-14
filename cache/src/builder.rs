@@ -369,7 +369,7 @@ where
       // Populate the store shard by shard.
       for (i, entries) in entries_by_shard.into_iter().enumerate() {
         if !entries.is_empty() {
-          let mut guard = store.shards[i].map.write_sync();
+          let mut guard = store.shards[i].map.write();
           *guard = entries;
         }
       }
@@ -406,7 +406,7 @@ where
       notification_sender,
       notifier,
       loader: self.loader.take(),
-      pending_loads: Mutex::new(Default::default()),
+      pending_loads: crate::sync::HybridMutex::new(Default::default()),
       spawner,
     }))
   }

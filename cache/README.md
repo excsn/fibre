@@ -1,12 +1,12 @@
 # **`Fibre Cache`**
 
-`fibre_cache` offer best-in-class, high-performance, concurrent, multimode sync/async cache for Rust. It is built from the heart and soul of a Java-turned-Rust engineer to bring the comprehensive, flexible, and ergonomic "it just works" feeling of top-tier Java caches (like Caffeine) to the Rust ecosystem.
+`fibre-cache` offers a best-in-class, high-performance, concurrent, multimode sync/async cache for Rust. It is built from the heart and soul of a Java-turned-Rust engineer to bring the comprehensive, flexible, and ergonomic "it just works" feeling of top-tier Java caches (like Caffeine) to the Rust ecosystem.
 
 ## Motivation
 
-The current state of caching in Rust, while offering some excellent high-performance options, often feels specialized and inflexible. Caches like `stretto` are brilliant but opinionated, while others lack the rich, general-purpose feature set needed for complex applications.
+The current state of caching in Rust, while offering some excellent high-performance options, often feels specialized and inflexible. Caches can be brilliant but opinionated, while others lack the rich, general-purpose feature set needed for complex applications.
 
-`fibre_cache` was born from the desire for a cache that is **both incredibly fast and uncompromisingly flexible**. It aims to be the definitive, general-purpose caching library for Rust, providing a complete toolset that feels both powerful to experts and intuitive to newcomers.
+`fibre-cache` was born from the desire for a cache that is **both incredibly fast and uncompromisingly flexible**. It aims to be the definitive, general-purpose caching library for Rust, providing a complete toolset that feels both powerful to experts and intuitive to newcomers.
 
 ## Core Philosophy
 *   **No Compromises:** Get the raw speed of a systems language without sacrificing the rich, ergonomic APIs you love.
@@ -18,15 +18,15 @@ The current state of caching in Rust, while offering some excellent high-perform
 
 ## Quickstart
 
-Get started quickly by adding `fibre_cache` and its dependencies to your `Cargo.toml`:
+Get started quickly by adding `fibre-cache` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fibre_cache = { git = "https://github.com/excsn/fibre" } # Or path = "..."
+fibre-cache = { git = "https://github.com/excsn/fibre" } # Or use a version from crates.io
 tokio = { version = "1", features = ["full"] }
 ```
 
-A simple example using the `CacheBuilder` and the self-populating `CacheLoader`:
+A simple example using the `CacheBuilder` and the self-populating async loader:
 
 ```rust
 use fibre_cache::CacheBuilder;
@@ -49,13 +49,13 @@ async fn main() {
         .expect("Failed to build cache");
 
     // 1. First access to "my-key": miss. The loader is called automatically.
-    // The .get_with_async() method handles the thundering herd problem.
-    let value1 = cache.get_with_async(&"my-key".to_string()).await;
+    // The .get_with() method handles the thundering herd problem.
+    let value1 = cache.get_with(&"my-key".to_string()).await;
     println!("Received: {}", value1);
     assert_eq!(*value1, "Value for my-key");
 
     // 2. Second access to "my-key": hit. The value is returned instantly.
-    let value2 = cache.get_with_async(&"my-key".to_string()).await;
+    let value2 = cache.get_with(&"my-key".to_string()).await;
     println!("Received: {}", value2);
     assert_eq!(*value2, "Value for my-key");
 
@@ -63,7 +63,7 @@ async fn main() {
     let metrics = cache.metrics();
     assert_eq!(metrics.hits, 1);
     assert_eq!(metrics.misses, 1);
-    println!("\nCache Metrics: {:?}", metrics);
+    println!("\nCache Metrics: {:#?}", metrics);
 }
 ```
 
@@ -71,7 +71,7 @@ async fn main() {
 
 ## Feature Overview
 
-`fibre_cache` combines the best features from across the caching landscape into one comprehensive package.
+`fibre-cache` combines the best features from across the caching landscape into one comprehensive package.
 
 #### **Key Architectural Pillars**
 *   **High Concurrency via Sharding:** Partitions data across independently locked shards to minimize contention.
@@ -89,7 +89,7 @@ async fn main() {
 | **Runtime Agnostic** | The `async_loader` can be used with any async runtime via a `TaskSpawner` trait. |
 | **Stale-While-Revalidate** | Can serve stale data for a configured grace period while refreshing it in the background, hiding latency. |
 | **Comprehensive Policies** | Includes **TinyLfu**, **SIEVE**, **SLRU**, **ARC**, **LRU**, **FIFO**, and **Random** eviction/admission policies. |
-| **Bulk Operations** | Efficient, parallelized `get_all`, `insert_all`, and `invalidate_all` methods. |
+| **Bulk Operations** | Efficient, parallelized `multiget`, `multi_insert`, and `multi_invalidate` methods. |
 | **In-place Mutation** | A `compute` method for safe, atomic mutation of existing values. |
 | **Eviction Listener** | Receive non-blocking notifications for every item removal on a dedicated background thread. |
 | **Persistence (`serde`)**| An opt-in `serde` feature provides a flexible `to_snapshot()` and `build_from_snapshot()` API. |
@@ -98,32 +98,30 @@ async fn main() {
 
 ## Feature Comparison
 
-This table compares `fibre_cache` against other popular high-performance caching libraries.
-
-| Feature Group | Feature | Moka / Caffeine | Stretto / Ristretto | **`fibre_cache`** | Key Advantages & Notes |
+| Feature Group | Feature | Moka / Caffeine | Stretto / Ristretto | **`fibre-cache`** | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Core Architecture** | **Concurrency Model** | Sharded, Fine-Grained Locks | Sharded, Fine-Grained Locks | ✅ Sharded, Custom Hybrid Lock | Custom lock provides true non-blocking async waits. |
-| | **Sync & Async API** | ✅ | ✅ | ✅ | Fully interoperable sync and async handles. |
-| | **`V: Clone` Required?** | Yes | No (but `K`/`V` fixed) | ✅ **No** | **Core Advantage:** `Arc<V>`-based storage supports non-cloneable values. |
+| **Core Architecture** | **Concurrency Model** | Sharded | Sharded | ✅ Sharded, Custom Hybrid Lock | Custom lock with distinct, optimized paths for sync and async. |
+| | **Sync & Async API** | ✅ | ✅ | ✅ | Zero-cost, fully interoperable sync and async handles. |
+| | **`V: Clone` Required?** | Yes | No | ✅ **No** | `Arc<V>` storage natively supports non-cloneable values. |
 | | | | | | |
-| **Eviction & Policies**| **Cost-Based Eviction** | ✅ | ✅ | ✅ | |
-| | **TTL / TTI Support** | ✅ | ✅ | ✅ | Handled by a dedicated background task. |
-| | **Pluggable Policies** | Limited | ❌ (TinyLFU is integral) | ✅ **Highly Flexible** | A `CachePolicy` trait allows for swappable strategies. |
-| | **Available Policies** | Segmented-LRU | Sampled-LFU (TinyLFU) | ✅ **Most Comprehensive**<br/>*TinyLfu, SIEVE, SLRU, ARC...* | Offers a wide range of modern and classic algorithms. |
-| | **Admission Control** | Implicit in SLRU | ✅ Probabilistic Filter | ✅ **Integrated** | Enables scan resistance and smart admission within the policy. |
+| **Eviction & Policies**| **Cost-Based Eviction** | ✅ | ✅ | ✅ | Items can have individual `cost` towards `capacity`. |
+| | **Global TTL / TTI** | ✅ | ✅ | ✅ | Cache-wide Time-to-Live and Time-to-Idle. |
+| | **Per-Item TTL** | ✅ | ❌ | ✅ | `insert_with_ttl` provides fine-grained expiration control. |
+| | **Pluggable Policies** | Limited | ❌ | ✅ **Highly Flexible** | A `CachePolicy` trait allows for swappable strategies. |
+| | **Available Policies** | Segmented-LRU | TinyLFU | ✅ **Most Comprehensive** | TinyLFU, ARC, SLRU, SIEVE, LRU, FIFO, and Random. |
 | | | | | | |
-| **API & Ergonomics** | **`entry` API** | ✅ (Excellent `entry` API) | ❌ | ✅ | Atomic "get-or-insert" for both sync and async. |
-| | **`compute`** | ✅ | ❌ | ✅ | |
-| | **Bulk Operations** | ✅ | ✅ | ✅ | Efficient, parallelized `get_all`, `insert_all`, etc. |
+| **API & Ergonomics** | **`entry` API** | ✅ | ❌ | ✅ | Atomic "get-or-insert" for both sync and async. |
+| | **`compute`** | ✅ | ❌ | ✅ | Safe, atomic, in-place mutation of values. |
+| | **Bulk Operations** | ✅ | ✅ | ✅ | Parallelized `multiget`, `multi_insert`, etc. (via `bulk` feature) |
 | | | | | | |
 | **Advanced Patterns**| **`CacheLoader`** | ✅ | ❌ | ✅ **Runtime Agnostic** | `TaskSpawner` trait makes it work with any async runtime. |
-| | **Thundering Herd Protection** | ✅ | N/A | ✅ | Built into the `CacheLoader` via a custom `LoadFuture`. |
-| | **Stale-While-Revalidate** | ✅ | ❌ | ✅ | Hides latency by serving stale data while refreshing. |
-| | **Weak/Soft References** | ✅ | ❌ | ❌ (Deferred) | An advanced memory management feature for a future version. |
+| | **Thundering Herd Protection** | ✅ | N/A | ✅ | Built into the `get_with` loader to prevent duplicate work. |
+| | **Stale-While-Revalidate** | ✅ | ❌ | ✅ | Hides refresh latency by serving stale data. |
+| | **Weak/Soft References** | ✅ | ❌ | ❌ (Future) | An advanced memory management feature for a future version. |
 | | | | | | |
-| **Production Features**| **Eviction Listener** | ✅ | ✅ | ✅ | Non-blocking notifications via a dedicated task. |
-| | **Metrics & Stats** | ✅ | ✅ | ✅ | |
-| | **Persistence (`serde`)** | ❌ | ❌ | ✅ **Serializable Snapshot** | `to_snapshot()` and `build_from_snapshot()` offer a flexible API. |
+| **Production Features**| **Eviction Listener** | ✅ | ✅ | ✅ | Decoupled notifications on a dedicated background task. |
+| | **Metrics & Stats** | ✅ | ✅ | ✅ | Detailed, contention-free metrics via `MetricsSnapshot`. |
+| | **Persistence (`serde`)** | ❌ | ❌ | ✅ **Serializable Snapshot** | `to_snapshot()` and `build_from_snapshot()` API. (via `serde` feature) |
 
 # License
 

@@ -132,8 +132,11 @@ fn test_sync_handle_conversion() {
 
   // Convert to async and check if the state is shared
   let async_handle = cache.to_async();
+
+  // We must now block on the `async` get method to get its result.
+  let value = futures_executor::block_on(async_handle.get(&"shared_key".to_string()));
   assert_eq!(
-    async_handle.get(&"shared_key".to_string()),
+    value,
     Some(Arc::new(999))
   );
 

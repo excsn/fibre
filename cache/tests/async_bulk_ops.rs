@@ -1,5 +1,5 @@
 use fibre_cache::{builder::CacheBuilder, policy::lru::LruPolicy, AsyncCache};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 
 fn new_test_cache(capacity: u64) -> AsyncCache<i32, String> {
@@ -67,10 +67,10 @@ async fn test_async_multi_invalidate() {
 
   // 3. Verify items are gone.
   for i in 5..15 {
-    assert!(cache.get(&i).is_none());
+    assert!(cache.get(&i).await.is_none());
   }
   for i in (0..5).chain(15..20) {
-    assert!(cache.get(&i).is_some());
+    assert!(cache.get(&i).await.is_some());
   }
 }
 
@@ -106,7 +106,7 @@ async fn test_async_multi_insert_triggers_eviction() {
   // We can check that the total number of items is correct.
   let mut total_keys = 0;
   for i in 0..15 {
-    if cache.get(&i).is_some() {
+    if cache.get(&i).await.is_some() {
       total_keys += 1;
     }
   }
