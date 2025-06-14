@@ -5,7 +5,7 @@ use std::sync::Arc;
 fn new_test_cache(capacity: u64) -> Cache<String, i32> {
   CacheBuilder::<String, i32>::new()
     .capacity(capacity)
-    .cache_policy(NullPolicy)
+    .cache_policy_factory(|| Box::new(NullPolicy))
     .build()
     .unwrap()
 }

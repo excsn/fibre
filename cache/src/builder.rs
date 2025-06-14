@@ -2,7 +2,6 @@ use crate::error::BuildError;
 use crate::handles::{AsyncCache, Cache};
 use crate::loader::Loader;
 use crate::metrics::Metrics;
-use crate::policy::tinylfu::TinyLfuPolicy;
 use crate::policy::CachePolicy;
 use crate::shared::CacheShared;
 use crate::snapshot::CacheSnapshot;
@@ -21,8 +20,6 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-
-use parking_lot::Mutex;
 
 /// Defines preset configurations for the cache's internal timer wheel,
 /// which manages TTL and TTI expirations.
@@ -61,7 +58,7 @@ pub struct CacheBuilder<K: Send, V: Send, H = ahash::RandomState> {
   timer_wheel_tick_duration: Option<Duration>,
   timer_wheel_size: Option<usize>,
   listener: Option<Arc<dyn EvictionListener<K, V>>>,
-  cache_policy: Option<Arc<dyn CachePolicy<K, V>>>,
+  policy_factory: Option<Arc<dyn Fn() -> Box<dyn CachePolicy<K, V>> + Send + Sync>>,
   loader: Option<Loader<K, V>>,
   spawner: Option<Arc<dyn TaskSpawner>>,
   _key_marker: PhantomData<K>,
@@ -124,15 +121,29 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
     self
   }
 
-  // In the general `impl<K, V, H> CacheBuilder` block, add this new method:
-  /// Sets a custom eviction policy for the cache.
+  /// Sets the eviction policy for the cache using a factory function.
   ///
-  /// By default, the cache uses a `TinyLfu` policy.
-  pub fn cache_policy<Policy>(mut self, policy: Policy) -> Self
+  /// The provided factory closure will be called once for each cache shard.
+  /// It must return a `Box<dyn CachePolicy<...>>`, signifying that the cache
+  /// takes ownership of the created policy instance. This is the most flexible
+  /// and safest way to configure a custom policy.
+  ///
+  /// # Example
+  /// ```ignore
+  /// let cache = CacheBuilder::new()
+  ///     .capacity(1000)
+  ///     .shards(4)
+  ///     .cache_policy_factory(|| {
+  ///         // This closure creates a new LruPolicy for each shard.
+  ///         Box::new(LruPolicy::new())
+  ///     })
+  ///     .build();
+  /// ```
+  pub fn cache_policy_factory<F>(mut self, factory: F) -> Self
   where
-    Policy: CachePolicy<K, V> + 'static,
+    F: Fn() -> Box<dyn CachePolicy<K, V>> + Send + Sync + 'static,
   {
-    self.cache_policy = Some(Arc::new(policy));
+    self.policy_factory = Some(Arc::new(factory));
     self
   }
 
@@ -229,7 +240,7 @@ impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
       timer_wheel_tick_duration: None, // Will default to 1s if not set
       timer_wheel_size: None,          // Will default to 60 if not set
       listener: None,
-      cache_policy: None,
+      policy_factory: None,
       loader: None,
       spawner: None,
       _key_marker: PhantomData,
@@ -309,15 +320,30 @@ where
 
     let store = Arc::new(ShardedStore::new(self.shards, self.hasher.clone()));
     let metrics = Arc::new(Metrics::new());
-    let cache_policy = self.cache_policy.take().unwrap_or_else(|| {
-      // If the cache is unbounded, use a NullPolicy that does nothing.
-      // Otherwise, default to TinyLfu which is designed for bounded caches.
-      if self.capacity == u64::MAX {
-        Arc::new(crate::policy::null::NullPolicy)
-      } else {
-        Arc::new(TinyLfuPolicy::new(self.capacity))
-      }
+
+    // Create the per-shard eviction policies using the factory.
+    let factory = self.policy_factory.take().unwrap_or_else(|| {
+      // If the user did not provide a factory, create a default one
+      // that constructs our default TinyLfu policy.
+      let capacity = self.capacity;
+      let shards = self.shards;
+      Arc::new(move || {
+        if capacity == u64::MAX {
+          Box::new(crate::policy::null::NullPolicy)
+        } else {
+          // Each sharded policy is responsible for a fraction of the total capacity.
+          let shard_capacity = (capacity as f64 / shards as f64).ceil() as u64;
+          Box::new(crate::policy::tinylfu::TinyLfuPolicy::new(shard_capacity))
+        }
+      })
     });
+
+    // Call the factory `N` times to create `N` independent policy instances.
+    // The `Box` is converted to an `Arc` for internal sharing with the janitor.
+    let cache_policy: Box<[Arc<dyn CachePolicy<K, V>>]> = (0..self.shards)
+      .map(|_| Arc::from(factory()))
+      .collect::<Vec<_>>()
+      .into_boxed_slice();
 
     let (notifier, notification_sender) = if let Some(listener) = &self.listener {
       let (notifier, sender) = Notifier::spawn(listener.clone());
@@ -375,7 +401,7 @@ where
     let janitor_context = JanitorContext {
       store: Arc::clone(&store),
       metrics: Arc::clone(&metrics),
-      eviction_policy: Arc::clone(&cache_policy),
+      cache_policy: cache_policy.clone(),
       timer_wheel: timer_wheel.as_ref().map(Clone::clone),
       capacity: self.capacity,
       time_to_idle: self.time_to_idle,
@@ -398,7 +424,7 @@ where
     Ok(Arc::new(CacheShared {
       store,
       metrics,
-      eviction_policy: cache_policy,
+      cache_policy,
       timer_wheel,
       janitor,
       capacity: self.capacity,

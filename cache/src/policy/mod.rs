@@ -14,7 +14,6 @@ pub mod tinylfu;
 /// These events are buffered and processed by a background maintenance task.
 #[derive(Debug, Clone)]
 pub(crate) enum AccessEvent<K> {
-  Read(K, u64), // Key, cost
   Write(K, u64), // Key, cost
 }
 

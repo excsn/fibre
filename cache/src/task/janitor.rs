@@ -16,14 +16,14 @@ use std::time::Duration;
 /// The number of entries to sample from each shard on an expiration cleanup tick.
 const JANITOR_EXPIRE_SAMPLE_SIZE: usize = 10;
 /// The max number of access events to drain from a shard's buffer on a maintenance tick.
-const MAINTENANCE_DRAIN_LIMIT: usize = 8;
+const MAINTENANCE_DRAIN_LIMIT: usize = 64;
 
 /// A context object holding the thread-safe parts of the cache that the
 /// janitor needs to access.
 pub(crate) struct JanitorContext<K: Send, V: Send + Sync, H> {
   pub(crate) store: Arc<ShardedStore<K, V, H>>,
   pub(crate) metrics: Arc<Metrics>,
-  pub(crate) eviction_policy: Arc<dyn CachePolicy<K, V>>,
+  pub(crate) cache_policy: Box<[Arc<dyn CachePolicy<K, V>>]>,
   pub(crate) timer_wheel: Option<Arc<TimerWheel>>,
   pub(crate) capacity: u64,
   pub(crate) time_to_idle: Option<Duration>,
@@ -118,7 +118,7 @@ impl Janitor {
 
         if expired_set.contains(&key_hash) {
           // This entry has expired.
-          context.eviction_policy.on_remove(key);
+          context.cache_policy[i].on_remove(key);
           context
             .metrics
             .evicted_by_ttl
@@ -146,7 +146,10 @@ impl Janitor {
     H: BuildHasher + Clone + Send + Sync,
   {
     if context.time_to_idle.is_some() {
-      for shard in context.store.iter_shards() {
+      // --- START OF FIX ---
+      // We must enumerate the shards to get the index for the policy.
+      for (i, shard) in context.store.iter_shards().enumerate() {
+        // --- END OF FIX ---
         let mut guard = shard.map.write();
         let mut victims = Vec::new();
 
@@ -168,7 +171,11 @@ impl Janitor {
           // We must re-check that the entry still exists before removing,
           // as another thread could have invalidated it in the meantime.
           if let Some(entry) = guard.remove(&key) {
-            context.eviction_policy.on_remove(&key);
+            // --- START OF FIX ---
+            // Select the policy for the correct shard index.
+            context.cache_policy[i].on_remove(&key);
+            // --- END OF FIX ---
+
             context
               .metrics
               .evicted_by_tti
@@ -202,57 +209,55 @@ impl Janitor {
     H: BuildHasher + Clone + Send + Sync,
   {
     let current_cost = context.metrics.current_cost.load(Ordering::Relaxed);
-    if current_cost > context.capacity {
-      let cost_to_free = current_cost - context.capacity;
-      let (victims, total_cost_released) = context.eviction_policy.evict(cost_to_free);
+    if current_cost <= context.capacity {
+      return;
+    }
 
+    let cost_to_free = current_cost - context.capacity;
+    let num_shards = context.store.shards.len();
+    // Calculate how much cost each shard's policy should try to free.
+    let cost_to_free_per_shard = (cost_to_free as f64 / num_shards as f64).ceil() as u64;
+
+    if cost_to_free_per_shard == 0 {
+      return;
+    }
+
+    let mut total_cost_released = 0;
+    let mut total_victims_count = 0;
+
+    // Evict from each shard's policy in a deterministic order.
+    for i in 0..num_shards {
+      let (victims, cost_released) = context.cache_policy[i].evict(cost_to_free_per_shard);
       if victims.is_empty() {
-        return;
+        continue;
       }
+      total_cost_released += cost_released;
+      total_victims_count += victims.len();
 
-      let mut notifications_to_send = Vec::new();
-
-      // --- START OF DEFINITIVE FIX ---
-      // Process one victim at a time. This ensures the janitor never holds
-      // more than one shard lock at once, preventing any possibility of a
-      // deadlock with insert/get operations.
-      for key in victims {
-        // Determine the shard for this specific key.
-        let shard = context.store.get_shard(&key);
-
-        // Acquire the lock for ONLY this shard.
-        let mut guard = shard.map.write();
-
-        // The lock is held for the shortest possible duration.
-        if let Some(removed_entry) = guard.remove(&key) {
-          context
-            .metrics
-            .evicted_by_capacity
-            .fetch_add(1, Ordering::Relaxed);
-
-          if let Some(_) = &context.notification_sender {
-            notifications_to_send.push((
-              key.clone(),
-              removed_entry.value(),
-              EvictionReason::Capacity,
-            ));
+      // Get the corresponding data shard and remove the victim keys from it.
+      let shard = &context.store.shards[i];
+      let mut guard = shard.map.write();
+      for key in &victims {
+        // The policy for shard `i` should only evict keys that belong to shard `i`.
+        // We remove the key from the HashMap, and if successful, send a notification.
+        if let Some(removed_entry) = guard.remove(key) {
+          if let Some(sender) = &context.notification_sender {
+            let _ = sender.try_send((key.clone(), removed_entry.value(), EvictionReason::Capacity));
           }
         }
-        // The write lock `guard` is dropped here, before processing the next victim.
       }
-      // --- END OF DEFINITIVE FIX ---
+    }
 
-      // The cost is adjusted once after all victims are processed.
+    // Update global metrics once at the end.
+    if total_cost_released > 0 {
+      context
+        .metrics
+        .evicted_by_capacity
+        .fetch_add(total_victims_count as u64, Ordering::Relaxed);
       context
         .metrics
         .current_cost
         .fetch_sub(total_cost_released, Ordering::Relaxed);
-
-      if let Some(sender) = &context.notification_sender {
-        for (key, value, reason) in notifications_to_send {
-          let _ = sender.try_send((key, value, reason));
-        }
-      }
     }
   }
 
@@ -266,6 +271,7 @@ impl Janitor {
 /// This is now public within the crate so other parts of the cache can call it.
 pub(crate) fn perform_shard_maintenance<K, V, H>(
   shard: &Shard<K, V, H>,
+  shard_index: usize,
   context: &JanitorContext<K, V, H>,
 ) where
   K: Eq + Hash + Clone + Send,
@@ -276,11 +282,9 @@ pub(crate) fn perform_shard_maintenance<K, V, H>(
   for _ in 0..MAINTENANCE_DRAIN_LIMIT {
     match shard.event_buffer_rx.try_recv() {
       Ok(event) => match event {
-        AccessEvent::Read(key, cost) => {
-          context.eviction_policy.on_access(&key, cost);
-        }
         AccessEvent::Write(key, cost) => {
-          let decision = context.eviction_policy.on_admit(&key, cost);
+          let policy = &context.cache_policy[shard_index];
+          let decision = policy.on_admit(&key, cost);
 
           if let AdmissionDecision::AdmitAndEvict(victims) = decision {
             let mut notifications_to_send = Vec::new();

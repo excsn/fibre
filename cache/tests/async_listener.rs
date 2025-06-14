@@ -21,7 +21,7 @@ async fn test_async_listener_for_capacity() {
   let cache = CacheBuilder::default()
     .capacity(2)
     .shards(1) 
-    .cache_policy(LruPolicy::new())
+    .cache_policy_factory(|| Box::new(LruPolicy::new()))
     .eviction_listener(TestListener { sender: tx })
     // Add a fast janitor tick to ensure eviction happens promptly for the test
     .janitor_tick_interval(Duration::from_millis(10))

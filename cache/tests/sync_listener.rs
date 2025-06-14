@@ -24,7 +24,7 @@ fn test_sync_listener_for_capacity() {
   let cache = CacheBuilder::default()
     .capacity(2)
     .shards(1)
-    .cache_policy(LruPolicy::new())
+    .cache_policy_factory(|| Box::new(LruPolicy::new()))
     .eviction_listener(TestListener { sender: tx })
     .build()
     .unwrap();

@@ -17,13 +17,12 @@ use std::{fmt, thread};
 
 use ahash::HashMap;
 use fibre::mpsc;
-use parking_lot::Mutex;
 
 /// The internal, thread-safe core of the cache.
 pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) store: Arc<ShardedStore<K, V, H>>,
   pub(crate) metrics: Arc<Metrics>,
-  pub(crate) eviction_policy: Arc<dyn CachePolicy<K, V>>,
+  pub(crate) cache_policy: Box<[Arc<dyn CachePolicy<K, V>>]>,
   // The timer wheel for managing TTL and TTI expirations.
   pub(crate) timer_wheel: Option<Arc<TimerWheel>>,
   pub(crate) janitor: Option<Janitor>,
@@ -79,6 +78,24 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
     } else {
       None
     }
+  }
+
+  pub fn get_shard_index(&self, key: &K) -> usize
+  where
+    K: Hash,
+    H: BuildHasher,
+  {
+    let hash = crate::store::hash_key(&self.store.hasher, key);
+    return hash as usize & (self.store.shards.len() - 1);
+  }
+
+  pub fn get_cache_policy(&self, key: &K) -> &Arc<(dyn CachePolicy<K, V> + 'static)>
+  where
+    K: Hash,
+    H: BuildHasher,
+  {
+    let shard_index = self.get_shard_index(key);
+    return &self.cache_policy[shard_index];
   }
 
   pub(crate) fn spawn_loader_task(shared: Arc<Self>, key: K, future: Arc<LoadFuture<V>>)

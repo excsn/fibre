@@ -5,7 +5,7 @@ fn new_test_cache(capacity: u64) -> Cache<i32, String> {
   CacheBuilder::new()
     .capacity(capacity)
     .shards(4) // Use multiple shards to test cross-shard logic
-    .cache_policy(LruPolicy::new())
+    .cache_policy_factory(|| Box::new(LruPolicy::new()))
     .janitor_tick_interval(Duration::from_millis(50))
     .build()
     .unwrap()

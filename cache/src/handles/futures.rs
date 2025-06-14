@@ -77,7 +77,6 @@ where
     if let Some(entry_arc) = entry_arc_opt {
       // Call on_hit *after* guard is dropped
       self.on_hit(key, &entry_arc, &shard.event_buffer_tx);
-      self._run_opportunistic_maintenance(&shard);
       value_arc_opt
     } else {
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
@@ -185,7 +184,7 @@ where
 
     let _ = shard
       .event_buffer_tx
-      .try_send(AccessEvent::Write(key, cost));
+      .try_send(AccessEvent::Write(key.clone(), cost));
 
     self.shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
     self
@@ -204,7 +203,7 @@ where
       .total_cost_added
       .fetch_add(cost, Ordering::Relaxed);
 
-    self._run_opportunistic_maintenance(&shard);
+    self._run_opportunistic_maintenance(&key, &shard);
   }
 
   /// Asynchronously inserts a key-value pair into the cache with a specific cost
@@ -256,7 +255,7 @@ where
 
     let _ = shard
       .event_buffer_tx
-      .try_send(AccessEvent::Write(key, cost));
+      .try_send(AccessEvent::Write(key.clone(), cost));
 
     self.shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
     self
@@ -275,7 +274,7 @@ where
       .total_cost_added
       .fetch_add(cost, Ordering::Relaxed);
 
-    self._run_opportunistic_maintenance(&shard);
+    self._run_opportunistic_maintenance(&key, &shard);
   }
 
   /// Atomically computes a new value for a key.
@@ -326,7 +325,7 @@ where
         }
       }
 
-      self.shared.eviction_policy.on_remove(key);
+      self.shared.get_cache_policy(&key).on_remove(key);
       self
         .shared
         .metrics
@@ -353,16 +352,20 @@ where
     let mut shard_guards =
       future::join_all(self.shared.store.iter_shards().map(|s| s.map.write_async())).await;
 
-    // 2. Clear each shard and notify the eviction policy.
-    for guard in shard_guards.iter_mut() {
+    // 2. Iterate through each shard, notify the corresponding policy for each
+    //    key being removed, and then clear the shard's map.
+    for (i, guard) in shard_guards.iter_mut().enumerate() {
+      let policy = &self.shared.cache_policy[i];
       for key in guard.keys() {
-        self.shared.eviction_policy.on_remove(key);
+        policy.on_remove(key);
       }
       guard.clear();
     }
 
-    // 3. Clear the eviction policy's internal state.
-    self.shared.eviction_policy.clear();
+    // 3. Reset all policy states.
+    for policy in self.shared.cache_policy.iter() {
+      policy.clear();
+    }
 
     // 4. Reset metrics and cost gate.
     self
@@ -381,12 +384,16 @@ where
       entry.update_last_accessed();
     }
 
-    let _ = event_tx.try_send(AccessEvent::Read(key.clone(), entry.cost()));
+    // For a read hit, we can call the policy's update logic directly.
+    self
+      .shared
+      .get_cache_policy(&key)
+      .on_access(key, entry.cost());
     self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
   }
 
   /// Helper to run maintenance on a shard if the maintenance lock is not contended.
-  fn _run_opportunistic_maintenance(&self, shard: &crate::store::Shard<K, V, H>)
+  fn _run_opportunistic_maintenance(&self, key: &K, shard: &crate::store::Shard<K, V, H>)
   where
     K: Eq + Hash + Clone + Send,
     V: Send + Sync,
@@ -408,10 +415,11 @@ where
     }
 
     if let Some(_guard) = shard.maintenance_lock.try_lock() {
+      let shard_index = self.shared.get_shard_index(key);
       let janitor_context = crate::task::janitor::JanitorContext {
         store: Arc::clone(&self.shared.store),
         metrics: Arc::clone(&self.shared.metrics),
-        eviction_policy: Arc::clone(&self.shared.eviction_policy),
+        cache_policy: self.shared.cache_policy.clone(),
         timer_wheel: self.shared.timer_wheel.as_ref().map(Arc::clone),
         capacity: self.shared.capacity,
         time_to_idle: self.shared.time_to_idle,
@@ -421,7 +429,7 @@ where
           .as_ref()
           .map(|val| val.clone()),
       };
-      crate::task::janitor::perform_shard_maintenance(shard, &janitor_context);
+      crate::task::janitor::perform_shard_maintenance(shard, shard_index, &janitor_context);
     }
   }
 }
@@ -479,9 +487,11 @@ where
                 if shared.time_to_idle.is_some() {
                   entry.update_last_accessed();
                 }
-                let _ = shard
-                  .event_buffer_tx
-                  .try_send(AccessEvent::Read(key.clone(), entry.cost()));
+                // For a read hit, we can call the policy's update logic directly.
+                self
+                  .shared
+                  .get_cache_policy(&key)
+                  .on_access(&key, entry.cost());
                 found.insert(key.clone(), entry.value());
               }
             }
@@ -629,7 +639,7 @@ where
                 }
               }
 
-              shared.eviction_policy.on_remove(&key);
+              self.shared.get_cache_policy(&key).on_remove(&key);
               shared
                 .metrics
                 .invalidations

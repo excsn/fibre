@@ -13,7 +13,7 @@ mod lru {
     let cache = CacheBuilder::default()
       .capacity(3)
       .shards(1)
-      .cache_policy(LruPolicy::new())
+      .cache_policy_factory(|| Box::new(LruPolicy::new()))
       .janitor_tick_interval(Duration::from_millis(10))
       .build()
       .unwrap();
@@ -53,7 +53,7 @@ mod fifo {
     let cache = CacheBuilder::default()
       .capacity(3)
       .shards(1)
-      .cache_policy(Fifo::new())
+      .cache_policy_factory(|| Box::new(Fifo::new()))
       .janitor_tick_interval(Duration::from_millis(10))
       .build()
       .unwrap();
@@ -87,7 +87,7 @@ mod sieve {
     let cache = CacheBuilder::default()
       .capacity(3)
       .shards(1)
-      .cache_policy(SievePolicy::new())
+      .cache_policy_factory(|| Box::new(SievePolicy::new()))
       .janitor_tick_interval(Duration::from_millis(10))
       .build()
       .unwrap();
@@ -123,7 +123,7 @@ mod tinylfu {
       .capacity(capacity)
       .shards(1)
       // The default policy for a bounded cache is TinyLfu, but we are explicit for clarity.
-      .cache_policy(TinyLfuPolicy::new(capacity))
+      .cache_policy_factory(move || Box::new(TinyLfuPolicy::new(capacity)))
       .janitor_tick_interval(Duration::from_millis(10))
       .build()
       .unwrap()
@@ -312,7 +312,7 @@ mod slru {
     let cache = CacheBuilder::default()
       .capacity(4)
       .shards(1)
-      .cache_policy(SlruPolicy::new(4))
+      .cache_policy_factory(|| Box::new(SlruPolicy::new(4)))
       .janitor_tick_interval(Duration::from_millis(10)) // Add this line
       .build()
       .unwrap();

@@ -23,7 +23,7 @@ fn main() {
   let cache = CacheBuilder::default()
     .capacity(3) // A small capacity to easily trigger evictions
     .shards(1)
-    .cache_policy(SievePolicy::new())
+    .cache_policy_factory(|| Box::new(SievePolicy::new()))
     .eviction_listener(MyListener)
     .janitor_tick_interval(Duration::from_millis(50))
     .build()
