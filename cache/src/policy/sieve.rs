@@ -40,7 +40,6 @@ where
   K: Eq + Hash + Clone + Send + Sync,
   V: Send + Sync,
 {
-  
   /// On access, simply mark the item's `visited` flag as true.
   fn on_access(&self, key: &K, cost: u64) {
     let mut items = self.items.lock();
@@ -159,5 +158,167 @@ where
     self.order.lock().clear();
     self.items.lock().clear();
     *self.hand.lock() = 0;
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_new_item_admitted() {
+    let policy = SievePolicy::<i32>::new();
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+
+    let items = policy.items.lock();
+    let order = policy.order.lock();
+
+    assert!(items.contains_key(&1));
+    assert!(items.contains_key(&2));
+    assert!(
+      !items.get(&1).unwrap().visited,
+      "New item should not be visited"
+    );
+    assert!(!items.get(&2).unwrap().visited);
+    // Newest items are at the front of the VecDeque
+    assert_eq!(*order, vec![2, 1]);
+  }
+
+  #[test]
+  fn test_access_sets_visited_bit() {
+    let policy = SievePolicy::<i32>::new();
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    assert!(!policy.items.lock().get(&1).unwrap().visited);
+
+    // Access the item
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_access(&policy, &1, 1);
+
+    assert!(
+      policy.items.lock().get(&1).unwrap().visited,
+      "Accessed item's visited bit should be true"
+    );
+    // Order should not change on access
+    assert_eq!(*policy.order.lock(), vec![1]);
+  }
+
+  #[test]
+  fn test_re_admit_moves_to_front() {
+    let policy = SievePolicy::<i32>::new();
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+    assert_eq!(*policy.order.lock(), vec![2, 1]);
+
+    // Re-admitting an item moves it to the front (MRU)
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    assert_eq!(*policy.order.lock(), vec![1, 2]);
+  }
+
+  #[test]
+  fn test_evict_unvisited_item() {
+    let policy = SievePolicy::<i32>::new();
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1); // Oldest, at the back of VecDeque
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+
+    // Hand starts at 0, scanning from the back (oldest). Item 1 is unvisited.
+    let (victims, cost_freed) = <SievePolicy<i32> as CachePolicy<i32, ()>>::evict(&policy, 1);
+
+    assert_eq!(victims, vec![1]);
+    assert_eq!(cost_freed, 1);
+    assert!(!policy.items.lock().contains_key(&1));
+    assert_eq!(*policy.order.lock(), vec![2]);
+    assert_eq!(
+      *policy.hand.lock(),
+      0,
+      "Hand should not advance after eviction"
+    );
+  }
+
+  #[test]
+  fn test_evict_spares_visited_item() {
+    let policy = SievePolicy::<i32>::new();
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1); // Oldest
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+
+    // Visit the oldest item, giving it a second chance
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_access(&policy, &1, 1);
+
+    // Eviction process:
+    // 1. Hand at 0, scans from back, finds item 1.
+    // 2. Item 1 is visited. Its visited bit is flipped to false. Hand increments to 1.
+    // 3. Hand at 1, scans from back, finds item 2.
+    // 4. Item 2 is unvisited. It is evicted.
+    let (victims, cost_freed) = <SievePolicy<i32> as CachePolicy<i32, ()>>::evict(&policy, 1);
+
+    assert_eq!(victims, vec![2]);
+    assert_eq!(cost_freed, 1);
+
+    let items = policy.items.lock();
+    assert!(items.contains_key(&1));
+    assert!(
+      !items.get(&1).unwrap().visited,
+      "Item 1's visited bit should be cleared"
+    );
+    assert_eq!(
+      *policy.hand.lock(),
+      1,
+      "Hand should have advanced past item 1"
+    );
+  }
+
+  #[test]
+  fn test_evict_resets_hand_after_full_sweep() {
+    let policy = SievePolicy::<i32>::new();
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+
+    // Visit both items
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_access(&policy, &1, 1);
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_access(&policy, &2, 1);
+
+    // First eviction call:
+    // - Hand spares item 1, hand -> 1
+    // - Hand spares item 2, hand -> 2
+    // - Loop finishes, hand is reset to 0. No victim found.
+    let (victims, cost_freed) = <SievePolicy<i32> as CachePolicy<i32, ()>>::evict(&policy, 0);
+    assert!(victims.is_empty());
+    assert_eq!(
+      *policy.hand.lock(),
+      0,
+      "Hand should reset after a full sweep with no evictions"
+    );
+
+    // Second eviction call:
+    // - Hand at 0, scans from back, finds item 1. It is now unvisited.
+    // - Item 1 is evicted.
+    let (victims2, _) = <SievePolicy<i32> as CachePolicy<i32, ()>>::evict(&policy, 1);
+    assert_eq!(victims2, vec![1]);
+  }
+
+  #[test]
+  fn test_on_remove_cleans_up_state() {
+    let policy = SievePolicy::<i32>::new();
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_remove(&policy, &1);
+
+    let items = policy.items.lock();
+    let order = policy.order.lock();
+    assert!(!items.contains_key(&1));
+    assert_eq!(*order, vec![2]);
+  }
+
+  #[test]
+  fn test_clear_resets_state() {
+    let policy = SievePolicy::<i32>::new();
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    *policy.hand.lock() = 5; // Set non-default hand
+
+    <SievePolicy<i32> as CachePolicy<i32, ()>>::clear(&policy);
+
+    assert!(policy.items.lock().is_empty());
+    assert!(policy.order.lock().is_empty());
+    assert_eq!(*policy.hand.lock(), 0);
   }
 }

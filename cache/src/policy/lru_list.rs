@@ -13,7 +13,7 @@ pub(super) struct Node<K> {
 // A self-contained, cost-based LRU list helper.
 // The internal implementation is completely replaced.
 #[derive(Debug)]
-pub(crate) struct LruList<K: Eq + Hash + Clone> {
+pub(super) struct LruList<K: Eq + Hash + Clone> {
   // Arena stores all nodes contiguously.
   pub(crate) nodes: Arena<Node<K>>,
   // HashMap for O(1) lookup of a key to its node index in the arena.
@@ -159,5 +159,186 @@ impl<K: Eq + Hash + Clone> LruList<K> {
       current = self.nodes[index].next;
     }
     keys
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+
+  #[test]
+  fn new_list_is_empty() {
+    let list = LruList::<i32>::new();
+    assert!(list.keys_as_vec().is_empty(), "New list keys should be empty");
+    assert!(
+      list.lookup.is_empty(),
+      "New list lookup map should be empty"
+    );
+    assert_eq!(list.current_total_cost(), 0, "New list cost should be zero");
+    assert!(!list.contains(&123), "New list should not contain any key");
+  }
+
+  #[test]
+  fn push_front_new_items() {
+    let mut list = LruList::new();
+
+    // 1. Push first item
+    list.push_front(10, 5);
+    assert!(list.contains(&10));
+    assert_eq!(list.current_total_cost(), 5);
+    assert_eq!(list.lookup.len(), 1);
+    assert_eq!(list.keys_as_vec(), vec![10]);
+    assert_eq!(list.lookup.get(&10).map(|&idx| list.nodes[idx].cost), Some(5));
+
+    // 2. Push second item
+    list.push_front(20, 2);
+    assert!(list.contains(&20));
+    assert_eq!(list.current_total_cost(), 7, "Cost should be 5 + 2");
+    assert_eq!(list.lookup.len(), 2);
+    assert_eq!(
+      list.keys_as_vec(),
+      vec![20, 10],
+      "Newest item should be at the front"
+    );
+  }
+
+  #[test]
+  fn push_front_existing_item_moves_to_front() {
+    let mut list = LruList::new();
+    list.push_front(1, 1);
+    list.push_front(2, 1);
+    list.push_front(3, 1);
+    assert_eq!(list.keys_as_vec(), vec![3, 2, 1]);
+    assert_eq!(list.current_total_cost(), 3);
+
+    // Re-push '1' (the LRU item). It should move to the front. Cost is unchanged.
+    list.push_front(1, 1);
+    assert_eq!(list.current_total_cost(), 3, "Cost should not change");
+    assert_eq!(list.lookup.len(), 3, "Length should not change");
+    assert_eq!(
+      list.keys_as_vec(),
+      vec![1, 3, 2],
+      "Existing item should move to front"
+    );
+  }
+
+  #[test]
+  fn push_front_existing_item_updates_cost() {
+    let mut list = LruList::new();
+    list.push_front(1, 10);
+    list.push_front(2, 20);
+    assert_eq!(list.current_total_cost(), 30);
+
+    // Re-push '1' with a new cost. It should move to the front and cost should be updated.
+    // New cost = (30 - 10) + 5 = 25
+    list.push_front(1, 5);
+    assert_eq!(list.current_total_cost(), 25, "Cost should be updated");
+    assert_eq!(
+      list.lookup.get(&1).map(|&idx| list.nodes[idx].cost),
+      Some(5),
+      "Lookup cost should be new cost"
+    );
+    assert_eq!(
+      list.keys_as_vec(),
+      vec![1, 2],
+      "Order should be updated"
+    );
+  }
+
+  #[test]
+  fn pop_back_from_non_empty_list() {
+    let mut list = LruList::new();
+    list.push_front(1, 1); // This will be the LRU item
+    list.push_front(2, 2);
+    list.push_front(3, 3);
+    assert_eq!(list.current_total_cost(), 6);
+
+    // Pop the LRU item (1)
+    let popped = list.pop_back();
+    assert_eq!(
+      popped,
+      Some((1, 1)),
+      "pop_back should return the LRU key and its cost"
+    );
+
+    // Verify internal state
+    assert_eq!(
+      list.current_total_cost(),
+      5,
+      "Cost should be reduced by popped item's cost"
+    );
+    assert!(!list.contains(&1), "Popped item should be removed");
+    assert_eq!(list.lookup.len(), 2);
+    assert_eq!(
+      list.keys_as_vec(),
+      vec![3, 2],
+      "Remaining items should be correct"
+    );
+  }
+
+  #[test]
+  fn pop_back_from_single_item_list() {
+    let mut list = LruList::new();
+    list.push_front(1, 10);
+
+    let popped = list.pop_back();
+    assert_eq!(popped, Some((1, 10)));
+    assert_eq!(list.current_total_cost(), 0);
+    assert!(list.keys_as_vec().is_empty());
+    assert!(list.lookup.is_empty());
+  }
+
+  #[test]
+  fn pop_back_from_empty_list() {
+    let mut list = LruList::<i32>::new();
+    assert_eq!(list.pop_back(), None, "pop_back on empty list returns None");
+  }
+
+  #[test]
+  fn remove_item_from_middle() {
+    let mut list = LruList::new();
+    list.push_front(1, 1);
+    list.push_front(2, 2);
+    list.push_front(3, 3);
+    assert_eq!(list.current_total_cost(), 6);
+
+    // Remove item from the middle
+    let removed_cost = list.remove(&2);
+    assert_eq!(removed_cost, Some(2));
+
+    // Verify state
+    assert_eq!(list.current_total_cost(), 4, "Cost should be 6 - 2");
+    assert!(!list.contains(&2));
+    assert_eq!(list.lookup.len(), 2);
+    assert_eq!(list.keys_as_vec(), vec![3, 1]);
+  }
+
+  #[test]
+  fn remove_non_existent_item() {
+    let mut list = LruList::new();
+    list.push_front(1, 1);
+    list.push_front(2, 2);
+
+    let removed_cost = list.remove(&99);
+    assert_eq!(removed_cost, None);
+    assert_eq!(list.current_total_cost(), 3, "Cost should not change");
+    assert_eq!(list.lookup.len(), 2, "Length should not change");
+  }
+
+  #[test]
+  fn clear_resets_list() {
+    let mut list = LruList::new();
+    list.push_front(1, 10);
+    list.push_front(2, 20);
+    list.push_front(3, 30);
+    assert_eq!(list.current_total_cost(), 60);
+    assert!(!list.keys_as_vec().is_empty());
+
+    list.clear();
+
+    assert!(list.keys_as_vec().is_empty());
+    assert!(list.lookup.is_empty());
+    assert_eq!(list.current_total_cost(), 0);
+    assert!(!list.contains(&1));
   }
 }

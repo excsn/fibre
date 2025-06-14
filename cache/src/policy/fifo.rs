@@ -1,4 +1,4 @@
-use super::{CachePolicy};
+use super::CachePolicy;
 use crate::policy::lru_list::LruList;
 use crate::policy::AdmissionDecision;
 
@@ -69,5 +69,129 @@ where
   /// Clear all internal tracking.
   fn clear(&self) {
     self.list.lock().clear();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_new_item_admitted_to_front() {
+    let policy = Fifo::<i32>::new();
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+
+    let list = policy.list.lock();
+    // The list's internal representation has the MRU (newest) at the head.
+    assert_eq!(list.keys_as_vec(), vec![2, 1]);
+    assert_eq!(list.current_total_cost(), 2);
+  }
+
+  #[test]
+  fn test_access_is_a_noop() {
+    let policy = Fifo::<i32>::new();
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+
+    let keys_before = policy.list.lock().keys_as_vec();
+
+    // Accessing an item should not change its order in a FIFO queue.
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_access(&policy, &1, 1);
+
+    let keys_after = policy.list.lock().keys_as_vec();
+    assert_eq!(
+      keys_before, keys_after,
+      "Access should not change FIFO order"
+    );
+  }
+
+  #[test]
+  fn test_re_admit_existing_key_is_a_noop() {
+    let policy = Fifo::<i32>::new();
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+
+    let keys_before = policy.list.lock().keys_as_vec();
+    let cost_before = policy.list.lock().current_total_cost();
+
+    // Re-admitting an existing key should not change its order or cost.
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 99); // Use different cost
+
+    let keys_after = policy.list.lock().keys_as_vec();
+    let cost_after = policy.list.lock().current_total_cost();
+
+    assert_eq!(
+      keys_before, keys_after,
+      "Re-admitting should not change FIFO order"
+    );
+    assert_eq!(
+      cost_before, cost_after,
+      "Re-admitting should not update cost"
+    );
+  }
+
+  #[test]
+  fn test_evict_removes_oldest_item() {
+    let policy = Fifo::<i32>::new();
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1); // Oldest
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 2);
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &3, 3); // Newest
+
+    // Evict one item. It should be the first one that was inserted (key 1).
+    let (victims, cost_freed) = <Fifo<i32> as CachePolicy<i32, ()>>::evict(&policy, 1);
+
+    assert_eq!(victims, vec![1]);
+    assert_eq!(cost_freed, 1);
+
+    let list = policy.list.lock();
+    assert_eq!(list.keys_as_vec(), vec![3, 2]);
+    assert_eq!(list.current_total_cost(), 5);
+  }
+
+  #[test]
+  fn test_evict_multiple_items() {
+    let policy = Fifo::<i32>::new();
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1); // Oldest
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &3, 1); // Newest
+
+    // Evict two items. Should be 1 and 2.
+    let (victims, cost_freed) = <Fifo<i32> as CachePolicy<i32, ()>>::evict(&policy, 2);
+
+    assert_eq!(victims, vec![1, 2]);
+    assert_eq!(cost_freed, 2);
+
+    let list = policy.list.lock();
+    assert_eq!(list.keys_as_vec(), vec![3]);
+    assert_eq!(list.current_total_cost(), 1);
+  }
+
+  #[test]
+  fn test_on_remove_cleans_up_state() {
+    let policy = Fifo::<i32>::new();
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 2);
+    assert_eq!(policy.list.lock().current_total_cost(), 3);
+
+    // Remove an item from the middle of the queue
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_remove(&policy, &1);
+
+    let list = policy.list.lock();
+    assert!(!list.contains(&1));
+    assert_eq!(list.keys_as_vec(), vec![2]);
+    assert_eq!(list.current_total_cost(), 2);
+  }
+
+  #[test]
+  fn test_clear_resets_state() {
+    let policy = Fifo::<i32>::new();
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &1, 1);
+    <Fifo<i32> as CachePolicy<i32, ()>>::on_admit(&policy, &2, 1);
+
+    <Fifo<i32> as CachePolicy<i32, ()>>::clear(&policy);
+
+    assert_eq!(policy.list.lock().current_total_cost(), 0);
+    assert!(policy.list.lock().keys_as_vec().is_empty());
   }
 }
