@@ -2,31 +2,33 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use crossbeam_utils::CachePadded;
+
 /// A thread-safe, internal metrics collector for the cache.
 /// All fields are atomic to allow for lock-free updates.
 #[derive(Debug)]
 pub struct Metrics {
   // --- Hit/Miss Ratios ---
-  pub(crate) hits: AtomicU64,
-  pub(crate) misses: AtomicU64,
+  pub(crate) hits: CachePadded<AtomicU64>,
+  pub(crate) misses: CachePadded<AtomicU64>,
 
   // --- Throughput ---
-  pub(crate) inserts: AtomicU64,
-  pub(crate) updates: AtomicU64,
-  pub(crate) invalidations: AtomicU64,
+  pub(crate) inserts: CachePadded<AtomicU64>,
+  pub(crate) updates: CachePadded<AtomicU64>,
+  pub(crate) invalidations: CachePadded<AtomicU64>,
 
   // --- Eviction Stats ---
-  pub(crate) evicted_by_capacity: AtomicU64,
-  pub(crate) evicted_by_ttl: AtomicU64,
-  pub(crate) evicted_by_tti: AtomicU64,
+  pub(crate) evicted_by_capacity: CachePadded<AtomicU64>,
+  pub(crate) evicted_by_ttl: CachePadded<AtomicU64>,
+  pub(crate) evicted_by_tti: CachePadded<AtomicU64>,
 
   // --- Admission Policy (for TinyLFU) ---
-  pub(crate) keys_admitted: AtomicU64,
-  pub(crate) keys_rejected: AtomicU64,
+  pub(crate) keys_admitted: CachePadded<AtomicU64>,
+  pub(crate) keys_rejected: CachePadded<AtomicU64>,
 
   // --- Cost / Size ---
-  pub(crate) current_cost: AtomicU64,
-  pub(crate) total_cost_added: AtomicU64,
+  pub(crate) current_cost: CachePadded<AtomicU64>,
+  pub(crate) total_cost_added: CachePadded<AtomicU64>,
 
   // --- Timestamps for Uptime ---
   created_at: Instant,
@@ -36,18 +38,18 @@ pub struct Metrics {
 impl Default for Metrics {
   fn default() -> Self {
     Self {
-      hits: AtomicU64::new(0),
-      misses: AtomicU64::new(0),
-      inserts: AtomicU64::new(0),
-      updates: AtomicU64::new(0),
-      invalidations: AtomicU64::new(0),
-      evicted_by_capacity: AtomicU64::new(0),
-      evicted_by_ttl: AtomicU64::new(0),
-      evicted_by_tti: AtomicU64::new(0),
-      keys_admitted: AtomicU64::new(0),
-      keys_rejected: AtomicU64::new(0),
-      current_cost: AtomicU64::new(0),
-      total_cost_added: AtomicU64::new(0),
+      hits: CachePadded::new(AtomicU64::new(0)),
+      misses: CachePadded::new(AtomicU64::new(0)),
+      inserts: CachePadded::new(AtomicU64::new(0)),
+      updates: CachePadded::new(AtomicU64::new(0)),
+      invalidations: CachePadded::new(AtomicU64::new(0)),
+      evicted_by_capacity: CachePadded::new(AtomicU64::new(0)),
+      evicted_by_ttl: CachePadded::new(AtomicU64::new(0)),
+      evicted_by_tti: CachePadded::new(AtomicU64::new(0)),
+      keys_admitted: CachePadded::new(AtomicU64::new(0)),
+      keys_rejected: CachePadded::new(AtomicU64::new(0)),
+      current_cost: CachePadded::new(AtomicU64::new(0)),
+      total_cost_added: CachePadded::new(AtomicU64::new(0)),
       created_at: Instant::now(), // Set the creation time here.
     }
   }

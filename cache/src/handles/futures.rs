@@ -103,7 +103,7 @@ where
       self.shared.time_to_idle,
     );
 
-    // --- NEW: Schedule timers ---
+    // --- Schedule timers ---
     if let Some(wheel) = &self.shared.timer_wheel {
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = self
@@ -119,7 +119,7 @@ where
     let mut guard = shard.map.write_async().await;
     let old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
 
-    // --- NEW: Cancel timers for the replaced entry ---
+    // --- Cancel timers for the replaced entry ---
     if let Some(entry) = old_entry {
       if let Some(wheel) = &self.shared.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
@@ -260,7 +260,7 @@ where
     let mut guard = shard.map.write_async().await;
 
     if let Some(entry) = guard.remove(key) {
-      // --- NEW: Cancel timers ---
+      // --- Cancel timers ---
       if let Some(wheel) = &self.shared.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
