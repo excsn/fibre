@@ -2,7 +2,7 @@
 
 use crate::policy::AdmissionDecision;
 
-use super::{AccessInfo, CachePolicy};
+use super::CachePolicy;
 
 use parking_lot::Mutex;
 use rand::seq::IteratorRandom;
@@ -31,7 +31,7 @@ where
   V: Send + Sync,
 {
   /// A random policy does not care about access patterns. This is a no-op.
-  fn on_access(&self, _info: &AccessInfo<K, V>) {}
+  fn on_access(&self, _key: &K, _cost: u64) {}
 
   /// A random policy always admits new items. We just need to start tracking it.
   fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {

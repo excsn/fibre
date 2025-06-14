@@ -1,7 +1,7 @@
 use crate::policy::lru_list::LruList;
 use crate::policy::AdmissionDecision;
 
-use super::{AccessInfo, CachePolicy};
+use super::CachePolicy;
 
 use parking_lot::Mutex;
 use std::hash::Hash;
@@ -27,9 +27,9 @@ where
   V: Send + Sync,
 {
   /// When an item is accessed, move it to the front of the usage queue.
-  fn on_access(&self, info: &AccessInfo<K, V>) {
+  fn on_access(&self, key: &K, _cost: u64) {
     // This is now an O(1) operation.
-    self.list.lock().move_to_front(info.key);
+    self.list.lock().move_to_front(key);
   }
 
   /// When an item is inserted, it is the most recently used.

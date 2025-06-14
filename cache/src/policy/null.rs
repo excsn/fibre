@@ -1,4 +1,4 @@
-use crate::policy::{AccessInfo, AdmissionDecision, CachePolicy};
+use crate::policy::{AdmissionDecision, CachePolicy};
 
 /// A default "no-op" eviction policy for unbounded caches or simple cases.
 /// It does nothing and never evicts anything.
@@ -11,7 +11,7 @@ where
   V: Send + Sync,
 {
   
-  fn on_access(&self, _info: &AccessInfo<K, V>) {}
+  fn on_access(&self, _key: &K, _cost: u64) {}
 
   fn on_admit(&self, _key: &K, _cost: u64) -> AdmissionDecision<K> {
     AdmissionDecision::Admit // Always admit new items.

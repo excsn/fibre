@@ -343,7 +343,7 @@ where
     }
 
     // Instead of calling the policy directly, record a read event.
-    let _ = event_tx.try_send(AccessEvent::Read(key.clone()));
+    let _ = event_tx.try_send(AccessEvent::Read(key.clone(), entry.cost()));
 
     self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
   }
@@ -527,7 +527,7 @@ where
         }
 
         let shard = &self.shared.store.shards[i];
-        let guard = shard.map.read(); // Acquire read lock
+        let guard = shard.map.read();
         let mut found = HashMap::new();
 
         for key in shard_keys {
@@ -539,7 +539,7 @@ where
               }
               let _ = shard
                 .event_buffer_tx
-                .try_send(AccessEvent::Read(key.clone()));
+                .try_send(AccessEvent::Read(key.clone(), entry.cost()));
               found.insert(key.clone(), entry.value());
             }
           }

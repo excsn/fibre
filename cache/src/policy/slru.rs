@@ -1,4 +1,4 @@
-use super::{AccessInfo, CachePolicy};
+use super::CachePolicy;
 use crate::policy::lru_list::LruList;
 use crate::policy::AdmissionDecision;
 
@@ -109,8 +109,8 @@ where
   K: Eq + Hash + Clone + Send + Sync,
   V: Send + Sync,
 {
-  fn on_access(&self, info: &AccessInfo<K, V>) {
-    self.access_internal(info.key, info.entry.cost());
+  fn on_access(&self, key: &K, cost: u64) {
+    self.access_internal(key, cost);
   }
 
   fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
@@ -176,14 +176,6 @@ mod tests {
   use crate::entry::CacheEntry;
 
   use std::sync::Arc;
-  // Helper to create a dummy AccessInfo for a given key.
-  // The `entry` Arc needs to live as long as the AccessInfo, so we pass it in.
-  fn access_info_for<'a>(
-    key: &'a i32,
-    entry: &'a Arc<CacheEntry<String>>,
-  ) -> AccessInfo<'a, i32, String> {
-    AccessInfo { key, entry }
-  }
 
   #[test]
   fn new_item_goes_to_probationary() {
@@ -202,7 +194,7 @@ mod tests {
     let entry = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
 
-    policy.on_access(&access_info_for(&1, &entry));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &1, entry.cost());
 
     assert!(!policy.probationary.lock().contains(&1));
     assert!(policy.protected.lock().contains(&1));
@@ -214,16 +206,16 @@ mod tests {
     let policy: SlruPolicy<i32> = SlruPolicy::new(10); // prob=2, prot=8
     let entry1 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry1.cost());
-    policy.on_access(&access_info_for(&1, &entry1)); // 1 is now in protected
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &1, entry1.cost()); // 1 is now in protected
 
     let entry2 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &2, entry2.cost());
-    policy.on_access(&access_info_for(&2, &entry2)); // 2 is now in protected, LRU of protected is 1
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &2, entry2.cost()); // 2 is now in protected, LRU of protected is 1
 
     let protected_keys = policy.protected.lock().keys_as_vec();
     assert_eq!(protected_keys.last(), Some(&1));
 
-    policy.on_access(&access_info_for(&1, &entry1)); // Access 1 again
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &1, entry1.cost()); // Access 1 again
 
     // Now 2 should be the LRU of protected
     let protected_keys_after = policy.protected.lock().keys_as_vec();
@@ -244,7 +236,7 @@ mod tests {
         &i,
         entries[(i - 1) as usize].cost(),
       );
-      policy.on_access(&access_info_for(&i, &entries[(i - 1) as usize]));
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &i, entries[(i - 1) as usize].cost());
     }
     assert_eq!(policy.protected.lock().current_total_cost(), 4);
     assert_eq!(policy.probationary.lock().current_total_cost(), 0);
@@ -254,7 +246,7 @@ mod tests {
     assert_eq!(policy.probationary.lock().current_total_cost(), 1);
 
     // 3. Access item 5 to promote it. This should cause item 1 (LRU of protected) to be demoted.
-    policy.on_access(&access_info_for(&5, &entries[4]));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &5, entries[4].cost());
 
     assert!(policy.protected.lock().contains(&5), "5 should be promoted");
     assert!(
@@ -304,7 +296,7 @@ mod tests {
         &i,
         entries[(i - 1) as usize].cost(),
       );
-      policy.on_access(&access_info_for(&i, &entries[(i - 1) as usize]));
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &i, entries[(i - 1) as usize].cost());
     }
     // Now protected has [4, 3, 2, 1], probationary is empty.
 
@@ -322,7 +314,7 @@ mod tests {
     let entry2 = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry1.cost()); // in prob
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &2, entry2.cost());
-    policy.on_access(&access_info_for(&2, &entry2)); // in prot
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &2, entry2.cost()); // in prot
 
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_remove(&policy, &1);
     assert!(!policy.probationary.lock().contains(&1));
@@ -351,8 +343,8 @@ mod tests {
     );
 
     // 2. Victim in protected (after probationary is empty)
-    policy.on_access(&access_info_for(&1, &entries[0]));
-    policy.on_access(&access_info_for(&2, &entries[1]));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &1, entries[0].cost());
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &2, entries[1].cost());
     assert_eq!(
       policy.peek_lru(),
       Some(1),
@@ -360,7 +352,7 @@ mod tests {
     );
 
     // 3. Re-accessing changes the victim
-    policy.on_access(&access_info_for(&1, &entries[0]));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &1, entries[0].cost());
     assert_eq!(
       policy.peek_lru(),
       Some(2),
@@ -409,7 +401,7 @@ mod tests {
     );
 
     // 2. Promote to protected
-    policy.on_access(&access_info_for(&1, &entry));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &1, entry.cost());
     let prot_keys_before = policy.protected.lock().keys_as_vec();
 
     // Re-inserting should still do nothing
@@ -435,7 +427,7 @@ mod tests {
         &i,
         entries[(i - 1) as usize].cost(),
       );
-      policy.on_access(&access_info_for(&i, &entries[(i - 1) as usize]));
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &i, entries[(i - 1) as usize].cost());
     }
     // Fill probationary
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &4, entries[3].cost());
@@ -472,7 +464,7 @@ mod tests {
         entries[(i - 1) as usize].cost(),
       );
     }
-    policy.on_access(&access_info_for(&5, &entries[4])); // Promote 5
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &5, entries[4].cost()); // Promote 5
 
     // Request to free a huge amount of cost
     let (victims, cost_freed) = <SlruPolicy<i32> as CachePolicy<i32, String>>::evict(&policy, 100);
@@ -499,7 +491,7 @@ mod tests {
         &i,
         entries[(i - 1) as usize].cost(),
       );
-      policy.on_access(&access_info_for(&i, &entries[(i - 1) as usize]));
+      <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &i, entries[(i - 1) as usize].cost());
     }
     assert_eq!(policy.protected.lock().current_total_cost(), 4);
     assert_eq!(policy.probationary.lock().current_total_cost(), 0);
@@ -518,7 +510,7 @@ mod tests {
     // This action should synchronously:
     //    a) Move item 5 to protected (cost becomes 5, over capacity).
     //    b) Trigger `maintain_capacities`, demoting item 1 to probationary.
-    policy.on_access(&access_info_for(&5, &entries[4]));
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &5, entries[4].cost());
 
     // 4. Assert: Check the state *immediately* after the access.
     assert_eq!(
@@ -571,7 +563,7 @@ mod tests {
 
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry1.cost()); // in prob
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &2, entry2.cost());
-    policy.on_access(&access_info_for(&2, &entry2)); // in prot
+    <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &2, entry2.cost()); // in prot
 
     assert_eq!(policy.probationary.lock().current_total_cost(), 1);
     assert_eq!(policy.protected.lock().current_total_cost(), 1);

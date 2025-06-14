@@ -1,6 +1,6 @@
 use crate::policy::{AdmissionDecision};
 
-use super::{AccessInfo, CachePolicy};
+use super::{CachePolicy};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -41,9 +41,9 @@ where
 {
   
   /// On access, set the "referenced" bit to true.
-  fn on_access(&self, info: &AccessInfo<K, V>) {
+  fn on_access(&self, key: &K, cost: u64) {
     let mut items = self.items.lock();
-    if let Some(entry) = items.get_mut(info.key) {
+    if let Some(entry) = items.get_mut(key) {
       entry.referenced = true;
     }
   }

@@ -9,15 +9,13 @@ pub mod sieve;
 pub mod slru;
 pub mod tinylfu;
 
-use crate::entry::CacheEntry;
-use std::sync::Arc;
 
 /// An event that is recorded on every access to the cache.
 /// These events are buffered and processed by a background maintenance task.
 #[derive(Debug, Clone)]
 pub(crate) enum AccessEvent<K> {
-  Read(K),
-  Write(K, u64), // Write events include the cost of the item.
+  Read(K, u64), // Key, cost
+  Write(K, u64), // Key, cost
 }
 
 #[derive(Debug)]
@@ -27,13 +25,6 @@ pub enum AdmissionDecision<K> {
   AdmitAndEvict(Vec<K>), // K is the key of the victim
 }
 
-/// Provides necessary information about an access to the eviction policy.
-pub struct AccessInfo<'a, K, V> {
-  pub key: &'a K,
-  pub entry: &'a Arc<CacheEntry<V>>,
-  // Add other fields as needed, e.g., current cache cost.
-}
-
 /// A trait for implementing cache admission/eviction policies.
 ///
 /// The policy is responsible for tracking item usage and deciding which items
@@ -41,7 +32,7 @@ pub struct AccessInfo<'a, K, V> {
 pub trait CachePolicy<K, V>: Send + Sync {
   /// Called when an item is accessed (read or written).
   /// The policy should update its internal tracking structures.
-  fn on_access(&self, info: &AccessInfo<K, V>);
+  fn on_access(&self, key: &K, cost: u64);
 
   /// Called when an item is being admitted.
   ///

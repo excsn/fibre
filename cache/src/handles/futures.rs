@@ -329,7 +329,7 @@ where
       entry.update_last_accessed();
     }
 
-    let _ = event_tx.try_send(AccessEvent::Read(key.clone()));
+    let _ = event_tx.try_send(AccessEvent::Read(key.clone(), entry.cost()));
     self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
   }
 }
@@ -391,7 +391,7 @@ where
                 }
                 let _ = shard
                   .event_buffer_tx
-                  .try_send(AccessEvent::Read(key.clone()));
+                  .try_send(AccessEvent::Read(key.clone(), entry.cost()));
                 found.insert(key.clone(), entry.value());
               }
             }

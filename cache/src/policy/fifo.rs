@@ -1,4 +1,4 @@
-use super::{AccessInfo, CachePolicy};
+use super::{CachePolicy};
 use crate::policy::lru_list::LruList;
 use crate::policy::AdmissionDecision;
 
@@ -26,7 +26,7 @@ where
   V: Send + Sync,
 {
   /// A FIFO policy does not care about access patterns. This is a no-op.
-  fn on_access(&self, _info: &AccessInfo<K, V>) {}
+  fn on_access(&self, _key: &K, _cost: u64) {}
 
   /// On insert, add the new item to the front of the queue.
   fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {

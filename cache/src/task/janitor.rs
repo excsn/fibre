@@ -1,5 +1,5 @@
 use crate::metrics::Metrics;
-use crate::policy::{AccessEvent, AccessInfo, AdmissionDecision, CachePolicy};
+use crate::policy::{AccessEvent, AdmissionDecision, CachePolicy};
 use crate::store::{Shard, ShardedStore};
 use crate::task::notifier::Notification;
 use crate::task::timer::TimerWheel;
@@ -299,13 +299,8 @@ pub(crate) fn perform_shard_maintenance<K, V, H>(
     match shard.event_buffer_rx.try_recv() {
       Ok(event) => {
         match event {
-          AccessEvent::Read(key) => {
-            // We need to look up the entry in the map to create AccessInfo.
-            let guard = shard.map.read();
-            if let Some(entry) = guard.get(&key) {
-              let info = AccessInfo { key: &key, entry };
-              context.eviction_policy.on_access(&info);
-            }
+          AccessEvent::Read(key, cost) => {
+            context.eviction_policy.on_access(&key, cost);
           }
           AccessEvent::Write(key, cost) => {
             let decision = context.eviction_policy.on_admit(&key, cost);

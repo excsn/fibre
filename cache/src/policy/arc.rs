@@ -1,6 +1,6 @@
 use crate::policy::AdmissionDecision;
 
-use super::{AccessInfo, CachePolicy};
+use super::{CachePolicy};
 
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
@@ -78,22 +78,22 @@ where
   K: Eq + Hash + Clone + Send + Sync,
   V: Send + Sync,
 {
-  fn on_access(&self, info: &AccessInfo<K, V>) {
+  fn on_access(&self, key: &K, _cost: u64) {
     let mut t1_guard = self.t1.lock();
     let mut t2_guard = self.t2.lock();
 
     // Case 1: Hit in T1 (item seen once). Promote it to T2.
-    if let Some(cost) = t1_guard.1.remove(info.key) {
-      t1_guard.0.retain(|k| k != info.key);
-      t2_guard.1.insert(info.key.clone(), cost);
-      t2_guard.0.push_front(info.key.clone());
+    if let Some(cost) = t1_guard.1.remove(key) {
+      t1_guard.0.retain(|k| k != key);
+      t2_guard.1.insert(key.clone(), cost);
+      t2_guard.0.push_front(key.clone());
       return;
     }
 
     // Case 2: Hit in T2. Just move it to the front (most recently used).
-    if t2_guard.1.contains_key(info.key) {
-      t2_guard.0.retain(|k| k != info.key);
-      t2_guard.0.push_front(info.key.clone());
+    if t2_guard.1.contains_key(key) {
+      t2_guard.0.retain(|k| k != key);
+      t2_guard.0.push_front(key.clone());
     }
   }
 

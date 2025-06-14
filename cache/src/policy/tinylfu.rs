@@ -1,4 +1,4 @@
-use super::{AccessInfo, CachePolicy};
+use super::CachePolicy;
 use crate::policy::lru_list::LruList;
 use crate::policy::AdmissionDecision;
 use super::slru::SlruPolicy;
@@ -60,8 +60,8 @@ where
   K: Eq + Hash + Clone + Send + Sync + 'static,
   V: Send + Sync + 'static,
 {
-  fn on_access(&self, info: &AccessInfo<K, V>) {
-    self.access_internal(info.key, info.entry.cost());
+  fn on_access(&self, key: &K, cost: u64) {
+    self.access_internal(key, cost);
   }
 
   fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
@@ -235,17 +235,7 @@ mod cms {
 
 #[cfg(test)]
 mod tests {
-  use std::sync::Arc;
-
   use super::*;
-  use crate::entry::CacheEntry;
-
-  fn access_info_for<'a>(
-    key: &'a i32,
-    entry: &'a Arc<CacheEntry<String>>,
-  ) -> AccessInfo<'a, i32, String> {
-    AccessInfo { key, entry }
-  }
 
   #[test]
   fn test_new_item_goes_to_window() {
