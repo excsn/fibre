@@ -1,36 +1,48 @@
+use generational_arena::{Arena, Index};
 use parking_lot::Mutex;
-use std::collections::LinkedList;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-// A node in the timer wheel's linked list.
+/// A timer entry stored in the shared Arena.
+/// It is part of a doubly-linked list within a specific wheel slot.
 pub(crate) struct Timer {
   pub(crate) laps: usize,
   pub(crate) key_hash: u64,
+  slot_index: usize,
+  prev: Option<Index>,
+  next: Option<Index>,
 }
 
-// The handle is now a struct containing the hash and the wheel slot for fast lookup.
+/// A single slot in the wheel, containing the head/tail of a linked list of timers.
+#[derive(Default, Clone, Copy)]
+struct Slot {
+  head: Option<Index>,
+  tail: Option<Index>,
+}
+
+/// A handle to a scheduled timer, allowing for O(1) cancellation.
+/// It holds an index into the `TimerWheel`'s internal arena.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TimerHandle {
-  pub(crate) key_hash: u64,
-  slot: usize,
+  index: Index,
 }
 
 pub(crate) struct TimerWheel {
-  wheel: Vec<Mutex<LinkedList<Timer>>>,
+  wheel: Vec<Mutex<Slot>>,
+  timers: Mutex<Arena<Timer>>,
   current_tick: AtomicUsize,
   tick_duration: Duration,
 }
 
 impl TimerWheel {
   pub(crate) fn new(wheel_size: usize, tick_duration: Duration) -> Self {
-    let mut wheel = Vec::with_capacity(wheel_size);
-    for _ in 0..wheel_size {
-      wheel.push(Mutex::new(LinkedList::new()));
-    }
+    let wheel = (0..wheel_size)
+      .map(|_| Mutex::new(Slot::default()))
+      .collect();
+
     Self {
       wheel,
+      timers: Mutex::new(Arena::new()),
       current_tick: AtomicUsize::new(0),
       tick_duration,
     }
@@ -44,48 +56,111 @@ impl TimerWheel {
     let laps = ticks / self.wheel.len();
     let slot = (current_tick + ticks) % self.wheel.len();
 
-    let timer = Timer { laps, key_hash };
-    self.wheel[slot].lock().push_back(timer);
+    let timer = Timer {
+      laps,
+      key_hash,
+      slot_index: slot,
+      prev: None,
+      next: None,
+    };
 
-    TimerHandle { key_hash, slot }
+    let mut timers = self.timers.lock();
+    let mut slot_guard = self.wheel[slot].lock();
+
+    let index = timers.insert(timer);
+
+    // Link at the head of the slot's list
+    let old_head = slot_guard.head;
+    if let Some(old_head_index) = old_head {
+      timers[old_head_index].prev = Some(index);
+    }
+    timers[index].next = old_head;
+    slot_guard.head = Some(index);
+
+    if slot_guard.tail.is_none() {
+      slot_guard.tail = Some(index);
+    }
+
+    TimerHandle { index }
   }
 
   pub(crate) fn cancel(&self, handle: &TimerHandle) {
-    // This is O(N) where N is the number of timers in the target bucket.
-    // A more complex implementation with an intrusive list would be O(1).
-    // This is an acceptable trade-off for simplicity.
-    for bucket in self.wheel.iter() {
-      let mut list = bucket.lock();
-      if let Some(pos) = list.iter().position(|t| t.key_hash == handle.key_hash) {
-        // `drain_filter` is unstable, so we do it manually.
-        let mut rest = list.split_off(pos);
-        rest.pop_front(); // Remove the element at the found position.
-        list.append(&mut rest); // Append the rest of the list back.
-        return; // Assume hashes are unique enough for one cancellation.
+    // This is now an O(1) operation.
+    let mut timers = self.timers.lock();
+
+    // Check if the timer still exists before trying to remove it.
+    if let Some(timer) = timers.get(handle.index) {
+      let slot_index = timer.slot_index;
+      let prev_index = timer.prev;
+      let next_index = timer.next;
+
+      // Lock the specific slot to update its head/tail pointers.
+      let mut slot_guard = self.wheel[slot_index].lock();
+
+      // Unlink the timer from the list.
+      if let Some(p) = prev_index {
+        timers[p].next = next_index;
+      } else {
+        // It was the head of the list.
+        slot_guard.head = next_index;
       }
+
+      if let Some(n) = next_index {
+        timers[n].prev = prev_index;
+      } else {
+        // It was the tail of the list.
+        slot_guard.tail = prev_index;
+      }
+
+      // Finally, remove the timer from the arena.
+      timers.remove(handle.index);
     }
   }
 
   pub(crate) fn advance(&self) -> Vec<u64> {
     let tick_to_process = self.current_tick.fetch_add(1, Ordering::Relaxed);
-    let slot = tick_to_process % self.wheel.len();
+    let slot_index = tick_to_process % self.wheel.len();
 
-    // The rest of the logic can now operate on an immutable self.
-    let mut current_bucket = self.wheel[slot].lock();
+    let mut timers = self.timers.lock();
+    let mut slot = self.wheel[slot_index].lock();
 
     let mut expired_hashes = Vec::new();
-    let mut still_running = LinkedList::new();
+    let mut current_opt = slot.head;
+    let mut to_remove = Vec::new();
 
-    while let Some(mut timer) = current_bucket.pop_front() {
+    // First pass: identify timers to remove and update laps.
+    while let Some(current_index) = current_opt {
+      let timer = &mut timers[current_index];
       if timer.laps > 0 {
         timer.laps -= 1;
-        still_running.push_back(timer);
+        current_opt = timer.next;
       } else {
+        // Expired. Mark for removal.
         expired_hashes.push(timer.key_hash);
+        to_remove.push(current_index);
+        current_opt = timer.next;
       }
     }
 
-    *current_bucket = still_running;
+    // Second pass: remove the expired timers from the list and arena.
+    for index_to_remove in to_remove {
+      let timer = &timers[index_to_remove];
+      let prev = timer.prev;
+      let next = timer.next;
+
+      if let Some(p) = prev {
+        timers[p].next = next;
+      } else {
+        slot.head = next;
+      }
+      if let Some(n) = next {
+        timers[n].prev = prev;
+      } else {
+        slot.tail = prev;
+      }
+      timers.remove(index_to_remove);
+    }
+
     expired_hashes
   }
 }

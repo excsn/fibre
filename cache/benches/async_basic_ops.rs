@@ -182,6 +182,10 @@ fn async_benches(c: &mut Criterion) {
     teardown_fn,
   )
   .throughput(|cfg: &BenchConfig| Throughput::Elements(cfg.num_items as u64))
+  .configure_criterion_group(|_group| {
+    // group.measurement_time(Duration::from_secs(10));
+    // group.warm_up_time(Duration::from_secs(3));
+  })
   .run();
 }
 

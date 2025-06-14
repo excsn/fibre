@@ -1,22 +1,17 @@
+use super::CachePolicy;
+use crate::policy::lru_list::LruList;
 use crate::policy::AdmissionDecision;
 
-use super::{CachePolicy};
-
 use parking_lot::Mutex;
-use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
-
-// We can reuse the LruList helper from tiny_lfu.rs if we extract it,
-// or just define a simple list with a lookup map here.
-type LruList<K> = (VecDeque<K>, HashMap<K, u64>);
 
 /// An eviction policy based on the Adaptive Replacement Cache (ARC) algorithm.
 #[derive(Debug)]
-pub struct ArcPolicy<K> {
-  // `p` is the target size of the T1 (recency) list.
+pub struct ArcPolicy<K: Eq + Hash + Clone> {
+  // `p` is the target size (cost) of the T1 (recency) list.
   // The target size of T2 is `capacity - p`.
-  p: Mutex<usize>,
-  capacity: usize,
+  p: Mutex<u64>,
+  capacity: u64,
 
   // T1: Recently used, seen once. "Top 1"
   t1: Mutex<LruList<K>>,
@@ -32,44 +27,48 @@ impl<K: Eq + Hash + Clone> ArcPolicy<K> {
   pub fn new(capacity: usize) -> Self {
     Self {
       p: Mutex::new(0),
-      capacity,
-      t1: Mutex::new((VecDeque::new(), HashMap::new())),
-      t2: Mutex::new((VecDeque::new(), HashMap::new())),
-      b1: Mutex::new((VecDeque::new(), HashMap::new())),
-      b2: Mutex::new((VecDeque::new(), HashMap::new())),
+      capacity: capacity as u64,
+      t1: Mutex::new(LruList::new()),
+      t2: Mutex::new(LruList::new()),
+      b1: Mutex::new(LruList::new()),
+      b2: Mutex::new(LruList::new()),
     }
   }
 
-  // Core logic to replace a victim when the cache is full.
-  fn replace(&self, _cost: u64) {
+  // Core logic to select and evict a victim, moving it to a ghost list.
+  fn replace(&self) -> Option<(K, u64)> {
     let p_guard = self.p.lock();
     let mut t1_guard = self.t1.lock();
 
-    // Check if T1 has more items than its target size `p`.
-    if !t1_guard.0.is_empty()
-      && (t1_guard.0.len() > *p_guard
-        || (self.b2.lock().1.contains_key(&t1_guard.0.back().unwrap())
-          && t1_guard.0.len() == *p_guard))
-    {
+    let t1_cost = t1_guard.current_total_cost();
+    let lru_t1_is_in_b2 = t1_guard
+      .tail
+      .map(|idx| self.b2.lock().contains(&t1_guard.nodes[idx].key))
+      .unwrap_or(false);
+
+    if t1_cost > 0 && (t1_cost > *p_guard || (lru_t1_is_in_b2 && t1_cost == *p_guard)) {
       // Evict from T1, move it to the B1 ghost list.
-      if let Some(key) = t1_guard.0.pop_back() {
-        if let Some(c) = t1_guard.1.remove(&key) {
-          let mut b1_guard = self.b1.lock();
-          b1_guard.1.insert(key.clone(), c);
-          b1_guard.0.push_front(key);
+      if let Some((key, cost)) = t1_guard.pop_back() {
+        let mut b1_guard = self.b1.lock();
+        b1_guard.push_front(key.clone(), cost);
+        if b1_guard.current_total_cost() > self.capacity {
+          b1_guard.pop_back();
         }
+        return Some((key, cost));
       }
     } else {
       // Evict from T2, move it to the B2 ghost list.
       let mut t2_guard = self.t2.lock();
-      if let Some(key) = t2_guard.0.pop_back() {
-        if let Some(c) = t2_guard.1.remove(&key) {
-          let mut b2_guard = self.b2.lock();
-          b2_guard.1.insert(key.clone(), c);
-          b2_guard.0.push_front(key);
+      if let Some((key, cost)) = t2_guard.pop_back() {
+        let mut b2_guard = self.b2.lock();
+        b2_guard.push_front(key.clone(), cost);
+        if b2_guard.current_total_cost() > self.capacity {
+          b2_guard.pop_back();
         }
+        return Some((key, cost));
       }
     }
+    None
   }
 }
 
@@ -78,22 +77,19 @@ where
   K: Eq + Hash + Clone + Send + Sync,
   V: Send + Sync,
 {
-  fn on_access(&self, key: &K, _cost: u64) {
+  fn on_access(&self, key: &K, cost: u64) {
     let mut t1_guard = self.t1.lock();
     let mut t2_guard = self.t2.lock();
 
     // Case 1: Hit in T1 (item seen once). Promote it to T2.
-    if let Some(cost) = t1_guard.1.remove(key) {
-      t1_guard.0.retain(|k| k != key);
-      t2_guard.1.insert(key.clone(), cost);
-      t2_guard.0.push_front(key.clone());
+    if t1_guard.remove(key).is_some() {
+      t2_guard.push_front(key.clone(), cost);
       return;
     }
 
     // Case 2: Hit in T2. Just move it to the front (most recently used).
-    if t2_guard.1.contains_key(key) {
-      t2_guard.0.retain(|k| k != key);
-      t2_guard.0.push_front(key.clone());
+    if t2_guard.contains(key) {
+      t2_guard.move_to_front(key);
     }
   }
 
@@ -109,80 +105,82 @@ where
 
     // Case 1: The key is in T1 or T2. This is a cache update, not a new insert.
     // This case should ideally be handled by `on_access` logic, but we check here too.
-    if t1_guard.1.contains_key(key) || t2_guard.1.contains_key(key) {
+    if t1_guard.contains(key) || t2_guard.contains(key) {
       // It's an update, so just ensure it's in T2.
-      if let Some(c) = t1_guard.1.remove(key) {
-        t1_guard.0.retain(|k| k != key);
-        t2_guard.1.insert(key.clone(), c);
-        t2_guard.0.push_front(key.clone());
+      if t1_guard.remove(key).is_some() {
+        t2_guard.push_front(key.clone(), cost);
       }
       return AdmissionDecision::Admit;
     }
 
     // Case 2: The key is in the B1 ghost list (a "recency" miss).
     // This suggests T1's target size `p` should grow.
-    if let Some(_c) = b1_guard.1.remove(key) {
-      b1_guard.0.retain(|k| k != key);
-      let b1_len = b1_guard.0.len();
-      let b2_len = b2_guard.0.len();
-      let delta = if b1_len >= b2_len { 1 } else { b2_len / b1_len };
+    if b1_guard.remove(key).is_some() {
+      let b1_cost = b1_guard.current_total_cost();
+      let b2_cost = b2_guard.current_total_cost();
+      let delta = if b1_cost >= b2_cost {
+        1
+      } else {
+        b2_cost / b1_cost
+      };
       *p_guard = (*p_guard + delta).min(self.capacity);
-      self.replace(cost);
+      self.replace();
     }
     // Case 3: The key is in the B2 ghost list (a "frequency" miss).
     // This suggests T2's target size should grow (i.e., `p` should shrink).
-    else if let Some(_c) = b2_guard.1.remove(key) {
-      b2_guard.0.retain(|k| k != key);
-      let b1_len = b1_guard.0.len();
-      let b2_len = b2_guard.0.len();
-      let delta = if b2_len >= b1_len { 1 } else { b1_len / b2_len };
+    else if b2_guard.remove(key).is_some() {
+      let b1_cost = b1_guard.current_total_cost();
+      let b2_cost = b2_guard.current_total_cost();
+      let delta = if b2_cost >= b1_cost {
+        1
+      } else {
+        b1_cost / b2_cost
+      };
       *p_guard = p_guard.saturating_sub(delta);
-      self.replace(cost);
+      self.replace();
     }
 
     // Case 4: A complete miss. The key is not in any list.
-    // Check if the cache is full (L1 + L2).
-    let l1_len = t1_guard.1.len();
-    let l2_len = t2_guard.1.len();
-    if l1_len + l2_len >= self.capacity {
-      self.replace(cost);
+    // Check if the cache is full (T1 + T2).
+    let l1_cost = t1_guard.current_total_cost();
+    let l2_cost = t2_guard.current_total_cost();
+    if l1_cost + l2_cost >= self.capacity {
+      self.replace();
     }
 
     // Finally, insert the new item into T1 (the probationary recency list).
-    t1_guard.1.insert(key.clone(), cost);
-    t1_guard.0.push_front(key.clone());
+    t1_guard.push_front(key.clone(), cost);
 
     AdmissionDecision::Admit
   }
 
   fn on_remove(&self, key: &K) {
-    if self.t1.lock().1.remove(key).is_some() {
-      self.t1.lock().0.retain(|k| k != key);
+    if self.t1.lock().remove(key).is_some() {
+      return;
     }
-    if self.t2.lock().1.remove(key).is_some() {
-      self.t2.lock().0.retain(|k| k != key);
-    }
+    self.t2.lock().remove(key);
   }
 
   fn evict(&self, mut cost_to_free: u64) -> (Vec<K>, u64) {
-    let victims = Vec::new();
-    let total_cost_freed = 0;
-    while cost_to_free > 0 {
-      self.replace(1);
-      cost_to_free = cost_to_free.saturating_sub(1);
+    let mut victims = Vec::new();
+    let mut total_cost_freed = 0;
+    while total_cost_freed < cost_to_free {
+      if let Some((key, cost)) = self.replace() {
+        total_cost_freed += cost;
+        victims.push(key);
+      } else {
+        // No more items to evict
+        break;
+      }
     }
     (victims, total_cost_freed)
   }
 
   fn clear(&self) {
     *self.p.lock() = 0;
-    self.t1.lock().0.clear();
-    self.t1.lock().1.clear();
-    self.t2.lock().0.clear();
-    self.t2.lock().1.clear();
-    self.b1.lock().0.clear();
-    self.b1.lock().1.clear();
-    self.b2.lock().0.clear();
-    self.b2.lock().1.clear();
+    self.t1.lock().clear();
+    self.t2.lock().clear();
+    self.b1.lock().clear();
+    self.b2.lock().clear();
   }
 }
