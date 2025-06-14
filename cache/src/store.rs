@@ -9,8 +9,6 @@ use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::Arc;
 
-const EVENT_BUFFER_CAPACITY: usize = 512;
-
 use crossbeam_utils::CachePadded;
 
 /// A helper function to hash a key using a `BuildHasher`.
@@ -21,13 +19,16 @@ pub(crate) fn hash_key<K: Hash, H: BuildHasher>(hasher: &H, key: &K) -> u64 {
   state.finish()
 }
 
+pub type AccessEventSender<K> = fibre::mpsc::UnboundedSender<AccessEvent<K>>;
+pub type AccessEventReceiver<K> = fibre::mpsc::UnboundedReceiver<AccessEvent<K>>;
+
 /// A single, independently locked partition of the cache.
 /// It contains both the data HashMap and a buffer for access events.
 pub(crate) struct Shard<K: Send, V, H> {
   pub(crate) map: HybridRwLock<HashMap<K, Arc<CacheEntry<V>>, H>>,
   // A bounded MPSC channel to buffer access events for the eviction policy.
-  pub(crate) event_buffer_tx: mpsc::BoundedSender<AccessEvent<K>>,
-  pub(crate) event_buffer_rx: mpsc::BoundedReceiver<AccessEvent<K>>,
+  pub(crate) event_buffer_tx: AccessEventSender<K>,
+  pub(crate) event_buffer_rx: AccessEventReceiver<K>,
   // A lock to ensure only one thread performs maintenance at a time.
   pub(crate) maintenance_lock: Mutex<()>,
 }
@@ -62,7 +63,7 @@ where
     for _ in 0..num_shards {
       let shard_map = HashMap::with_hasher(hasher.clone());
       let lock = HybridRwLock::new(shard_map);
-      let (tx, rx) = mpsc::bounded(EVENT_BUFFER_CAPACITY);
+      let (tx, rx) = mpsc::unbounded();
 
       let shard = Shard {
         map: lock,

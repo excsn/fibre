@@ -3,6 +3,7 @@ use crate::entry_api::{OccupiedEntry, VacantEntry};
 use crate::loader::LoadFuture;
 use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
+use crate::store::AccessEventSender;
 use crate::{time, AsyncCache, Entry, EvictionReason, MetricsSnapshot};
 
 use std::hash::{BuildHasher, Hash};
@@ -367,7 +368,7 @@ where
     &self,
     key: &K,
     entry: &Arc<CacheEntry<V>>,
-    event_tx: &fibre::mpsc::BoundedSender<AccessEvent<K>>,
+    event_tx: &AccessEventSender<K>,
   ) {
     if self.shared.time_to_idle.is_some() {
       entry.update_last_accessed();

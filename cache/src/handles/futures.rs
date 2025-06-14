@@ -3,6 +3,7 @@ use crate::entry_api_async::{AsyncEntry, AsyncOccupiedEntry, AsyncVacantEntry};
 use crate::loader::LoadFuture;
 use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
+use crate::store::AccessEventSender;
 use crate::{time, Cache, EvictionReason, MetricsSnapshot};
 
 use std::hash::{BuildHasher, Hash};
@@ -363,7 +364,7 @@ where
     &self,
     key: &K,
     entry: &Arc<CacheEntry<V>>,
-    event_tx: &fibre::mpsc::BoundedSender<AccessEvent<K>>,
+    event_tx: &AccessEventSender<K>,
   ) where
     K: Clone,
   {
