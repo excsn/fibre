@@ -3,7 +3,6 @@ use crate::entry_api_async::{AsyncEntry, AsyncOccupiedEntry, AsyncVacantEntry};
 use crate::loader::LoadFuture;
 use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
-use crate::store::AccessEventSender;
 use crate::{time, Cache, EvictionReason, MetricsSnapshot};
 
 use std::cell::Cell;
@@ -20,9 +19,6 @@ thread_local! {
   // Each thread gets its own state, avoiding contention.
   static RNG: Cell<u32> = Cell::new(1);
 }
-
-// A constant to determine the probability. 1/16 chance.
-const PROBABILITY_MASK: u32 = 15; // 2^4 - 1
 
 // --- AsyncCache ---
 
@@ -52,7 +48,8 @@ where
 
   /// Retrieves a value from the cache.
   pub async fn get(&self, key: &K) -> Option<Arc<V>> {
-    let shard = self.shared.store.get_shard(key);
+    let shard_index = self.shared.get_shard_index(key);
+    let shard = &self.shared.store.shards[shard_index];
     let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
     let value_arc_opt: Option<Arc<V>>;
 
@@ -76,7 +73,7 @@ where
 
     if let Some(entry_arc) = entry_arc_opt {
       // Call on_hit *after* guard is dropped
-      self.on_hit(key, &entry_arc, &shard.event_buffer_tx);
+      self.on_hit(key, &entry_arc, shard_index);
       value_arc_opt
     } else {
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
@@ -146,7 +143,9 @@ where
       self.shared.time_to_idle,
     );
 
-    if let Some(wheel) = &self.shared.timer_wheel {
+    let shard = self.shared.store.get_shard(&key);
+
+    if let Some(wheel) = &shard.timer_wheel {
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = self
         .shared
@@ -156,17 +155,14 @@ where
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 
-    let shard = self.shared.store.get_shard(&key);
-
     let old_entry: Option<Arc<CacheEntry<V>>>;
     {
-      // New scope for the guard
       let mut guard = shard.map.write_async().await;
       old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
-    } // `guard` (and L_shard) is released here.
+    }
 
     if let Some(entry) = old_entry {
-      if let Some(wheel) = &self.shared.timer_wheel {
+      if let Some(wheel) = &shard.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
         }
@@ -220,24 +216,23 @@ where
     let mut new_cache_entry =
       CacheEntry::new_with_custom_expiry(value, cost, expires_at, self.shared.time_to_idle);
 
-    if let Some(wheel) = &self.shared.timer_wheel {
+    let shard = self.shared.store.get_shard(&key);
+
+    if let Some(wheel) = &shard.timer_wheel {
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = Some(wheel.schedule(key_hash, ttl));
       let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
 
-    let shard = self.shared.store.get_shard(&key);
-
     let old_entry: Option<Arc<CacheEntry<V>>>;
     {
-      // New scope for the guard
       let mut guard = shard.map.write_async().await;
       old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
-    } // `guard` (and L_shard) is released here.
+    }
 
     if let Some(entry) = old_entry {
-      if let Some(wheel) = &self.shared.timer_wheel {
+      if let Some(wheel) = &shard.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
         }
@@ -316,7 +311,7 @@ where
     } // `guard` (and L_shard) is released here.
 
     if let Some(entry) = removed_entry {
-      if let Some(wheel) = &self.shared.timer_wheel {
+      if let Some(wheel) = &shard.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
         }
@@ -376,7 +371,7 @@ where
   }
 
   /// Private helper for cache hits.
-  fn on_hit(&self, key: &K, entry: &Arc<CacheEntry<V>>, event_tx: &AccessEventSender<K>)
+  fn on_hit(&self, key: &K, entry: &Arc<CacheEntry<V>>, shard_index: usize)
   where
     K: Clone,
   {
@@ -387,7 +382,7 @@ where
     // For a read hit, we can call the policy's update logic directly.
     self
       .shared
-      .get_cache_policy(&key)
+      .get_cache_policy_shard_idx(shard_index)
       .on_access(key, entry.cost());
     self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
   }
@@ -406,8 +401,8 @@ where
       val ^= val >> 17;
       val ^= val << 5;
       rng.set(val);
-      // Check if the lowest bits match our mask (e.g., a 1/16 chance)
-      (val & PROBABILITY_MASK) == 0
+      // Check if the lowest bits match our mask
+      (val & self.shared.maintenance_probability_mask) == 0
     });
 
     if !should_run {
@@ -420,7 +415,6 @@ where
         store: Arc::clone(&self.shared.store),
         metrics: Arc::clone(&self.shared.metrics),
         cache_policy: self.shared.cache_policy.clone(),
-        timer_wheel: self.shared.timer_wheel.as_ref().map(Arc::clone),
         capacity: self.shared.capacity,
         time_to_idle: self.shared.time_to_idle,
         notification_sender: self
@@ -563,7 +557,7 @@ where
               CacheEntry::new(value, cost, shared.time_to_live, shared.time_to_idle);
 
             // Schedule timers for the new entry.
-            if let Some(wheel) = &shared.timer_wheel {
+            if let Some(wheel) = &shard.timer_wheel {
               let key_hash = crate::store::hash_key(&shared.store.hasher, &key);
               let ttl_handle = shared.time_to_live.map(|ttl| wheel.schedule(key_hash, ttl));
               let tti_handle = None; // TTI handled by janitor sampling
@@ -573,7 +567,7 @@ where
             // Insert and handle any replaced entry.
             if let Some(old_entry) = guard.insert(key.clone(), Arc::new(new_cache_entry)) {
               // Cancel timers for the replaced entry.
-              if let Some(wheel) = &shared.timer_wheel {
+              if let Some(wheel) = &shard.timer_wheel {
                 if let Some(handle) = &old_entry.ttl_timer_handle {
                   wheel.cancel(handle);
                 }
@@ -630,7 +624,7 @@ where
           for key in shard_keys {
             if let Some(entry) = guard.remove(&key) {
               // Cancel any timers associated with the removed entry.
-              if let Some(wheel) = &shared.timer_wheel {
+              if let Some(wheel) = &shard.timer_wheel {
                 if let Some(handle) = &entry.ttl_timer_handle {
                   wheel.cancel(handle);
                 }
@@ -679,7 +673,8 @@ where
     V: Send + Sync + 'static, // V: Clone needed for the &LoadFuture Future impl
     H: BuildHasher + Clone + Send + Sync,
   {
-    let shard_ref = self.shared.store.get_shard(key); // Keep a ref to shard for event_tx later
+    let shard_index = self.shared.get_shard_index(key);
+    let shard_ref = &self.shared.store.shards[shard_index]; // Keep a ref to shard for event_tx later
 
     // 1. Optimistic read lock
     let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
@@ -745,7 +740,7 @@ where
       // This was a hit (either fresh or stale that can be returned)
       if let Some(ref entry_arc) = entry_arc_opt {
         // Should always be Some if value_to_return_opt is Some
-        self.on_hit(key, entry_arc, &shard_ref.event_buffer_tx);
+        self.on_hit(key, entry_arc, shard_index);
       }
       if is_stale_hit {
         self.trigger_background_load(key);

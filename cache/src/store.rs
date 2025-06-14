@@ -1,8 +1,10 @@
 use crate::entry::CacheEntry;
 use crate::policy::AccessEvent;
 use crate::sync::{HybridMutex, HybridRwLock};
+use crate::task::timer::TimerWheel;
 
 use core::fmt;
+use std::time::Duration;
 use fibre::mpsc;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -25,6 +27,7 @@ pub type AccessEventReceiver<K> = fibre::mpsc::UnboundedReceiver<AccessEvent<K>>
 /// It contains both the data HashMap and a buffer for access events.
 pub(crate) struct Shard<K: Send, V, H> {
   pub(crate) map: HybridRwLock<HashMap<K, Arc<CacheEntry<V>>, H>>,
+  pub(crate) timer_wheel: Option<TimerWheel>,
   // A bounded MPSC channel to buffer access events for the eviction policy.
   pub(crate) event_buffer_tx: AccessEventSender<K>,
   pub(crate) event_buffer_rx: AccessEventReceiver<K>,
@@ -56,20 +59,35 @@ where
   H: BuildHasher + Clone,
 {
   /// Creates a new `ShardedStore` with the specified number of shards and hasher.
-  pub(crate) fn new(num_shards: usize, hasher: H) -> Self {
-
+  pub(crate) fn new(
+    num_shards: usize,
+    hasher: H,
+    timer_wheel_size: usize,
+    timer_tick_duration: Duration,
+    has_timer_logic: bool,
+  ) -> Self {
     let mut shards = Vec::with_capacity(num_shards);
     for _ in 0..num_shards {
       let shard_map = HashMap::with_hasher(hasher.clone());
       let lock = HybridRwLock::new(shard_map);
       let (tx, rx) = mpsc::unbounded();
 
+      // --- START OF MODIFICATION ---
+      // Each shard gets its own independent TimerWheel.
+      let timer_wheel = if has_timer_logic {
+        Some(TimerWheel::new(timer_wheel_size, timer_tick_duration))
+      } else {
+        None
+      };
+
       let shard = Shard {
         map: lock,
+        timer_wheel,
         event_buffer_tx: tx,
         event_buffer_rx: rx,
         maintenance_lock: HybridMutex::new(()),
       };
+      // --- END OF MODIFICATION ---
 
       shards.push(CachePadded::new(shard));
     }
@@ -84,7 +102,7 @@ where
   #[inline]
   pub(crate) fn get_shard(&self, key: &K) -> &Shard<K, V, H> {
     let hash = hash_key(&self.hasher, key);
-    let index = hash as usize & (self.shards.len() - 1); 
+    let index = hash as usize & (self.shards.len() - 1);
     &self.shards[index]
   }
 

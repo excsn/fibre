@@ -2,6 +2,7 @@ use bench_matrix::{
   criterion_runner::sync_suite::SyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use fibre_cache::builder::maintenance_frequency;
 use fibre_cache::{builder::CacheBuilder, Cache};
 use rand::prelude::{SliceRandom, StdRng};
 use rand::SeedableRng;
@@ -41,7 +42,13 @@ fn extract_config(combo: &AbstractCombination) -> Result<BenchConfig, String> {
 // --- Benchmark Functions ---
 
 fn setup_fn(cfg: &BenchConfig) -> Result<(BenchContext, BenchState), String> {
-  let cache = Arc::new(CacheBuilder::default().capacity(cfg.capacity).build().unwrap());
+  let cache = Arc::new(
+    CacheBuilder::default()
+      .capacity(cfg.capacity)
+      .maintenance_chance(maintenance_frequency::AGGRESSIVE)
+      .build()
+      .unwrap(),
+  );
 
   // 1. Pre-populate the cache with num_items *in a single thread* for a consistent start.
   for i in 0..cfg.num_items {
@@ -120,7 +127,10 @@ fn sync_benches(c: &mut Criterion) {
       MatrixCellValue::String("GetMiss".to_string()),
       MatrixCellValue::String("Insert".to_string()),
     ], // Operation Type
-    vec![MatrixCellValue::Unsigned(10_000), MatrixCellValue::Unsigned(100_000)], // Cache Capacity
+    vec![
+      MatrixCellValue::Unsigned(10_000),
+      MatrixCellValue::Unsigned(100_000),
+    ], // Cache Capacity
     vec![
       MatrixCellValue::Unsigned(10_000),
       MatrixCellValue::Unsigned(100_000),

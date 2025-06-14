@@ -6,7 +6,6 @@ use crate::store::ShardedStore;
 use crate::sync::HybridMutex;
 use crate::task::janitor::Janitor;
 use crate::task::notifier::{Notification, Notifier};
-use crate::task::timer::TimerWheel;
 use crate::TaskSpawner;
 
 use std::hash::{BuildHasher, Hash};
@@ -23,8 +22,6 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) store: Arc<ShardedStore<K, V, H>>,
   pub(crate) metrics: Arc<Metrics>,
   pub(crate) cache_policy: Box<[Arc<dyn CachePolicy<K, V>>]>,
-  // The timer wheel for managing TTL and TTI expirations.
-  pub(crate) timer_wheel: Option<Arc<TimerWheel>>,
   pub(crate) janitor: Option<Janitor>,
   pub(crate) notification_sender: Option<mpsc::BoundedSender<Notification<K, V>>>,
   pub(crate) notifier: Option<Notifier<K, V>>,
@@ -35,6 +32,7 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) loader: Option<Loader<K, V>>,
   pub(crate) spawner: Option<Arc<dyn TaskSpawner>>,
   pub(crate) pending_loads: Box<[HybridMutex<HashMap<K, Arc<LoadFuture<V>>>>]>,
+  pub(crate) maintenance_probability_mask: u32,
 }
 
 impl<K: Send, V: Send + Sync, H> fmt::Debug for CacheShared<K, V, H> {
@@ -60,25 +58,6 @@ impl<K: Send, V: Send + Sync, H> Drop for CacheShared<K, V, H> {
 }
 
 impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
-  /// A "raw" get that performs a lookup without updating any stats or timers.
-  pub(crate) fn raw_get(&self, key: &K) -> Option<Arc<CacheEntry<V>>>
-  where
-    K: Eq + Hash,
-    H: BuildHasher + Clone,
-  {
-    let shard = self.store.get_shard(key);
-    // Access the map within the shard
-    let guard = shard.map.read();
-    if let Some(entry) = guard.get(key) {
-      if entry.is_expired(self.time_to_idle) {
-        None
-      } else {
-        Some(entry.clone())
-      }
-    } else {
-      None
-    }
-  }
 
   pub fn get_shard_index(&self, key: &K) -> usize
   where
@@ -86,6 +65,14 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
     H: BuildHasher,
   {
     let hash = crate::store::hash_key(&self.store.hasher, key);
+    return self.get_shard_index_from_hash(hash);
+  }
+
+  pub fn get_shard_index_from_hash(&self, hash: u64) -> usize
+  where
+    K: Hash,
+    H: BuildHasher,
+  {
     return hash as usize & (self.store.shards.len() - 1);
   }
 
@@ -96,6 +83,14 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
   {
     let shard_index = self.get_shard_index(key);
     return &self.cache_policy[shard_index];
+  }
+
+  pub fn get_cache_policy_shard_idx(&self, shard_idx: usize) -> &Arc<(dyn CachePolicy<K, V> + 'static)>
+  where
+    K: Hash,
+    H: BuildHasher,
+  {
+    return &self.cache_policy[shard_idx];
   }
 
   pub(crate) fn spawn_loader_task(shared: Arc<Self>, key: K, future: Arc<LoadFuture<V>>)

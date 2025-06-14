@@ -15,6 +15,48 @@ pub enum Entry<'a, K: Send, V: Send + Sync, H> {
   Vacant(VacantEntry<'a, K, V, H>),
 }
 
+impl<'a, K, V, H> Entry<'a, K, V, H>
+where
+  K: Eq + Hash + Clone + Send,
+  V: Send + Sync,
+  H: BuildHasher + Clone,
+{
+  /// Ensures a value is in the entry by inserting the default if empty, and returns
+  /// an `Arc` to the value.
+  pub fn or_insert(self, default: V, cost: u64) -> Arc<V> {
+    match self {
+      Entry::Occupied(o) => o.get(),
+      Entry::Vacant(v) => v.insert(default, cost),
+    }
+  }
+
+  /// Ensures a value is in the entry by inserting the result of the default function if empty,
+  /// and returns an `Arc` to the value.
+  /// The closure is only computed if the entry is vacant.
+  pub fn or_insert_with<F>(self, default: F, cost: u64) -> Arc<V>
+  where
+    F: FnOnce() -> V,
+  {
+    match self {
+      Entry::Occupied(o) => o.get(),
+      Entry::Vacant(v) => v.insert(default(), cost),
+    }
+  }
+
+  /// Ensures a value is in the entry by inserting the default value of the type if empty,
+  /// and returns an `Arc` to the value.
+  /// This requires `V` to implement `Default`.
+  pub fn or_default(self, cost: u64) -> Arc<V>
+  where
+    V: Default,
+  {
+    match self {
+      Entry::Occupied(o) => o.get(),
+      Entry::Vacant(v) => v.insert(V::default(), cost),
+    }
+  }
+}
+
 /// A view into an occupied entry in a `Cache`.
 pub struct OccupiedEntry<'a, K: Send, V: Send, H> {
   pub(crate) key: K,
@@ -112,5 +154,28 @@ where
       .fetch_add(cost, std::sync::atomic::Ordering::Relaxed);
 
     value_arc_to_return
+  }
+
+  /// Inserts the given default value into the cache and returns an `Arc` to it.
+  pub fn or_insert(self, default: V, cost: u64) -> Arc<V> {
+    self.insert(default, cost)
+  }
+
+  /// Inserts the value returned by the closure into the cache and returns an `Arc` to it.
+  /// The closure is only called if the entry is vacant.
+  pub fn or_insert_with<F>(self, default: F, cost: u64) -> Arc<V>
+  where
+    F: FnOnce() -> V,
+  {
+    self.insert(default(), cost)
+  }
+
+  /// Inserts the default value of the type `V` into the cache and returns an `Arc` to it.
+  /// This requires that `V` implements the `Default` trait.
+  pub fn or_default(self, cost: u64) -> Arc<V>
+  where
+    V: Default,
+  {
+    self.insert(V::default(), cost)
   }
 }

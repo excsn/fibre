@@ -1,3 +1,8 @@
+/// A set of presets for configuring the frequency of opportunistic maintenance.
+///
+/// These values are used with the [`CacheBuilder::maintenance_chance()`] method.
+pub mod maintenance_frequency;
+
 use crate::error::BuildError;
 use crate::handles::{AsyncCache, Cache};
 use crate::loader::Loader;
@@ -8,7 +13,6 @@ use crate::snapshot::CacheSnapshot;
 use crate::store::{hash_key, ShardedStore};
 use crate::task::janitor::{Janitor, JanitorContext};
 use crate::task::notifier::Notifier;
-use crate::task::timer::TimerWheel;
 use crate::{time, EvictionListener, TaskSpawner};
 
 use core::fmt;
@@ -61,6 +65,7 @@ pub struct CacheBuilder<K: Send, V: Send, H = ahash::RandomState> {
   policy_factory: Option<Arc<dyn Fn() -> Box<dyn CachePolicy<K, V>> + Send + Sync>>,
   loader: Option<Loader<K, V>>,
   spawner: Option<Arc<dyn TaskSpawner>>,
+  maintenance_probability_denominator: u32,
   _key_marker: PhantomData<K>,
   _value_marker: PhantomData<V>,
 }
@@ -223,6 +228,49 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
     self.timer_wheel_size = Some(size);
     self
   }
+
+  /// Sets the probability of running opportunistic maintenance on each `insert`.
+  ///
+  /// Maintenance is run with a chance of `1 / denominator`. For example, a
+  /// value of `16` means there is a 1-in-16 chance that any given `insert`
+  /// operation will trigger a maintenance cycle for its shard.
+  ///
+  /// The default is `16`, which is suitable for most workloads. For convenience,
+  /// this crate provides presets in the [`maintenance_frequency`] module, such as
+  /// [`maintenance_frequency::RESPONSIVE`] (the default) and
+  /// [`maintenance_frequency::THROUGHPUT`].
+  ///
+  /// A lower value (e.g., `RESPONSIVE`) increases the frequency of maintenance,
+  /// keeping memory usage smoother. A higher value (e.g., `THROUGHPUT`) reduces
+  /// the CPU overhead of maintenance checks, which can be beneficial in
+  /// extremely write-heavy workloads.
+  ///
+  /// The provided denominator will be rounded up to the next power of two for
+  /// efficient internal calculations.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `denominator` is `0`.
+  ///
+  /// # Example
+  /// ```
+  /// use fibre_cache::CacheBuilder;
+  /// use fibre_cache::builder::maintenance_frequency;
+  ///
+  /// // Configure the cache for maximum insert throughput.
+  /// let cache = CacheBuilder::<u64, u64>::new()
+  ///     .maintenance_chance(maintenance_frequency::THROUGHPUT)
+  ///     .build();
+  /// ```
+  pub fn maintenance_chance(mut self, denominator: u32) -> Self {
+    assert!(
+      denominator > 0,
+      "maintenance chance denominator cannot be zero"
+    );
+    // Ensure the denominator is a power of two for efficient bitmasking.
+    self.maintenance_probability_denominator = denominator.next_power_of_two();
+    self
+  }
 }
 
 // --- Default Constructor ---
@@ -231,7 +279,7 @@ impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
   pub fn new() -> Self {
     Self {
       capacity: u64::MAX,
-      shards: (num_cpus::get() * 4).max(1).next_power_of_two(),
+      shards: (num_cpus::get() * 8).max(1).next_power_of_two(),
       time_to_live: None,
       time_to_idle: None,
       hasher: H::default(),
@@ -243,6 +291,7 @@ impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
       policy_factory: None,
       loader: None,
       spawner: None,
+      maintenance_probability_denominator: maintenance_frequency::RESPONSIVE,
       _key_marker: PhantomData,
       _value_marker: PhantomData,
     }
@@ -318,7 +367,19 @@ where
       }
     }
 
-    let store = Arc::new(ShardedStore::new(self.shards, self.hasher.clone()));
+    let has_timer_logic = self.time_to_live.is_some() || self.time_to_idle.is_some();
+    let tick_duration = self
+      .timer_wheel_tick_duration
+      .unwrap_or(Duration::from_secs(1));
+    let wheel_size = self.timer_wheel_size.unwrap_or(60);
+
+    let store = Arc::new(ShardedStore::new(
+      self.shards,
+      self.hasher.clone(),
+      wheel_size,
+      tick_duration,
+      has_timer_logic,
+    ));
     let metrics = Arc::new(Metrics::new());
 
     // Create the per-shard eviction policies using the factory.
@@ -350,17 +411,6 @@ where
       (Some(notifier), Some(sender))
     } else {
       (None, None)
-    };
-
-    let timer_wheel = if self.time_to_live.is_some() || self.time_to_idle.is_some() {
-      let tick_duration = self
-        .timer_wheel_tick_duration
-        .unwrap_or(Duration::from_secs(1));
-      let wheel_size = self.timer_wheel_size.unwrap_or(60);
-
-      Some(Arc::new(TimerWheel::new(wheel_size, tick_duration)))
-    } else {
-      None
     };
 
     // --- Populate from Snapshot if it exists ---
@@ -402,7 +452,6 @@ where
       store: Arc::clone(&store),
       metrics: Arc::clone(&metrics),
       cache_policy: cache_policy.clone(),
-      timer_wheel: timer_wheel.as_ref().map(Clone::clone),
       capacity: self.capacity,
       time_to_idle: self.time_to_idle,
       notification_sender: notification_sender.as_ref().map(|val| val.clone()),
@@ -421,11 +470,13 @@ where
       .collect::<Vec<_>>()
       .into_boxed_slice();
 
+    // Calculate the bitmask from the denominator. A denominator of 16 gives a mask of 15 (0b1111).
+    let maintenance_probability_mask = self.maintenance_probability_denominator - 1;
+
     Ok(Arc::new(CacheShared {
       store,
       metrics,
       cache_policy,
-      timer_wheel,
       janitor,
       capacity: self.capacity,
       time_to_live: self.time_to_live,
@@ -436,6 +487,7 @@ where
       loader: self.loader.take(),
       pending_loads,
       spawner,
+      maintenance_probability_mask,
     }))
   }
 

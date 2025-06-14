@@ -2,7 +2,6 @@ use crate::metrics::Metrics;
 use crate::policy::{AccessEvent, AdmissionDecision, CachePolicy};
 use crate::store::{Shard, ShardedStore};
 use crate::task::notifier::Notification;
-use crate::task::timer::TimerWheel;
 use crate::EvictionReason;
 
 use fibre::mpsc;
@@ -24,7 +23,6 @@ pub(crate) struct JanitorContext<K: Send, V: Send + Sync, H> {
   pub(crate) store: Arc<ShardedStore<K, V, H>>,
   pub(crate) metrics: Arc<Metrics>,
   pub(crate) cache_policy: Box<[Arc<dyn CachePolicy<K, V>>]>,
-  pub(crate) timer_wheel: Option<Arc<TimerWheel>>,
   pub(crate) capacity: u64,
   pub(crate) time_to_idle: Option<Duration>,
   pub(crate) notification_sender: Option<mpsc::BoundedSender<Notification<K, V>>>,
@@ -85,34 +83,23 @@ impl Janitor {
     V: Send + Sync,
     H: BuildHasher + Clone + Send + Sync,
   {
-    let expired_hashes = match &context.timer_wheel {
-      Some(wheel) => wheel.advance(),
-      None => return,
-    };
+    // Iterate over each shard and advance its independent timer wheel.
+    for (i, shard) in context.store.iter_shards().enumerate() {
+      // Advance this shard's timer and get its expired keys.
+      let expired_hashes = match &shard.timer_wheel {
+        Some(wheel) => wheel.advance(),
+        None => continue, // This shard has no timer, so skip.
+      };
 
-    if expired_hashes.is_empty() {
-      return;
-    }
-
-    // Group hashes by shard to minimize locking
-    let mut hashes_by_shard: Vec<Vec<u64>> = vec![Vec::new(); context.store.shards.len()];
-    for hash in expired_hashes {
-      let index = hash as usize % context.store.shards.len();
-      hashes_by_shard[index].push(hash);
-    }
-
-    for (i, hashes) in hashes_by_shard.into_iter().enumerate() {
-      if hashes.is_empty() {
+      if expired_hashes.is_empty() {
         continue;
       }
 
-      // Convert Vec to HashSet for O(1) lookups inside the hot loop.
-      let expired_set: HashSet<u64> = hashes.into_iter().collect();
-
-      let shard = &context.store.shards[i];
+      let expired_set: HashSet<u64> = expired_hashes.into_iter().collect();
       let mut guard = shard.map.write();
 
-      // It's more efficient to retain than to remove one-by-one.
+      // Since these keys are from this shard's timer, we know they belong
+      // in this shard's map.
       guard.retain(|key, entry| {
         let key_hash = crate::store::hash_key(&context.store.hasher, key);
 
@@ -146,10 +133,9 @@ impl Janitor {
     H: BuildHasher + Clone + Send + Sync,
   {
     if context.time_to_idle.is_some() {
-      // --- START OF FIX ---
       // We must enumerate the shards to get the index for the policy.
       for (i, shard) in context.store.iter_shards().enumerate() {
-        // --- END OF FIX ---
+        
         let mut guard = shard.map.write();
         let mut victims = Vec::new();
 
@@ -171,10 +157,8 @@ impl Janitor {
           // We must re-check that the entry still exists before removing,
           // as another thread could have invalidated it in the meantime.
           if let Some(entry) = guard.remove(&key) {
-            // --- START OF FIX ---
             // Select the policy for the correct shard index.
             context.cache_policy[i].on_remove(&key);
-            // --- END OF FIX ---
 
             context
               .metrics
@@ -186,7 +170,7 @@ impl Janitor {
               .fetch_sub(entry.cost(), Ordering::Relaxed);
 
             // An item expired by TTI might still have a TTL timer. Cancel it.
-            if let Some(wheel) = &context.timer_wheel {
+            if let Some(wheel) = &shard.timer_wheel {
               if let Some(handle) = &entry.ttl_timer_handle {
                 wheel.cancel(handle);
               }

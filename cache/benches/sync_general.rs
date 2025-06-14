@@ -9,7 +9,10 @@ use bench_matrix::{
   criterion_runner::sync_suite::SyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use fibre_cache::{builder::CacheBuilder, BuildError as CacheBuilderError, Cache};
+use fibre_cache::{
+  builder::{maintenance_frequency, CacheBuilder},
+  BuildError as CacheBuilderError, Cache,
+};
 use rand::prelude::*;
 use rand_distr::Distribution;
 use rand_pcg::Pcg64;
@@ -54,6 +57,7 @@ fn setup_fn(cfg: &BenchConfig) -> Result<(BenchContext, BenchState), String> {
   let cache = Arc::new(
     CacheBuilder::default()
       .capacity(cfg.capacity as u64)
+      .maintenance_chance(maintenance_frequency::AGGRESSIVE)
       .loader(move |key: u64| {
         load_counter.fetch_add(1, Ordering::Relaxed);
         (key, 1)

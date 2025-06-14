@@ -2,6 +2,7 @@ use bench_matrix::{
   criterion_runner::async_suite::AsyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use fibre_cache::builder::maintenance_frequency;
 use fibre_cache::{builder::CacheBuilder, AsyncCache};
 use futures_util::future;
 use rand::prelude::{SliceRandom, StdRng};
@@ -52,6 +53,7 @@ fn setup_fn(
     let cache = Arc::new(
       CacheBuilder::default()
         .capacity(cfg.capacity)
+        .maintenance_chance(maintenance_frequency::AGGRESSIVE)
         .build_async()
         .unwrap(),
     );

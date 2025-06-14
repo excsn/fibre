@@ -27,6 +27,7 @@ pub(crate) struct TimerHandle {
   index: Index,
 }
 
+#[derive(Default)]
 pub(crate) struct TimerWheel {
   wheel: Vec<Mutex<Slot>>,
   timers: Mutex<Arena<Timer>>,
