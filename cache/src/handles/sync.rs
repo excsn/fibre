@@ -6,6 +6,7 @@ use crate::shared::CacheShared;
 use crate::store::AccessEventSender;
 use crate::{time, AsyncCache, Entry, EvictionReason, MetricsSnapshot};
 
+use std::cell::Cell;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -17,6 +18,16 @@ use ahash::{HashMap, HashMapExt};
 use rayon::iter::{
   IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
 };
+
+thread_local! {
+  // A simple, fast Xorshift random number generator for probabilistic checks.
+  // Each thread gets its own state, avoiding contention.
+  static RNG: Cell<u32> = Cell::new(1);
+}
+
+// A constant to determine the probability. 1/16 chance.
+// We check if (random_number & PROBABILITY_MASK) == 0.
+const PROBABILITY_MASK: u32 = 15; // 2^4 - 1
 
 /// A thread-safe, synchronous cache.
 #[derive(Debug)]
@@ -48,16 +59,24 @@ where
   /// and the entry is not expired. Returns `None` otherwise.
   pub fn get(&self, key: &K) -> Option<Arc<V>> {
     let shard = self.shared.store.get_shard(key);
-    let guard = shard.map.read();
+    let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
 
-    if let Some(entry) = guard.get(key) {
-      if entry.is_expired(self.shared.time_to_idle) {
-        self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
-        None
-      } else {
-        self.on_hit(key, entry, &shard.event_buffer_tx);
-        Some(entry.value())
-      }
+    // Scope the read guard to release the lock as soon as possible.
+    {
+      let guard = shard.map.read();
+      entry_arc_opt = guard.get(key).and_then(|entry| {
+        if entry.is_expired(self.shared.time_to_idle) {
+          None
+        } else {
+          Some(entry.clone())
+        }
+      });
+    } // Read lock is dropped here.
+
+    if let Some(entry_arc) = entry_arc_opt {
+      self.on_hit(key, &entry_arc, &shard.event_buffer_tx);
+      self._run_opportunistic_maintenance(shard); // Maintenance is called *after* lock is released.
+      Some(entry_arc.value())
     } else {
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
       None
@@ -187,6 +206,8 @@ where
       .metrics
       .total_cost_added
       .fetch_add(cost, Ordering::Relaxed);
+
+    self._run_opportunistic_maintenance(shard);
   }
 
   /// Inserts a key-value pair into the cache with a specific cost and Time-to-Live (TTL).
@@ -255,6 +276,8 @@ where
       .metrics
       .total_cost_added
       .fetch_add(cost, Ordering::Relaxed);
+
+    self._run_opportunistic_maintenance(shard);
   }
 
   /// Atomically computes a new value for a key.
@@ -364,12 +387,7 @@ where
 
   /// Private helper method to run common logic on a cache hit.
   /// This includes updating metadata for TTI and notifying the eviction policy.
-  fn on_hit(
-    &self,
-    key: &K,
-    entry: &Arc<CacheEntry<V>>,
-    event_tx: &AccessEventSender<K>,
-  ) {
+  fn on_hit(&self, key: &K, entry: &Arc<CacheEntry<V>>, event_tx: &AccessEventSender<K>) {
     if self.shared.time_to_idle.is_some() {
       entry.update_last_accessed();
     }
@@ -378,6 +396,46 @@ where
     let _ = event_tx.try_send(AccessEvent::Read(key.clone(), entry.cost()));
 
     self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+  }
+
+  /// Helper to run maintenance on a shard if the maintenance lock is not contended.
+  fn _run_opportunistic_maintenance(&self, shard: &crate::store::Shard<K, V, H>)
+  where
+    K: Eq + Hash + Clone + Send,
+    V: Send + Sync,
+    H: BuildHasher + Clone,
+  {
+    let should_run = RNG.with(|rng| {
+      let mut val = rng.get();
+      // Xorshift algorithm
+      val ^= val << 13;
+      val ^= val >> 17;
+      val ^= val << 5;
+      rng.set(val);
+      // Check if the lowest bits match our mask (e.g., a 1/16 chance)
+      (val & PROBABILITY_MASK) == 0
+    });
+
+    if !should_run {
+      return;
+    }
+
+    if let Some(_guard) = shard.maintenance_lock.try_lock() {
+      let janitor_context = crate::task::janitor::JanitorContext {
+        store: Arc::clone(&self.shared.store),
+        metrics: Arc::clone(&self.shared.metrics),
+        eviction_policy: Arc::clone(&self.shared.eviction_policy),
+        timer_wheel: self.shared.timer_wheel.as_ref().map(Arc::clone),
+        capacity: self.shared.capacity,
+        time_to_idle: self.shared.time_to_idle,
+        notification_sender: self
+          .shared
+          .notification_sender
+          .as_ref()
+          .map(|val| val.clone()),
+      };
+      crate::task::janitor::perform_shard_maintenance(shard, &janitor_context);
+    }
   }
 }
 
@@ -438,7 +496,10 @@ where
     // If we can't get it, it means another thread is already handling
     // a load for this or another key. It's safe to just give up; that
     // other thread's work will likely benefit us anyway.
-    if let Some(mut pending) = self.shared.pending_loads.try_lock() {
+    let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+    let index = hash as usize & (self.shared.pending_loads.len() - 1);
+    let pending_loads_lock = &self.shared.pending_loads[index];
+    if let Some(mut pending) = pending_loads_lock.try_lock() {
       // Double-check that another thread didn't start the refresh
       // while we were waiting for the lock.
       if pending.contains_key(key) {
@@ -466,7 +527,10 @@ where
     let mut am_leader = false;
     let future = loop {
       // 1. Lock the pending loads map to ensure only one "leader" is chosen.
-      let mut pending = self.shared.pending_loads.lock();
+      let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+      let index = hash as usize & (self.shared.pending_loads.len() - 1);
+      let pending_loads_lock = &self.shared.pending_loads[index];
+      let mut pending = pending_loads_lock.lock();
 
       // 2. Check for an existing `LoadFuture`. If another thread is already
       //    loading this key, we become a "waiter".

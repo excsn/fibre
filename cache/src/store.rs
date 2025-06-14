@@ -1,10 +1,9 @@
 use crate::entry::CacheEntry;
 use crate::policy::AccessEvent;
-use crate::sync::HybridRwLock;
+use crate::sync::{HybridMutex, HybridRwLock};
 
 use core::fmt;
 use fibre::mpsc;
-use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::Arc;
@@ -30,7 +29,7 @@ pub(crate) struct Shard<K: Send, V, H> {
   pub(crate) event_buffer_tx: AccessEventSender<K>,
   pub(crate) event_buffer_rx: AccessEventReceiver<K>,
   // A lock to ensure only one thread performs maintenance at a time.
-  pub(crate) maintenance_lock: Mutex<()>,
+  pub(crate) maintenance_lock: HybridMutex<()>,
 }
 
 /// A cache store that is partitioned into multiple, independently locked shards.
@@ -69,7 +68,7 @@ where
         map: lock,
         event_buffer_tx: tx,
         event_buffer_rx: rx,
-        maintenance_lock: Mutex::new(()),
+        maintenance_lock: HybridMutex::new(()),
       };
 
       shards.push(CachePadded::new(shard));

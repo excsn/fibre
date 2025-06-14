@@ -35,7 +35,7 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) stale_while_revalidate: Option<Duration>,
   pub(crate) loader: Option<Loader<K, V>>,
   pub(crate) spawner: Option<Arc<dyn TaskSpawner>>,
-  pub(crate) pending_loads: HybridMutex<HashMap<K, Arc<LoadFuture<V>>>>,
+  pub(crate) pending_loads: Box<[HybridMutex<HashMap<K, Arc<LoadFuture<V>>>>]>,
 }
 
 impl<K: Send, V: Send + Sync, H> fmt::Debug for CacheShared<K, V, H> {
@@ -133,7 +133,10 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
             .total_cost_added
             .fetch_add(cost, Ordering::Relaxed);
 
-          shared.pending_loads.lock().remove(&key);
+          let hash = crate::store::hash_key(&shared.store.hasher, &key);
+          let index = hash as usize & (shared.pending_loads.len() - 1);
+          shared.pending_loads[index].lock().remove(&key);
+
           future.complete(value_arc_to_return);
         });
       }
@@ -184,7 +187,9 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
               .fetch_add(cost, Ordering::Relaxed);
 
             {
-              shared.pending_loads.lock_async().await.remove(&key);
+              let hash = crate::store::hash_key(&shared.store.hasher, &key);
+              let index = hash as usize & (shared.pending_loads.len() - 1);
+              shared.pending_loads[index].lock_async().await.remove(&key);
             }
             future.complete(value_arc_to_return);
           }

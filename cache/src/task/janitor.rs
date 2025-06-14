@@ -16,7 +16,7 @@ use std::time::Duration;
 /// The number of entries to sample from each shard on an expiration cleanup tick.
 const JANITOR_EXPIRE_SAMPLE_SIZE: usize = 10;
 /// The max number of access events to drain from a shard's buffer on a maintenance tick.
-const MAINTENANCE_DRAIN_LIMIT: usize = 128;
+const MAINTENANCE_DRAIN_LIMIT: usize = 8;
 
 /// A context object holding the thread-safe parts of the cache that the
 /// janitor needs to access.
@@ -71,101 +71,11 @@ impl Janitor {
     V: Send + Sync + 'static,
     H: BuildHasher + Clone + Send + Sync + 'static,
   {
-    // First, apply all buffered access events to the eviction policy.
-    Self::perform_maintenance(context);
     // Then, clean up expired items from TTL and TTI.
     Self::cleanup_ttl(context);
     Self::cleanup_tti(context);
     // Finally, enforce capacity.
     Self::cleanup_capacity(context);
-  }
-
-  /// Drains access event buffers and applies them to the eviction policy.
-  fn perform_maintenance<K, V, H>(context: &JanitorContext<K, V, H>)
-  where
-    K: Eq + Hash + Clone + Send + Sync + 'static,
-    V: Send + Sync,
-    H: BuildHasher + Clone + Send + Sync,
-  {
-    // --- PHASE 1: Collect all victims without cross-shard locking ---
-    let mut all_victims = Vec::new();
-
-    for shard in context.store.iter_shards() {
-      let _guard = shard.maintenance_lock.lock();
-
-      // Drain this shard's buffer
-      for _ in 0..MAINTENANCE_DRAIN_LIMIT {
-        match shard.event_buffer_rx.try_recv() {
-          Ok(event) => match event {
-            AccessEvent::Read(key, cost) => {
-              context.eviction_policy.on_access(&key, cost);
-            }
-            AccessEvent::Write(key, cost) => {
-              let decision = context.eviction_policy.on_admit(&key, cost);
-              if let AdmissionDecision::AdmitAndEvict(mut victims) = decision {
-                // Just collect the victims, DON'T evict yet.
-                all_victims.append(&mut victims);
-              }
-            }
-          },
-          Err(_) => break, // Buffer is empty
-        }
-      }
-    }
-
-    if all_victims.is_empty() {
-      return; // Nothing to evict, we're done.
-    }
-
-    // --- PHASE 2: Group victims and evict with a strict lock order ---
-    use std::collections::HashMap;
-    let mut victims_by_shard: HashMap<usize, Vec<K>> = HashMap::new();
-    for key in all_victims {
-      let hash = crate::store::hash_key(&context.store.hasher, &key);
-      let index = hash as usize % context.store.shards.len();
-      victims_by_shard.entry(index).or_default().push(key);
-    }
-
-    let mut total_cost_released = 0;
-    let mut notifications_to_send = Vec::new();
-
-    // Iterate by shard index to enforce lock order
-    for shard_index in 0..context.store.shards.len() {
-      if let Some(shard_victims) = victims_by_shard.get(&shard_index) {
-        let shard = &context.store.shards[shard_index];
-        let mut guard = shard.map.write(); // Lock is acquired only ONCE per shard, in order.
-
-        for key in shard_victims {
-          if let Some(removed_entry) = guard.remove(key) {
-            let cost = removed_entry.cost();
-            total_cost_released += cost;
-            context
-              .metrics
-              .evicted_by_capacity
-              .fetch_add(1, Ordering::Relaxed);
-
-            if context.notification_sender.is_some() {
-              notifications_to_send.push((
-                key.clone(),
-                removed_entry.value(),
-                EvictionReason::Capacity,
-              ));
-            }
-          }
-        }
-      }
-    }
-
-    context
-      .metrics
-      .current_cost
-      .fetch_sub(total_cost_released, Ordering::Relaxed);
-
-    if let Some(sender) = &context.notification_sender {
-      for (key, value, reason) in notifications_to_send {
-        let _ = sender.try_send((key, value, reason));
-      }
-    }
   }
 
   /// Removes expired items based on TTL.
@@ -349,5 +259,71 @@ impl Janitor {
   /// Signals the janitor thread to stop.
   pub(crate) fn stop(self) {
     self.stop_flag.store(true, Ordering::Relaxed);
+  }
+}
+
+/// Drains access event buffer for a single shard and applies them to the eviction policy.
+/// This is now public within the crate so other parts of the cache can call it.
+pub(crate) fn perform_shard_maintenance<K, V, H>(
+  shard: &Shard<K, V, H>,
+  context: &JanitorContext<K, V, H>,
+) where
+  K: Eq + Hash + Clone + Send,
+  V: Send + Sync,
+  H: BuildHasher + Clone,
+{
+  // Drain a bounded number of events to prevent this loop from running too long.
+  for _ in 0..MAINTENANCE_DRAIN_LIMIT {
+    match shard.event_buffer_rx.try_recv() {
+      Ok(event) => match event {
+        AccessEvent::Read(key, cost) => {
+          context.eviction_policy.on_access(&key, cost);
+        }
+        AccessEvent::Write(key, cost) => {
+          let decision = context.eviction_policy.on_admit(&key, cost);
+
+          if let AdmissionDecision::AdmitAndEvict(victims) = decision {
+            let mut notifications_to_send = Vec::new();
+            let mut total_cost_released = 0;
+
+            for victim_key in victims {
+              let victim_shard = context.store.get_shard(&victim_key);
+              let mut guard = victim_shard.map.write();
+
+              if let Some(removed_entry) = guard.remove(&victim_key) {
+                let victim_cost = removed_entry.cost();
+                total_cost_released += victim_cost;
+                context
+                  .metrics
+                  .evicted_by_capacity
+                  .fetch_add(1, Ordering::Relaxed);
+                if context.notification_sender.is_some() {
+                  notifications_to_send.push((
+                    victim_key.clone(),
+                    removed_entry.value(),
+                    EvictionReason::Capacity,
+                  ));
+                }
+              }
+            }
+
+            context
+              .metrics
+              .current_cost
+              .fetch_sub(total_cost_released, Ordering::Relaxed);
+
+            if let Some(sender) = &context.notification_sender {
+              for notif in notifications_to_send {
+                let _ = sender.try_send(notif);
+              }
+            }
+          }
+        }
+      },
+      Err(_) => {
+        // The buffer is empty for this shard, we are done.
+        break;
+      }
+    }
   }
 }

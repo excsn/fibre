@@ -6,6 +6,7 @@ use crate::shared::CacheShared;
 use crate::store::AccessEventSender;
 use crate::{time, Cache, EvictionReason, MetricsSnapshot};
 
+use std::cell::Cell;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -13,8 +14,15 @@ use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt};
 use futures_util::future;
-#[cfg(feature = "bulk")]
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+
+thread_local! {
+  // A simple, fast Xorshift random number generator for probabilistic checks.
+  // Each thread gets its own state, avoiding contention.
+  static RNG: Cell<u32> = Cell::new(1);
+}
+
+// A constant to determine the probability. 1/16 chance.
+const PROBABILITY_MASK: u32 = 15; // 2^4 - 1
 
 // --- AsyncCache ---
 
@@ -69,6 +77,7 @@ where
     if let Some(entry_arc) = entry_arc_opt {
       // Call on_hit *after* guard is dropped
       self.on_hit(key, &entry_arc, &shard.event_buffer_tx);
+      self._run_opportunistic_maintenance(&shard);
       value_arc_opt
     } else {
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
@@ -194,6 +203,8 @@ where
       .metrics
       .total_cost_added
       .fetch_add(cost, Ordering::Relaxed);
+
+    self._run_opportunistic_maintenance(&shard);
   }
 
   /// Asynchronously inserts a key-value pair into the cache with a specific cost
@@ -263,6 +274,8 @@ where
       .metrics
       .total_cost_added
       .fetch_add(cost, Ordering::Relaxed);
+
+    self._run_opportunistic_maintenance(&shard);
   }
 
   /// Atomically computes a new value for a key.
@@ -360,12 +373,8 @@ where
   }
 
   /// Private helper for cache hits.
-  fn on_hit(
-    &self,
-    key: &K,
-    entry: &Arc<CacheEntry<V>>,
-    event_tx: &AccessEventSender<K>,
-  ) where
+  fn on_hit(&self, key: &K, entry: &Arc<CacheEntry<V>>, event_tx: &AccessEventSender<K>)
+  where
     K: Clone,
   {
     if self.shared.time_to_idle.is_some() {
@@ -374,6 +383,46 @@ where
 
     let _ = event_tx.try_send(AccessEvent::Read(key.clone(), entry.cost()));
     self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+  }
+
+  /// Helper to run maintenance on a shard if the maintenance lock is not contended.
+  fn _run_opportunistic_maintenance(&self, shard: &crate::store::Shard<K, V, H>)
+  where
+    K: Eq + Hash + Clone + Send,
+    V: Send + Sync,
+    H: BuildHasher + Clone,
+  {
+    let should_run = RNG.with(|rng| {
+      let mut val = rng.get();
+      // Xorshift algorithm
+      val ^= val << 13;
+      val ^= val >> 17;
+      val ^= val << 5;
+      rng.set(val);
+      // Check if the lowest bits match our mask (e.g., a 1/16 chance)
+      (val & PROBABILITY_MASK) == 0
+    });
+
+    if !should_run {
+      return;
+    }
+
+    if let Some(_guard) = shard.maintenance_lock.try_lock() {
+      let janitor_context = crate::task::janitor::JanitorContext {
+        store: Arc::clone(&self.shared.store),
+        metrics: Arc::clone(&self.shared.metrics),
+        eviction_policy: Arc::clone(&self.shared.eviction_policy),
+        timer_wheel: self.shared.timer_wheel.as_ref().map(Arc::clone),
+        capacity: self.shared.capacity,
+        time_to_idle: self.shared.time_to_idle,
+        notification_sender: self
+          .shared
+          .notification_sender
+          .as_ref()
+          .map(|val| val.clone()),
+      };
+      crate::task::janitor::perform_shard_maintenance(shard, &janitor_context);
+    }
   }
 }
 
@@ -704,7 +753,10 @@ where
     K: Clone + 'static,
     V: 'static,
   {
-    if let Some(mut pending) = self.shared.pending_loads.try_lock() {
+    let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+    let index = hash as usize & (self.shared.pending_loads.len() - 1);
+    let pending_loads_lock = &self.shared.pending_loads[index];
+    if let Some(mut pending) = pending_loads_lock.try_lock() {
       if pending.contains_key(key) {
         return;
       }
@@ -728,7 +780,10 @@ where
       // 1. Lock the pending loads map. Note: This is a sync mutex lock,
       //    which is acceptable here because it should be held for a very
       //    short duration (a few hashmap lookups).
-      let mut pending = self.shared.pending_loads.lock_async().await;
+      let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+      let index = hash as usize & (self.shared.pending_loads.len() - 1);
+      let pending_loads_lock = &self.shared.pending_loads[index];
+      let mut pending = pending_loads_lock.lock_async().await;
 
       // 2. Check for an existing `LoadFuture`.
       //    DO NOT call self.shared.raw_get(key) here to prevent AB-BA deadlock.

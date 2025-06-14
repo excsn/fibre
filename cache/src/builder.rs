@@ -332,10 +332,7 @@ where
         .unwrap_or(Duration::from_secs(1));
       let wheel_size = self.timer_wheel_size.unwrap_or(60);
 
-      Some(Arc::new(TimerWheel::new(
-        wheel_size,
-        tick_duration,
-      )))
+      Some(Arc::new(TimerWheel::new(wheel_size, tick_duration)))
     } else {
       None
     };
@@ -393,6 +390,11 @@ where
         None
       };
 
+    let pending_loads = (0..self.shards)
+      .map(|_| crate::sync::HybridMutex::new(Default::default()))
+      .collect::<Vec<_>>()
+      .into_boxed_slice();
+
     Ok(Arc::new(CacheShared {
       store,
       metrics,
@@ -406,7 +408,7 @@ where
       notification_sender,
       notifier,
       loader: self.loader.take(),
-      pending_loads: crate::sync::HybridMutex::new(Default::default()),
+      pending_loads,
       spawner,
     }))
   }
