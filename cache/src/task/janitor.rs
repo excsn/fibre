@@ -6,6 +6,7 @@ use crate::task::timer::TimerWheel;
 use crate::EvictionReason;
 
 use fibre::mpsc;
+use std::collections::HashSet;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -125,16 +126,17 @@ impl Janitor {
         continue;
       }
 
+      // Convert Vec to HashSet for O(1) lookups inside the hot loop.
+      let expired_set: HashSet<u64> = hashes.into_iter().collect();
+
       let shard = &context.store.shards[i];
       let mut guard = shard.map.write_sync();
 
       // It's more efficient to retain than to remove one-by-one.
       guard.retain(|key, entry| {
         let key_hash = crate::store::hash_key(&context.store.hasher, key);
-        // If the timer wheel fired for this item's hash, we treat it as expired.
-        // The is_expired() check is redundant and racy, as the janitor tick might
-        // run slightly before the entry's exact expiration timestamp.
-        if hashes.contains(&key_hash) {
+
+        if expired_set.contains(&key_hash) {
           // This entry has expired.
           context.eviction_policy.on_remove(key);
           context
@@ -179,7 +181,7 @@ impl Janitor {
         }
 
         if victims.is_empty() {
-            continue; // No victims found in this shard, move to the next.
+          continue; // No victims found in this shard, move to the next.
         }
 
         for key in victims {
@@ -297,53 +299,51 @@ pub(crate) fn perform_shard_maintenance<K, V, H>(
   // Drain a bounded number of events to prevent this loop from running too long.
   for _ in 0..MAINTENANCE_DRAIN_LIMIT {
     match shard.event_buffer_rx.try_recv() {
-      Ok(event) => {
-        match event {
-          AccessEvent::Read(key, cost) => {
-            context.eviction_policy.on_access(&key, cost);
-          }
-          AccessEvent::Write(key, cost) => {
-            let decision = context.eviction_policy.on_admit(&key, cost);
+      Ok(event) => match event {
+        AccessEvent::Read(key, cost) => {
+          context.eviction_policy.on_access(&key, cost);
+        }
+        AccessEvent::Write(key, cost) => {
+          let decision = context.eviction_policy.on_admit(&key, cost);
 
-            if let AdmissionDecision::AdmitAndEvict(victims) = decision {
-              let mut notifications_to_send = Vec::new();
-              let mut total_cost_released = 0;
+          if let AdmissionDecision::AdmitAndEvict(victims) = decision {
+            let mut notifications_to_send = Vec::new();
+            let mut total_cost_released = 0;
 
-              for victim_key in victims {
-                let victim_shard = context.store.get_shard(&victim_key);
-                let mut guard = victim_shard.map.write_sync();
+            for victim_key in victims {
+              let victim_shard = context.store.get_shard(&victim_key);
+              let mut guard = victim_shard.map.write_sync();
 
-                if let Some(removed_entry) = guard.remove(&victim_key) {
-                  let victim_cost = removed_entry.cost();
-                  total_cost_released += victim_cost;
-                  context
-                    .metrics
-                    .evicted_by_capacity
-                    .fetch_add(1, Ordering::Relaxed);
-                  if context.notification_sender.is_some() {
-                    notifications_to_send.push((
-                      victim_key.clone(),
-                      removed_entry.value(),
-                      EvictionReason::Capacity,
-                    ));
-                  }
+              if let Some(removed_entry) = guard.remove(&victim_key) {
+                let victim_cost = removed_entry.cost();
+                total_cost_released += victim_cost;
+                context
+                  .metrics
+                  .evicted_by_capacity
+                  .fetch_add(1, Ordering::Relaxed);
+                if context.notification_sender.is_some() {
+                  notifications_to_send.push((
+                    victim_key.clone(),
+                    removed_entry.value(),
+                    EvictionReason::Capacity,
+                  ));
                 }
               }
+            }
 
-              context
-                .metrics
-                .current_cost
-                .fetch_sub(total_cost_released, Ordering::Relaxed);
+            context
+              .metrics
+              .current_cost
+              .fetch_sub(total_cost_released, Ordering::Relaxed);
 
-              if let Some(sender) = &context.notification_sender {
-                for notif in notifications_to_send {
-                  let _ = sender.try_send(notif);
-                }
+            if let Some(sender) = &context.notification_sender {
+              for notif in notifications_to_send {
+                let _ = sender.try_send(notif);
               }
             }
           }
         }
-      }
+      },
       Err(_) => {
         // The buffer is empty for this shard, we are done.
         break;

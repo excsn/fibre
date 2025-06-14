@@ -98,7 +98,8 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
 
   /// Sets the number of concurrent shards to use.
   pub fn shards(mut self, shards: usize) -> Self {
-    self.shards = shards;
+    // Ensure shards is at least 1 and a power of two for fast bitwise ANDing.
+    self.shards = shards.max(1).next_power_of_two();
     self
   }
 
