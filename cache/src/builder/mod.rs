@@ -304,8 +304,8 @@ impl<K: Send, V: Send> Default for CacheBuilder<K, V, ahash::RandomState> {
   }
 }
 
+#[cfg(feature = "rapidhash")]
 impl<K: Send, V: Send> CacheBuilder<K, V, rapidhash::RapidRandomState> {
-  #[cfg(feature = "rapidhash")]
   pub fn rapidhash() -> Self {
     Self::new()
   }

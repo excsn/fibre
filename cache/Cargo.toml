@@ -5,7 +5,7 @@ edition = "2021"
 license = "MPL-2.0"
 authors = ["Excerion Sun <dev@excsn.com>"]
 
-description = "Best in-class comprehensive, high-performance, concurrent multi mode sync/async caching library for Rust. Inspired by Java's Caffeine, it provides a rich, ergonomic API including a runtime-agnostic CacheLoader, an atomic `entry` API, and a wide choice of modern eviction policies like TinyLFU and SIEVE."
+description = "Best in-class comprehensive, high-performance, concurrent multi-mode sync/async caching library for Rust. Inspired by Java's Caffeine, it provides a rich, ergonomic API including a runtime-agnostic CacheLoader, an atomic `entry` API, and a wide choice of modern eviction policies like W-TinyLFU, SIEVE, ARC, LRU, Clock, SLRU, Random."
 repository = "https://github.com/excsn/fibre"
 readme = "README.md"
 keywords = ["cache", "caching", "tinylfu", "lfu", "concurrent"]
