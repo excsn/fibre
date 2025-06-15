@@ -1,11 +1,10 @@
-# **`fibre-cache`**
+# **`fibre_cache`**
 
-`fibre-cache` offers a best-in-class, high-performance, concurrent, multimode sync/async cache for Rust. It is built from the heart and soul of a Java-turned-Rust engineer to bring the comprehensive, flexible, and ergonomic "it just works" feeling of top-tier Java caches (like Caffeine) to the Rust ecosystem.
-Of course. It's crucial to set the right expectations for a library in its early stages. Here is a brief section you can add to the README, designed to be clear and direct. A good place for it would be right after the introduction and before the Quickstart section.
+`fibre_cache` offers a best-in-class, most flexible, high-performance, concurrent, multimode sync/async cache for Rust. It is built from the heart and soul of a Java-turned-Rust engineer to bring the comprehensive, flexible, and ergonomic "it just works" feeling of top-tier Java caches (like Caffeine) to the Rust ecosystem.
 
 ## ⚠️ Current Status: Beta
 
-Please note that `fibre-cache` is currently in an active beta phase. The core functionality is robust and well-tested, but the public API is still evolving.
+Please note that `fibre_cache` is currently in an active beta phase. The core functionality is robust and well-tested, but the public API is still evolving.
 
 This means:
 *   **APIs May Change:** Until the `1.0` release, breaking changes may be introduced in minor version updates (`0.x.y`).
@@ -17,7 +16,7 @@ We highly encourage you to try it out, provide feedback and report any issues. C
 
 The current state of caching in Rust, while offering some excellent high-performance options, often feels specialized and inflexible. Caches can be brilliant but opinionated, while others lack the rich, general-purpose feature set needed for complex applications.
 
-`fibre-cache` was born from the desire for a cache that is **both incredibly fast and uncompromisingly flexible**. It aims to be the definitive, general-purpose caching library for Rust, providing a complete toolset that feels both powerful to experts and intuitive to newcomers.
+`fibre_cache` was born from the desire for a cache that is **both incredibly fast and uncompromisingly flexible**. It aims to be the definitive, general-purpose caching library for Rust, providing a complete toolset that feels both powerful to experts and intuitive to newcomers.
 
 ## Core Philosophy
 *   **No Compromises:** Get the raw speed of a systems language without sacrificing the rich, ergonomic APIs you love.
@@ -29,14 +28,12 @@ The current state of caching in Rust, while offering some excellent high-perform
 
 ## Quickstart
 
-Get started quickly by adding `fibre-cache` to your `Cargo.toml`:
+Get started quickly by adding `fibre_cache` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-# For the latest version from git:
-fibre-cache = { git = "https://github.com/excsn/fibre", branch = "main" }
-# Or from crates.io:
-# fibre-cache = "0.5"
+# From crates.io:
+# fibre_cache = "^0"
 
 tokio = { version = "1", features = ["full"] }
 ```
@@ -86,7 +83,7 @@ async fn main() {
 
 ## Feature Overview
 
-`fibre-cache` combines the best features from across the caching landscape into one comprehensive package.
+`fibre_cache` combines the best features from across the caching landscape into one comprehensive package.
 
 #### **Key Architectural Pillars**
 *   **High Concurrency via Sharding:** Partitions data across independently locked shards to minimize contention.
@@ -113,7 +110,7 @@ async fn main() {
 
 ## Feature Comparison
 
-| Feature Group | Feature | Moka / Caffeine | Stretto / Ristretto | **`fibre-cache`** | Notes |
+| Feature Group | Feature | Moka / Caffeine | Stretto / Ristretto | **`fibre_cache`** | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Core Architecture** | **Concurrency Model** | Sharded | Sharded | ✅ **Sharded, Custom Lock** | Custom hybrid lock with distinct, optimized paths for sync and async. |
 | | **Sync/Async Interoperability** | Separate Caches | ✅ | ✅ **Zero-Cost Handles** | A single cache instance can be accessed via both sync and async handles seamlessly. |

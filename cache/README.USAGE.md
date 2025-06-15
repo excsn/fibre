@@ -1,6 +1,6 @@
-# Usage Guide: `fibre-cache`
+# Usage Guide: `fibre_cache`
 
-This guide provides a detailed overview of `fibre-cache`'s features, core concepts, and API. It is intended for developers who want to understand how to effectively configure and use the library in their applications.
+This guide provides a detailed overview of `fibre_cache`'s features, core concepts, and API. It is intended for developers who want to understand how to effectively configure and use the library in their applications.
 
 ## Table of Contents
 1.  [Core Concepts](#core-concepts)
@@ -23,7 +23,7 @@ This guide provides a detailed overview of `fibre-cache`'s features, core concep
 
 *   **`Cache` and `AsyncCache` Handles**: These are the two primary structs for interacting with the cache. `Cache` provides a synchronous, blocking API, while `AsyncCache` provides a non-blocking, `async` API. They are lightweight handles that can be cloned cheaply and share the same underlying cache instance.
 *   **Sharding**: To achieve high concurrency, the cache's data is partitioned across multiple shards. Each shard is managed by its own lock, minimizing contention when different keys are accessed by different threads.
-*   **Capacity and Cost**: A `fibre-cache` instance can be "bounded" by a `capacity`. Each item inserted into the cache has a `cost` (a `u64` value). The cache is considered over capacity when the sum of all item costs exceeds the configured capacity. For simple cases where all items are the same size, a cost of `1` per item is common.
+*   **Capacity and Cost**: A `fibre_cache` instance can be "bounded" by a `capacity`. Each item inserted into the cache has a `cost` (a `u64` value). The cache is considered over capacity when the sum of all item costs exceeds the configured capacity. For simple cases where all items are the same size, a cost of `1` per item is common.
 *   **Background Janitor**: A dedicated background thread, the "janitor," is responsible for all cleanup tasks. This includes removing items that have expired due to Time-to-Live (TTL) or Time-to-Idle (TTI), and evicting items when the cache is over capacity. This design ensures that user-facing operations like `get` and `insert` remain fast and predictable.
 *   **Eviction Policies**: The logic for deciding which items to evict when the cache is full is determined by a `CachePolicy`. The library provides a wide range of modern and classic policies (e.g., `TinyLfu`, `Sieve`, `LRU`) and allows for custom implementations.
 
