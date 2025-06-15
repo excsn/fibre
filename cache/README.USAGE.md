@@ -40,7 +40,7 @@ use std::time::Duration;
 
 fn main() {
     // Create a cache that expires items 5 seconds after insertion.
-    let cache = CacheBuilder::default()
+    let cache = CacheBuilder::<String, i32>::new()
         .capacity(100)
         .time_to_live(Duration::from_secs(5))
         .build()
@@ -148,10 +148,14 @@ These are the primary handles for interacting with the cache. Their APIs are lar
 
 *   `entry(&self, key: K) -> Entry<'_, K, V, H>`
     *   Provides an API similar to `std::collections::HashMap::entry` for atomic "get-or-insert" operations. The returned `Entry` enum can be either `Occupied` or `Vacant`.
-*   `compute<F>(&self, key: &K, f: F)`
-    *   Atomically applies a closure `f` to a mutable reference of a value. **Warning**: This method waits (by yielding the thread/task) until it can get exclusive access. If another part of your code holds an `Arc` to the value indefinitely, this method will loop forever (a **livelock**).
-*   `try_compute<F>(&self, key: &K, f: F) -> bool`
-    *   The non-waiting version of `compute`. It attempts to apply the closure once and returns `true` on success. It returns `false` if exclusive access could not be obtained (e.g., another `Arc` to the value exists).
+*   `compute<F>(&self, key: &K, f: F) -> bool`
+    *   Atomically applies a closure `f` to a mutable reference of a value. Returns `true` if the key existed and the computation was applied. **Warning**: This method waits (by yielding the thread/task) until it can get exclusive access. If another part of your code holds an `Arc` to the value indefinitely, this method will loop forever (a **livelock**).
+*   `try_compute<F>(&self, key: &K, f: F) -> Option<bool>`
+    *   The non-waiting version of `compute`. It attempts to apply the closure once. Returns `Some(true)` on success, `Some(false)` if exclusive access could not be obtained (e.g., another `Arc` to the value exists), and `None` if the key was not found.
+*   `compute_val<F, R>(&self, key: &K, mut f: F) -> ComputeResult<R>`
+    *   A waiting version of `try_compute_val`. Atomically applies a closure `f` that returns a value of type `R`. Returns `ComputeResult::Ok(R)` on success or `ComputeResult::NotFound` if the key does not exist. **Warning**: This can livelock for the same reason as `compute`.
+*   `try_compute_val<F, R>(&self, key: &K, f: F) -> ComputeResult<R>`
+    *   A non-waiting version of `compute_val`. It attempts to apply the closure once and returns `ComputeResult::Ok(R)` on success, `ComputeResult::Fail` if exclusive access could not be obtained, or `ComputeResult::NotFound` if the key was not found.
 
 ### Bulk Operations
 
@@ -169,11 +173,13 @@ These methods are more efficient than calling their singular counterparts in a l
 You can provide a custom eviction policy to the `CacheBuilder`. The library provides several high-performance implementations, each with different trade-offs:
 
 *   **`TinyLfuPolicy`**: (Default for bounded caches) A sophisticated policy that protects frequently used items from being evicted by infrequently used items, making it scan-resistant. It combines an LRU window with an SLRU main cache. Best for general-purpose workloads.
+*   **`ArcPolicy`**: Adaptive Replacement Cache. A sophisticated policy that balances between recency (LRU) and frequency (LFU) to offer high hit rates under mixed workloads.
 *   **`SievePolicy`**: A very recent, simple, and high-performance policy that provides excellent scan resistance with minimal memory overhead. A strong alternative to TinyLFU.
 *   **`SlruPolicy`**: Segmented LRU. Divides the cache into probationary and protected segments to provide better scan resistance than plain LRU.
 *   **`LruPolicy`**: Classic Least Recently Used. Simple and effective for workloads without large, infrequent scans.
 *   **`FifoPolicy`**: First-In, First-Out. Evicts items in the order they were inserted, ignoring access patterns.
-*   **`RandomPolicy`**: Evicts a random item when at capacity.
+*   **`ClockPolicy`**: An approximation of LRU that offers better performance under high concurrency.
+*   **`RandomPolicy`**: Evicts a random item when at capacity. (Requires `random` feature).
 
 ### Eviction Listener
 

@@ -27,3 +27,9 @@ impl fmt::Display for BuildError {
 }
 
 impl std::error::Error for BuildError {}
+
+pub enum ComputeResult<R> {
+  Ok(R),
+  Fail,
+  NotFound,
+}

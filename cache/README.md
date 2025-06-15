@@ -1,5 +1,9 @@
 # **`fibre_cache`**
 
+[![crates.io](https://img.shields.io/crates/v/fibre_cache.svg)](https://crates.io/crates/fibre_cache)
+[![docs.rs](https://docs.rs/fibre_cache/badge.svg)](https://docs.rs/fibre_cache)
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
+
 `fibre_cache` offers a best-in-class, most flexible, high-performance, concurrent, multimode sync/async cache for Rust. It is built from the heart and soul of a Java-turned-Rust engineer to bring the comprehensive, flexible, and ergonomic "it just works" feeling of top-tier Java caches (like Caffeine) to the Rust ecosystem.
 
 ## ⚠️ Current Status: Beta

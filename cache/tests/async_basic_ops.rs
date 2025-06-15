@@ -131,14 +131,14 @@ async fn test_async_compute() {
 
   // Test successful compute
   let was_computed = cache.try_compute(&"key1".to_string(), |v| *v *= 2).await;
-  assert!(was_computed);
+  assert_eq!(was_computed, Some(true));
   assert_eq!(cache.fetch(&"key1".to_string()).await, Some(Arc::new(100)));
   assert_eq!(cache.metrics().updates, 1);
 
   // Test failed compute (due to another Arc existing)
   let external_arc = cache.fetch(&"key1".to_string()).await.unwrap();
   let was_computed_again = cache.try_compute(&"key1".to_string(), |v| *v *= 2).await;
-  assert!(!was_computed_again);
+  assert_eq!(was_computed_again, Some(false));
   assert_eq!(cache.fetch(&"key1".to_string()).await, Some(Arc::new(100))); // Value is unchanged
   assert_eq!(cache.metrics().updates, 1); // Metric is unchanged
   drop(external_arc);
@@ -147,7 +147,7 @@ async fn test_async_compute() {
   let was_computed_miss = cache
     .try_compute(&"non-existent".to_string(), |v| *v *= 2)
     .await;
-  assert!(!was_computed_miss);
+  assert_eq!(was_computed_miss, None);
 }
 
 #[tokio::test]

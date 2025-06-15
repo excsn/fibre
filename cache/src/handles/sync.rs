@@ -1,5 +1,6 @@
 use crate::entry::CacheEntry;
 use crate::entry_api::{OccupiedEntry, VacantEntry};
+use crate::error::ComputeResult;
 use crate::loader::LoadFuture;
 use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
@@ -342,9 +343,9 @@ where
   /// This function will not panic, but it can loop indefinitely if another
   /// thread holds an `Arc` to the value and never releases it, preventing
   /// `try_compute` from ever succeeding. This is a form of livelock.
-  /// 
+  ///
   /// NOTE: Use the `get` method for reads where possible to mitigate blocking.
-  pub fn compute<F>(&self, key: &K, mut f: F)
+  pub fn compute<F>(&self, key: &K, mut f: F) -> bool
   where
     F: FnMut(&mut V),
   {
@@ -353,9 +354,13 @@ where
     // multiple times if there's a race, although that's extremely unlikely.
     // The *modification* inside the closure, however, will only be applied once.
     loop {
-      if self.try_compute(key, &mut f) {
-        // The operation succeeded.
-        return;
+      
+      let opt = self.try_compute(key, &mut f);
+     
+      match opt {
+        Some(true) => return true,
+        Some(false) => {},
+        None => return false,
       }
       // The operation failed because another thread is holding an Arc to the value.
       // Yield the current thread to the OS scheduler to give other threads
@@ -364,12 +369,23 @@ where
     }
   }
 
+  pub fn try_compute<F>(&self, key: &K, f: F) -> Option<bool>
+  where
+    F: FnOnce(&mut V),
+  {
+    return match self.try_compute_val(key, f) {
+      ComputeResult::Ok(_) => Some(true),
+      ComputeResult::Fail => Some(false),
+      ComputeResult::NotFound => None,
+    };
+  }
+
   /// Atomically computes a new value for a key.
   /// The provided closure is called with a mutable reference to the value
   /// if the key exists and no other threads are currently reading it.
-  pub fn try_compute<F>(&self, key: &K, f: F) -> bool
+  pub fn try_compute_val<F, R>(&self, key: &K, f: F) -> ComputeResult<R>
   where
-    F: FnOnce(&mut V),
+    F: FnOnce(&mut V) -> R,
   {
     let shard = self.shared.store.get_shard(key);
     let mut guard = shard.map.write();
@@ -383,16 +399,56 @@ where
         //    This is the step that will fail if another thread is reading the value.
         if let Some(value) = Arc::get_mut(&mut entry.value) {
           // Success! We have exclusive access.
-          f(value);
+          let user_value = f(value);
           self.shared.metrics.updates.fetch_add(1, Ordering::Relaxed);
-          return true;
+          return ComputeResult::Ok(user_value);
         }
       }
+      
+      // If any of the `if let` checks fail, it means we couldn't get
+      // exclusive access, so the computation fails.
+      return ComputeResult::Fail;
     }
 
-    // If any of the `if let` checks fail, it means we couldn't get
-    // exclusive access, so the computation fails.
-    false
+    return ComputeResult::NotFound; // Key does not exist
+  }
+
+  /// Atomically computes a new value for a key, waiting if necessary.
+  ///
+  /// This function provides a blocking, "wait-and-succeed" version of the
+  /// read-modify-write pattern. It repeatedly calls `try_compute` in a loop
+  /// until the modification is successful.
+  ///
+  /// The closure `f` will be called with a mutable reference `&mut V` to the
+  /// value if the key exists.
+  ///
+  /// # Panics
+  ///
+  /// This function will not panic, but it can loop indefinitely if another
+  /// thread holds an `Arc` to the value and never releases it, preventing
+  /// `try_compute` from ever succeeding. This is a form of livelock.
+  ///
+  /// NOTE: Use the `get` method for reads where possible to mitigate blocking.
+  pub fn compute_val<F, R>(&self, key: &K, mut f: F) -> ComputeResult<R>
+  where
+    F: FnMut(&mut V) -> R,
+  {
+    // Loop, calling the non-blocking `try_compute` until it succeeds.
+    // The `FnMut` bound is necessary because the closure might be called
+    // multiple times if there's a race, although that's extremely unlikely.
+    // The *modification* inside the closure, however, will only be applied once.
+    loop {
+      let result = self.try_compute_val(key, &mut f);
+
+      if !matches!(result, ComputeResult::Fail) {
+        return result;
+      }
+
+      // The operation failed because another thread is holding an Arc to the value.
+      // Yield the current thread to the OS scheduler to give other threads
+      // a chance to run and potentially drop their Arcs.
+      thread::yield_now();
+    }
   }
 
   /// Removes an entry from the cache, returning `true` if the key was found.

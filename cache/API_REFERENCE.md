@@ -11,10 +11,10 @@ use fibre_cache::CacheBuilder;
 use std::time::Duration;
 
 // Create a cache with a maximum cost of 1000, and a 5-second TTL.
-let cache = CacheBuilder::new()
+let cache = CacheBuilder::<String, i32>::new()
     .capacity(1000)
     .time_to_live(Duration::from_secs(5))
-    .build::<String, i32>()
+    .build()
     .unwrap();
 
 // Insert a value. The `cost` is 1.
@@ -147,12 +147,18 @@ A handle to the cache for synchronous operations.
     *   Inserts a key-value-cost triple into the cache.
 *   `pub fn insert_with_ttl(&self, key: K, value: V, cost: u64, ttl: Duration)`
     *   Inserts an entry with a specific TTL that overrides the cache's default.
-*   `pub fn compute<F>(&self, key: &K, mut f: F)`
+*   `pub fn compute<F>(&self, key: &K, mut f: F) -> bool`
     *   *where `F: FnMut(&mut V)`*
-    *   Atomically applies a closure to a mutable reference of a value. **Warning**: This method will wait (by repeatedly yielding the thread) until it can get exclusive access. If another thread holds an `Arc` to the value indefinitely, this can cause a livelock. Use with caution.
-*   `pub fn try_compute<F>(&self, key: &K, f: F) -> bool`
+    *   Atomically applies a closure to a mutable reference of a value. Returns `true` if the key existed and the computation was applied, `false` otherwise. **Warning**: This method will wait (by repeatedly yielding the thread) until it can get exclusive access. If another thread holds an `Arc` to the value indefinitely, this can cause a livelock.
+*   `pub fn try_compute<F>(&self, key: &K, f: F) -> Option<bool>`
     *   *where `F: FnOnce(&mut V)`*
-    *   Atomically applies a closure to a mutable reference of a value if and only if no other thread holds a reference (`Arc`) to it. Returns `true` on success. This is the non-blocking version of `compute`.
+    *   Atomically applies a closure to a mutable reference of a value if and only if no other thread holds a reference (`Arc`) to it. Returns `Some(true)` on success, `Some(false)` if the value was locked, and `None` if the key was not found. This is the non-blocking version of `compute`.
+*   `pub fn compute_val<F, R>(&self, key: &K, mut f: F) -> ComputeResult<R>`
+    *   *where `F: FnMut(&mut V) -> R`*
+    *   Waiting version of `try_compute_val`. Atomically applies a closure that returns a value. Can livelock. Returns `ComputeResult::Ok(R)` on success or `ComputeResult::NotFound` if the key does not exist.
+*   `pub fn try_compute_val<F, R>(&self, key: &K, f: F) -> ComputeResult<R>`
+    *   *where `F: FnOnce(&mut V) -> R`*
+    *   Non-blocking version of `compute_val`. Returns `ComputeResult::Ok(R)` on success, `ComputeResult::Fail` if the value was locked, and `ComputeResult::NotFound` if the key was not found.
 *   `pub fn invalidate(&self, key: &K) -> bool`
     *   Removes an entry from the cache, returning `true` if the key was found.
 *   `pub fn clear(&self)`
@@ -165,37 +171,28 @@ A handle to the cache for synchronous operations.
     *   Retrieves multiple values from the cache, parallelizing lookups across shards.
 *   `pub fn multi_insert<I>(&self, items: I)`
     *   *(feature: `bulk`)*
+    *   Inserts multiple items in parallel.
 *   `pub fn multi_invalidate<I, Q>(&self, keys: I)`
     *   *(feature: `bulk`)*
+    *   Removes multiple items in parallel.
 
 ---
 
 #### **struct** `AsyncCache<K, V, H>`
-A handle to the cache for asynchronous operations.
+A handle to the cache for asynchronous operations. All methods are async equivalents of the `Cache` methods.
 
 *   `pub fn to_sync(&self) -> Cache<K, V, H>`
-    *   Converts to a `Cache` handle. This is a zero-cost `Arc` clone.
 *   `pub async fn get<F, R>(&self, key: &K, f: F) -> Option<R>`
-    *   *where `F: FnOnce(&V) -> R`*
-    *   Asynchronously looks up an entry and applies a closure to the value.
 *   `pub async fn fetch(&self, key: &K) -> Option<Arc<V>>`
-    *   Asynchronously retrieves a clone of the `Arc` pointing to the value.
 *   `pub async fn peek(&self, key: &K) -> Option<Arc<V>>`
-    *   Asynchronously retrieves a value without updating its recency or access time.
 *   `pub async fn fetch_with(&self, key: &K) -> Arc<V>`
-    *   Asynchronously retrieves a value, using the configured `async_loader` if the key is not present. This method provides thundering herd protection.
 *   `pub async fn entry(&self, key: K) -> AsyncEntry<'_, K, V, H>`
-    *   Asynchronously creates a view into a specific entry.
 *   `pub async fn insert(&self, key: K, value: V, cost: u64)`
-    *   Asynchronously inserts a key-value-cost triple.
 *   `pub async fn insert_with_ttl(&self, key: K, value: V, cost: u64, ttl: Duration)`
-    *   Asynchronously inserts an entry with a specific TTL.
-*   `pub async fn compute<F>(&self, key: &K, mut f: F)`
-    *   *where `F: FnMut(&mut V)`*
-    *   Asynchronously applies a closure to a mutable reference of a value. **Warning**: This method can cause a livelock if an `Arc` to the value is held indefinitely elsewhere.
-*   `pub async fn try_compute<F>(&self, key: &K, f: F) -> bool`
-    *   *where `F: FnOnce(&mut V)`*
-    *   Asynchronously and non-blockingly attempts to apply a closure to a mutable reference of a value.
+*   `pub async fn compute<F>(&self, key: &K, mut f: F) -> bool`
+*   `pub async fn try_compute<F>(&self, key: &K, f: F) -> Option<bool>`
+*   `pub async fn compute_val<F, R>(&self, key: &K, mut f: F) -> ComputeResult<R>`
+*   `pub async fn try_compute_val<F, R>(&self, key: &K, f: F) -> ComputeResult<R>`
 *   `pub async fn invalidate(&self, key: &K) -> bool`
 *   `pub async fn clear(&self)`
 *   `pub async fn to_snapshot(&self) -> CacheSnapshot<K, V>`
@@ -245,6 +242,7 @@ A trait for receiving notifications when entries are evicted from the cache.
 #### **trait** `CachePolicy<K, V>`
 The core trait for implementing an eviction policy. The following policies are provided:
 *   **`TinyLfuPolicy`**: (Default for bounded caches) A sophisticated policy that protects frequently used items from being evicted by infrequently used items, making it scan-resistant. It combines an LRU window with an SLRU main cache.
+*   **`ArcPolicy`**: Adaptive Replacement Cache. A sophisticated policy that balances between recency (LRU) and frequency (LFU) to offer high hit rates under mixed workloads.
 *   **`SlruPolicy`**: Segmented LRU. Divides the cache into probationary and protected segments to provide better scan resistance than plain LRU.
 *   **`SievePolicy`**: A very simple and efficient eviction algorithm that provides good scan resistance with low overhead.
 *   **`LruPolicy`**: Standard Least Recently Used. Evicts the item that hasn't been accessed for the longest time.
@@ -262,6 +260,12 @@ The core trait for implementing an eviction policy. The following policies are p
 
 #### **enum** `EvictionReason`
 *   `Capacity` | `Expired` | `Invalidated`
+
+#### **enum** `ComputeResult<R>`
+The result of a `compute_val` or `try_compute_val` operation.
+*   `Ok(R)`: The computation was successful and returned a value of type `R`.
+*   `Fail`: The computation failed because another thread held a reference to the value.
+*   `NotFound`: The key was not found in the cache.
 
 #### **struct** `MetricsSnapshot`
 *   `pub hits: u64`
