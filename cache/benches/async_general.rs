@@ -64,7 +64,7 @@ fn setup_fn(
     let cache: Arc<AsyncCache<u64, u64>> = Arc::new(
       CacheBuilder::default()
         .capacity(cfg.capacity as u64)
-        .maintenance_chance(maintenance_frequency::AGGRESSIVE)
+        .maintenance_chance(maintenance_frequency::LOW_OVERHEAD)
         .async_loader(move |key: u64| {
           let load_counter = load_counter.clone();
           async move {
@@ -137,13 +137,13 @@ fn benchmark_logic(
         for op in task_ops {
           match op {
             Op::Read(key) => {
-              black_box(cache_clone.get(&key).await);
+              black_box(cache_clone.get(&key, |_v| ()).await);
             }
             Op::Write(key, value) => {
               cache_clone.insert(key, value, 1).await;
             }
             Op::Compute(key) => {
-              black_box(cache_clone.get_with(&key).await);
+              black_box(cache_clone.fetch_with(&key).await);
             }
           }
         }

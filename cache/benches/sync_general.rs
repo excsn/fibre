@@ -57,7 +57,7 @@ fn setup_fn(cfg: &BenchConfig) -> Result<(BenchContext, BenchState), String> {
   let cache = Arc::new(
     CacheBuilder::default()
       .capacity(cfg.capacity as u64)
-      .maintenance_chance(maintenance_frequency::AGGRESSIVE)
+      .maintenance_chance(maintenance_frequency::LOW_OVERHEAD)
       .loader(move |key: u64| {
         load_counter.fetch_add(1, Ordering::Relaxed);
         (key, 1)
@@ -86,7 +86,7 @@ fn setup_fn(cfg: &BenchConfig) -> Result<(BenchContext, BenchState), String> {
   for i in 0..cfg.num_ops {
     let key = match cfg.workload.as_str() {
       "Read100_Zipf" | "Read75Write25_Zipf" | "Write100_Zipf" | "Compute_Zipf" => {
-        zipf.sample(&mut rng) as u64
+        (zipf.sample(&mut rng) - 1.0) as u64
       }
       "Read100_Uniform" => rng.random_range(0..cfg.capacity) as u64,
       "Compute_SameKey" => 0,
@@ -131,13 +131,13 @@ fn benchmark_logic(
         for op in thread_ops {
           match op {
             Op::Read(key) => {
-              black_box(cache_clone.get(key));
+              black_box(cache_clone.get(key, |_v| ()));
             }
             Op::Write(key, value) => {
               cache_clone.insert(*key, *value, 1);
             }
             Op::Compute(key) => {
-              black_box(cache_clone.get_with(key));
+              black_box(cache_clone.fetch_with(key));
             }
           }
         }

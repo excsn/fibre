@@ -4,6 +4,29 @@
 
 This library provides a high-performance, concurrent, thread-safe caching solution for Rust, with first-class support for both synchronous and asynchronous applications.
 
+#### Getting Started
+
+```rust
+use fibre_cache::CacheBuilder;
+use std::time::Duration;
+
+// Create a cache with a maximum cost of 1000, and a 5-second TTL.
+let cache = CacheBuilder::new()
+    .capacity(1000)
+    .time_to_live(Duration::from_secs(5))
+    .build::<String, i32>()
+    .unwrap();
+
+// Insert a value. The `cost` is 1.
+cache.insert("key1".to_string(), 100, 1);
+
+// Retrieve the value using `fetch`, which returns an Arc<V>.
+let value = cache.fetch(&"key1".to_string()).unwrap();
+assert_eq!(*value, 100);
+
+// After 5 seconds, the value will be expired and automatically removed.
+```
+
 #### Core Handles
 The primary entry points for interacting with the cache are two handle types:
 
@@ -16,7 +39,7 @@ Both handles are lightweight wrappers around a shared cache core, and converting
 *   **Builder Pattern**: Caches are created exclusively through the `CacheBuilder`, which provides a fluent API for configuration.
 *   **Sharded Concurrency**: The cache is internally partitioned into multiple "shards," each with its own lock. This design minimizes lock contention and allows for high-throughput concurrent access.
 *   **Background Maintenance**: A background "janitor" thread is responsible for all periodic cleanup, including enforcing capacity and expiring items based on Time-to-Live (TTL) or Time-to-Idle (TTI). This keeps user-facing operations fast and predictable.
-*   **Pluggable Policies**: Eviction logic is abstracted via the `CachePolicy` trait, with sensible defaults (`TinyLFU`) for bounded caches.
+*   **Pluggable Policies**: Eviction logic is abstracted via the `CachePolicy` trait, with sensible defaults (`TinyLfuPolicy`) for bounded caches.
 
 #### Pervasive Patterns
 *   **Key/Value Constraints**: To be stored in the cache, keys (`K`) and values (`V`) must satisfy certain trait bounds, which are most restrictive when all features are used.
@@ -26,7 +49,7 @@ Both handles are lightweight wrappers around a shared cache core, and converting
 
 ---
 
-### 2. Configuration
+### 2. Configuration (`CacheBuilder`)
 
 All cache instances are created and configured using the `CacheBuilder`.
 
@@ -61,18 +84,20 @@ The fluent builder for creating `Cache` and `AsyncCache` instances.
 *   `pub fn eviction_listener<Listener>(mut self, listener: Listener) -> Self`
     *   *where `Listener: EvictionListener<K, V> + 'static`*
     *   Registers a listener to receive notifications when entries are evicted.
-*   `pub fn cache_policy<Policy>(mut self, policy: Policy) -> Self`
-    *   *where `Policy: CachePolicy<K, V> + 'static`*
-    *   Sets a custom eviction policy. Defaults to `TinyLfuPolicy` for bounded caches and `NullPolicy` for unbounded ones.
+*   `pub fn cache_policy_factory<F>(mut self, factory: F) -> Self`
+    *   *where `F: Fn() -> Box<dyn CachePolicy<K, V>> + Send + Sync + 'static`*
+    *   Sets a custom eviction policy via a factory function that is called for each shard. Defaults to `TinyLfuPolicy` for bounded caches and `NullPolicy` for unbounded ones.
 *   `pub fn loader(mut self, f: impl Fn(K) -> (V, u64) + Send + Sync + 'static) -> Self`
-    *   Sets the synchronous loader function, used by `get_with`.
+    *   Sets the synchronous loader function, used by [`Cache::fetch_with`]. When `fetch_with` is called for a key that isn't in the cache, this closure is executed to compute its value.
 *   `pub fn async_loader<F, Fut>(mut self, f: F) -> Self`
     *   *where `F: Fn(K) -> Fut + Send + Sync + 'static`, `Fut: Future<Output = (V, u64)> + Send + 'static`*
-    *   Sets the asynchronous loader function, used by `get_with`.
+    *   Sets the asynchronous loader function, used by [`AsyncCache::fetch_with`].
 *   `pub fn spawner(mut self, spawner: Arc<dyn TaskSpawner>) -> Self`
     *   Provides a custom task spawner for the `async_loader`. Required if using an `async_loader` without the `tokio` feature.
 *   `pub fn hasher(mut self, hasher: H) -> Self`
     *   Sets a custom hasher for the cache.
+*   `pub fn maintenance_chance(mut self, denominator: u32) -> Self`
+    *   Sets the probability (`1 / denominator`) of running maintenance on insert. Use presets from the `maintenance_frequency` module for convenience.
 *   `pub fn timer_mode(mut self, mode: TimerWheelMode) -> Self`
     *   Configures the internal expiration timer using a preset.
 *   `pub fn timer_tick_duration(mut self, duration: Duration) -> Self`
@@ -98,65 +123,50 @@ The fluent builder for creating `Cache` and `AsyncCache` instances.
 
 ---
 
-#### **enum** `TimerWheelMode`
-Preset configurations for the cache's internal timer for TTL/TTI.
-
-*   `Default`
-*   `HighPrecisionShortLived`
-*   `LowPrecisionLongLived`
-
----
-
-### 3. Main Types and Their Public Methods
+### 3. Main Types and Public Methods
 
 #### **struct** `Cache<K, V, H>`
 A handle to the cache for synchronous operations.
 
 *   `pub fn to_async(&self) -> AsyncCache<K, V, H>`
-    *   *where `K: Eq + Hash + Clone + Send + 'static`, `V: Send + Sync`, `H: BuildHasher + Clone`*
     *   Converts to an `AsyncCache` handle. This is a zero-cost `Arc` clone.
 *   `pub fn metrics(&self) -> MetricsSnapshot`
     *   Returns a point-in-time snapshot of the cache's metrics.
-*   `pub fn get(&self, key: &K) -> Option<Arc<V>>`
-    *   *where `K: Eq + Hash + Clone + Send + 'static`, `V: Send + Sync`, `H: BuildHasher + Clone`*
-    *   Retrieves a value from the cache.
-*   `pub fn get_with(&self, key: &K) -> Arc<V>`
-    *   *where `K: Eq + Hash + Clone + Send + Sync + 'static`, `V: Send + Sync + 'static`, `H: BuildHasher + Clone + Send + Sync + 'static`*
-    *   Retrieves a value, using the configured `loader` if the key is not present.
+*   `pub fn get<F, R>(&self, key: &K, f: F) -> Option<R>`
+    *   *where `F: FnOnce(&V) -> R`*
+    *   Looks up an entry and, if found, applies a closure to the value without cloning it. This is the most efficient read operation.
+*   `pub fn fetch(&self, key: &K) -> Option<Arc<V>>`
+    *   Retrieves a clone of the `Arc` pointing to the value if the key is found and not expired.
+*   `pub fn peek(&self, key: &K) -> Option<Arc<V>>`
+    *   Retrieves a value without updating its recency or access time (i.e., does not affect LRU or TTI).
+*   `pub fn fetch_with(&self, key: &K) -> Arc<V>`
+    *   Retrieves a value, using the configured synchronous `loader` if the key is not present. This method provides thundering herd protection.
 *   `pub fn entry(&self, key: K) -> Entry<'_, K, V, H>`
-    *   *where `K: Eq + Hash + Clone + Send + 'static`, `V: Send + Sync`, `H: BuildHasher + Clone`*
     *   Creates a view into a specific entry, allowing for atomic "get-or-insert" operations.
 *   `pub fn insert(&self, key: K, value: V, cost: u64)`
-    *   *where `K: Eq + Hash + Clone + Send + Sync + 'static`, `V: Send + Sync`, `H: BuildHasher + Clone + Sync`*
     *   Inserts a key-value-cost triple into the cache.
 *   `pub fn insert_with_ttl(&self, key: K, value: V, cost: u64, ttl: Duration)`
-    *   *where `K: Eq + Hash + Clone + Send + Sync + 'static`, `V: Send + Sync`, `H: BuildHasher + Clone + Sync`*
     *   Inserts an entry with a specific TTL that overrides the cache's default.
-*   `pub fn compute<F>(&self, key: &K, f: F) -> bool`
-    *   *where `F: FnOnce(&mut V)`, `K: Eq + Hash + Clone + Send + 'static`, `V: Send + Sync`, `H: BuildHasher + Clone`*
-    *   Atomically applies a closure to a mutable reference of a value if no other thread is reading it.
+*   `pub fn compute<F>(&self, key: &K, mut f: F)`
+    *   *where `F: FnMut(&mut V)`*
+    *   Atomically applies a closure to a mutable reference of a value. **Warning**: This method will wait (by repeatedly yielding the thread) until it can get exclusive access. If another thread holds an `Arc` to the value indefinitely, this can cause a livelock. Use with caution.
+*   `pub fn try_compute<F>(&self, key: &K, f: F) -> bool`
+    *   *where `F: FnOnce(&mut V)`*
+    *   Atomically applies a closure to a mutable reference of a value if and only if no other thread holds a reference (`Arc`) to it. Returns `true` on success. This is the non-blocking version of `compute`.
 *   `pub fn invalidate(&self, key: &K) -> bool`
-    *   *where `K: Eq + Hash + Clone + Send + 'static`, `V: Send + Sync`, `H: BuildHasher + Clone`*
-    *   Removes an entry from the cache.
+    *   Removes an entry from the cache, returning `true` if the key was found.
 *   `pub fn clear(&self)`
-    *   *where `K: Eq + Hash + Clone + Send + 'static`, `V: Send + Sync`, `H: BuildHasher + Clone`*
     *   Removes all entries from the cache.
 *   `pub fn to_snapshot(&self) -> CacheSnapshot<K, V>`
     *   *(feature: `serde`)*
-    *   *where `K: ... + Serialize`, `V: ... + Serialize + Clone`*
     *   Creates a serializable snapshot of the cache's current state. Pauses all other operations.
 *   `pub fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
     *   *(feature: `bulk`)*
-    *   *where `I: IntoIterator<Item = Q>`, `K: From<Q>`, `H: BuildHasher + Clone + Sync`*
     *   Retrieves multiple values from the cache, parallelizing lookups across shards.
 *   `pub fn multi_insert<I>(&self, items: I)`
     *   *(feature: `bulk`)*
-    *   *where `I: IntoIterator<Item = (K, V, u64)>`*
-    *   Inserts multiple entries into the cache.
 *   `pub fn multi_invalidate<I, Q>(&self, keys: I)`
     *   *(feature: `bulk`)*
-    *   *where `I: IntoIterator<Item = Q>`, `K: From<Q>`*
-    *   Removes multiple entries from the cache.
 
 ---
 
@@ -164,85 +174,67 @@ A handle to the cache for synchronous operations.
 A handle to the cache for asynchronous operations.
 
 *   `pub fn to_sync(&self) -> Cache<K, V, H>`
-    *   *where `K: Clone + Eq + Hash + Send`, `V: Send + Sync`, `H: BuildHasher + Clone`*
     *   Converts to a `Cache` handle. This is a zero-cost `Arc` clone.
-*   `pub fn metrics(&self) -> MetricsSnapshot`
-    *   Returns a point-in-time snapshot of the cache's metrics.
-*   `pub fn get(&self, key: &K) -> Option<Arc<V>>`
-    *   *where `K: Clone + Eq + Hash + Send`, `V: Send + Sync`, `H: BuildHasher + Clone`*
-    *   Retrieves a value from the cache.
-*   `pub async fn get_with(&self, key: &K) -> Arc<V>`
-    *   *where `K: Clone + Eq + Hash + Send + Sync + 'static`, `V: Send + Sync + 'static`, `H: BuildHasher + Clone + Send + Sync + 'static`*
-    *   Asynchronously retrieves a value, using the configured loader if the key is not present.
+*   `pub async fn get<F, R>(&self, key: &K, f: F) -> Option<R>`
+    *   *where `F: FnOnce(&V) -> R`*
+    *   Asynchronously looks up an entry and applies a closure to the value.
+*   `pub async fn fetch(&self, key: &K) -> Option<Arc<V>>`
+    *   Asynchronously retrieves a clone of the `Arc` pointing to the value.
+*   `pub async fn peek(&self, key: &K) -> Option<Arc<V>>`
+    *   Asynchronously retrieves a value without updating its recency or access time.
+*   `pub async fn fetch_with(&self, key: &K) -> Arc<V>`
+    *   Asynchronously retrieves a value, using the configured `async_loader` if the key is not present. This method provides thundering herd protection.
 *   `pub async fn entry(&self, key: K) -> AsyncEntry<'_, K, V, H>`
-    *   *where `K: Clone + Eq + Hash + Send`, `V: Send + Sync`, `H: BuildHasher + Clone`*
     *   Asynchronously creates a view into a specific entry.
 *   `pub async fn insert(&self, key: K, value: V, cost: u64)`
-    *   *where `K: Clone + Eq + Hash + Send + Sync`, `V: Send + Sync`, `H: BuildHasher + Clone + Send + Sync`*
     *   Asynchronously inserts a key-value-cost triple.
 *   `pub async fn insert_with_ttl(&self, key: K, value: V, cost: u64, ttl: Duration)`
-    *   *where `K: Clone + Eq + Hash + Send + Sync`, `V: Send + Sync`, `H: BuildHasher + Clone + Send + Sync`*
     *   Asynchronously inserts an entry with a specific TTL.
-*   `pub async fn compute<F>(&self, key: &K, f: F) -> bool`
-    *   *where `F: FnOnce(&mut V)`, `K: Clone + Eq + Hash + Send`, `V: Send + Sync`, `H: BuildHasher + Clone`*
-    *   Asynchronously applies a closure to a mutable reference of a value.
+*   `pub async fn compute<F>(&self, key: &K, mut f: F)`
+    *   *where `F: FnMut(&mut V)`*
+    *   Asynchronously applies a closure to a mutable reference of a value. **Warning**: This method can cause a livelock if an `Arc` to the value is held indefinitely elsewhere.
+*   `pub async fn try_compute<F>(&self, key: &K, f: F) -> bool`
+    *   *where `F: FnOnce(&mut V)`*
+    *   Asynchronously and non-blockingly attempts to apply a closure to a mutable reference of a value.
 *   `pub async fn invalidate(&self, key: &K) -> bool`
-    *   *where `K: Clone + Eq + Hash + Send`, `V: Send + Sync`, `H: BuildHasher + Clone`*
-    *   Asynchronously removes an entry from the cache.
 *   `pub async fn clear(&self)`
-    *   *where `K: Clone + Eq + Hash + Send`, `V: Send + Sync`, `H: BuildHasher + Clone`*
-    *   Asynchronously removes all entries from the cache.
 *   `pub async fn to_snapshot(&self) -> CacheSnapshot<K, V>`
     *   *(feature: `serde`)*
-    *   *where `K: ... + Serialize`, `V: ... + Serialize + Clone`*
-    *   Asynchronously creates a serializable snapshot of the cache's current state.
 *   `pub async fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
-    *   *where `I: IntoIterator<Item = Q>`, `K: From<Q> + ...`, `V: Send + Sync`, `H: BuildHasher + Clone`*
-    *   Asynchronously retrieves multiple values from the cache.
+    *   *(feature: `bulk`)*
 *   `pub async fn multi_insert<I>(&self, items: I)`
     *   *(feature: `bulk`)*
-    *   *where `I: IntoIterator<Item = (K, V, u64)>`*
-    *   Asynchronously inserts multiple entries.
 *   `pub async fn multi_invalidate<I, Q>(&self, keys: I)`
     *   *(feature: `bulk`)*
-    *   *where `I: IntoIterator<Item = Q>`, `K: From<Q>`*
-    *   Asynchronously removes multiple entries.
 
 ---
 
-#### **enum** `Entry<'a, K, V, H>`
-A view into a single synchronous entry in a cache, which may either be occupied or vacant.
+### 4. Entry API
 
-*   `Occupied(OccupiedEntry<'a, K, V, H>)`
-*   `Vacant(VacantEntry<'a, K, V, H>)`
+The Entry API provides a way to atomically manipulate a single cache entry, preventing race conditions for "get-or-insert" logic.
 
-#### **struct** `OccupiedEntry<'a, K, V, H>`
+#### **enum** `Entry<'a, K, V, H>` / `AsyncEntry<'a, K, V, H>`
+A view into a single cache entry, which is either occupied or vacant.
+
+*   `Occupied(OccupiedEntry<'a, K, V, H>)` / `Occupied(AsyncOccupiedEntry<'a, K, V, H>)`
+*   `Vacant(VacantEntry<'a, K, V, H>)` / `Vacant(AsyncVacantEntry<'a, K, V, H>)`
+
+##### **Common Methods on `Entry` and `AsyncEntry`**
+*   `pub fn or_insert(self, default: V, cost: u64) -> Arc<V>`
+*   `pub fn or_insert_with<F>(self, default: F, cost: u64) -> Arc<V>`
+*   `pub fn or_default(self, cost: u64) -> Arc<V>`
+
+##### **struct** `OccupiedEntry` / `AsyncOccupiedEntry`
 *   `pub fn key(&self) -> &K`
 *   `pub fn get(&self) -> Arc<V>`
 
-#### **struct** `VacantEntry<'a, K, V, H>`
+##### **struct** `VacantEntry` / `AsyncVacantEntry`
 *   `pub fn key(&self) -> &K`
-*   `pub fn insert(mut self, value: V, cost: u64) -> Arc<V>`
+*   `pub fn insert(self, value: V, cost: u64) -> Arc<V>`
 
 ---
 
-#### **enum** `AsyncEntry<'a, K, V, H>`
-A view into a single asynchronous entry in a cache.
-
-*   `Occupied(AsyncOccupiedEntry<'a, K, V, H>)`
-*   `Vacant(AsyncVacantEntry<'a, K, V, H>)`
-
-#### **struct** `AsyncOccupiedEntry<'a, K, V, H>`
-*   `pub fn key(&self) -> &K`
-*   `pub fn get(&self) -> Arc<V>`
-
-#### **struct** `AsyncVacantEntry<'a, K, V, H>`
-*   `pub fn key(&self) -> &K`
-*   `pub fn insert(mut self, value: V, cost: u64) -> Arc<V>`
-
----
-
-### 4. Public Traits and Their Methods
+### 5. Policies and Listeners
 
 #### **trait** `EvictionListener<K, V>`
 A trait for receiving notifications when entries are evicted from the cache.
@@ -250,50 +242,39 @@ A trait for receiving notifications when entries are evicted from the cache.
 *   `fn on_evict(&self, key: K, value: Arc<V>, reason: EvictionReason)`
     *   Called by a background task when an entry is removed.
 
-#### **trait** `TaskSpawner`
-A trait for spawning a future onto an asynchronous runtime.
-
-*   `fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>)`
-    *   Spawns a type-erased future.
+#### **trait** `CachePolicy<K, V>`
+The core trait for implementing an eviction policy. The following policies are provided:
+*   **`TinyLfuPolicy`**: (Default for bounded caches) A sophisticated policy that protects frequently used items from being evicted by infrequently used items, making it scan-resistant. It combines an LRU window with an SLRU main cache.
+*   **`SlruPolicy`**: Segmented LRU. Divides the cache into probationary and protected segments to provide better scan resistance than plain LRU.
+*   **`SievePolicy`**: A very simple and efficient eviction algorithm that provides good scan resistance with low overhead.
+*   **`LruPolicy`**: Standard Least Recently Used. Evicts the item that hasn't been accessed for the longest time.
+*   **`FifoPolicy`**: First-In, First-Out. Evicts items in the order they were inserted.
+*   **`ClockPolicy`**: An approximation of LRU that offers better performance under high concurrency.
+*   **`RandomPolicy`**: Evicts a random item. (Requires `random` feature).
+*   **`NullPolicy`**: (Default for unbounded caches) A no-op policy that never evicts.
 
 ---
 
-### 5. Public Enums (Non-Config)
+### 6. Supporting Types
+
+#### **enum** `TimerWheelMode`
+*   `Default` | `HighPrecisionShortLived` | `LowPrecisionLongLived`
 
 #### **enum** `EvictionReason`
-Describes the reason an entry was removed from the cache.
-
-*   `Capacity`: The entry was removed due to exceeding the cache's capacity.
-*   `Expired`: The entry was removed because its TTL or TTI expired.
-*   `Invalidated`: The entry was removed because it was manually invalidated.
-
----
-
-### 6. Public Structs (Data-oriented)
+*   `Capacity` | `Expired` | `Invalidated`
 
 #### **struct** `MetricsSnapshot`
-A point-in-time, public-facing snapshot of the cache's metrics.
-
 *   `pub hits: u64`
 *   `pub misses: u64`
 *   `pub hit_ratio: f64`
-*   `pub inserts: u64`
-*   `pub updates: u64`
-*   `pub invalidations: u64`
-*   `pub evicted_by_capacity: u64`
-*   `pub evicted_by_ttl: u64`
-*   `pub evicted_by_tti: u64`
-*   `pub keys_admitted: u64`
-*   `pub keys_rejected: u64`
-*   `pub current_cost: u64`
-*   `pub total_cost_added: u64`
-*   `pub uptime_secs: u64`
-
----
+*   ...and many others.
 
 #### **struct** `CacheSnapshot<K, V>`
 *(Requires feature `serde`)*
-A serializable, point-in-time snapshot of the cache's data. Used with `Cache::to_snapshot` and `CacheBuilder::build_from_snapshot`.
+A serializable, point-in-time snapshot of the cache's data.
+
+#### **trait** `TaskSpawner`
+A trait for spawning a future onto an asynchronous runtime.
 
 ---
 

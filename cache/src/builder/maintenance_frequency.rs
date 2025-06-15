@@ -20,4 +20,4 @@ pub const THROUGHPUT: u32 = 64;
 /// it very infrequently (once every 256 inserts per shard). This setting
 /// should be used with caution, as it may allow the cache's event buffers
 /// and memory usage to grow significantly between maintenance cycles.
-pub const AGGRESSIVE: u32 = 256;
+pub const LOW_OVERHEAD: u32 = 256;

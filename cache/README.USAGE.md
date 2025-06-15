@@ -23,9 +23,9 @@ This guide provides a detailed overview of `fibre-cache`'s features, core concep
 
 *   **`Cache` and `AsyncCache` Handles**: These are the two primary structs for interacting with the cache. `Cache` provides a synchronous, blocking API, while `AsyncCache` provides a non-blocking, `async` API. They are lightweight handles that can be cloned cheaply and share the same underlying cache instance.
 *   **Sharding**: To achieve high concurrency, the cache's data is partitioned across multiple shards. Each shard is managed by its own lock, minimizing contention when different keys are accessed by different threads.
-*   **Capacity and Cost**: A `fibre-cache` instance can be "bounded" by a `capacity`. Each item inserted into the cache has a `cost` (a `u64` value). The cache is considered over capacity when the sum of all item costs exceeds the configured capacity. For simple cases, a cost of `1` per item is common.
+*   **Capacity and Cost**: A `fibre-cache` instance can be "bounded" by a `capacity`. Each item inserted into the cache has a `cost` (a `u64` value). The cache is considered over capacity when the sum of all item costs exceeds the configured capacity. For simple cases where all items are the same size, a cost of `1` per item is common.
 *   **Background Janitor**: A dedicated background thread, the "janitor," is responsible for all cleanup tasks. This includes removing items that have expired due to Time-to-Live (TTL) or Time-to-Idle (TTI), and evicting items when the cache is over capacity. This design ensures that user-facing operations like `get` and `insert` remain fast and predictable.
-*   **Eviction Policies**: The logic for deciding which items to evict when the cache is full is determined by a `CachePolicy`. The library provides a wide range of modern and classic policies (e.g., `TinyLfu`, `ARC`, `SIEVE`, `LRU`) and allows for custom implementations.
+*   **Eviction Policies**: The logic for deciding which items to evict when the cache is full is determined by a `CachePolicy`. The library provides a wide range of modern and classic policies (e.g., `TinyLfu`, `Sieve`, `LRU`) and allows for custom implementations.
 
 ## Quick Start Examples
 
@@ -39,6 +39,7 @@ use std::thread;
 use std::time::Duration;
 
 fn main() {
+    // Create a cache that expires items 5 seconds after insertion.
     let cache = CacheBuilder::default()
         .capacity(100)
         .time_to_live(Duration::from_secs(5))
@@ -47,20 +48,22 @@ fn main() {
 
     cache.insert("key1".to_string(), 100, 1);
     
-    assert!(cache.get(&"key1".to_string()).is_some());
+    // fetch() returns an Arc<V>
+    assert_eq!(*cache.fetch(&"key1".to_string()).unwrap(), 100);
     println!("Item 'key1' is in the cache.");
 
     println!("Waiting for 6 seconds for item to expire...");
     thread::sleep(Duration::from_secs(6));
 
-    assert!(cache.get(&"key1".to_string()).is_none());
+    // The background janitor will have removed the expired item.
+    assert!(cache.fetch(&"key1".to_string()).is_none());
     println!("Item 'key1' has expired and is no longer in the cache.");
 }
 ```
 
 ### Asynchronous Cache with Loader
 
-This example demonstrates a "read-through" cache. When `get_with` is called for a key that isn't present, the provided `async_loader` is automatically executed to fetch the value.
+This example demonstrates a "read-through" cache. When `fetch_with` is called for a key that isn't present, the provided `async_loader` is automatically executed to fetch the value. This feature includes **thundering herd protection**, ensuring the loader is only called once even if many tasks request the same missing key simultaneously.
 
 ```rust
 use fibre_cache::CacheBuilder;
@@ -79,11 +82,11 @@ async fn main() {
         .unwrap();
 
     // First call: a cache miss, the loader runs.
-    let value1 = cache.get_with(&"my-key".to_string()).await;
+    let value1 = cache.fetch_with(&"my-key".to_string()).await;
     assert_eq!(*value1, "value for my-key");
 
     // Second call: a cache hit, the loader does not run.
-    let value2 = cache.get_with(&"my-key".to_string()).await;
+    let value2 = cache.fetch_with(&"my-key".to_string()).await;
     assert_eq!(*value2, "value for my-key");
 
     assert_eq!(cache.metrics().misses, 1);
@@ -103,9 +106,9 @@ All caches must be configured and created via the `CacheBuilder`. It provides a 
 *   `.time_to_live(Duration)`: Sets a global Time-to-Live for all items.
 *   `.time_to_idle(Duration)`: Sets a global Time-to-Idle for all items.
 *   `.stale_while_revalidate(Duration)`: Configures a grace period for serving stale data while refreshing.
-*   `.cache_policy(impl CachePolicy)`: Sets a custom eviction policy.
-*   `.loader(impl Fn)`: Sets a synchronous loader function.
-*   `.async_loader(impl Fn)`: Sets an asynchronous loader function.
+*   `.cache_policy_factory(impl Fn)`: Sets a custom eviction policy via a factory function.
+*   `.loader(impl Fn)`: Sets a synchronous loader function for `Cache::fetch_with`.
+*   `.async_loader(impl Fn)`: Sets an asynchronous loader function for `AsyncCache::fetch_with`.
 *   `.eviction_listener(impl EvictionListener)`: Registers a callback for item evictions.
 *   `.shards(usize)`: Sets the number of concurrent shards (will be rounded to the next power of two).
 
@@ -119,55 +122,58 @@ These are the primary handles for interacting with the cache. Their APIs are lar
 
 ### Core Operations
 
-*   `pub fn get(&self, key: &K) -> Option<Arc<V>>`
+*   `get<F, R>(&self, key: &K, f: F) -> Option<R>`
+    *   The most efficient read method. Looks up an entry and, if found, applies the closure `f` to the value *without* cloning the value's `Arc`. The closure is executed while a read lock is held on the shard, so it should be fast.
+*   `fetch(&self, key: &K) -> Option<Arc<V>>`
     *   Retrieves a clone of the `Arc` containing the value if the key exists and is not expired.
-*   `pub fn insert(&self, key: K, value: V, cost: u64)`
+*   `peek(&self, key: &K) -> Option<Arc<V>>`
+    *   Retrieves a value without updating its recency or access time. This is useful for inspecting the cache without affecting the eviction policy's state (e.g., LRU order).
+*   `insert(&self, key: K, value: V, cost: u64)`
     *   Inserts a key-value-cost triple into the cache. If the key already exists, its value and cost are updated.
-*   `pub fn insert_with_ttl(&self, key: K, value: V, cost: u64, ttl: Duration)`
+*   `insert_with_ttl(&self, key: K, value: V, cost: u64, ttl: Duration)`
     *   Inserts an item with a specific TTL that overrides the cache's global default.
-*   `pub fn invalidate(&self, key: &K) -> bool`
+*   `invalidate(&self, key: &K) -> bool`
     *   Removes an item from the cache, returning `true` if the item was present.
-*   `pub fn clear(&self)`
+*   `clear(&self)`
     *   Removes all items from the cache. This is a "stop-the-world" operation that locks all shards.
-*   `pub fn metrics(&self) -> MetricsSnapshot`
+*   `metrics(&self) -> MetricsSnapshot`
     *   Returns a point-in-time snapshot of the cache's performance metrics.
 
 ### Loader-Based Operations
 
-*   `pub fn get_with(&self, key: &K) -> Arc<V>`
-    *   Retrieves a value for the given key. If the key is not present, it executes the configured synchronous or asynchronous loader to compute, insert, and return the value. This method provides thundering herd protection.
+*   `fetch_with(&self, key: &K) -> Arc<V>`
+    *   Retrieves a value for the given key. If the key is not present, it executes the configured synchronous or asynchronous loader to compute, insert, and return the value. This method provides **thundering herd protection**.
 
 ### Atomic Operations
 
-*   `pub fn entry(&self, key: K) -> Entry<'_, K, V, H>`
+*   `entry(&self, key: K) -> Entry<'_, K, V, H>`
     *   Provides an API similar to `std::collections::HashMap::entry` for atomic "get-or-insert" operations. The returned `Entry` enum can be either `Occupied` or `Vacant`.
-*   `pub fn compute<F>(&self, key: &K, f: F) -> bool`
-    *   Atomically applies a closure `F` to a mutable reference of a value. This succeeds only if no other thread is holding a reference (`Arc`) to the value, ensuring safe, in-place mutation.
+*   `compute<F>(&self, key: &K, f: F)`
+    *   Atomically applies a closure `f` to a mutable reference of a value. **Warning**: This method waits (by yielding the thread/task) until it can get exclusive access. If another part of your code holds an `Arc` to the value indefinitely, this method will loop forever (a **livelock**).
+*   `try_compute<F>(&self, key: &K, f: F) -> bool`
+    *   The non-waiting version of `compute`. It attempts to apply the closure once and returns `true` on success. It returns `false` if exclusive access could not be obtained (e.g., another `Arc` to the value exists).
 
 ### Bulk Operations
 
 *(Requires the `bulk` feature flag)*
 These methods are more efficient than calling their singular counterparts in a loop, as they parallelize work across shards.
 
-*   `pub fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
-    *   Retrieves multiple values from the cache.
-*   `pub fn multi_insert<I>(&self, items: I)`
-    *   Inserts multiple key-value-cost triples into the cache.
-*   `pub fn multi_invalidate<I, Q>(&self, keys: I)`
-    *   Removes multiple entries from the cache.
+*   `multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
+*   `multi_insert<I>(&self, items: I)`
+*   `multi_invalidate<I, Q>(&self, keys: I)`
 
 ## Advanced Features
 
 ### Eviction Policies
 
-You can provide a custom eviction policy to the `CacheBuilder`. The library provides several high-performance implementations:
-*   `fibre_cache::policy::TinyLfuPolicy`: The default for bounded caches. A modern, high-hit-rate policy that balances recency and frequency.
-*   `fibre_cache::policy::ArcPolicy`: A classic adaptive policy that dynamically balances between LRU and LFU strategies.
-*   `fibre_cache::policy::SievePolicy`: A very recent, low-overhead, and scan-resistant policy.
-*   `fibre_cache::policy::SlruPolicy`: Segmented LRU, which is more scan-resistant than plain LRU.
-*   `fibre_cache::policy::LruPolicy`: Classic Least Recently Used.
-*   `fibre_cache::policy::FifoPolicy`: First-In, First-Out.
-*   `fibre_cache::policy::RandomPolicy`: Evicts a random item when at capacity.
+You can provide a custom eviction policy to the `CacheBuilder`. The library provides several high-performance implementations, each with different trade-offs:
+
+*   **`TinyLfuPolicy`**: (Default for bounded caches) A sophisticated policy that protects frequently used items from being evicted by infrequently used items, making it scan-resistant. It combines an LRU window with an SLRU main cache. Best for general-purpose workloads.
+*   **`SievePolicy`**: A very recent, simple, and high-performance policy that provides excellent scan resistance with minimal memory overhead. A strong alternative to TinyLFU.
+*   **`SlruPolicy`**: Segmented LRU. Divides the cache into probationary and protected segments to provide better scan resistance than plain LRU.
+*   **`LruPolicy`**: Classic Least Recently Used. Simple and effective for workloads without large, infrequent scans.
+*   **`FifoPolicy`**: First-In, First-Out. Evicts items in the order they were inserted, ignoring access patterns.
+*   **`RandomPolicy`**: Evicts a random item when at capacity.
 
 ### Eviction Listener
 
@@ -182,8 +188,8 @@ You can observe all item removals by implementing the `EvictionListener` trait a
 *(Requires the `serde` feature flag)*
 The library provides a mechanism to save and restore the cache's state.
 
-*   `pub fn to_snapshot(&self) -> CacheSnapshot<K, V>`
-    *   A method on `Cache` and `AsyncCache` that creates a serializable representation of all non-expired items. This is a "stop-the-world" operation.
+*   `to_snapshot(&self) -> CacheSnapshot<K, V>`
+    *   A method on `Cache` and `AsyncCache` that creates a serializable representation of all non-expired items. This is a "stop-the-world" operation that briefly locks all shards.
 *   `CacheBuilder::build_from_snapshot(snapshot: CacheSnapshot)`
     *   A method on the builder to construct a new cache and pre-populate it with data from a snapshot.
 

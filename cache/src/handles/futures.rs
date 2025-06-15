@@ -47,8 +47,60 @@ where
     return self.shared.metrics.snapshot();
   }
 
-  /// Retrieves a value from the cache.
-  pub async fn get(&self, key: &K) -> Option<Arc<V>> {
+  /// Looks up an entry and, if found, applies a closure to the value.
+  ///
+  /// This is the most efficient way to read a value from the cache as it
+  /// does not require cloning the underlying `Arc`. The provided closure `f`
+  /// is executed while a read lock is held on the shard, so it should be fast.
+  ///
+  /// # Returns
+  ///
+  /// - `Some(R)` if the key was found, where `R` is the return value of the closure.
+  /// - `None` if the key was not found.
+  pub async fn get<F, R>(&self, key: &K, f: F) -> Option<R>
+  where
+    F: FnOnce(&V) -> R,
+  {
+    let shard_index = self.shared.get_shard_index(key);
+    let shard = &self.shared.store.shards[shard_index];
+    let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
+    let result: Option<R>;
+
+    // Scope for the ReadGuard
+    {
+      let guard = shard.map.read_async().await;
+      if let Some(entry_in_guard) = guard.get(key) {
+        if entry_in_guard.is_expired(self.shared.time_to_idle) {
+          entry_arc_opt = None;
+          result = None;
+        } else {
+          // Execute the closure while the lock is held
+          result = Some(f(entry_in_guard.value().as_ref()));
+          // Clone the entry to call on_hit outside the lock
+          entry_arc_opt = Some(entry_in_guard.clone());
+        }
+      } else {
+        entry_arc_opt = None;
+        result = None;
+      }
+    } // guard is dropped here
+
+    if let Some(entry_arc) = entry_arc_opt {
+      self.on_hit(key, &entry_arc, shard_index);
+    } else if result.is_none() {
+      self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    result
+  }
+
+  /// Asynchronously fetches a value from the cache, returning a clone of the `Arc`.
+  ///
+  /// This operation is fast and does not block other readers. It will increment
+  /// the reference count of the value's `Arc`.
+  ///
+  /// NOTE: Prefer get, compute will block as long as Arc ref count > 1
+  pub async fn fetch(&self, key: &K) -> Option<Arc<V>> {
     let shard_index = self.shared.get_shard_index(key);
     let shard = &self.shared.store.shards[shard_index];
     let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
@@ -273,10 +325,35 @@ where
     self._run_opportunistic_maintenance(&key, &shard);
   }
 
+  /// Asynchronously and atomically computes a new value for a key, waiting if necessary.
+  ///
+  /// This function provides a blocking, "wait-and-succeed" version of the
+  /// read-modify-write pattern. It repeatedly calls `try_compute` in a loop
+  /// until the modification is successful.
+  ///
+  /// The closure `f` will be called with a mutable reference `&mut V` to the
+  /// value if the key exists.
+  /// 
+  /// NOTE: Use the `get` method for reads where possible to mitigate blocking.
+  pub async fn compute<F>(&self, key: &K, mut f: F)
+  where
+    F: FnMut(&mut V),
+  {
+    loop {
+      // We must call the async `try_compute` here.
+      if self.try_compute(key, &mut f).await {
+        return;
+      }
+      // Yield control back to the Tokio runtime. This is the async equivalent
+      // of `thread::yield_now()`, preventing the executor from being starved.
+      tokio::task::yield_now().await;
+    }
+  }
+
   /// Atomically computes a new value for a key.
   /// The provided closure is called with a mutable reference to the value
   /// if the key exists and no other threads are currently reading it.
-  pub async fn compute<F>(&self, key: &K, f: F) -> bool
+  pub async fn try_compute<F>(&self, key: &K, f: F) -> bool
   where
     F: FnOnce(&mut V),
   {
@@ -667,7 +744,7 @@ where
   /// This method provides thundering herd protection, ensuring that if multiple
   /// tasks request a missing key simultaneously, the loader function is only
   /// executed once.
-  pub async fn get_with(&self, key: &K) -> Arc<V>
+  pub async fn fetch_with(&self, key: &K) -> Arc<V>
   where
     K: Clone + Send + Sync + 'static,
     V: Send + Sync + 'static, // V: Clone needed for the &LoadFuture Future impl
@@ -771,7 +848,7 @@ where
     }
   }
 
-  /// Private helper for the "miss" path of `get_with_async`.
+  /// Private helper for the "miss" path of `fetch_with_async`.
   ///
   /// This implements thundering herd protection for asynchronous callers.
   async fn load_value_awaiting(&self, key: &K) -> Arc<V>
@@ -792,7 +869,7 @@ where
 
       // 2. Check for an existing `LoadFuture`.
       //    DO NOT call self.shared.raw_get(key) here to prevent AB-BA deadlock.
-      //    The initial optimistic raw_get in get_with handles the "already cached" case.
+      //    The initial optimistic raw_get in fetch_with handles the "already cached" case.
       if let Some(existing_future) = pending.get(key) {
         // We will get a value, so this counts as a HIT for us.
         self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);

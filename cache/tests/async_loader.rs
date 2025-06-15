@@ -25,15 +25,15 @@ async fn test_async_loader_basic() {
     .build_async()
     .unwrap();
 
-  // 1. First call to get_with_async on a missing key.
-  let value = cache.get_with(&5).await;
+  // 1. First call to fetch_with_async on a missing key.
+  let value = cache.fetch_with(&5).await;
   assert_eq!(*value, 50);
   assert_eq!(load_count.load(Ordering::SeqCst), 1);
   assert_eq!(cache.metrics().misses, 1);
   assert_eq!(cache.metrics().inserts, 1);
 
   // 2. Second call on the same key.
-  let value = cache.get_with(&5).await;
+  let value = cache.fetch_with(&5).await;
   assert_eq!(*value, 50);
   assert_eq!(
     load_count.load(Ordering::SeqCst),
@@ -77,7 +77,7 @@ async fn test_async_loader_thundering_herd() {
       // Wait for all tasks to be ready
       barrier_clone.wait().await;
       // All tasks request the same missing key at once
-      let value = cache_clone.get_with(&99).await;
+      let value = cache_clone.fetch_with(&99).await;
       assert_eq!(*value, 990);
     }));
   }

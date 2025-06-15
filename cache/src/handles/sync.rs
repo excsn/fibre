@@ -49,11 +49,62 @@ where
     return self.shared.metrics.snapshot();
   }
 
-  /// Retrieves a value from the cache.
+  /// Looks up an entry and, if found, applies a closure to the value.
   ///
-  /// Returns a clone of the `Arc` containing the value if the key is found
-  /// and the entry is not expired. Returns `None` otherwise.
-  pub fn get(&self, key: &K) -> Option<Arc<V>> {
+  /// This is the most efficient way to read a value from the cache as it
+  /// does not require cloning the underlying `Arc`. The provided closure `f`
+  /// is executed while a read lock is held on the shard, so it should be fast.
+  ///
+  /// # Returns
+  ///
+  /// - `Some(R)` if the key was found, where `R` is the return value of the closure.
+  /// - `None` if the key was not found.
+  pub fn get<F, R>(&self, key: &K, f: F) -> Option<R>
+  where
+    F: FnOnce(&V) -> R,
+  {
+    let shard_index = self.shared.get_shard_index(key);
+    let shard = &self.shared.store.shards[shard_index];
+    let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
+    let result: Option<R>;
+
+    // Scope the read guard
+    {
+      let guard = shard.map.read();
+      if let Some(entry_in_guard) = guard.get(key) {
+        if entry_in_guard.is_expired(self.shared.time_to_idle) {
+          entry_arc_opt = None;
+          result = None;
+        } else {
+          // Execute the closure while the lock is held
+          result = Some(f(entry_in_guard.value().as_ref()));
+          // Clone the entry to call on_hit outside the lock
+          entry_arc_opt = Some(entry_in_guard.clone());
+        }
+      } else {
+        entry_arc_opt = None;
+        result = None;
+      }
+    } // Read lock is dropped here.
+
+    if let Some(entry_arc) = entry_arc_opt {
+      self.on_hit(key, &entry_arc, shard_index);
+    } else if result.is_none() {
+      // Only count a miss if we didn't get a result inside the lock.
+      self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    result
+  }
+
+  /// Fetches a value from the cache, returning a clone of the `Arc` if the key
+  /// is found and the entry is not expired.
+  ///
+  /// This operation is fast and does not block other readers. It will increment
+  /// the reference count of the value's `Arc`.
+  ///
+  /// NOTE: Prefer get, compute will block as long as Arc ref count > 1
+  pub fn fetch(&self, key: &K) -> Option<Arc<V>> {
     let shard_index = self.shared.get_shard_index(key);
     let shard = &self.shared.store.shards[shard_index];
     let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
@@ -147,7 +198,6 @@ where
 
     let shard = self.shared.store.get_shard(&key);
 
-    // --- START OF MODIFICATION ---
     // Schedule timers on this shard's specific TimerWheel.
     if let Some(wheel) = &shard.timer_wheel {
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
@@ -158,7 +208,6 @@ where
       let tti_handle = None;
       new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
     }
-    // --- END OF MODIFICATION ---
 
     let old_entry: Option<Arc<CacheEntry<V>>>;
     {
@@ -167,10 +216,8 @@ where
     }
 
     if let Some(entry) = old_entry {
-      // --- START OF MODIFICATION ---
       // Cancel timers on this shard's specific TimerWheel.
       if let Some(wheel) = &shard.timer_wheel {
-        // --- END OF MODIFICATION ---
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
         }
@@ -281,10 +328,46 @@ where
     self._run_opportunistic_maintenance(&key, shard);
   }
 
+  /// Atomically computes a new value for a key, waiting if necessary.
+  ///
+  /// This function provides a blocking, "wait-and-succeed" version of the
+  /// read-modify-write pattern. It repeatedly calls `try_compute` in a loop
+  /// until the modification is successful.
+  ///
+  /// The closure `f` will be called with a mutable reference `&mut V` to the
+  /// value if the key exists.
+  ///
+  /// # Panics
+  ///
+  /// This function will not panic, but it can loop indefinitely if another
+  /// thread holds an `Arc` to the value and never releases it, preventing
+  /// `try_compute` from ever succeeding. This is a form of livelock.
+  /// 
+  /// NOTE: Use the `get` method for reads where possible to mitigate blocking.
+  pub fn compute<F>(&self, key: &K, mut f: F)
+  where
+    F: FnMut(&mut V),
+  {
+    // Loop, calling the non-blocking `try_compute` until it succeeds.
+    // The `FnMut` bound is necessary because the closure might be called
+    // multiple times if there's a race, although that's extremely unlikely.
+    // The *modification* inside the closure, however, will only be applied once.
+    loop {
+      if self.try_compute(key, &mut f) {
+        // The operation succeeded.
+        return;
+      }
+      // The operation failed because another thread is holding an Arc to the value.
+      // Yield the current thread to the OS scheduler to give other threads
+      // a chance to run and potentially drop their Arcs.
+      thread::yield_now();
+    }
+  }
+
   /// Atomically computes a new value for a key.
   /// The provided closure is called with a mutable reference to the value
   /// if the key exists and no other threads are currently reading it.
-  pub fn compute<F>(&self, key: &K, f: F) -> bool
+  pub fn try_compute<F>(&self, key: &K, f: F) -> bool
   where
     F: FnOnce(&mut V),
   {
@@ -456,7 +539,7 @@ where
   V: Send + Sync,
   H: BuildHasher + Clone + Send + Sync + 'static,
 {
-  pub fn get_with(&self, key: &K) -> Arc<V>
+  pub fn fetch_with(&self, key: &K) -> Arc<V>
   where
     K: Clone + 'static,
     V: 'static,
@@ -525,7 +608,7 @@ where
     }
   }
 
-  /// Private helper for the "miss" path of `get_with`.
+  /// Private helper for the "miss" path of `fetch_with`.
   ///
   /// This implements the full thundering herd protection logic for synchronous callers.
   fn load_value_blocking(&self, key: &K) -> Arc<V>
@@ -545,7 +628,7 @@ where
       // 2. Check for an existing `LoadFuture`. If another thread is already
       //    loading this key, we become a "waiter".
       //    DO NOT call self.shared.raw_get(key) here to prevent AB-BA deadlock.
-      //    The initial optimistic raw_get in get_with handles the "already cached" case.
+      //    The initial optimistic raw_get in fetch_with handles the "already cached" case.
       if let Some(existing_future) = pending.get(key) {
         // We will get a value, so this counts as a HIT for us.
         self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);

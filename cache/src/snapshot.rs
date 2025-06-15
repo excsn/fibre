@@ -260,12 +260,12 @@ mod tests {
 
     // 4. Verify the new cache's state
     assert_eq!(new_cache.metrics().current_cost, 2);
-    assert!(new_cache.get(&1).is_some());
+    assert!(new_cache.fetch(&1).is_some());
 
     // Now sleep for the remaining time + margin
     std::thread::sleep(Duration::from_secs(5));
     assert!(
-      new_cache.get(&1).is_none(),
+      new_cache.fetch(&1).is_none(),
       "Item should have expired based on its original insertion time"
     );
   }
@@ -306,7 +306,7 @@ mod tests {
 
     // 4. Verify the new cache's state
     assert_eq!(new_cache.metrics().current_cost, 1);
-    assert_eq!(new_cache.get(&1).await.unwrap().id, 1);
+    assert_eq!(new_cache.fetch(&1).await.unwrap().id, 1);
   }
 
   #[test]

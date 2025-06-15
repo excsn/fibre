@@ -154,7 +154,7 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
 
   /// Sets the synchronous loader function for the cache.
   ///
-  /// The provided closure is called by `get_with` when a key is not present.
+  /// The provided closure is called by `fetch_with` when a key is not present.
   /// It must return a tuple of `(value, cost)`.
   pub fn loader(mut self, f: impl Fn(K) -> (V, u64) + Send + Sync + 'static) -> Self {
     self.loader = Some(Loader::Sync(Arc::new(f)));
@@ -163,7 +163,7 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
 
   /// Sets the asynchronous loader function for the cache.
   ///
-  /// The provided closure is called by `get_with` when a key is not present.
+  /// The provided closure is called by `fetch_with` when a key is not present.
   /// It must return a tuple of `(value, cost)`.
   pub fn async_loader<F, Fut>(mut self, f: F) -> Self
   where

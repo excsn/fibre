@@ -23,7 +23,7 @@ mod lru {
     cache.insert(3, "c", 1);
     assert_eq!(cache.metrics().current_cost, 3);
 
-    cache.get(&1);
+    cache.fetch(&1);
 
     cache.insert(4, "d", 1);
     assert_eq!(
@@ -35,10 +35,10 @@ mod lru {
     std::thread::sleep(Duration::from_millis(50)); // <-- WAIT FOR JANITOR
 
     assert_eq!(cache.metrics().current_cost, 3);
-    assert!(cache.get(&2).is_none(), "Key 2 should have been evicted");
-    assert!(cache.get(&1).is_some());
-    assert!(cache.get(&3).is_some());
-    assert!(cache.get(&4).is_some());
+    assert!(cache.fetch(&2).is_none(), "Key 2 should have been evicted");
+    assert!(cache.fetch(&1).is_some());
+    assert!(cache.fetch(&3).is_some());
+    assert!(cache.fetch(&4).is_some());
   }
 }
 
@@ -62,16 +62,16 @@ mod fifo {
     cache.insert(2, "b", 1);
     cache.insert(3, "c", 1);
 
-    cache.get(&1);
+    cache.fetch(&1);
 
     cache.insert(4, "d", 1);
     std::thread::sleep(Duration::from_millis(50)); // <-- WAIT FOR JANITOR
 
     assert_eq!(cache.metrics().current_cost, 3);
-    assert!(cache.get(&1).is_none(), "Key 1 should have been evicted");
-    assert!(cache.get(&2).is_some());
-    assert!(cache.get(&3).is_some());
-    assert!(cache.get(&4).is_some());
+    assert!(cache.fetch(&1).is_none(), "Key 1 should have been evicted");
+    assert!(cache.fetch(&2).is_some());
+    assert!(cache.fetch(&3).is_some());
+    assert!(cache.fetch(&4).is_some());
   }
 }
 
@@ -96,16 +96,16 @@ mod sieve {
     cache.insert(2, "b", 1);
     cache.insert(3, "c", 1);
 
-    cache.get(&2);
+    cache.fetch(&2);
 
     cache.insert(4, "d", 1);
     std::thread::sleep(Duration::from_millis(50)); // <-- WAIT FOR JANITOR
 
     assert_eq!(cache.metrics().current_cost, 3);
-    assert!(cache.get(&1).is_none(), "Key 1 should be evicted");
-    assert!(cache.get(&2).is_some(), "Key 2 should be retained");
-    assert!(cache.get(&3).is_some());
-    assert!(cache.get(&4).is_some());
+    assert!(cache.fetch(&1).is_none(), "Key 1 should be evicted");
+    assert!(cache.fetch(&2).is_some(), "Key 2 should be retained");
+    assert!(cache.fetch(&3).is_some());
+    assert!(cache.fetch(&4).is_some());
   }
 }
 
@@ -134,8 +134,8 @@ mod tinylfu {
     let cache = build_test_cache(10);
     cache.insert(1, "one".to_string(), 1);
     cache.insert(2, "two".to_string(), 1);
-    assert_eq!(*cache.get(&1).unwrap(), "one");
-    assert_eq!(*cache.get(&2).unwrap(), "two");
+    assert_eq!(*cache.fetch(&1).unwrap(), "one");
+    assert_eq!(*cache.fetch(&2).unwrap(), "two");
   }
 
   #[test]
@@ -143,12 +143,12 @@ mod tinylfu {
     let cache = build_test_cache(10);
     cache.insert(1, "one".to_string(), 1);
     cache.insert(2, "two".to_string(), 1);
-    assert_eq!(*cache.get(&1).unwrap(), "one");
-    assert_eq!(*cache.get(&2).unwrap(), "two");
+    assert_eq!(*cache.fetch(&1).unwrap(), "one");
+    assert_eq!(*cache.fetch(&2).unwrap(), "two");
 
     cache.invalidate(&1);
-    assert_eq!(cache.get(&1), None);
-    assert_eq!(*cache.get(&2).unwrap(), "two");
+    assert_eq!(cache.fetch(&1), None);
+    assert_eq!(*cache.fetch(&2).unwrap(), "two");
   }
 
   #[test]
@@ -158,8 +158,8 @@ mod tinylfu {
     cache.insert(2, "two".to_string(), 1);
     assert_eq!(cache.metrics().current_cost, 2);
 
-    cache.get(&1);
-    cache.get(&2);
+    cache.fetch(&1);
+    cache.fetch(&2);
     assert_eq!(cache.metrics().current_cost, 2);
 
     cache.insert(3, "three".to_string(), 1);
@@ -193,8 +193,8 @@ mod tinylfu {
     assert_eq!(cache.metrics().current_cost, 2);
 
     cache.clear();
-    assert_eq!(cache.get(&1), None);
-    assert_eq!(cache.get(&2), None);
+    assert_eq!(cache.fetch(&1), None);
+    assert_eq!(cache.fetch(&2), None);
     assert_eq!(cache.metrics().current_cost, 0);
   }
 
@@ -207,7 +207,7 @@ mod tinylfu {
       cache.insert(i, i.to_string(), 1);
     }
     for i in 1..=9 {
-      cache.get(&i); // Freq(1..9) is > 1, Freq(10) is 1
+      cache.fetch(&i); // Freq(1..9) is > 1, Freq(10) is 1
     }
     assert_eq!(cache.metrics().current_cost, 10);
 
@@ -232,15 +232,15 @@ mod tinylfu {
       "Janitor should bring cost back to capacity"
     );
     assert!(
-      cache.get(&10).is_none(),
+      cache.fetch(&10).is_none(),
       "Infrequent item (10) should be evicted"
     );
     assert!(
-      cache.get(&1).is_some(),
+      cache.fetch(&1).is_some(),
       "Hot item (1) should have been protected"
     );
     assert!(
-      cache.get(&100).is_some(),
+      cache.fetch(&100).is_some(),
       "New trigger item (100) should now be in the cache"
     );
   }
@@ -257,7 +257,7 @@ mod tinylfu {
 
     // 2. Make item 5 very "hot" by accessing it repeatedly.
     for _ in 0..10 {
-      cache.get(&5);
+      cache.fetch(&5);
     }
 
     // 3. Insert item 11. This will push the cache over capacity.
@@ -279,7 +279,7 @@ mod tinylfu {
       "Janitor should bring cost back to capacity"
     );
     assert!(
-      cache.get(&5).is_some(),
+      cache.fetch(&5).is_some(),
       "Hot item 5 should have been protected"
     );
 
@@ -288,11 +288,11 @@ mod tinylfu {
     // Cleanup_capacity will ask the policy to evict, and it will evict from the main SLRU,
     // which will choose item 1.
     assert!(
-      cache.get(&1).is_none(),
+      cache.fetch(&1).is_none(),
       "Weak, cold victim (1) should be evicted by policy"
     );
     assert!(
-      cache.get(&11).is_some(),
+      cache.fetch(&11).is_some(),
       "New item 11 should be in the cache"
     );
   }
@@ -328,7 +328,7 @@ mod slru {
 
     // 2. Access item 2. The policy should promote it to the protected segment.
     // Policy prob: [4, 3, 1], Policy prot: [2]
-    cache.get(&2);
+    cache.fetch(&2);
 
     // 3. Insert item 5. This will exceed total capacity.
     // The insert itself is non-blocking and pushes the cost to 5.
@@ -350,12 +350,12 @@ mod slru {
       "Cache cost should be back to capacity after janitor runs"
     );
     assert!(
-      cache.get(&1).is_none(),
+      cache.fetch(&1).is_none(),
       "LRU of probationary (1) should be evicted"
     );
-    assert!(cache.get(&2).is_some(), "Promoted item (2) should be safe");
-    assert!(cache.get(&3).is_some());
-    assert!(cache.get(&4).is_some());
-    assert!(cache.get(&5).is_some(), "New item (5) should be present");
+    assert!(cache.fetch(&2).is_some(), "Promoted item (2) should be safe");
+    assert!(cache.fetch(&3).is_some());
+    assert!(cache.fetch(&4).is_some());
+    assert!(cache.fetch(&5).is_some(), "New item (5) should be present");
   }
 }

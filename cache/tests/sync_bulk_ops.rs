@@ -66,10 +66,10 @@ fn test_sync_multi_invalidate() {
 
   // 3. Verify items are gone.
   for i in 5..15 {
-    assert!(cache.get(&i).is_none());
+    assert!(cache.fetch(&i).is_none());
   }
   for i in (0..5).chain(15..20) {
-    assert!(cache.get(&i).is_some());
+    assert!(cache.fetch(&i).is_some());
   }
 }
 
@@ -105,7 +105,7 @@ fn test_sync_multi_insert_triggers_eviction() {
   // We can check that the total number of items is correct.
   let mut total_keys = 0;
   for i in 0..15 {
-    if cache.get(&i).is_some() {
+    if cache.fetch(&i).is_some() {
       total_keys += 1;
     }
   }

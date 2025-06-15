@@ -16,7 +16,7 @@ fn test_unbounded_cache_with_ttl_does_not_panic() {
   assert!(cache.is_ok());
   let cache = cache.unwrap();
   cache.insert(1, 1, 1);
-  assert!(cache.get(&1).is_some());
+  assert!(cache.fetch(&1).is_some());
 }
 
 #[tokio::test]
@@ -29,7 +29,7 @@ async fn test_unbounded_async_cache_with_tti_does_not_panic() {
   assert!(cache.is_ok());
   let cache = cache.unwrap();
   cache.insert(1, 1, 1).await;
-  assert!(cache.get(&1).await.is_some());
+  assert!(cache.fetch(&1).await.is_some());
 }
 
 #[test]
@@ -47,7 +47,7 @@ fn test_bounded_cache_defaults_to_tinylfu() {
 
   // Access item 1 repeatedly to make it "hot". Item 2 remains "cold".
   for _ in 0..10 {
-    cache.get(&1);
+    cache.fetch(&1);
   }
 
   // At this point, cost is 2. The cache is full.
@@ -71,7 +71,7 @@ fn test_bounded_cache_defaults_to_tinylfu() {
     2,
     "Janitor should bring cost back to capacity"
   );
-  assert!(cache.get(&1).is_some(), "Hot item 1 should be protected");
-  assert!(cache.get(&2).is_none(), "Cold item 2 should be evicted");
-  assert!(cache.get(&3).is_some(), "New item 3 should be present");
+  assert!(cache.fetch(&1).is_some(), "Hot item 1 should be protected");
+  assert!(cache.fetch(&2).is_none(), "Cold item 2 should be evicted");
+  assert!(cache.fetch(&3).is_some(), "New item 3 should be present");
 }

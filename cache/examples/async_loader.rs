@@ -44,7 +44,7 @@ async fn main() {
     let cache_clone = cache.clone();
     tasks.push(tokio::spawn(async move {
       println!("[Task {}] Requesting key 42...", i);
-      let value = cache_clone.get_with(&42).await;
+      let value = cache_clone.fetch_with(&42).await;
       println!("[Task {}] Received value: {}", i, value);
       assert_eq!(*value, "value_for_42");
     }));
@@ -66,7 +66,7 @@ async fn main() {
 
   println!("\n--- Second Request ---");
   println!("Requesting key 42 again. This should now be a cache hit.");
-  let value = cache.get_with(&42).await;
+  let value = cache.fetch_with(&42).await;
   println!("Received value: {}", value);
   println!(
     "Database function was called {} time(s) in total.",

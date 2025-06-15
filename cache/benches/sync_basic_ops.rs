@@ -45,7 +45,7 @@ fn setup_fn(cfg: &BenchConfig) -> Result<(BenchContext, BenchState), String> {
   let cache = Arc::new(
     CacheBuilder::default()
       .capacity(cfg.capacity)
-      .maintenance_chance(maintenance_frequency::AGGRESSIVE)
+      .maintenance_chance(maintenance_frequency::LOW_OVERHEAD)
       .build()
       .unwrap(),
   );
@@ -102,7 +102,7 @@ fn benchmark_logic(
         match op_type.as_str() {
           "GetHit" | "GetMiss" => {
             for key in thread_keys {
-              black_box(cache_clone.get(key));
+              black_box(cache_clone.get(key, |_v| ()));
             }
           }
           "Insert" => {

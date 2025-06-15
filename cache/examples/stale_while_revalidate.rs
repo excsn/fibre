@@ -39,12 +39,12 @@ fn main() {
   let key = "my-data".to_string();
 
   println!("--- Step 1: Initial Load ---");
-  let value1 = cache.get_with(&key);
+  let value1 = cache.fetch_with(&key);
   println!("Received: {:?}", *value1);
   assert_eq!(value1.version, 1);
 
   println!("\n--- Step 2: Cache Hit (Fresh) ---");
-  let value2 = cache.get_with(&key);
+  let value2 = cache.fetch_with(&key);
   println!("Received: {:?}", *value2);
   assert_eq!(value2.version, 1);
   println!("Loader calls: {}", load_counter.load(Ordering::Relaxed));
@@ -58,7 +58,7 @@ fn main() {
     "Requesting key '{}'. It's stale, but within the grace period.",
     key
   );
-  let value3 = cache.get_with(&key);
+  let value3 = cache.fetch_with(&key);
   println!("IMMEDIATELY Received (stale): {:?}", *value3);
   assert_eq!(
     value3.version, 1,
@@ -82,7 +82,7 @@ fn main() {
   );
 
   println!("\n--- Step 6: Final Read (Fresh) ---");
-  let value4 = cache.get_with(&key);
+  let value4 = cache.fetch_with(&key);
   println!("Received (refreshed): {:?}", *value4);
   assert_eq!(value4.version, 2, "Should now have the refreshed version 2");
 

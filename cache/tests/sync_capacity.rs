@@ -27,10 +27,10 @@ fn test_sync_janitor_evicts_on_capacity() {
   // 3. Assert the cache is back to its target capacity.
   assert_eq!(cache.metrics().current_cost, 10);
   assert!(
-    cache.get(&0).is_none(),
+    cache.fetch(&0).is_none(),
     "Key 0 should have been evicted by the janitor"
   );
-  assert!(cache.get(&10).is_some());
+  assert!(cache.fetch(&10).is_some());
   assert_eq!(cache.metrics().evicted_by_capacity, 1);
 }
 
@@ -58,8 +58,8 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up() {
     15,
     "Cache should be temporarily over capacity"
   );
-  assert!(cache.get(&1).is_some());
-  assert!(cache.get(&2).is_some());
+  assert!(cache.fetch(&1).is_some());
+  assert!(cache.fetch(&2).is_some());
 
   // 4. Wait for the janitor to run.
   // With LRU policy, it will evict item 1 (cost 5), then item 2 (cost 10)
@@ -72,8 +72,8 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up() {
     0,
     "Janitor should have evicted both items"
   );
-  assert!(cache.get(&1).is_none(), "Item 1 should have been evicted");
-  assert!(cache.get(&2).is_none(), "Item 2 should have been evicted");
+  assert!(cache.fetch(&1).is_none(), "Item 1 should have been evicted");
+  assert!(cache.fetch(&2).is_none(), "Item 2 should have been evicted");
   assert_eq!(cache.metrics().evicted_by_capacity, 2);
 }
 
@@ -99,11 +99,11 @@ fn test_sync_janitor_evicts_on_capacity_with_lru() { // Renamed slightly for cla
   // 3. Assert the cache is back to its target capacity.
   assert_eq!(cache.metrics().current_cost, 10, "Cost should be 10 (capacity) after janitor");
   assert!(
-    cache.get(&0).is_none(), // With LRU, item 0 (first in) should be evicted
+    cache.fetch(&0).is_none(), // With LRU, item 0 (first in) should be evicted
     "Key 0 should have been evicted by the janitor"
   );
   for i in 1..=10 { // Items 1 through 10 should remain
-      assert!(cache.get(&i).is_some(), "Key {} should still be present", i);
+      assert!(cache.fetch(&i).is_some(), "Key {} should still be present", i);
   }
   assert_eq!(cache.metrics().evicted_by_capacity, 1);
 }
@@ -127,8 +127,8 @@ fn test_sync_janitor_evicts_on_capacity_with_default_tinylfu() {
 
   // To make eviction predictable, let's access items 2 and 3 to make them "hotter"
   // than item 1 in the eviction policy's view.
-  cache.get(&2);
-  cache.get(&3);
+  cache.fetch(&2);
+  cache.fetch(&3);
 
   // 2. Cause an overflow by replacing an item with a higher-cost one.
   // This is a more reliable way to create an overflow state for the janitor with TinyLFU.
@@ -154,9 +154,9 @@ fn test_sync_janitor_evicts_on_capacity_with_default_tinylfu() {
   
   // 6. Assert item consistency (which specific item is evicted depends on fine-grained policy details,
   // but we can confirm that *one* of the cost-1 items is gone).
-  let item1_present = cache.get(&1).is_some(); // cost 2
-  let item2_present = cache.get(&2).is_some(); // cost 1
-  let item3_present = cache.get(&3).is_some(); // cost 1
+  let item1_present = cache.fetch(&1).is_some(); // cost 2
+  let item2_present = cache.fetch(&2).is_some(); // cost 1
+  let item3_present = cache.fetch(&3).is_some(); // cost 1
   
   assert!(item1_present, "Item 1 (high cost) should remain");
   // One of item 2 or 3 should be evicted.
@@ -188,7 +188,7 @@ fn test_sync_no_eviction_if_at_capacity() {
   assert_eq!(cache.metrics().current_cost, cache_capacity, "Cost should remain at capacity");
   assert_eq!(cache.metrics().evicted_by_capacity, initial_evictions, "No new evictions should occur");
   for i in 0..cache_capacity { // All items should still be present
-      assert!(cache.get(&(i as i32)).is_some(), "Key {} should still be present", i);
+      assert!(cache.fetch(&(i as i32)).is_some(), "Key {} should still be present", i);
   }
 }
 
@@ -221,8 +221,8 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up_large_overflow() { // 
     11, // 1 (for key 1) + 10 (for key 2)
     "Cache should be temporarily over capacity"
   );
-  assert!(cache.get(&1).is_some());
-  assert!(cache.get(&2).is_some());
+  assert!(cache.fetch(&1).is_some());
+  assert!(cache.fetch(&2).is_some());
   let evictions_before_janitor = cache.metrics().evicted_by_capacity;
 
 
@@ -240,8 +240,8 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up_large_overflow() { // 
     0, // Both items evicted to get under capacity 5.
     "Janitor should have evicted both items"
   );
-  assert!(cache.get(&1).is_none(), "Item 1 should have been evicted");
-  assert!(cache.get(&2).is_none(), "Item 2 should have been evicted");
+  assert!(cache.fetch(&1).is_none(), "Item 1 should have been evicted");
+  assert!(cache.fetch(&2).is_none(), "Item 2 should have been evicted");
   let evictions_after_janitor = cache.metrics().evicted_by_capacity;
   assert_eq!(evictions_after_janitor - evictions_before_janitor, 2, "Two items should be evicted by janitor");
 }

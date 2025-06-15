@@ -1,3 +1,11 @@
+//! An eviction policy based on a Least Recently Used (LRU) algorithm.
+//!
+//! This policy evicts the item that has not been accessed for the longest
+//! period of time. It is simple and effective for many workloads but can be
+
+//! vulnerable to cache pollution from operations that scan over many items
+//! once (e.g., a "one-hit wonder").
+
 use crate::policy::lru_list::LruList;
 use crate::policy::AdmissionDecision;
 

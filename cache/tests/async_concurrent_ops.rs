@@ -26,7 +26,7 @@ async fn test_async_concurrent_load_and_invalidate() {
     let barrier_clone = barrier.clone();
     tasks.push(tokio::spawn(async move {
       barrier_clone.wait().await;
-      let value = cache_clone.get_with(&1).await;
+      let value = cache_clone.fetch_with(&1).await;
       assert_eq!(*value, 10);
     }));
   }

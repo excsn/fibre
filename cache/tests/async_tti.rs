@@ -21,7 +21,7 @@ async fn test_async_item_expires_after_tti() {
 
   // The get call will see the item is expired and return None.
   assert!(
-    cache.get(&"key").await.is_none(),
+    cache.fetch(&"key").await.is_none(),
     "Item should expire after being idle"
   );
 
@@ -50,7 +50,7 @@ async fn test_async_tti_is_reset_on_access() {
   for _ in 0..3 {
     sleep(TINY_TTI / 2).await;
     assert!(
-      cache.get(&"key").await.is_some(),
+      cache.fetch(&"key").await.is_some(),
       "Item should be present before TTI expires"
     );
   }
@@ -60,7 +60,7 @@ async fn test_async_tti_is_reset_on_access() {
 
   // The item should finally be expired.
   assert!(
-    cache.get(&"key").await.is_none(),
+    cache.fetch(&"key").await.is_none(),
     "Item should have expired after final idle period"
   );
 }

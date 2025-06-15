@@ -40,7 +40,7 @@ fn main() {
 
   // Access key 1. In Sieve, this sets its 'visited' bit, giving it a second chance.
   println!("\nAccessing key 1 to mark it as 'visited'...");
-  cache.get(&1);
+  cache.fetch(&1);
 
   // Insert a 4th item. This will push the cache over capacity.
   println!("\nInserting key 4. This will trigger an eviction.");
@@ -55,12 +55,12 @@ fn main() {
   // But 1 was visited, so it is spared.
   // The next oldest is 2, which is unvisited. Key 2 should be the victim.
   assert!(
-    cache.get(&1).is_some(),
+    cache.fetch(&1).is_some(),
     "Key 1 should be present (was visited)"
   );
-  assert!(cache.get(&2).is_none(), "Key 2 should have been evicted");
-  assert!(cache.get(&3).is_some());
-  assert!(cache.get(&4).is_some());
+  assert!(cache.fetch(&2).is_none(), "Key 2 should have been evicted");
+  assert!(cache.fetch(&3).is_some());
+  assert!(cache.fetch(&4).is_some());
 
   println!("Final cost: {}", cache.metrics().current_cost);
   println!("\nCache metrics: {:#?}", cache.metrics());

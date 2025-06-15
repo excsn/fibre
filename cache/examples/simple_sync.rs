@@ -16,7 +16,7 @@ fn main() {
   cache.insert("key1".to_string(), 100, 1);
 
   // Get the value.
-  match cache.get(&"key1".to_string()) {
+  match cache.fetch(&"key1".to_string()) {
     Some(value) => println!("Found value for key1: {}", value),
     None => println!("Value for key1 not found."),
   }
@@ -27,7 +27,7 @@ fn main() {
   thread::sleep(Duration::from_secs(6));
 
   // The janitor runs every second and will have removed the expired item.
-  match cache.get(&"key1".to_string()) {
+  match cache.fetch(&"key1".to_string()) {
     Some(value) => println!("Found value for key1: {}", value),
     None => println!("Value for key1 not found (as expected after TTL)."),
   }

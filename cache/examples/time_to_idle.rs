@@ -19,7 +19,7 @@ fn main() {
     // Wait for 1 second, which is less than the TTI.
     thread::sleep(Duration::from_secs(1));
     // Accessing the key resets its idle timer back to 2 seconds.
-    assert!(cache.get(&"my_key").is_some());
+    assert!(cache.fetch(&"my_key").is_some());
     println!(
       "[Cycle {}] Accessed 'my_key'. Its 2-second idle timer has been reset.",
       i
@@ -32,7 +32,7 @@ fn main() {
 
   // The get call will find the item is expired because it has been idle for > 2s.
   assert!(
-    cache.get(&"my_key").is_none(),
+    cache.fetch(&"my_key").is_none(),
     "Item should be expired now."
   );
   println!("'my_key' has expired due to being idle for more than 2 seconds.");

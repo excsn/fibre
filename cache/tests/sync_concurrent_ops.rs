@@ -30,7 +30,7 @@ fn test_sync_concurrent_load_and_invalidate() {
     handles.push(thread::spawn(move || {
       barrier_clone.wait();
       // All threads request the same key
-      let value = cache_clone.get_with(&1);
+      let value = cache_clone.fetch_with(&1);
       // The value could be 10 (if they ran before invalidate) or
       // potentially a re-loaded 10. The key is no deadlocks.
       assert_eq!(*value, 10);

@@ -22,7 +22,7 @@ fn test_sync_item_expires_after_tti() {
   // The get call will see the item is expired and return None.
   // At this point, the item might still be in the cache map, waiting for the janitor.
   assert!(
-    cache.get(&"key").is_none(),
+    cache.fetch(&"key").is_none(),
     "Item should be identified as expired on get"
   );
 
@@ -51,7 +51,7 @@ fn test_sync_tti_is_reset_on_access() {
   for _ in 0..3 {
     thread::sleep(TINY_TTI / 2);
     assert!(
-      cache.get(&"key").is_some(),
+      cache.fetch(&"key").is_some(),
       "Item should be present before TTI expires"
     );
   }
@@ -61,7 +61,7 @@ fn test_sync_tti_is_reset_on_access() {
 
   // The item should finally be expired.
   assert!(
-    cache.get(&"key").is_none(),
+    cache.fetch(&"key").is_none(),
     "Item should have expired after final idle period"
   );
 }

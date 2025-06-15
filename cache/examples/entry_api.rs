@@ -56,7 +56,7 @@ fn main() {
   );
 
   println!("\nFinal cache state:");
-  println!("user_a -> session {}", cache.get(&user_a).unwrap());
-  println!("user_b -> session {}", cache.get(&user_b).unwrap());
+  println!("user_a -> session {}", cache.fetch(&user_a).unwrap());
+  println!("user_b -> session {}", cache.fetch(&user_b).unwrap());
   println!("\nMetrics: {:#?}", cache.metrics());
 }

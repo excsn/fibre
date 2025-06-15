@@ -23,9 +23,9 @@ fn test_sync_loader_basic() {
     .build()
     .unwrap();
 
-  // 1. First call to get_with on a missing key.
+  // 1. First call to fetch_with on a missing key.
   // This should trigger the loader.
-  let value = cache.get_with(&5);
+  let value = cache.fetch_with(&5);
   assert_eq!(*value, 50);
   assert_eq!(
     load_count.load(Ordering::SeqCst),
@@ -35,9 +35,9 @@ fn test_sync_loader_basic() {
   assert_eq!(cache.metrics().misses, 1);
   assert_eq!(cache.metrics().inserts, 1);
 
-  // 2. Second call to get_with on the same key.
+  // 2. Second call to fetch_with on the same key.
   // This should be a cache hit and not call the loader.
-  let value = cache.get_with(&5);
+  let value = cache.fetch_with(&5);
   assert_eq!(*value, 50);
   assert_eq!(
     load_count.load(Ordering::SeqCst),
@@ -78,7 +78,7 @@ fn test_sync_loader_thundering_herd() {
       // Wait for all threads to be ready
       barrier_clone.wait();
       // All threads request the same missing key at once
-      let value = cache_clone.get_with(&99);
+      let value = cache_clone.fetch_with(&99);
       assert_eq!(*value, 990);
     }));
   }

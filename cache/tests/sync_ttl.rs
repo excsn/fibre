@@ -15,9 +15,9 @@ fn test_sync_item_expires_after_ttl() {
     .unwrap();
 
   cache.insert("key", "value", 1);
-  assert!(cache.get(&"key").is_some());
+  assert!(cache.fetch(&"key").is_some());
   thread::sleep(TINY_TTL + SLEEP_MARGIN);
-  assert!(cache.get(&"key").is_none(), "Item should have expired");
+  assert!(cache.fetch(&"key").is_none(), "Item should have expired");
 
   let metrics = cache.metrics();
   assert_eq!(metrics.hits, 1);
@@ -38,10 +38,10 @@ fn test_sync_ttl_is_not_reset_on_access() {
 
   cache.insert("key", "value", 1);
   thread::sleep(TINY_TTL / 2);
-  assert!(cache.get(&"key").is_some());
+  assert!(cache.fetch(&"key").is_some());
   thread::sleep(TINY_TTL / 2 + SLEEP_MARGIN);
   assert!(
-    cache.get(&"key").is_none(),
+    cache.fetch(&"key").is_none(),
     "Item should have expired despite access"
   );
 }

@@ -1,6 +1,17 @@
-# **`Fibre Cache`**
+# **`fibre-cache`**
 
 `fibre-cache` offers a best-in-class, high-performance, concurrent, multimode sync/async cache for Rust. It is built from the heart and soul of a Java-turned-Rust engineer to bring the comprehensive, flexible, and ergonomic "it just works" feeling of top-tier Java caches (like Caffeine) to the Rust ecosystem.
+Of course. It's crucial to set the right expectations for a library in its early stages. Here is a brief section you can add to the README, designed to be clear and direct. A good place for it would be right after the introduction and before the Quickstart section.
+
+## ⚠️ Current Status: Beta
+
+Please note that `fibre-cache` is currently in an active beta phase. The core functionality is robust and well-tested, but the public API is still evolving.
+
+This means:
+*   **APIs May Change:** Until the `1.0` release, breaking changes may be introduced in minor version updates (`0.x.y`).
+*   **Production Use:** While we strive for stability, using this library in a mission-critical production environment is **at your own risk**. Please be prepared to adapt to changes and conduct thorough testing for your specific use case.
+
+We highly encourage you to try it out, provide feedback and report any issues. Contributions are always welcome as we work towards a stable release
 
 ## Motivation
 
@@ -22,7 +33,11 @@ Get started quickly by adding `fibre-cache` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fibre-cache = { git = "https://github.com/excsn/fibre" } # Or use a version from crates.io
+# For the latest version from git:
+fibre-cache = { git = "https://github.com/excsn/fibre", branch = "main" }
+# Or from crates.io:
+# fibre-cache = "0.5"
+
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -76,21 +91,21 @@ async fn main() {
 #### **Key Architectural Pillars**
 *   **High Concurrency via Sharding:** Partitions data across independently locked shards to minimize contention.
 *   **Hybrid Locking:** A custom `HybridRwLock` provides raw, blocking speed for sync operations and true, non-blocking suspension for async operations.
-*   **Non-`Clone` Value Support:** Stores values in an `Arc<V>`, making `V: Clone` unnecessary for most operations—a core advantage over many other Rust caches.
+*   **No `V: Clone` Required:** Stores values in an `Arc<V>`, making `V: Clone` unnecessary for most operations—a core advantage over many other Rust caches.
 *   **Unified Sync/Async API:** Zero-cost `to_sync()` and `to_async()` methods allow seamless conversion between handles.
 *   **Trait-Based Policies:** A flexible `CachePolicy` trait allows for swapping out admission and eviction algorithms.
 
 ### **Implemented Features**
 | Feature | Details |
 | :--- | :--- |
-| **Atomic `entry` API** | A fully atomic get-or-insert API mimicking `HashMap`, safe for concurrent use. |
+| **Atomic `entry` API** | A fully atomic get-or-insert API mimicking `HashMap`, safe for concurrent use in both sync and async contexts. |
 | **`CacheLoader`** | Self-populating cache via `get_with`. Supports both sync (`loader`) and async (`async_loader`) functions. |
-| **Thundering Herd Protection**| Guarantees a loader is executed only once for concurrent misses on the same key. |
-| **Runtime Agnostic** | The `async_loader` can be used with any async runtime via a `TaskSpawner` trait. |
+| **Thundering Herd Protection**| Guarantees a loader is executed only once for concurrent misses on the same key, preventing duplicate work. |
+| **Runtime Agnostic** | The `async_loader` can be used with any async runtime (`tokio`, `async-std`, etc.) via a `TaskSpawner` trait. |
 | **Stale-While-Revalidate** | Can serve stale data for a configured grace period while refreshing it in the background, hiding latency. |
 | **Comprehensive Policies** | Includes **TinyLfu**, **SIEVE**, **SLRU**, **ARC**, **LRU**, **FIFO**, and **Random** eviction/admission policies. |
-| **Bulk Operations** | Efficient, parallelized `multiget`, `multi_insert`, and `multi_invalidate` methods. |
-| **In-place Mutation** | A `compute` method for safe, atomic mutation of existing values. |
+| **Bulk Operations** | Efficient, parallelized `multiget`, `multi_insert`, and `multi_invalidate` methods (via `bulk` feature). |
+| **In-place Mutation** | A `compute` method for safe, atomic mutation of existing values without cloning. |
 | **Eviction Listener** | Receive non-blocking notifications for every item removal on a dedicated background thread. |
 | **Persistence (`serde`)**| An opt-in `serde` feature provides a flexible `to_snapshot()` and `build_from_snapshot()` API. |
 | **Metrics & Stats** | A zero-dependency, queryable metrics system for deep observability. |
@@ -100,29 +115,34 @@ async fn main() {
 
 | Feature Group | Feature | Moka / Caffeine | Stretto / Ristretto | **`fibre-cache`** | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Core Architecture** | **Concurrency Model** | Sharded | Sharded | ✅ Sharded, Custom Hybrid Lock | Custom lock with distinct, optimized paths for sync and async. |
-| | **Sync & Async API** | ✅ | ✅ | ✅ | Zero-cost, fully interoperable sync and async handles. |
-| | **`V: Clone` Required?** | Yes | No | ✅ **No** | `Arc<V>` storage natively supports non-cloneable values. |
+| **Core Architecture** | **Concurrency Model** | Sharded | Sharded | ✅ **Sharded, Custom Lock** | Custom hybrid lock with distinct, optimized paths for sync and async. |
+| | **Sync/Async Interoperability** | Separate Caches | ✅ | ✅ **Zero-Cost Handles** | A single cache instance can be accessed via both sync and async handles seamlessly. |
+| | **`V: Clone` Required?** | **Yes** | No | ✅ **No** | `Arc<V>` storage natively supports non-cloneable values, a major ergonomic win. |
+| | **Maintenance Model** | Background Thread | Sampling-based | ✅ **Janitor + Opportunistic** | A dedicated janitor thread is augmented by opportunistic maintenance on writes. |
+| | **Contention-Free Access Batching**| Event Queue | Buffer-based | ✅ **Striped Left-Right** | A sophisticated, low-contention `AccessBatcher` for policy updates on the hot path. |
 | | | | | | |
 | **Eviction & Policies**| **Cost-Based Eviction** | ✅ | ✅ | ✅ | Items can have individual `cost` towards `capacity`. |
 | | **Global TTL / TTI** | ✅ | ✅ | ✅ | Cache-wide Time-to-Live and Time-to-Idle. |
 | | **Per-Item TTL** | ✅ | ❌ | ✅ | `insert_with_ttl` provides fine-grained expiration control. |
-| | **Pluggable Policies** | Limited | ❌ | ✅ **Highly Flexible** | A `CachePolicy` trait allows for swappable strategies. |
-| | **Available Policies** | Segmented-LRU | TinyLFU | ✅ **Most Comprehensive** | TinyLFU, ARC, SLRU, SIEVE, LRU, FIFO, and Random. |
+| | **Timer System for Expirations**| Hierarchical Wheel | ❌ (Sampling) | ✅ **Configurable Per-Shard Wheel** | High-precision, low-overhead expiration management via `TimerWheelMode`. |
+| | **Pluggable Policies** | Limited | ❌ | ✅ **Highly Flexible** | A `CachePolicy` trait allows for easy implementation of custom strategies. |
+| | **Available Policies** | Segmented-LRU | TinyLFU | ✅ **Most Comprehensive** | **TinyLFU**, **ARC**, **SLRU**, **SIEVE**, **LRU**, **FIFO**, and **Random**. |
 | | | | | | |
 | **API & Ergonomics** | **`entry` API** | ✅ | ❌ | ✅ | Atomic "get-or-insert" for both sync and async. |
+| | **Read API Ergonomics** | `get` (clones Arc) | `get` (returns ref) | ✅ **`get` & `fetch`** | Offers both a zero-cost `get` (with closure) and an `Arc`-cloning `fetch`. |
 | | **`compute`** | ✅ | ❌ | ✅ | Safe, atomic, in-place mutation of values. |
 | | **Bulk Operations** | ✅ | ✅ | ✅ | Parallelized `multiget`, `multi_insert`, etc. (via `bulk` feature) |
 | | | | | | |
 | **Advanced Patterns**| **`CacheLoader`** | ✅ | ❌ | ✅ **Runtime Agnostic** | `TaskSpawner` trait makes it work with any async runtime. |
-| | **Thundering Herd Protection** | ✅ | N/A | ✅ | Built into the `get_with` loader to prevent duplicate work. |
+| | **Thundering Herd Protection** | ✅ | N/A | ✅ | Built into `get_with` to prevent duplicate work. |
 | | **Stale-While-Revalidate** | ✅ | ❌ | ✅ | Hides refresh latency by serving stale data. |
-| | **Weak/Soft References** | ✅ | ❌ | ❌ (Future) | An advanced memory management feature for a future version. |
 | | | | | | |
-| **Production Features**| **Eviction Listener** | ✅ | ✅ | ✅ | Decoupled notifications on a dedicated background task. |
+| **Production Features**| **Eviction Listener** | ✅ | ✅ | ✅ | Decoupled notifications on a dedicated background task to prevent blocking. |
 | | **Metrics & Stats** | ✅ | ✅ | ✅ | Detailed, contention-free metrics via `MetricsSnapshot`. |
-| | **Persistence (`serde`)** | ❌ | ❌ | ✅ **Serializable Snapshot** | `to_snapshot()` and `build_from_snapshot()` API. (via `serde` feature) |
+| | **Persistence (`serde`)** | ❌ | ❌ | ✅ **Serializable Snapshot** | `to_snapshot()` and `build_from_snapshot()` API (via `serde` feature). |
 
 # License
 
 Licensed under the [MPL-2.0](https://www.mozilla.org/en-US/MPL/2.0/).
+
+Of course. Here is the final, expanded feature comparison table.

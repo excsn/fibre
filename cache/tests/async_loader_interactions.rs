@@ -26,7 +26,7 @@ async fn test_async_stale_while_revalidate() {
     .unwrap();
 
   // 1. First call, triggers initial load.
-  let value1 = cache.get_with(&5).await;
+  let value1 = cache.fetch_with(&5).await;
   assert_eq!(*value1, 5);
   assert_eq!(load_count.load(Ordering::Relaxed), 1);
 
@@ -34,7 +34,7 @@ async fn test_async_stale_while_revalidate() {
   sleep(Duration::from_millis(150)).await;
 
   // 3. Second call. Should return the STALE value (5) immediately.
-  let value2 = cache.get_with(&5).await;
+  let value2 = cache.fetch_with(&5).await;
   assert_eq!(*value2, 5, "Should return stale value immediately");
 
   // 4. Wait for the background load to complete.
@@ -46,7 +46,7 @@ async fn test_async_stale_while_revalidate() {
   );
 
   // 5. Third call. Should now return the new, refreshed value.
-  let value3 = cache.get_with(&5).await;
+  let value3 = cache.fetch_with(&5).await;
   assert_eq!(*value3, 105);
   assert_eq!(
     load_count.load(Ordering::Relaxed),
