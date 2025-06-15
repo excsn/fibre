@@ -106,6 +106,19 @@ where
       hasher,
     }
   }
+}
+
+impl<K, V, H> ShardedStore<K, V, H>
+where
+  K: Hash + Send,
+  H: BuildHasher,
+{
+  /// Returns the shard index for a given key.
+  #[inline]
+  pub(crate) fn get_shard_index(&self, key: &K) -> usize {
+    let hash = hash_key(&self.hasher, key);
+    hash as usize & (self.shards.len() - 1)
+  }
 
   /// Returns a reference to the `Shard` for a given key.
   #[inline]

@@ -307,16 +307,23 @@ pub(crate) fn perform_shard_maintenance<K, V, H>(
             let mut total_cost_released = 0;
 
             for victim_key in victims {
-              let victim_shard = context.store.get_shard(&victim_key);
+              // The victim could be in another shard, so we must look it up.
+              let victim_shard_index = context.store.get_shard_index(&victim_key);
+              let victim_shard = &context.store.shards[victim_shard_index];
+
               let mut guard = victim_shard.map.write();
 
               if let Some(removed_entry) = guard.remove(&victim_key) {
+                // If we evicted a key, we must also tell its original policy.
+                context.cache_policy[victim_shard_index].on_remove(&victim_key);
+
                 let victim_cost = removed_entry.cost();
                 total_cost_released += victim_cost;
                 context
                   .metrics
                   .evicted_by_capacity
                   .fetch_add(1, Ordering::Relaxed);
+
                 if context.notification_sender.is_some() {
                   notifications_to_send.push((
                     victim_key.clone(),

@@ -64,8 +64,7 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
     K: Hash,
     H: BuildHasher,
   {
-    let hash = crate::store::hash_key(&self.store.hasher, key);
-    return self.get_shard_index_from_hash(hash);
+    return self.store.get_shard_index(key);
   }
 
   pub fn get_shard_index_from_hash(&self, hash: u64) -> usize
