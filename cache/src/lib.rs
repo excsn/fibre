@@ -25,6 +25,7 @@ pub mod policy;
 // mod backpressure;
 mod entry;
 mod loader;
+mod rng;
 mod shared;
 mod store;
 mod sync;

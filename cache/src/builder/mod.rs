@@ -457,10 +457,11 @@ where
       notification_sender: notification_sender.as_ref().map(|val| val.clone()),
     };
 
+    let maintenance_probability_denominator = self.maintenance_probability_denominator;
     let janitor =
       if self.time_to_live.is_some() || self.time_to_idle.is_some() || self.capacity != u64::MAX {
         let tick_interval = self.janitor_tick_interval.unwrap_or(Duration::from_secs(1));
-        Some(Janitor::spawn(janitor_context, tick_interval))
+        Some(Janitor::spawn(janitor_context, tick_interval, maintenance_probability_denominator))
       } else {
         None
       };
@@ -469,9 +470,6 @@ where
       .map(|_| crate::sync::HybridMutex::new(Default::default()))
       .collect::<Vec<_>>()
       .into_boxed_slice();
-
-    // Calculate the bitmask from the denominator. A denominator of 16 gives a mask of 15 (0b1111).
-    let maintenance_probability_mask = self.maintenance_probability_denominator - 1;
 
     Ok(Arc::new(CacheShared {
       store,
@@ -487,7 +485,7 @@ where
       loader: self.loader.take(),
       pending_loads,
       spawner,
-      maintenance_probability_mask,
+      maintenance_probability_denominator,
     }))
   }
 

@@ -3,6 +3,7 @@ use crate::entry_api::{OccupiedEntry, VacantEntry};
 use crate::loader::LoadFuture;
 use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
+use crate::task::janitor::COOPERATIVE_MAINTENANCE_DRAIN_LIMIT;
 use crate::{time, AsyncCache, Entry, EvictionReason, MetricsSnapshot};
 
 use std::cell::Cell;
@@ -398,12 +399,12 @@ where
       entry.update_last_accessed();
     }
 
-    // For a read hit, we can call the policy's update logic directly.
-    // This is extremely fast for policies like TinyLFU where the read path.
-    self
-      .shared
-      .get_cache_policy_shard_idx(shard_idx)
-      .on_access(key, entry.cost());
+    // Defer the policy update by recording the access in the shard's batcher.
+    // This is a very fast, low-contention operation.
+    let shard = &self.shared.store.shards[shard_idx];
+    shard
+      .read_access_batcher
+      .record_access(key, entry.cost(), &self.shared.store.hasher);
 
     self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
   }
@@ -415,18 +416,11 @@ where
     V: Send + Sync,
     H: BuildHasher + Clone,
   {
-    let should_run = RNG.with(|rng| {
-      let mut val = rng.get();
-      // Xorshift algorithm
-      val ^= val << 13;
-      val ^= val >> 17;
-      val ^= val << 5;
-      rng.set(val);
-      // Check if the lowest bits match our mask
-      (val & self.shared.maintenance_probability_mask) == 0
-    });
-
-    if !should_run {
+    // The check is now a simple, fast method call on the shard's FastRng.
+    if !shard
+      .rng
+      .should_run(self.shared.maintenance_probability_denominator)
+    {
       return;
     }
 
@@ -446,7 +440,12 @@ where
           .as_ref()
           .map(|val| val.clone()),
       };
-      crate::task::janitor::perform_shard_maintenance(shard, shard_index, &janitor_context);
+      crate::task::janitor::perform_shard_maintenance(
+        shard,
+        shard_index,
+        &janitor_context,
+        COOPERATIVE_MAINTENANCE_DRAIN_LIMIT,
+      );
     }
   }
 }

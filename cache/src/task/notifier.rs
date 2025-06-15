@@ -14,7 +14,7 @@ pub(crate) struct Notifier<K: Send, V: Send + Sync> {
   _sender: mpsc::BoundedSender<(K, Arc<V>, EvictionReason)>,
 }
 
-impl <K: Send, V: Send + Sync>  Notifier<K, V> {
+impl<K: Send, V: Send + Sync> Notifier<K, V> {
   /// Spawns a new notifier thread.
   pub(crate) fn spawn(
     listener: Arc<dyn EvictionListener<K, V>>,
@@ -25,8 +25,10 @@ impl <K: Send, V: Send + Sync>  Notifier<K, V> {
   {
     // A simple, bounded MPSC channel for notifications.
     const NOTIFICATION_CHANNEL_CAPACITY: usize = 128;
-    let (tx, rx): (mpsc::BoundedSender<Notification<K, V>>, mpsc::BoundedReceiver<Notification<K, V>>) =
-      mpsc::bounded(NOTIFICATION_CHANNEL_CAPACITY);
+    let (tx, rx): (
+      mpsc::BoundedSender<Notification<K, V>>,
+      mpsc::BoundedReceiver<Notification<K, V>>,
+    ) = mpsc::bounded(NOTIFICATION_CHANNEL_CAPACITY);
 
     let handle = thread::spawn(move || {
       // The main notifier loop.

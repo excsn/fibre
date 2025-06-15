@@ -32,7 +32,7 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) loader: Option<Loader<K, V>>,
   pub(crate) spawner: Option<Arc<dyn TaskSpawner>>,
   pub(crate) pending_loads: Box<[HybridMutex<HashMap<K, Arc<LoadFuture<V>>>>]>,
-  pub(crate) maintenance_probability_mask: u32,
+  pub(crate) maintenance_probability_denominator: u32,
 }
 
 impl<K: Send, V: Send + Sync, H> fmt::Debug for CacheShared<K, V, H> {

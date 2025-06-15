@@ -5,6 +5,7 @@ use crate::task::notifier::Notification;
 use crate::EvictionReason;
 
 use fibre::mpsc;
+use rand::Rng;
 use std::collections::HashSet;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,8 +15,18 @@ use std::time::Duration;
 
 /// The number of entries to sample from each shard on an expiration cleanup tick.
 const JANITOR_EXPIRE_SAMPLE_SIZE: usize = 10;
-/// The max number of access events to drain from a shard's buffer on a maintenance tick.
-const MAINTENANCE_DRAIN_LIMIT: usize = 64;
+
+/// The max number of access events to drain from a shard's buffer during
+/// cooperative maintenance (e.g., on an insert). This should be small
+/// to keep the user-facing operation fast.
+pub(crate) const COOPERATIVE_MAINTENANCE_DRAIN_LIMIT: usize = 16;
+
+/// The max number of access events to drain from a shard's buffer during
+/// a janitor run. This can be larger as it runs on a background thread.
+const JANITOR_MAINTENANCE_DRAIN_LIMIT: usize = 256;
+
+/// The number of random shards the janitor will attempt to check on each tick.
+const JANITOR_CHECKS_PER_TICK: usize = 2;
 
 /// A context object holding the thread-safe parts of the cache that the
 /// janitor needs to access.
@@ -36,7 +47,11 @@ pub(crate) struct Janitor {
 
 impl Janitor {
   /// Spawns a new janitor thread.
-  pub(crate) fn spawn<K, V, H>(context: JanitorContext<K, V, H>, tick_interval: Duration) -> Self
+  pub(crate) fn spawn<K, V, H>(
+    context: JanitorContext<K, V, H>,
+    tick_interval: Duration,
+    maintenance_probability_denominator: u32,
+  ) -> Self
   where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     V: Send + Sync + 'static,
@@ -50,7 +65,7 @@ impl Janitor {
         let sleep_start = std::time::Instant::now();
 
         // Perform all maintenance tasks.
-        Self::cleanup(&context);
+        Self::cleanup(&context, maintenance_probability_denominator);
 
         // Sleep for the remaining duration of the tick interval.
         if let Some(remaining) = tick_interval.checked_sub(sleep_start.elapsed()) {
@@ -62,130 +77,142 @@ impl Janitor {
     Self { handle, stop_flag }
   }
 
-  /// The main cleanup and maintenance routine.
-  fn cleanup<K, V, H>(context: &JanitorContext<K, V, H>)
+  /// The main cleanup and maintenance routine, probabilistic.
+  fn cleanup<K, V, H>(context: &JanitorContext<K, V, H>, maintenance_probability_denominator: u32)
   where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     V: Send + Sync + 'static,
     H: BuildHasher + Clone + Send + Sync + 'static,
   {
-    // Then, clean up expired items from TTL and TTI.
-    Self::cleanup_ttl(context);
-    Self::cleanup_tti(context);
-    // Finally, enforce capacity.
-    Self::cleanup_capacity(context);
-  }
+    let num_shards = context.store.shards.len();
+    if num_shards == 0 {
+      return;
+    }
 
-  /// Removes expired items based on TTL.
-  fn cleanup_ttl<K, V, H>(context: &JanitorContext<K, V, H>)
-  where
-    K: Eq + Hash + Clone + Send,
-    V: Send + Sync,
-    H: BuildHasher + Clone + Send + Sync,
-  {
-    // Iterate over each shard and advance its independent timer wheel.
-    for (i, shard) in context.store.iter_shards().enumerate() {
-      // Advance this shard's timer and get its expired keys.
-      let expired_hashes = match &shard.timer_wheel {
-        Some(wheel) => wheel.advance(),
-        None => continue, // This shard has no timer, so skip.
-      };
+    let mut rng = rand::rng();
 
-      if expired_hashes.is_empty() {
+    // On each janitor tick, we check a few random shards.
+    for _ in 0..JANITOR_CHECKS_PER_TICK.min(num_shards) {
+      let shard_index = rng.random_range(0..num_shards);
+      let shard = &context.store.shards[shard_index];
+
+      // The check is now a simple, fast method call on the shard's FastRng.
+      if !shard.rng.should_run(maintenance_probability_denominator) {
         continue;
       }
 
-      let expired_set: HashSet<u64> = expired_hashes.into_iter().collect();
-      let mut guard = shard.map.write();
-
-      // Since these keys are from this shard's timer, we know they belong
-      // in this shard's map.
-      guard.retain(|key, entry| {
-        let key_hash = crate::store::hash_key(&context.store.hasher, key);
-
-        if expired_set.contains(&key_hash) {
-          // This entry has expired.
-          context.cache_policy[i].on_remove(key);
-          context
-            .metrics
-            .evicted_by_ttl
-            .fetch_add(1, Ordering::Relaxed);
-          context
-            .metrics
-            .current_cost
-            .fetch_sub(entry.cost(), Ordering::Relaxed);
-          if let Some(sender) = &context.notification_sender {
-            let _ = sender.try_send((key.clone(), entry.value(), EvictionReason::Expired));
-          }
-          false // Remove from map.
-        } else {
-          true // Keep in map.
-        }
-      });
+      // Use the same probability as opportunistic maintenance.
+      if let Some(_guard) = shard.maintenance_lock.try_lock() {
+        // We got the lock. Perform all maintenance for this single shard.
+        perform_shard_maintenance(shard, shard_index, context, JANITOR_MAINTENANCE_DRAIN_LIMIT);
+        Self::cleanup_ttl_for_shard(shard, shard_index, context);
+        Self::cleanup_tti_for_shard(shard, shard_index, context);
+      }
     }
+
+    // The capacity check remains global and runs on every tick to enforce
+    // the hard memory limit reliably.
+    Self::cleanup_capacity(context);
   }
 
-  /// Removes expired items based on TTI by sampling.
-  fn cleanup_tti<K, V, H>(context: &JanitorContext<K, V, H>)
-  where
+  /// Removes expired items based on TTL for a single shard.
+  fn cleanup_ttl_for_shard<K, V, H>(
+    shard: &Shard<K, V, H>,
+    shard_index: usize,
+    context: &JanitorContext<K, V, H>,
+  ) where
     K: Eq + Hash + Clone + Send,
     V: Send + Sync,
     H: BuildHasher + Clone + Send + Sync,
   {
-    if context.time_to_idle.is_some() {
-      // We must enumerate the shards to get the index for the policy.
-      for (i, shard) in context.store.iter_shards().enumerate() {
-        
-        let mut guard = shard.map.write();
-        let mut victims = Vec::new();
+    let expired_hashes = match &shard.timer_wheel {
+      Some(wheel) => wheel.advance(),
+      None => return,
+    };
 
-        // We approximate random sampling by taking the first N items from the
-        // shard's iterator. The order is arbitrary due to HashMap's internal layout.
-        // This is much more efficient than a full scan.
-        for (key, entry) in guard.iter().take(JANITOR_EXPIRE_SAMPLE_SIZE) {
-          // Pass the TTI value to is_expired. This is the only check we need to do.
-          if entry.is_expired(context.time_to_idle) {
-            victims.push(key.clone());
+    if expired_hashes.is_empty() {
+      return;
+    }
+
+    let expired_set: HashSet<u64> = expired_hashes.into_iter().collect();
+    let mut guard = shard.map.write();
+
+    guard.retain(|key, entry| {
+      let key_hash = crate::store::hash_key(&context.store.hasher, key);
+
+      if expired_set.contains(&key_hash) {
+        context.cache_policy[shard_index].on_remove(key);
+        context
+          .metrics
+          .evicted_by_ttl
+          .fetch_add(1, Ordering::Relaxed);
+        context
+          .metrics
+          .current_cost
+          .fetch_sub(entry.cost(), Ordering::Relaxed);
+        if let Some(sender) = &context.notification_sender {
+          let _ = sender.try_send((key.clone(), entry.value(), EvictionReason::Expired));
+        }
+        false // Remove from map.
+      } else {
+        true // Keep in map.
+      }
+    });
+  }
+
+  /// Removes expired items based on TTI for a single shard by sampling.
+  fn cleanup_tti_for_shard<K, V, H>(
+    shard: &Shard<K, V, H>,
+    shard_index: usize,
+    context: &JanitorContext<K, V, H>,
+  ) where
+    K: Eq + Hash + Clone + Send,
+    V: Send + Sync,
+    H: BuildHasher + Clone + Send + Sync,
+  {
+    if context.time_to_idle.is_none() {
+      return;
+    }
+
+    let mut guard = shard.map.write();
+    let mut victims = Vec::new();
+
+    for (key, entry) in guard.iter().take(JANITOR_EXPIRE_SAMPLE_SIZE) {
+      if entry.is_expired(context.time_to_idle) {
+        victims.push(key.clone());
+      }
+    }
+
+    if victims.is_empty() {
+      return;
+    }
+
+    for key in victims {
+      if let Some(entry) = guard.remove(&key) {
+        context.cache_policy[shard_index].on_remove(&key);
+        context
+          .metrics
+          .evicted_by_tti
+          .fetch_add(1, Ordering::Relaxed);
+        context
+          .metrics
+          .current_cost
+          .fetch_sub(entry.cost(), Ordering::Relaxed);
+
+        if let Some(wheel) = &shard.timer_wheel {
+          if let Some(handle) = &entry.ttl_timer_handle {
+            wheel.cancel(handle);
           }
         }
 
-        if victims.is_empty() {
-          continue; // No victims found in this shard, move to the next.
-        }
-
-        for key in victims {
-          // We must re-check that the entry still exists before removing,
-          // as another thread could have invalidated it in the meantime.
-          if let Some(entry) = guard.remove(&key) {
-            // Select the policy for the correct shard index.
-            context.cache_policy[i].on_remove(&key);
-
-            context
-              .metrics
-              .evicted_by_tti
-              .fetch_add(1, Ordering::Relaxed);
-            context
-              .metrics
-              .current_cost
-              .fetch_sub(entry.cost(), Ordering::Relaxed);
-
-            // An item expired by TTI might still have a TTL timer. Cancel it.
-            if let Some(wheel) = &shard.timer_wheel {
-              if let Some(handle) = &entry.ttl_timer_handle {
-                wheel.cancel(handle);
-              }
-            }
-
-            if let Some(sender) = &context.notification_sender {
-              let _ = sender.try_send((key, entry.value(), EvictionReason::Expired));
-            }
-          }
+        if let Some(sender) = &context.notification_sender {
+          let _ = sender.try_send((key, entry.value(), EvictionReason::Expired));
         }
       }
     }
   }
 
-  /// Removes items if the cache is over its cost capacity.
+  /// Removes items if the cache is over its cost capacity. (Unchanged - remains global)
   fn cleanup_capacity<K, V, H>(context: &JanitorContext<K, V, H>)
   where
     K: Eq + Hash + Clone + Send + Sync,
@@ -199,7 +226,6 @@ impl Janitor {
 
     let cost_to_free = current_cost - context.capacity;
     let num_shards = context.store.shards.len();
-    // Calculate how much cost each shard's policy should try to free.
     let cost_to_free_per_shard = (cost_to_free as f64 / num_shards as f64).ceil() as u64;
 
     if cost_to_free_per_shard == 0 {
@@ -209,7 +235,6 @@ impl Janitor {
     let mut total_cost_released = 0;
     let mut total_victims_count = 0;
 
-    // Evict from each shard's policy in a deterministic order.
     for i in 0..num_shards {
       let (victims, cost_released) = context.cache_policy[i].evict(cost_to_free_per_shard);
       if victims.is_empty() {
@@ -218,12 +243,9 @@ impl Janitor {
       total_cost_released += cost_released;
       total_victims_count += victims.len();
 
-      // Get the corresponding data shard and remove the victim keys from it.
       let shard = &context.store.shards[i];
       let mut guard = shard.map.write();
       for key in &victims {
-        // The policy for shard `i` should only evict keys that belong to shard `i`.
-        // We remove the key from the HashMap, and if successful, send a notification.
         if let Some(removed_entry) = guard.remove(key) {
           if let Some(sender) = &context.notification_sender {
             let _ = sender.try_send((key.clone(), removed_entry.value(), EvictionReason::Capacity));
@@ -232,7 +254,6 @@ impl Janitor {
       }
     }
 
-    // Update global metrics once at the end.
     if total_cost_released > 0 {
       context
         .metrics
@@ -257,13 +278,24 @@ pub(crate) fn perform_shard_maintenance<K, V, H>(
   shard: &Shard<K, V, H>,
   shard_index: usize,
   context: &JanitorContext<K, V, H>,
+  drain_limit: usize,
 ) where
   K: Eq + Hash + Clone + Send,
   V: Send + Sync,
   H: BuildHasher + Clone,
 {
+  let policy = &context.cache_policy[shard_index];
+
+  // 1. Drain the lock-free read batcher and apply all access events.
+  let read_batch = shard.read_access_batcher.drain();
+  if !read_batch.is_empty() {
+    for (key, cost) in read_batch {
+      policy.on_access(&key, cost);
+    }
+  }
+
   // Drain a bounded number of events to prevent this loop from running too long.
-  for _ in 0..MAINTENANCE_DRAIN_LIMIT {
+  for _ in 0..drain_limit {
     match shard.event_buffer_rx.try_recv() {
       Ok(event) => match event {
         AccessEvent::Write(key, cost) => {

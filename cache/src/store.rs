@@ -1,14 +1,17 @@
 use crate::entry::CacheEntry;
 use crate::policy::AccessEvent;
+use crate::rng::FastRng;
 use crate::sync::{HybridMutex, HybridRwLock};
+use crate::task::access_batcher::AccessBatcher;
 use crate::task::timer::TimerWheel;
 
 use core::fmt;
-use std::time::Duration;
 use fibre::mpsc;
+use rand::Rng;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crossbeam_utils::CachePadded;
 
@@ -20,8 +23,9 @@ pub(crate) fn hash_key<K: Hash, H: BuildHasher>(hasher: &H, key: &K) -> u64 {
   state.finish()
 }
 
-pub type AccessEventSender<K> = fibre::mpsc::UnboundedSender<AccessEvent<K>>;
-pub type AccessEventReceiver<K> = fibre::mpsc::UnboundedReceiver<AccessEvent<K>>;
+const ACCESS_EVENT_CHANNEL_BUFFER: usize = 512;
+pub type AccessEventSender<K> = fibre::mpsc::BoundedSender<AccessEvent<K>>;
+pub type AccessEventReceiver<K> = fibre::mpsc::BoundedReceiver<AccessEvent<K>>;
 
 /// A single, independently locked partition of the cache.
 /// It contains both the data HashMap and a buffer for access events.
@@ -31,8 +35,12 @@ pub(crate) struct Shard<K: Send, V, H> {
   // A bounded MPSC channel to buffer access events for the eviction policy.
   pub(crate) event_buffer_tx: AccessEventSender<K>,
   pub(crate) event_buffer_rx: AccessEventReceiver<K>,
+  // The new batcher for deferred read/access notifications.
+  pub(crate) read_access_batcher: AccessBatcher<K>,
   // A lock to ensure only one thread performs maintenance at a time.
   pub(crate) maintenance_lock: HybridMutex<()>,
+  // This holds the RNG state for this thread.
+  pub(crate) rng: FastRng,
 }
 
 /// A cache store that is partitioned into multiple, independently locked shards.
@@ -70,9 +78,8 @@ where
     for _ in 0..num_shards {
       let shard_map = HashMap::with_hasher(hasher.clone());
       let lock = HybridRwLock::new(shard_map);
-      let (tx, rx) = mpsc::unbounded();
+      let (tx, rx) = mpsc::bounded(ACCESS_EVENT_CHANNEL_BUFFER);
 
-      // --- START OF MODIFICATION ---
       // Each shard gets its own independent TimerWheel.
       let timer_wheel = if has_timer_logic {
         Some(TimerWheel::new(timer_wheel_size, timer_tick_duration))
@@ -80,14 +87,16 @@ where
         None
       };
 
+      let initial_seed = rand::rng().random();
       let shard = Shard {
         map: lock,
         timer_wheel,
         event_buffer_tx: tx,
         event_buffer_rx: rx,
+        read_access_batcher: AccessBatcher::new(),
         maintenance_lock: HybridMutex::new(()),
+        rng: FastRng::new(initial_seed),
       };
-      // --- END OF MODIFICATION ---
 
       shards.push(CachePadded::new(shard));
     }
