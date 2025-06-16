@@ -6,6 +6,8 @@ use crate::task::access_batcher::AccessBatcher;
 use crate::task::timer::TimerWheel;
 
 use core::fmt;
+use std::borrow::Borrow;
+use equivalent::Equivalent;
 use fibre::mpsc;
 use rand::Rng;
 use std::collections::HashMap;
@@ -17,7 +19,7 @@ use crossbeam_utils::CachePadded;
 
 /// A helper function to hash a key using a `BuildHasher`.
 #[inline]
-pub(crate) fn hash_key<K: Hash, H: BuildHasher>(hasher: &H, key: &K) -> u64 {
+pub(crate) fn hash_key<K: Hash + ?Sized, H: BuildHasher>(hasher: &H, key: &K) -> u64 {
   let mut state = hasher.build_hasher();
   key.hash(&mut state);
   state.finish()
@@ -115,14 +117,21 @@ where
 {
   /// Returns the shard index for a given key.
   #[inline]
-  pub(crate) fn get_shard_index(&self, key: &K) -> usize {
+  pub(crate) fn get_shard_index<Q>(&self, key: &Q) -> usize
+  where
+    Q: Hash + Equivalent<K> + ?Sized,
+  {
     let hash = hash_key(&self.hasher, key);
     hash as usize & (self.shards.len() - 1)
   }
 
   /// Returns a reference to the `Shard` for a given key.
   #[inline]
-  pub(crate) fn get_shard(&self, key: &K) -> &Shard<K, V, H> {
+  pub(crate) fn get_shard<Q>(&self, key: &Q) -> &Shard<K, V, H>
+  where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
+  {
     let hash = hash_key(&self.hasher, key);
     let index = hash as usize & (self.shards.len() - 1);
     &self.shards[index]

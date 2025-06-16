@@ -7,6 +7,7 @@ use crate::shared::CacheShared;
 use crate::task::janitor::COOPERATIVE_MAINTENANCE_DRAIN_LIMIT;
 use crate::{time, Cache, EvictionReason, MetricsSnapshot};
 
+use std::borrow::Borrow;
 use std::cell::Cell;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt};
+use equivalent::Equivalent;
 use futures_util::future;
 
 thread_local! {
@@ -58,36 +60,38 @@ where
   ///
   /// - `Some(R)` if the key was found, where `R` is the return value of the closure.
   /// - `None` if the key was not found.
-  pub async fn get<F, R>(&self, key: &K, f: F) -> Option<R>
+  pub async fn get<Q, F, R>(&self, key: &Q, f: F) -> Option<R>
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnOnce(&V) -> R,
   {
     let shard_index = self.shared.get_shard_index(key);
     let shard = &self.shared.store.shards[shard_index];
-    let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
+    let hit_info: Option<(K, Arc<CacheEntry<V>>)>;
     let result: Option<R>;
 
     // Scope for the ReadGuard
     {
       let guard = shard.map.read_async().await;
-      if let Some(entry_in_guard) = guard.get(key) {
+      if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
         if entry_in_guard.is_expired(self.shared.time_to_idle) {
-          entry_arc_opt = None;
+          hit_info = None;
           result = None;
         } else {
           // Execute the closure while the lock is held
           result = Some(f(entry_in_guard.value().as_ref()));
           // Clone the entry to call on_hit outside the lock
-          entry_arc_opt = Some(entry_in_guard.clone());
+          hit_info = Some((found_key.clone(), entry_in_guard.clone()));
         }
       } else {
-        entry_arc_opt = None;
+        hit_info = None;
         result = None;
       }
     } // guard is dropped here
 
-    if let Some(entry_arc) = entry_arc_opt {
-      self.on_hit(key, &entry_arc, shard_index);
+    if let Some((found_key, entry_arc)) = hit_info {
+      self.on_hit(found_key, &entry_arc, shard_index);
     } else if result.is_none() {
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
     }
@@ -101,34 +105,34 @@ where
   /// the reference count of the value's `Arc`.
   ///
   /// NOTE: Prefer get, compute will block as long as Arc ref count > 1
-  pub async fn fetch(&self, key: &K) -> Option<Arc<V>> {
+  pub async fn fetch<Q>(&self, key: &Q) -> Option<Arc<V>>
+  where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
+  {
     let shard_index = self.shared.get_shard_index(key);
     let shard = &self.shared.store.shards[shard_index];
-    let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
-    let value_arc_opt: Option<Arc<V>>;
+    let hit_info: Option<(K, Arc<CacheEntry<V>>)>;
 
     // Scope for the ReadGuard
     {
       let guard = shard.map.read_async().await;
-      if let Some(entry_in_guard) = guard.get(key) {
+      if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
         if entry_in_guard.is_expired(self.shared.time_to_idle) {
-          entry_arc_opt = None;
-          value_arc_opt = None;
+          hit_info = None;
         } else {
           // Clone necessary info while guard is active
-          entry_arc_opt = Some(entry_in_guard.clone());
-          value_arc_opt = Some(entry_in_guard.value());
+          hit_info = Some((found_key.clone(), entry_in_guard.clone()));
         }
       } else {
-        entry_arc_opt = None;
-        value_arc_opt = None;
+        hit_info = None;
       }
     } // guard is dropped here, HL_S_ReadLock released
 
-    if let Some(entry_arc) = entry_arc_opt {
+    if let Some((found_key, entry_arc)) = hit_info {
       // Call on_hit *after* guard is dropped
-      self.on_hit(key, &entry_arc, shard_index);
-      value_arc_opt
+      self.on_hit(found_key, &entry_arc, shard_index);
+      Some(entry_arc.value())
     } else {
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
       None
@@ -143,7 +147,11 @@ where
   ///
   /// Returns a clone of the `Arc` containing the value if the key is found
   /// and the entry is not expired. Returns `None` otherwise.
-  pub async fn peek(&self, key: &K) -> Option<Arc<V>> {
+  pub async fn peek<Q>(&self, key: &Q) -> Option<Arc<V>>
+  where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
+  {
     let shard = self.shared.store.get_shard(key);
     let guard = shard.map.read_async().await;
 
@@ -336,8 +344,10 @@ where
   /// value if the key exists.
   ///
   /// NOTE: Use the `get` method for reads where possible to mitigate blocking.
-  pub async fn compute<F>(&self, key: &K, mut f: F) -> bool
+  pub async fn compute<Q, F>(&self, key: &Q, mut f: F) -> bool
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnMut(&mut V),
   {
     loop {
@@ -355,8 +365,10 @@ where
     }
   }
 
-  pub async fn try_compute<F>(&self, key: &K, f: F) -> Option<bool>
+  pub async fn try_compute<Q, F>(&self, key: &Q, f: F) -> Option<bool>
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnOnce(&mut V),
   {
     return match self.try_compute_val(key, f).await {
@@ -369,8 +381,10 @@ where
   /// Atomically computes a new value for a key.
   /// The provided closure is called with a mutable reference to the value
   /// if the key exists and no other threads are currently reading it.
-  pub async fn try_compute_val<F, R>(&self, key: &K, f: F) -> ComputeResult<R>
+  pub async fn try_compute_val<Q, F, R>(&self, key: &Q, f: F) -> ComputeResult<R>
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnOnce(&mut V) -> R,
   {
     // The implementation is identical to the synchronous version.
@@ -392,7 +406,7 @@ where
 
     return ComputeResult::NotFound; // Key does not exist
   }
-  
+
   // Atomically computes a new value for a key, waiting if necessary.
   ///
   /// This function provides a blocking, "wait-and-succeed" version of the
@@ -409,8 +423,10 @@ where
   /// `try_compute` from ever succeeding. This is a form of livelock.
   ///
   /// NOTE: Use the `get` method for reads where possible to mitigate blocking.
-  pub async fn compute_val<F, R>(&self, key: &K, mut f: F) -> ComputeResult<R>
+  pub async fn compute_val<Q, F, R>(&self, key: &Q, mut f: F) -> ComputeResult<R>
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnMut(&mut V) -> R,
   {
     // Loop, calling the non-blocking `try_compute` until it succeeds.
@@ -431,21 +447,22 @@ where
   }
 
   /// Removes an entry from the cache, returning `true` if the key was found.
-  pub async fn invalidate(&self, key: &K) -> bool
+  pub async fn invalidate<Q>(&self, key: &Q) -> bool
   where
-    K: Clone,
+    K: Borrow<Q> + Clone,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     V: Sync,
   {
     let shard = self.shared.store.get_shard(key);
 
-    let removed_entry: Option<Arc<CacheEntry<V>>>;
+    let removed_entry: Option<(K, Arc<CacheEntry<V>>)>;
     {
       // New scope for the guard
       let mut guard = shard.map.write_async().await;
-      removed_entry = guard.remove(key);
+      removed_entry = guard.remove_entry(key);
     } // `guard` (and L_shard) is released here.
 
-    if let Some(entry) = removed_entry {
+    if let Some((found_key, entry)) = removed_entry {
       if let Some(wheel) = &shard.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
@@ -455,7 +472,7 @@ where
         }
       }
 
-      self.shared.get_cache_policy(&key).on_remove(key);
+      self.shared.get_cache_policy(key).on_remove(&found_key);
       self
         .shared
         .metrics
@@ -468,7 +485,7 @@ where
         .fetch_sub(entry.cost(), Ordering::Relaxed);
 
       if let Some(sender) = &self.shared.notification_sender {
-        let _ = sender.try_send((key.clone(), entry.value(), EvictionReason::Invalidated));
+        let _ = sender.try_send((found_key, entry.value(), EvictionReason::Invalidated));
       }
       true
     } else {
@@ -506,7 +523,7 @@ where
   }
 
   /// Private helper for cache hits.
-  fn on_hit(&self, key: &K, entry: &Arc<CacheEntry<V>>, shard_index: usize)
+  fn on_hit(&self, key: K, entry: &Arc<CacheEntry<V>>, shard_index: usize)
   where
     K: Clone,
   {
@@ -576,32 +593,35 @@ where
   /// Returns a `HashMap` containing the keys and values that were found.
   pub async fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>
   where
-    I: IntoIterator<Item = Q>,
-    K: From<Q> + Eq + Hash + Clone + Send + Sync,
-    V: Send + Sync,
-    H: BuildHasher + Clone,
+    I: IntoIterator,
+    I::Item: std::borrow::Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + Sync + ?Sized + ToOwned<Owned = K>,
+    K: std::borrow::Borrow<Q>,
   {
-    let num_shards = self.shared.store.iter_shards().count();
+    let num_shards = self.shared.store.shards.len();
     let mut keys_by_shard: Vec<Vec<K>> = Vec::with_capacity(num_shards);
     for _ in 0..num_shards {
       keys_by_shard.push(Vec::new());
     }
 
     let mut total_reqs = 0;
-    for key in keys.into_iter().map(K::from) {
-      let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+
+    // The structure of this loop is the same.
+    // The key conversion is the only necessary change to satisfy the structure.
+    for item in keys.into_iter() {
+      let q: &Q = item.borrow();
+      let hash = crate::store::hash_key(&self.shared.store.hasher, q);
       let index = hash as usize % num_shards;
-      keys_by_shard[index].push(key);
+      // This conversion is required because `keys_by_shard` must hold owned `K`s.
+      keys_by_shard[index].push(q.to_owned());
       total_reqs += 1;
     }
 
-    // Create a future for each shard that needs to be checked.
     let get_futs = keys_by_shard
       .into_iter()
       .enumerate()
       .filter(|(_, keys)| !keys.is_empty())
       .map(|(i, shard_keys)| {
-        // Clone the Arc to move it into the async block.
         let shared = Arc::clone(&self.shared);
         async move {
           let shard = &shared.store.shards[i];
@@ -609,17 +629,12 @@ where
           let mut found = HashMap::new();
 
           for key in shard_keys {
-            if let Some(entry) = guard.get(&key) {
+            if let Some(entry) = guard.get(key.borrow()) {
               if !entry.is_expired(shared.time_to_idle) {
-                // This is a hit. Update TTI and send a Read event to the janitor.
                 if shared.time_to_idle.is_some() {
                   entry.update_last_accessed();
                 }
-                // For a read hit, we can call the policy's update logic directly.
-                self
-                  .shared
-                  .get_cache_policy(&key)
-                  .on_access(&key, entry.cost());
+                shared.get_cache_policy(&key).on_access(&key, entry.cost());
                 found.insert(key.clone(), entry.value());
               }
             }
@@ -628,10 +643,8 @@ where
         }
       });
 
-    // Execute all shard lookups concurrently.
     let results_by_shard: Vec<HashMap<K, Arc<V>>> = future::join_all(get_futs).await;
 
-    // Combine results and update global metrics.
     let mut final_map = HashMap::new();
     for map in results_by_shard {
       final_map.extend(map);
@@ -804,32 +817,29 @@ where
   pub async fn fetch_with(&self, key: &K) -> Arc<V>
   where
     K: Clone + Send + Sync + 'static,
-    V: Send + Sync + 'static, // V: Clone needed for the &LoadFuture Future impl
+    V: Send + Sync + 'static,
     H: BuildHasher + Clone + Send + Sync,
   {
     let shard_index = self.shared.get_shard_index(key);
     let shard_ref = &self.shared.store.shards[shard_index]; // Keep a ref to shard for event_tx later
 
     // 1. Optimistic read lock
-    let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
-    let value_to_return_opt: Option<Arc<V>>;
+    let hit_info: Option<(K, Arc<CacheEntry<V>>)>;
     let mut is_stale_hit = false;
 
     // Scope for the ReadGuard
     {
       let guard = shard_ref.map.read_async().await;
-      if let Some(entry_in_guard) = guard.get(key) {
+      if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
         let expires_at_nanos = entry_in_guard.expires_at.load(Ordering::Relaxed);
 
         if expires_at_nanos == 0 {
           // No TTL, always fresh if present
           if entry_in_guard.is_expired(self.shared.time_to_idle) {
             // Check TTI
-            entry_arc_opt = None;
-            value_to_return_opt = None;
+            hit_info = None;
           } else {
-            entry_arc_opt = Some(entry_in_guard.clone());
-            value_to_return_opt = Some(entry_in_guard.value());
+            hit_info = Some((found_key.clone(), entry_in_guard.clone()));
           }
         } else {
           // Entry has a TTL
@@ -838,48 +848,41 @@ where
             // CASE A: Fresh Hit
             if entry_in_guard.is_expired(self.shared.time_to_idle) {
               // Double check TTI
-              entry_arc_opt = None;
-              value_to_return_opt = None;
+              hit_info = None;
             } else {
-              entry_arc_opt = Some(entry_in_guard.clone());
-              value_to_return_opt = Some(entry_in_guard.value());
+              hit_info = Some((found_key.clone(), entry_in_guard.clone()));
             }
           } else if let Some(grace_period) = self.shared.stale_while_revalidate {
             // CASE B: Stale Hit possible
             if now_nanos < expires_at_nanos + grace_period.as_nanos() as u64 {
               // Stale but within grace. Return stale, trigger background refresh.
-              entry_arc_opt = Some(entry_in_guard.clone()); // Stale entry
-              value_to_return_opt = Some(entry_in_guard.value()); // Stale value
+              hit_info = Some((found_key.clone(), entry_in_guard.clone())); // Stale entry
               is_stale_hit = true;
               // trigger_background_load will be called later, after guard drops
             } else {
               // Fully expired past grace
-              entry_arc_opt = None;
-              value_to_return_opt = None;
+              hit_info = None;
             }
           } else {
             // Expired, no SWR
-            entry_arc_opt = None;
-            value_to_return_opt = None;
+            hit_info = None;
           }
         }
       } else {
         // Not in map
-        entry_arc_opt = None;
-        value_to_return_opt = None;
+        hit_info = None;
       }
     } // guard is dropped here, HL_S_ReadLock released
 
-    if let Some(value_to_return) = value_to_return_opt {
+    if let Some((found_key, ref entry_arc)) = hit_info {
       // This was a hit (either fresh or stale that can be returned)
-      if let Some(ref entry_arc) = entry_arc_opt {
-        // Should always be Some if value_to_return_opt is Some
-        self.on_hit(key, entry_arc, shard_index);
-      }
       if is_stale_hit {
-        self.trigger_background_load(key);
+        self.trigger_background_load(&found_key);
+      } else {
+        // Should always be Some if value_to_return_opt is Some
+        self.on_hit(found_key, entry_arc, shard_index);
       }
-      return value_to_return;
+      return entry_arc.value();
     }
 
     // CASE C: Miss or fully expired.

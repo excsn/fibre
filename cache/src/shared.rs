@@ -15,6 +15,7 @@ use std::time::Duration;
 use std::{fmt, thread};
 
 use ahash::HashMap;
+use equivalent::Equivalent;
 use fibre::mpsc;
 
 /// The internal, thread-safe core of the cache.
@@ -59,9 +60,10 @@ impl<K: Send, V: Send + Sync, H> Drop for CacheShared<K, V, H> {
 
 impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
 
-  pub fn get_shard_index(&self, key: &K) -> usize
+  pub fn get_shard_index<Q>(&self, key: &Q) -> usize
   where
     K: Hash,
+    Q: Hash + Equivalent<K> + ?Sized,
     H: BuildHasher,
   {
     return self.store.get_shard_index(key);
@@ -75,9 +77,10 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
     return hash as usize & (self.store.shards.len() - 1);
   }
 
-  pub fn get_cache_policy(&self, key: &K) -> &Arc<(dyn CachePolicy<K, V> + 'static)>
+  pub fn get_cache_policy<Q>(&self, key: &Q) -> &Arc<(dyn CachePolicy<K, V> + 'static)>
   where
     K: Hash,
+    Q: Hash + Equivalent<K> + ?Sized,
     H: BuildHasher,
   {
     let shard_index = self.get_shard_index(key);

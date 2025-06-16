@@ -7,6 +7,7 @@ use crate::shared::CacheShared;
 use crate::task::janitor::COOPERATIVE_MAINTENANCE_DRAIN_LIMIT;
 use crate::{time, AsyncCache, Entry, EvictionReason, MetricsSnapshot};
 
+use std::borrow::Borrow;
 use std::cell::Cell;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering;
@@ -15,6 +16,7 @@ use std::thread;
 use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt};
+use equivalent::Equivalent;
 #[cfg(feature = "bulk")]
 use rayon::iter::{
   IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
@@ -60,36 +62,38 @@ where
   ///
   /// - `Some(R)` if the key was found, where `R` is the return value of the closure.
   /// - `None` if the key was not found.
-  pub fn get<F, R>(&self, key: &K, f: F) -> Option<R>
+  pub fn get<Q, F, R>(&self, key: &Q, f: F) -> Option<R>
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnOnce(&V) -> R,
   {
     let shard_index = self.shared.get_shard_index(key);
     let shard = &self.shared.store.shards[shard_index];
-    let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
+    let hit_info: Option<(K, Arc<CacheEntry<V>>)>;
     let result: Option<R>;
 
     // Scope the read guard
     {
       let guard = shard.map.read();
-      if let Some(entry_in_guard) = guard.get(key) {
+      if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
         if entry_in_guard.is_expired(self.shared.time_to_idle) {
-          entry_arc_opt = None;
+          hit_info = None;
           result = None;
         } else {
           // Execute the closure while the lock is held
           result = Some(f(entry_in_guard.value().as_ref()));
           // Clone the entry to call on_hit outside the lock
-          entry_arc_opt = Some(entry_in_guard.clone());
+          hit_info = Some((found_key.clone(), entry_in_guard.clone()));
         }
       } else {
-        entry_arc_opt = None;
+        hit_info = None;
         result = None;
       }
     } // Read lock is dropped here.
 
-    if let Some(entry_arc) = entry_arc_opt {
-      self.on_hit(key, &entry_arc, shard_index);
+    if let Some((found_key, entry_arc)) = hit_info {
+      self.on_hit(found_key, &entry_arc, shard_index);
     } else if result.is_none() {
       // Only count a miss if we didn't get a result inside the lock.
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
@@ -105,25 +109,33 @@ where
   /// the reference count of the value's `Arc`.
   ///
   /// NOTE: Prefer get, compute will block as long as Arc ref count > 1
-  pub fn fetch(&self, key: &K) -> Option<Arc<V>> {
+  pub fn fetch<Q>(&self, key: &Q) -> Option<Arc<V>>
+  where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
+  {
     let shard_index = self.shared.get_shard_index(key);
     let shard = &self.shared.store.shards[shard_index];
-    let entry_arc_opt: Option<Arc<CacheEntry<V>>>;
+    let hit_info: Option<(K, Arc<CacheEntry<V>>)>;
 
     // Scope the read guard to release the lock as soon as possible.
     {
       let guard = shard.map.read();
-      entry_arc_opt = guard.get(key).and_then(|entry| {
-        if entry.is_expired(self.shared.time_to_idle) {
-          None
+      if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
+        if entry_in_guard.is_expired(self.shared.time_to_idle) {
+          hit_info = None;
         } else {
-          Some(entry.clone())
+          // Execute the closure while the lock is held
+          // Clone the entry to call on_hit outside the lock
+          hit_info = Some((found_key.clone(), entry_in_guard.clone()));
         }
-      });
+      } else {
+        hit_info = None;
+      }
     } // Read lock is dropped here.
 
-    if let Some(entry_arc) = entry_arc_opt {
-      self.on_hit(key, &entry_arc, shard_index);
+    if let Some((found_key, entry_arc)) = hit_info {
+      self.on_hit(found_key, &entry_arc, shard_index);
       Some(entry_arc.value())
     } else {
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
@@ -139,7 +151,11 @@ where
   ///
   /// Returns a clone of the `Arc` containing the value if the key is found
   /// and the entry is not expired. Returns `None` otherwise.
-  pub fn peek(&self, key: &K) -> Option<Arc<V>> {
+  pub fn peek<Q>(&self, key: &Q) -> Option<Arc<V>>
+  where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
+  {
     let shard = self.shared.store.get_shard(key);
     let guard = shard.map.read();
 
@@ -345,8 +361,10 @@ where
   /// `try_compute` from ever succeeding. This is a form of livelock.
   ///
   /// NOTE: Use the `get` method for reads where possible to mitigate blocking.
-  pub fn compute<F>(&self, key: &K, mut f: F) -> bool
+  pub fn compute<Q, F>(&self, key: &Q, mut f: F) -> bool
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnMut(&mut V),
   {
     // Loop, calling the non-blocking `try_compute` until it succeeds.
@@ -354,12 +372,11 @@ where
     // multiple times if there's a race, although that's extremely unlikely.
     // The *modification* inside the closure, however, will only be applied once.
     loop {
-      
       let opt = self.try_compute(key, &mut f);
-     
+
       match opt {
         Some(true) => return true,
-        Some(false) => {},
+        Some(false) => {}
         None => return false,
       }
       // The operation failed because another thread is holding an Arc to the value.
@@ -369,8 +386,10 @@ where
     }
   }
 
-  pub fn try_compute<F>(&self, key: &K, f: F) -> Option<bool>
+  pub fn try_compute<Q, F>(&self, key: &Q, f: F) -> Option<bool>
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnOnce(&mut V),
   {
     return match self.try_compute_val(key, f) {
@@ -383,8 +402,10 @@ where
   /// Atomically computes a new value for a key.
   /// The provided closure is called with a mutable reference to the value
   /// if the key exists and no other threads are currently reading it.
-  pub fn try_compute_val<F, R>(&self, key: &K, f: F) -> ComputeResult<R>
+  pub fn try_compute_val<Q, F, R>(&self, key: &Q, f: F) -> ComputeResult<R>
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnOnce(&mut V) -> R,
   {
     let shard = self.shared.store.get_shard(key);
@@ -404,7 +425,7 @@ where
           return ComputeResult::Ok(user_value);
         }
       }
-      
+
       // If any of the `if let` checks fail, it means we couldn't get
       // exclusive access, so the computation fails.
       return ComputeResult::Fail;
@@ -429,8 +450,10 @@ where
   /// `try_compute` from ever succeeding. This is a form of livelock.
   ///
   /// NOTE: Use the `get` method for reads where possible to mitigate blocking.
-  pub fn compute_val<F, R>(&self, key: &K, mut f: F) -> ComputeResult<R>
+  pub fn compute_val<Q, F, R>(&self, key: &Q, mut f: F) -> ComputeResult<R>
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnMut(&mut V) -> R,
   {
     // Loop, calling the non-blocking `try_compute` until it succeeds.
@@ -452,20 +475,22 @@ where
   }
 
   /// Removes an entry from the cache, returning `true` if the key was found.
-  pub fn invalidate(&self, key: &K) -> bool
+  pub fn invalidate<Q>(&self, key: &Q) -> bool
   where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
     V: Sync,
   {
     let shard = self.shared.store.get_shard(key);
 
-    let removed_entry: Option<Arc<CacheEntry<V>>>;
+    let removed_entry: Option<(K, Arc<CacheEntry<V>>)>;
     {
       // New scope for the guard
       let mut guard = shard.map.write();
-      removed_entry = guard.remove(key);
+      removed_entry = guard.remove_entry(key);
     } // `guard` (and L_shard) is released here.
 
-    if let Some(entry) = removed_entry {
+    if let Some((found_key, entry)) = removed_entry {
       if let Some(wheel) = &shard.timer_wheel {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
@@ -475,7 +500,7 @@ where
         }
       }
 
-      self.shared.get_cache_policy(key).on_remove(key);
+      self.shared.get_cache_policy(key).on_remove(&found_key);
       self
         .shared
         .metrics
@@ -488,7 +513,7 @@ where
         .fetch_sub(entry.cost(), Ordering::Relaxed);
 
       if let Some(sender) = &self.shared.notification_sender {
-        let _ = sender.try_send((key.clone(), entry.value(), EvictionReason::Invalidated));
+        let _ = sender.try_send((found_key, entry.value(), EvictionReason::Invalidated));
       }
       true
     } else {
@@ -533,7 +558,7 @@ where
 
   /// Private helper method to run common logic on a cache hit.
   /// This includes updating metadata for TTI and notifying the eviction policy.
-  fn on_hit(&self, key: &K, entry: &Arc<CacheEntry<V>>, shard_idx: usize) {
+  fn on_hit(&self, key: K, entry: &Arc<CacheEntry<V>>, shard_idx: usize) {
     if self.shared.time_to_idle.is_some() {
       entry.update_last_accessed();
     }
@@ -602,11 +627,15 @@ where
   {
     // 1. Optimistic read lock.
     let shard_index = self.shared.get_shard_index(key);
-    if let Some(entry) = self.shared.store.shards[shard_index].map.read().get(key) {
+    if let Some((found_key, entry)) = self.shared.store.shards[shard_index]
+      .map
+      .read()
+      .get_key_value(key)
+    {
       let expires_at_nanos = entry.expires_at.load(Ordering::Relaxed);
       if expires_at_nanos == 0 {
         // No TTL, it's a fresh hit
-        self.on_hit(key, entry, shard_index);
+        self.on_hit(found_key.clone(), entry, shard_index);
         return entry.value();
       }
 
@@ -614,7 +643,7 @@ where
 
       // CASE A: Fresh Hit
       if now_nanos < expires_at_nanos {
-        self.on_hit(key, entry, shard_index);
+        self.on_hit(found_key.clone(), entry, shard_index);
         return entry.value();
       }
 
@@ -746,70 +775,79 @@ where
   #[cfg(feature = "bulk")]
   pub fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>
   where
-    I: IntoIterator<Item = Q>,
-    K: From<Q>,
-    H: BuildHasher + Clone + Sync,
+    // The input `I` must be convertible into a parallel iterator.
+    I: IntoParallelIterator,
+    // The items from the iterator must be borrowable as `&Q` and thread-safe.
+    I::Item: Borrow<Q> + Send + Sync,
+    // The cache's key `K` must be borrowable as `&Q` for HashMap lookups.
+    K: Borrow<Q>,
+    // `Q` is the borrowed type (e.g., `str`) that can be used for lookups.
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
   {
-    // Group keys by shard index to minimize lock acquisitions.
-    let mut keys_by_shard: Vec<Vec<K>> = vec![Vec::new(); self.shared.store.iter_shards().count()];
-    let mut total_reqs = 0;
-    for key in keys.into_iter().map(K::from) {
-      let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
-      let index = hash as usize % keys_by_shard.len();
-      keys_by_shard[index].push(key);
-      total_reqs += 1;
-    }
+    // We collect the keys first to get a definite count for metrics.
+    // This does not clone the key data itself, just the iterator items (e.g., `&str`).
+    let keys_vec: Vec<I::Item> = keys.into_par_iter().collect();
+    let total_reqs = keys_vec.len() as u64;
 
-    // Use Rayon to process shards in parallel.
-    let results_by_shard: Vec<HashMap<K, Arc<V>>> = keys_by_shard
-      .par_iter()
-      .enumerate()
-      .map(|(i, shard_keys)| {
-        if shard_keys.is_empty() {
-          return HashMap::new();
-        }
+    let final_map = keys_vec
+      .into_par_iter()
+      // Use fold/reduce, a powerful pattern for parallel aggregation.
+      .fold(
+        // 1. Identity: Each thread gets its own empty HashMap to work with.
+        || HashMap::new(),
+        // 2. Fold: This closure is run in parallel by many threads.
+        // It takes a thread-local accumulator (`mut acc`) and one item from the input.
+        |mut acc, key_item| {
+          // Get the borrowed `&Q` from the iterator item.
+          let q: &Q = key_item.borrow();
 
-        let shard = &self.shared.store.shards[i];
-        let guard = shard.map.read();
-        let mut found = HashMap::new();
+          let shard_index = self.shared.get_shard_index(q);
+          let shard = &self.shared.store.shards[shard_index];
 
-        for key in shard_keys {
-          if let Some(entry) = guard.get(key) {
-            if !entry.is_expired(self.shared.time_to_idle) {
-              // This is a hit. Update TTI and send a Read event to the janitor.
-              if self.shared.time_to_idle.is_some() {
-                entry.update_last_accessed();
+          // We must scope the read guard to a block.
+          let hit_info: Option<(K, Arc<CacheEntry<V>>)> = {
+            let guard = shard.map.read();
+            // Perform the lookup using the borrowed `&Q`.
+            if let Some((found_key, entry)) = guard.get_key_value(q) {
+              if !entry.is_expired(self.shared.time_to_idle) {
+                // HIT: This is the ONLY place we clone the key.
+                Some((found_key.clone(), entry.clone()))
+              } else {
+                None // Expired
               }
-
-              self
-                .shared
-                .get_cache_policy(key)
-                .on_access(key, entry.cost());
-              found.insert(key.clone(), entry.value());
+            } else {
+              None // Miss
             }
+          }; // Read lock is released here.
+
+          // If we got a hit, update the accumulator and notify the policy.
+          if let Some((key_clone, entry_clone)) = hit_info {
+            self.on_hit(key_clone.clone(), &entry_clone, shard_index);
+            acc.insert(key_clone, entry_clone.value());
           }
-        }
-        found
-      })
-      .collect();
 
-    // Combine results and update global metrics.
-    let mut final_map = HashMap::new();
-    for map in results_by_shard {
-      final_map.extend(map);
-    }
+          acc
+        },
+      )
+      // 3. Reduce: Merge the HashMaps from all threads into a single one.
+      .reduce(
+        || HashMap::new(),
+        |mut a, b| {
+          a.extend(b);
+          a
+        },
+      );
 
+    // Update global metrics after all parallel work is done.
     let hits = final_map.len() as u64;
-    self
-      .shared
-      .metrics
-      .hits
-      .fetch_add(hits, std::sync::atomic::Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .misses
-      .fetch_add(total_reqs - hits, std::sync::atomic::Ordering::Relaxed);
+    self.shared.metrics.hits.fetch_add(hits, Ordering::Relaxed);
+    if total_reqs > hits {
+      self
+        .shared
+        .metrics
+        .misses
+        .fetch_add(total_reqs - hits, Ordering::Relaxed);
+    }
 
     final_map
   }

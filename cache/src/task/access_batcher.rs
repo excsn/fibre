@@ -33,7 +33,7 @@ impl<K: Hash + Eq> AccessBatcher<K> {
 
   /// Records an access event. Called by many producer threads from the `get` hot path.
   #[inline]
-  pub(crate) fn record_access<H: BuildHasher>(&self, key: &K, cost: u64, hasher: &H)
+  pub(crate) fn record_access<H: BuildHasher>(&self, key: K, cost: u64, hasher: &H)
   where
     K: Clone,
   {
@@ -42,12 +42,12 @@ impl<K: Hash + Eq> AccessBatcher<K> {
     let stripes = &self.instances[idx];
 
     // 2. Hash the key to pick a stripe, minimizing contention.
-    let hash = hash_key(hasher, key);
+    let hash = hash_key(hasher, &key);
     let stripe_idx = hash as usize & (BATCH_STRIPES - 1);
 
     // 3. Lock only that single stripe and insert the data.
     let mut guard = stripes[stripe_idx].lock();
-    guard.insert(key.clone(), cost);
+    guard.insert(key, cost);
   }
 
   /// Swaps buffers and returns the entire coalesced, inactive batch.
