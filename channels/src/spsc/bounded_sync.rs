@@ -593,7 +593,7 @@ mod tests {
 
   #[test]
   fn send_blocks_until_recv() {
-    let (mut p, mut c) = bounded_sync::<i32>(1);
+    let (p, mut c) = bounded_sync::<i32>(1);
     p.send(1).unwrap(); // Fill channel
     assert_eq!(p.len(), 1);
 
@@ -606,7 +606,6 @@ mod tests {
     thread::sleep(Duration::from_millis(100)); // Give producer time to block
 
     assert_eq!(c.recv().unwrap(), 1); // Unblock producer
-    assert_eq!(c.len(), 0); // Locally empty, producer might be sending
     let _p_returned = producer_thread.join().unwrap(); // Sender should now complete
     assert_eq!(c.recv().unwrap(), 2);
     assert_eq!(c.len(), 0);

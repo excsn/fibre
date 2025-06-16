@@ -67,19 +67,6 @@ impl<T: Send> AsyncSender<T> {
     Ok(())
   }
 
-  /// Clones this sender.
-  pub fn clone(&self) -> Self {
-    self
-      .shared
-      .channel
-      .sender_count
-      .fetch_add(1, Ordering::Relaxed);
-    Self {
-      shared: self.shared.clone(),
-      closed: AtomicBool::new(false),
-    }
-  }
-
   /// Closes this sender handle.
   ///
   /// This is an explicit alternative to `drop`. If this is the last sender handle,
@@ -142,6 +129,20 @@ impl<T: Send> AsyncSender<T> {
     mem::forget(self);
     Sender {
       shared,
+      closed: AtomicBool::new(false),
+    }
+  }
+}
+
+impl<T: Send> Clone for AsyncSender<T> {
+  fn clone(&self) -> Self {
+    self
+      .shared
+      .channel
+      .sender_count
+      .fetch_add(1, Ordering::Relaxed);
+    Self {
+      shared: self.shared.clone(),
       closed: AtomicBool::new(false),
     }
   }
@@ -216,7 +217,7 @@ impl<T: Send> AsyncReceiver<T> {
   }
 
   pub fn sender_count(&self) -> usize {
-     self.shared.channel.sender_count.load(Ordering::Relaxed)
+    self.shared.channel.sender_count.load(Ordering::Relaxed)
   }
 
   /// Returns `true` if the channel is empty.

@@ -1,5 +1,3 @@
-// src/mpsc/bounded_sync.rs
-
 //! The core implementation and synchronous API for the bounded MPSC channel.
 
 use crate::coord::CapacityGate;
@@ -167,28 +165,13 @@ impl<T: Send> Sender<T> {
     }
   }
 
-  /// Clones this sender.
-  ///
-  /// A bounded MPSC channel can have multiple producers.
-  pub fn clone(&self) -> Self {
-    self
-      .shared
-      .channel
-      .sender_count
-      .fetch_add(1, Ordering::Relaxed);
-    Self {
-      shared: self.shared.clone(),
-      closed: AtomicBool::new(false),
-    }
-  }
-
   /// Returns `true` if the receiver has been dropped.
   pub fn is_closed(&self) -> bool {
     self.shared.channel.receiver_dropped.load(Ordering::Acquire)
   }
 
   pub fn sender_count(&self) -> usize {
-     self.shared.channel.sender_count.load(Ordering::Relaxed)
+    self.shared.channel.sender_count.load(Ordering::Relaxed)
   }
 
   /// Returns the number of messages currently in the channel.
@@ -218,6 +201,23 @@ impl<T: Send> Sender<T> {
     mem::forget(self);
     AsyncSender {
       shared,
+      closed: AtomicBool::new(false),
+    }
+  }
+}
+
+impl<T: Send> Clone for Sender<T> {
+  /// Clones this sender.
+  ///
+  /// A bounded MPSC channel can have multiple producers.
+  fn clone(&self) -> Self {
+    self
+      .shared
+      .channel
+      .sender_count
+      .fetch_add(1, Ordering::Relaxed);
+    Self {
+      shared: self.shared.clone(),
       closed: AtomicBool::new(false),
     }
   }
@@ -351,7 +351,7 @@ impl<T: Send> Receiver<T> {
   }
 
   pub fn sender_count(&self) -> usize {
-     self.shared.channel.sender_count.load(Ordering::Relaxed)
+    self.shared.channel.sender_count.load(Ordering::Relaxed)
   }
 
   /// Returns the number of messages currently in the channel.
