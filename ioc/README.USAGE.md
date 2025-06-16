@@ -9,6 +9,10 @@ This guide provides a detailed overview of the `fibre_ioc` container, its core c
 - [Quick Start: Trait-Based Injection](#quick-start-trait-based-injection)
 - [Service Registration](#service-registration)
 - [Service Resolution](#service-resolution)
+  - [The Resolution Macro Family](#the-resolution-macro-family)
+  - [Resolving Required Dependencies (Panicking)](#resolving-required-dependencies-panicking)
+  - [Resolving Optional Dependencies (Fallible)](#resolving-optional-dependencies-fallible)
+  - [Resolving from a Specific Container](#resolving-from-a-specific-container)
 - [Advanced Topics](#advanced-topics)
   - [Using `LocalContainer` for `!Send` Types](#using-localcontainer-for-send-types)
   - [Isolated Containers for Testing](#isolated-containers-for-testing)
@@ -95,43 +99,23 @@ You can register services with different lifetimes. The concepts are the same fo
 
 A singleton service is instantiated only once. The same instance is returned for all subsequent resolutions.
 
-**For `Container` (thread-safe):**
 ```rust
 // The factory is called only on the first resolution.
 global().add_singleton(|| AppConfig { /* ... */ });
-```
-
-**For `LocalContainer` (single-threaded):**
-```rust
-# #[cfg(feature = "local")] {
-use fibre_ioc::LocalContainer;
-let mut container = LocalContainer::new();
-container.add_singleton(|| LocalConfig { /* ... */ });
-# }
 ```
 
 ### Transient
 
 A transient service is instantiated every time it is resolved.
 
-**For `Container` (thread-safe):**
 ```rust
-// Factory is called every time `resolve!(RequestContext)` is used.
+// Factory is called every time a `RequestContext` is resolved.
 global().add_transient(|| RequestContext { /* ... */ });
-```
-
-**For `LocalContainer` (single-threaded):**
-```rust
-# #[cfg(feature = "local")] {
-use fibre_ioc::LocalContainer;
-let mut container = LocalContainer::new();
-container.add_transient(|| LocalRequestContext { /* ... */ });
-# }
 ```
 
 ### Instance (`Container` only)
 
-You can register a pre-existing object with the thread-safe `Container`. This is effectively a pre-initialized singleton. `LocalContainer` does not have this method.
+You can register a pre-existing object with the thread-safe `Container`. This is effectively a pre-initialized singleton.
 
 ```rust
 let preconfigured_service = MyService::new("special_config");
@@ -153,9 +137,20 @@ let config = resolve!(AppConfig, "test_config");
 
 ## Service Resolution
 
-### Using the `resolve!` Macro
+### The Resolution Macro Family
 
-The `resolve!` macro is the most ergonomic way to get dependencies **from the global `Container`**. It panics if the requested service is not registered. It cannot be used with a `LocalContainer`.
+`fibre_ioc` provides a family of macros for ergonomic resolution. The choice of macro depends on two factors:
+1.  Is the dependency **required** (panics if missing) or **optional** (returns an `Option`)?
+2.  Are you resolving from the **global container** or a **specific container instance**?
+
+|                   | Required (Panics)   | Optional (`Option`)     |
+| ----------------- | ------------------- | ----------------------- |
+| **Global**        | `resolve!`          | `maybe_resolve!`        |
+| **From Instance** | `resolve_from!`     | `maybe_resolve_from!`   |
+
+### Resolving Required Dependencies (Panicking)
+
+Use `resolve!` for required dependencies from the global container. This is the most common case in application code.
 
 ```rust
 // Resolve an unnamed service by type
@@ -168,42 +163,49 @@ let named_service = resolve!(MyService, "my_name");
 let greeter = resolve!(trait Greeter);
 ```
 
-### Using the Fallible `get` Method
+### Resolving Optional Dependencies (Fallible)
 
-For cases where a service might be optional, or when using a `LocalContainer`, you must use the `get()` method. It returns an `Option`, allowing you to handle a missing registration gracefully.
+Use `maybe_resolve!` when a service is optional. This macro returns an `Option` and will not panic if the service is missing.
 
-**For `Container`:**
 ```rust
-use fibre_ioc::global;
-if let Some(service) = global().get::<MyService>(None) {
-    // service is an Arc<MyService>
-    service.do_work();
+use fibre_ioc::maybe_resolve;
+
+if let Some(optional_feature) = maybe_resolve!(OptionalFeature) {
+    // optional_feature is an Arc<OptionalFeature>
+    optional_feature.activate();
+} else {
+    println!("Optional feature is not configured.");
 }
 ```
 
-**For `LocalContainer`:**
-```rust
-# #[cfg(feature = "local")] {
-use fibre_ioc::LocalContainer;
-let mut container = LocalContainer::new();
-container.add_singleton(|| MyLocalService);
+### Resolving from a Specific Container
 
-if let Some(service) = container.get::<MyLocalService>(None) {
-    // service is an Rc<MyLocalService>
-    service.do_local_work();
-}
-# }
+For testing or when managing isolated scopes, use the `_from` variants. These macros take a container instance as their first argument and work with both `Container` and `LocalContainer`.
+
+```rust
+use fibre_ioc::{Container, resolve_from, maybe_resolve_from};
+
+let container = Container::new();
+container.add_instance(String::from("hello"));
+
+// Use resolve_from! for a required dependency in this container
+let message = resolve_from!(&container, String);
+assert_eq!(*message, "hello");
+
+// Use maybe_resolve_from! for an optional dependency
+let missing: Option<i32> = maybe_resolve_from!(&container, i32);
+assert!(missing.is_none());
 ```
 
 ## Advanced Topics
 
 ### Using `LocalContainer` for `!Send` Types
 
-The primary advantage of `LocalContainer` is its ability to manage types that don't implement `Send` or `Sync`, which is impossible in the thread-safe `Container`.
+The primary advantage of `LocalContainer` is its ability to manage types that don't implement `Send` or `Sync`.
 
 ```rust
 # #[cfg(feature = "local")] {
-use fibre_ioc::LocalContainer;
+use fibre_ioc::{LocalContainer, resolve_from};
 use std::rc::Rc;
 use std::cell::RefCell;
 
@@ -214,13 +216,13 @@ struct UiState {
 }
 
 let mut container = LocalContainer::new();
-
 container.add_singleton(|| UiState {
     user_name: Rc::new("Alice".to_string()),
     counter: RefCell::new(0),
 });
 
-let ui_state = container.get::<UiState>(None).unwrap();
+// We must use a `_from` macro with LocalContainer
+let ui_state = resolve_from!(&container, UiState);
 
 // We can now work with the non-thread-safe service
 assert_eq!(*ui_state.user_name, "Alice");
@@ -231,22 +233,20 @@ assert_eq!(*ui_state.counter.borrow(), 1);
 
 ### Isolated Containers for Testing
 
-While the `global()` container is convenient, it can create cross-contamination in tests. For robust testing, always create a new `Container` or `LocalContainer` for each test.
+While the `global()` container is convenient, it can create cross-contamination in tests. For robust testing, always create a new `Container` or `LocalContainer` and use the `_from` macros.
 
 ```rust
-use fibre_ioc::Container;
+use fibre_ioc::{Container, resolve_from};
 
 #[test]
 fn my_isolated_test() {
     let container = Container::new();
+    container.add_instance(MockDatabase::new()); // A test double
 
-    // Register a mock service only in this local container
-    container.add_instance(MockDatabase::new());
+    // Resolve from the specific test container
+    let db = resolve_from!(&container, MockDatabase);
 
-    // Pass the container to the system under test
-    let service = MyService::new(&container);
-
-    service.run_logic(); // This will use the MockDatabase
+    // ... run test logic with the mock dependency ...
 
     // When `container` goes out of scope, all its services are dropped.
 }
@@ -254,7 +254,9 @@ fn my_isolated_test() {
 
 ## Error Handling
 
-Error handling is identical for both container types.
+Error handling is consistent across all macros and container types.
 
-*   **Missing Services**: `resolve!` panics. `get()` returns `None`.
+*   **Missing Services**:
+    *   `resolve!` and `resolve_from!` will **panic**.
+    *   `maybe_resolve!` and `maybe_resolve_from!` return `None`.
 *   **Circular Dependencies**: The container automatically detects circular dependencies during resolution and will **always panic** with a "Circular dependency detected" message. This prevents infinite recursion and is not recoverable.

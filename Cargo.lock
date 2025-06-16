@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "fibre_ioc"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "dashmap",
  "once_cell",

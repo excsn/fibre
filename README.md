@@ -3,6 +3,7 @@
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 [![Crates.io](https://img.shields.io/crates/v/fibre?label=fibre)](https://crates.io/crates/fibre)
 [![Crates.io](https://img.shields.io/crates/v/fibre_cache?label=fibre_cache)](https://crates.io/crates/fibre_cache)
+[![Crates.io](https://img.shields.io/crates/v/fibre_ioc?label=fibre_ioc)](https://crates.io/crates/fibre_ioc)
 
 `fibre` is a workspace of high-performance, concurrent building blocks for Rust, designed to enable the development of best in class low-latency, low-overhead applications.
 
@@ -17,6 +18,7 @@
 
 *   **[`fibre`](./channels/README.md)**: A library of specialized, high-performance, and memory-efficient sync/async channels (`spsc`, `mpsc`, `spmc`, `mpmc`).
 *   **[`fibre_cache`](./cache/README.md)**: A comprehensive, flexible, and high-performance concurrent caching library with modern eviction policies.
+*   **[`fibre_ioc`](./ioc/README.md)**: A flexible, thread-safe, and dynamic Inversion of Control (IoC) container with support for optional dependencies and a single-threaded, non-`Send`/`Sync` variant.
 
 ## Documentation
 
@@ -24,6 +26,7 @@ Detailed documentation and usage guides can be found within each crate's directo
 
 *   **`fibre` (Channels)**: [Usage Guide](./channels/README.GUIDE.md) | [API Reference (docs.rs)](https://docs.rs/fibre)
 *   **`fibre_cache` (Cache)**: [Usage Guide](./cache/README.GUIDE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_cache)
+*   **`fibre_ioc` (IoC Container)**: [Usage Guide](./ioc/README.GUIDE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_ioc)
 
 ## License
 

@@ -10,7 +10,7 @@ The library provides two main container types:
 1.  **`Container`**: A thread-safe container suitable for most application-wide use cases. It shares services using `std::sync::Arc`.
 2.  **`LocalContainer`**: A single-threaded container for performance-critical or `!Send`/`!Sync` scenarios. It shares services using `std::rc::Rc`.
 
-Interaction with the library is primarily done through an instance of a container or the singleton `Container` instance provided by the `global()` function.
+Interaction with the library is primarily done through an instance of a container or the singleton `Container` instance provided by the `global()` function. Resolution of services is made ergonomic through a family of macros for both required (`resolve!`, `resolve_from!`) and optional (`maybe_resolve!`, `maybe_resolve_from!`) dependencies.
 
 ## Core Types
 
@@ -134,7 +134,7 @@ pub fn add_singleton_trait_with_name<I: ?Sized + Any + Send + Sync>(
 
 **`get`**
 
-Resolves a service from the container, returning `Option<Arc<T>>`.
+Resolves a service from the container, returning `Option<Arc<T>>`. This is the foundational method upon which the resolution macros are built.
 
 ```rust
 pub fn get<T: ?Sized + Any + Send + Sync>(&self, name: Option<&str>) -> Option<Arc<T>>;
@@ -259,16 +259,55 @@ pub fn get<T: ?Sized + Any + 'static>(&self, name: Option<&str>) -> Option<Rc<T>
 
 ## Macros
 
-### `resolve!`
+The library provides a family of macros for ergonomic service resolution. They are split into two categories: those that work on the global container and those that work on a specific container instance.
 
-A macro for ergonomic, panicking resolution of services from the global `Container` instance.
+### Global Container Macros
 
-#### **Forms**
+These macros are convenient shortcuts that always operate on the `Container` instance returned by `global()`.
 
-*   **Resolve unnamed concrete type:** `resolve!(MyType)`
-*   **Resolve named concrete type:** `resolve!(MyType, "my_name")`
-*   **Resolve unnamed trait object:** `resolve!(trait MyTrait)`
-*   **Resolve named trait object:** `resolve!(trait MyTrait, "my_name")`
+#### `resolve!`
+
+Resolves a **required** service from the global container. This macro panics if the service is not found.
+
+**Forms**
+*   `resolve!(MyType)`
+*   `resolve!(MyType, "my_name")`
+*   `resolve!(trait MyTrait)`
+*   `resolve!(trait MyTrait, "my_name")`
+
+#### `maybe_resolve!`
+
+Resolves an **optional** service from the global container. This macro returns an `Option` (`None` if the service is not found).
+
+**Forms**
+*   `maybe_resolve!(MyType)` -> `Option<Arc<MyType>>`
+*   `maybe_resolve!(MyType, "my_name")`
+*   `maybe_resolve!(trait MyTrait)` -> `Option<Arc<dyn MyTrait>>`
+*   `maybe_resolve!(trait MyTrait, "my_name")`
+
+### Container-Specific Macros
+
+These foundational macros allow you to resolve services from any container instance, including `Container` and `LocalContainer`. This is especially useful for testing and managing isolated scopes.
+
+#### `resolve_from!`
+
+Resolves a **required** service from a specific container instance. This macro panics if the service is not found.
+
+**Forms**
+*   `resolve_from!(my_container, MyType)`
+*   `resolve_from!(my_container, MyType, "my_name")`
+*   `resolve_from!(my_container, trait MyTrait)`
+*   `resolve_from!(my_container, trait MyTrait, "my_name")`
+
+#### `maybe_resolve_from!`
+
+Resolves an **optional** service from a specific container instance. This macro returns an `Option`.
+
+**Forms**
+*   `maybe_resolve_from!(my_container, MyType)`
+*   `maybe_resolve_from!(my_container, MyType, "my_name")`
+*   `maybe_resolve_from!(my_container, trait MyTrait)`
+*   `maybe_resolve_from!(my_container, trait MyTrait, "my_name")`
 
 ## Public Functions
 
@@ -284,8 +323,10 @@ pub fn global() -> &'static Container;
 
 The library uses two main strategies for handling resolution failures in **both** container types:
 
-1.  **Panicking**: This is the default behavior when using the `resolve!` macro. It is designed for "fail-fast" scenarios where a dependency is considered essential for the application to run.
+1.  **Panicking (for required dependencies)**: This is the behavior when using the `resolve!` and `resolve_from!` macros. It is designed for "fail-fast" scenarios where a dependency is essential for the application to run.
     *   **Missing Service**: Panics with a message like `"Failed to resolve required service: ..."`.
-    *   **Circular Dependency**: Panics with a message like `"Circular dependency detected while resolving service: ..."`. This check is always active, even for the non-panicking `get` method.
+    *   **Circular Dependency**: Panics with a message like `"Circular dependency detected while resolving service: ..."`.
 
-2.  **Fallible `Option`**: The `container.get()` and `local_container.get()` methods return an `Option`. They will return `None` if a service is not found, allowing for graceful handling of optional dependencies. Note that they will still panic in the case of a circular dependency.
+2.  **Fallible `Option` (for optional dependencies)**: The `maybe_resolve!` and `maybe_resolve_from!` macros are the primary tools for this pattern. They return `None` if a service is not found, allowing for graceful handling. These macros are built upon the underlying `container.get()` methods, which provide the same fallible behavior.
+
+Note that a circular dependency will *always* cause a panic, even when using non-panicking resolution macros or methods.
