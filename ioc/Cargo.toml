@@ -1,0 +1,17 @@
+[package]
+name = "fibre_ioc"
+version = "0.5.0"
+description = "A flexible, thread-safe and dynamic Inversion of Control (IoC) container for Rust."
+readme = "README.md"
+keywords = ["ioc", "di", "dependency-injection", "inversion-of-control"]
+categories = ["rust-patterns", "config"]
+
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+dashmap = "^5.5"
+once_cell = "^1.18"

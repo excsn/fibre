@@ -2,9 +2,17 @@
 members = [
   "channels",
   "cache",
+  "ioc",
 ]
 exclude = []
 
 resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MPL-2.0"
+authors = ["Excerion Sun <dev@excsn.com>"]
+homepage = "https://github.com/excsn/fibre"
+repository = "https://github.com/excsn/fibre"
 
 [workspace.dependencies]
