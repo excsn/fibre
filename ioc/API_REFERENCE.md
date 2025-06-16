@@ -6,15 +6,19 @@ This document provides a detailed reference for the public API of the `fibre_ioc
 
 `fibre_ioc` is an Inversion of Control (IoC) container for Rust. Its primary purpose is to manage the lifecycle and dependencies of services within an application.
 
-The central component of the library is the `Container`, which acts as a registry for services. Interaction with the library is primarily done through an instance of `Container` or the singleton instance provided by the `global()` function.
+The library provides two main container types:
+1.  **`Container`**: A thread-safe container suitable for most application-wide use cases. It shares services using `std::sync::Arc`.
+2.  **`LocalContainer`**: A single-threaded container for performance-critical or `!Send`/`!Sync` scenarios. It shares services using `std::rc::Rc`.
 
-A key pattern throughout the library is that all services are resolved wrapped in a `std::sync::Arc`, enabling safe sharing across threads. All registered types must satisfy the `Any + Send + Sync` trait bounds.
+Interaction with the library is primarily done through an instance of a container or the singleton `Container` instance provided by the `global()` function.
 
 ## Core Types
 
 ### struct `Container`
 
-The `Container` is the main IoC container that holds all service registrations. It is thread-safe and allows for concurrent registration and resolution of services.
+The `Container` is the main thread-safe IoC container that holds all service registrations. It is designed for concurrency and allows simultaneous registration and resolution of services from multiple threads.
+
+All types registered with this container must have `'static` lifetimes and satisfy the `Send + Sync` trait bounds.
 
 ```rust
 #[derive(Default)]
@@ -27,7 +31,7 @@ pub struct Container { /* private fields */ }
 
 **`new`**
 
-Creates a new, empty `Container`. This is useful for creating isolated scopes, such as in testing.
+Creates a new, empty `Container`. This is useful for creating isolated, thread-safe scopes.
 
 ```rust
 pub fn new() -> Self;
@@ -35,11 +39,9 @@ pub fn new() -> Self;
 
 ##### **Instance Registration**
 
-These methods register a pre-existing object instance with the container. This object will be treated as a singleton.
-
 **`add_instance`**
 
-Registers an unnamed instance of a type `T`.
+Registers an unnamed, pre-existing object instance. The instance will be treated as a singleton.
 
 ```rust
 pub fn add_instance<T: Any + Send + Sync>(&self, instance: T);
@@ -47,7 +49,7 @@ pub fn add_instance<T: Any + Send + Sync>(&self, instance: T);
 
 **`add_instance_with_name`**
 
-Registers a named instance of a type `T`.
+Registers a named, pre-existing object instance.
 
 ```rust
 pub fn add_instance_with_name<T: Any + Send + Sync>(&self, name: &str, instance: T);
@@ -55,11 +57,9 @@ pub fn add_instance_with_name<T: Any + Send + Sync>(&self, name: &str, instance:
 
 ##### **Singleton Registration**
 
-These methods register a factory function that will be called exactly once to create a singleton instance of a service. The resulting instance is then shared for all subsequent resolutions.
-
 **`add_singleton`**
 
-Registers an unnamed singleton factory for a type `T`.
+Registers an unnamed singleton factory. The factory is called only once, and the resulting instance is shared for all subsequent resolutions.
 
 ```rust
 pub fn add_singleton<T: Any + Send + Sync>(
@@ -70,7 +70,7 @@ pub fn add_singleton<T: Any + Send + Sync>(
 
 **`add_singleton_with_name`**
 
-Registers a named singleton factory for a type `T`.
+Registers a named singleton factory.
 
 ```rust
 pub fn add_singleton_with_name<T: Any + Send + Sync>(
@@ -82,11 +82,9 @@ pub fn add_singleton_with_name<T: Any + Send + Sync>(
 
 ##### **Transient Registration**
 
-These methods register a factory function that will be called every time a service is resolved, creating a new instance on each request.
-
 **`add_transient`**
 
-Registers an unnamed transient factory for a type `T`.
+Registers an unnamed transient factory. The factory is called every time the service is resolved.
 
 ```rust
 pub fn add_transient<T: Any + Send + Sync>(
@@ -97,7 +95,7 @@ pub fn add_transient<T: Any + Send + Sync>(
 
 **`add_transient_with_name`**
 
-Registers a named transient factory for a type `T`.
+Registers a named transient factory.
 
 ```rust
 pub fn add_transient_with_name<T: Any + Send + Sync>(
@@ -109,11 +107,9 @@ pub fn add_transient_with_name<T: Any + Send + Sync>(
 
 ##### **Trait Registration**
 
-These methods are specifically for registering services against a trait object (`dyn Trait`). The factory must return an `Arc<I>` where `I` is the trait object type. Currently, only singleton lifetimes are supported for traits.
-
 **`add_singleton_trait`**
 
-Registers an unnamed singleton factory for a trait object `I`.
+Registers an unnamed singleton factory for a trait object. The factory must return an `Arc<I>`.
 
 ```rust
 pub fn add_singleton_trait<I: ?Sized + Any + Send + Sync>(
@@ -124,7 +120,7 @@ pub fn add_singleton_trait<I: ?Sized + Any + Send + Sync>(
 
 **`add_singleton_trait_with_name`**
 
-Registers a named singleton factory for a trait object `I`.
+Registers a named singleton factory for a trait object.
 
 ```rust
 pub fn add_singleton_trait_with_name<I: ?Sized + Any + Send + Sync>(
@@ -138,20 +134,134 @@ pub fn add_singleton_trait_with_name<I: ?Sized + Any + Send + Sync>(
 
 **`get`**
 
-Resolves a service of type `T` from the container, returning an `Option`. This method does not panic if the service is not found.
-
-*   **`T`**: The type of the service to resolve. For trait objects, use `dyn MyTrait`.
-*   **`name`**: An optional string slice to resolve a named service.
+Resolves a service from the container, returning `Option<Arc<T>>`.
 
 ```rust
 pub fn get<T: ?Sized + Any + Send + Sync>(&self, name: Option<&str>) -> Option<Arc<T>>;
 ```
 
+---
+
+### struct `LocalContainer`
+
+<small>Available with the `"local"` feature flag.</small>
+
+A single-threaded, non-thread-safe Inversion of Control container. It is more performant than the thread-safe `Container` for single-threaded scenarios and has the key advantage of being able to store types that are **not** `Send` or `Sync`.
+
+Registration methods on `LocalContainer` require a mutable reference (`&mut self`).
+
+```rust
+#[cfg(feature = "local")]
+#[derive(Default)]
+pub struct LocalContainer { /* private fields */ }
+```
+
+#### `impl LocalContainer`
+
+##### **Constructors**
+
+**`new`**
+
+Creates a new, empty `LocalContainer`.
+
+```rust
+#[cfg(feature = "local")]
+pub fn new() -> Self;
+```
+
+##### **Singleton Registration**
+
+**`add_singleton`**
+
+Registers an unnamed singleton factory.
+
+```rust
+#[cfg(feature = "local")]
+pub fn add_singleton<T: Any + 'static>(&mut self, factory: impl Fn() -> T + 'static);
+```
+
+**`add_singleton_with_name`**
+
+Registers a named singleton factory.
+
+```rust
+#[cfg(feature = "local")]
+pub fn add_singleton_with_name<T: Any + 'static>(
+    &mut self,
+    name: &str,
+    factory: impl Fn() -> T + 'static,
+);
+```
+
+##### **Transient Registration**
+
+**`add_transient`**
+
+Registers an unnamed transient factory.
+
+```rust
+#[cfg(feature = "local")]
+pub fn add_transient<T: Any + 'static>(&mut self, factory: impl Fn() -> T + 'static);
+```
+
+**`add_transient_with_name`**
+
+Registers a named transient factory.
+
+```rust
+#[cfg(feature = "local")]
+pub fn add_transient_with_name<T: Any + 'static>(
+    &mut self,
+    name: &str,
+    factory: impl Fn() -> T + 'static,
+);
+```
+
+##### **Trait Registration**
+
+**`add_singleton_trait`**
+
+Registers an unnamed singleton factory for a trait object. The factory must return an `Rc<I>`.
+
+```rust
+#[cfg(feature = "local")]
+pub fn add_singleton_trait<I: ?Sized + Any + 'static>(
+    &mut self,
+    factory: impl Fn() -> Rc<I> + 'static,
+);
+```
+
+**`add_singleton_trait_with_name`**
+
+Registers a named singleton factory for a trait object.
+
+```rust
+#[cfg(feature = "local")]
+pub fn add_singleton_trait_with_name<I: ?Sized + Any + 'static>(
+    &mut self,
+    name: &str,
+    factory: impl Fn() -> Rc<I> + 'static,
+);
+```
+
+##### **Resolution**
+
+**`get`**
+
+Resolves a service from the container, returning `Option<Rc<T>>`.
+
+```rust
+#[cfg(feature = "local")]
+pub fn get<T: ?Sized + Any + 'static>(&self, name: Option<&str>) -> Option<Rc<T>>;
+```
+
+---
+
 ## Macros
 
 ### `resolve!`
 
-A macro for ergonomic, panicking resolution of services from the global container. It is the primary way to retrieve dependencies in an application.
+A macro for ergonomic, panicking resolution of services from the global `Container` instance.
 
 #### **Forms**
 
@@ -164,7 +274,7 @@ A macro for ergonomic, panicking resolution of services from the global containe
 
 ### `global`
 
-Returns a static reference to the one and only global `Container` instance. This instance is lazily created on its first access in a thread-safe manner.
+Returns a static reference to the one and only global thread-safe `Container` instance. This instance is lazily created on its first access.
 
 ```rust
 pub fn global() -> &'static Container;
@@ -172,10 +282,10 @@ pub fn global() -> &'static Container;
 
 ## Error Handling
 
-The library uses two main strategies for handling resolution failures:
+The library uses two main strategies for handling resolution failures in **both** container types:
 
 1.  **Panicking**: This is the default behavior when using the `resolve!` macro. It is designed for "fail-fast" scenarios where a dependency is considered essential for the application to run.
     *   **Missing Service**: Panics with a message like `"Failed to resolve required service: ..."`.
     *   **Circular Dependency**: Panics with a message like `"Circular dependency detected while resolving service: ..."`. This check is always active, even for the non-panicking `get` method.
 
-2.  **Fallible `Option`**: The `container.get()` method returns `Option<Arc<T>>`. It will return `None` if a service is not found, allowing for graceful handling of optional dependencies. Note that it will still panic in the case of a circular dependency.
+2.  **Fallible `Option`**: The `container.get()` and `local_container.get()` methods return an `Option`. They will return `None` if a service is not found, allowing for graceful handling of optional dependencies. Note that they will still panic in the case of a circular dependency.

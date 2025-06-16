@@ -57,7 +57,11 @@
 mod container;
 mod core;
 mod global;
+#[cfg(feature = "local")]
+mod local_container; 
 mod macros;
 
 pub use container::Container;
 pub use global::global;
+#[cfg(feature = "local")]
+pub use local_container::LocalContainer;

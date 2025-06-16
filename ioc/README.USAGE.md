@@ -5,35 +5,42 @@ This guide provides a detailed overview of the `fibre_ioc` container, its core c
 ## Table of Contents
 
 - [Core Concepts](#core-concepts)
+- [Choosing a Container: `Container` vs. `LocalContainer`](#choosing-a-container-container-vs-localcontainer)
 - [Quick Start: Trait-Based Injection](#quick-start-trait-based-injection)
 - [Service Registration](#service-registration)
-  - [Singleton](#singleton)
-  - [Transient](#transient)
-  - [Instance](#instance)
-  - [Named Registrations](#named-registrations)
 - [Service Resolution](#service-resolution)
-  - [Using the `resolve!` Macro](#using-the-resolve-macro)
-  - [Using the Fallible `get` Method](#using-the-fallible-get-method)
 - [Advanced Topics](#advanced-topics)
-  - [Working with Traits](#working-with-traits)
+  - [Using `LocalContainer` for `!Send` Types](#using-localcontainer-for-send-types)
   - [Isolated Containers for Testing](#isolated-containers-for-testing)
 - [Error Handling](#error-handling)
-  - [Missing Services](#missing-services)
-  - [Circular Dependencies](#circular-dependencies)
 
 ## Core Concepts
 
-*   **Container**: The central registry for all your services. It holds the "recipes" (providers) for creating service instances. You can use the `global()` container for application-wide dependencies or create isolated instances with `Container::new()`.
-
+*   **Container**: The central registry for all your services. It holds the "recipes" (providers) for creating service instances.
 *   **Provider**: An internal enum that defines how a service is created and its lifetime. The main variants are `Singleton` (created once, then shared) and `Transient` (created new each time).
-
-*   **Resolution**: The process of requesting an instance of a service from the container. This is typically done via the `resolve!` macro.
-
+*   **Resolution**: The process of requesting an instance of a service from the container.
 *   **InjectionKey**: A service is uniquely identified by a combination of its `TypeId` and an optional `String` name. This allows you to register multiple, distinct providers for the same Rust type.
+
+## Choosing a Container: `Container` vs. `LocalContainer`
+
+Fibre provides two distinct container types to suit different needs.
+
+1.  **`Container` (Thread-Safe)**
+    *   **Use when**: Building a typical multi-threaded application where services might be accessed from anywhere.
+    *   **Sharing**: Uses `std::sync::Arc` for shared ownership.
+    *   **Bounds**: Requires all registered types to be `Send + Sync`.
+    *   **Access**: The `global()` function provides a convenient, application-wide instance of this container.
+
+2.  **`LocalContainer` (Single-Threaded)**
+    *   **Feature Flag**: Requires the `"local"` feature to be enabled.
+    *   **Use when**: You need maximum performance in a single-threaded context (like a game loop or a single-threaded executor) or when you need to store types that are not `Send` or `Sync` (e.g., `Rc`, `RefCell`, or types from C FFI).
+    *   **Sharing**: Uses `std::rc::Rc` for shared ownership.
+    *   **Bounds**: Does **not** require types to be `Send` or `Sync`.
+    *   **API**: Registration methods (`add_*`) take `&mut self`.
 
 ## Quick Start: Trait-Based Injection
 
-The most powerful feature of an IoC container is its ability to decouple components. Here is a canonical example where a `ReportService` depends on a `Logger` abstraction (a trait), not a concrete type.
+The most powerful feature of an IoC container is decoupling components. Here is a canonical example using the thread-safe `global` container where a `ReportService` depends on a `Logger` abstraction (a trait), not a concrete type.
 
 ```rust
 use fibre_ioc::{global, resolve};
@@ -67,7 +74,6 @@ impl ReportService {
 
 fn main() {
     // 4. Register the dependencies
-    // Register ConsoleLogger as the implementation for the `dyn Logger` trait.
     global().add_singleton_trait::<dyn Logger>(|| Arc::new(ConsoleLogger));
 
     // The ReportService factory *resolves* its dependency from the container.
@@ -83,70 +89,63 @@ fn main() {
 
 ## Service Registration
 
-You can register services with different lifetimes. All registration methods are available on both the global container and any local `Container` instance.
+You can register services with different lifetimes. The concepts are the same for both `Container` and `LocalContainer`, but the trait bounds and method signatures differ slightly.
 
 ### Singleton
 
-A singleton service is instantiated only once. The same instance is returned for all subsequent resolutions. This is useful for shared resources like configuration, database connection pools, or thread-safe clients.
+A singleton service is instantiated only once. The same instance is returned for all subsequent resolutions.
 
+**For `Container` (thread-safe):**
 ```rust
-struct AppConfig { database_url: String }
-
-// Factory is called only on the first resolution.
-global().add_singleton(|| AppConfig {
-    database_url: "postgres://...".to_string()
-});
+// The factory is called only on the first resolution.
+global().add_singleton(|| AppConfig { /* ... */ });
 ```
-**Method Signatures:**
+
+**For `LocalContainer` (single-threaded):**
 ```rust
-pub fn add_singleton<T: Any + Send + Sync>(
-    &self,
-    factory: impl Fn() -> T + Send + Sync + 'static
-);
+# #[cfg(feature = "local")] {
+use fibre_ioc::LocalContainer;
+let mut container = LocalContainer::new();
+container.add_singleton(|| LocalConfig { /* ... */ });
+# }
 ```
 
 ### Transient
 
-A transient service is instantiated every time it is resolved. This is useful for short-lived objects that carry request-specific state, like a request handler or a unit of work.
+A transient service is instantiated every time it is resolved.
 
+**For `Container` (thread-safe):**
 ```rust
-struct RequestContext { request_id: u64 }
-
 // Factory is called every time `resolve!(RequestContext)` is used.
-global().add_transient(|| RequestContext {
-    request_id: rand::random()
-});
+global().add_transient(|| RequestContext { /* ... */ });
 ```
-**Method Signatures:**
+
+**For `LocalContainer` (single-threaded):**
 ```rust
-pub fn add_transient<T: Any + Send + Sync>(
-    &self,
-    factory: impl Fn() -> T + Send + Sync + 'static
-);
+# #[cfg(feature = "local")] {
+use fibre_ioc::LocalContainer;
+let mut container = LocalContainer::new();
+container.add_transient(|| LocalRequestContext { /* ... */ });
+# }
 ```
 
-### Instance
+### Instance (`Container` only)
 
-You can register an object that has already been created. This is effectively a pre-initialized singleton.
+You can register a pre-existing object with the thread-safe `Container`. This is effectively a pre-initialized singleton. `LocalContainer` does not have this method.
 
 ```rust
 let preconfigured_service = MyService::new("special_config");
-
 global().add_instance(preconfigured_service);
-```
-**Method Signatures:**
-```rust
-pub fn add_instance<T: Any + Send + Sync>(&self, instance: T);
 ```
 
 ### Named Registrations
 
-All registration methods have a `_with_name` variant (e.g., `add_singleton_with_name`) that accepts a string slice name. This allows you to register multiple, distinct providers for the same type.
+All registration methods have a `_with_name` variant (e.g., `add_singleton_with_name`) that accepts a string slice name. This allows you to register multiple providers for the same type.
 
 ```rust
 // Register two different configurations for the same struct
-global().add_instance_with_name("default_config", AppConfig { ... });
-global().add_instance_with_name("test_config", AppConfig { ... });
+global().add_instance_with_name("default_config", AppConfig { /* ... */ });
+global().add_instance_with_name("test_config", AppConfig { /* ... */ });
 
 // Later, you can resolve the specific one you need
 let config = resolve!(AppConfig, "test_config");
@@ -156,7 +155,7 @@ let config = resolve!(AppConfig, "test_config");
 
 ### Using the `resolve!` Macro
 
-The `resolve!` macro is the most ergonomic way to get dependencies. It panics if the requested service is not registered, enforcing a "fail-fast" policy where missing dependencies cause an immediate crash.
+The `resolve!` macro is the most ergonomic way to get dependencies **from the global `Container`**. It panics if the requested service is not registered. It cannot be used with a `LocalContainer`.
 
 ```rust
 // Resolve an unnamed service by type
@@ -167,53 +166,72 @@ let named_service = resolve!(MyService, "my_name");
 
 // Resolve an unnamed trait object
 let greeter = resolve!(trait Greeter);
-
-// Resolve a named trait object
-let german_greeter = resolve!(trait Greeter, "german");
 ```
 
 ### Using the Fallible `get` Method
 
-For cases where a service might be optional, you can use the `container.get()` method directly. It returns an `Option<Arc<T>>`, allowing you to handle a missing registration gracefully.
+For cases where a service might be optional, or when using a `LocalContainer`, you must use the `get()` method. It returns an `Option`, allowing you to handle a missing registration gracefully.
 
+**For `Container`:**
 ```rust
 use fibre_ioc::global;
-
-if let Some(optional_service) = global().get::<OptionalService>(None) {
-    optional_service.do_work();
-} else {
-    println!("Optional service not configured, skipping.");
+if let Some(service) = global().get::<MyService>(None) {
+    // service is an Arc<MyService>
+    service.do_work();
 }
 ```
-**Method Signature:**
+
+**For `LocalContainer`:**
 ```rust
-pub fn get<T: ?Sized + Any + Send + Sync>(&self, name: Option<&str>) -> Option<Arc<T>>;
+# #[cfg(feature = "local")] {
+use fibre_ioc::LocalContainer;
+let mut container = LocalContainer::new();
+container.add_singleton(|| MyLocalService);
+
+if let Some(service) = container.get::<MyLocalService>(None) {
+    // service is an Rc<MyLocalService>
+    service.do_local_work();
+}
+# }
 ```
 
 ## Advanced Topics
 
-### Working with Traits
+### Using `LocalContainer` for `!Send` Types
 
-To register a service that implements a trait, use the `add_singleton_trait` or `add_transient_trait` methods. Your factory must return an `Arc<dyn YourTrait>`.
+The primary advantage of `LocalContainer` is its ability to manage types that don't implement `Send` or `Sync`, which is impossible in the thread-safe `Container`.
 
 ```rust
-trait Notifier: Send + Sync { fn notify(&self, msg: &str); }
-struct EmailNotifier;
-impl Notifier for EmailNotifier { /* ... */ }
+# #[cfg(feature = "local")] {
+use fibre_ioc::LocalContainer;
+use std::rc::Rc;
+use std::cell::RefCell;
 
-// The factory returns an Arc'd trait object.
-global().add_singleton_trait::<dyn Notifier>(|| {
-    Arc::new(EmailNotifier)
+// This service contains an Rc and a RefCell, so it is !Send and !Sync.
+struct UiState {
+    user_name: Rc<String>,
+    counter: RefCell<i32>,
+}
+
+let mut container = LocalContainer::new();
+
+container.add_singleton(|| UiState {
+    user_name: Rc::new("Alice".to_string()),
+    counter: RefCell::new(0),
 });
 
-// Resolve it using the `trait` keyword in the macro.
-let notifier = resolve!(trait Notifier);
-notifier.notify("Hello!");
+let ui_state = container.get::<UiState>(None).unwrap();
+
+// We can now work with the non-thread-safe service
+assert_eq!(*ui_state.user_name, "Alice");
+*ui_state.counter.borrow_mut() += 1;
+assert_eq!(*ui_state.counter.borrow(), 1);
+# }
 ```
 
 ### Isolated Containers for Testing
 
-While the `global()` container is great for applications, it can create cross-contamination in tests. For testing, it's best to create a new `Container` for each test or test module.
+While the `global()` container is convenient, it can create cross-contamination in tests. For robust testing, always create a new `Container` or `LocalContainer` for each test.
 
 ```rust
 use fibre_ioc::Container;
@@ -236,31 +254,7 @@ fn my_isolated_test() {
 
 ## Error Handling
 
-### Missing Services
+Error handling is identical for both container types.
 
-*   **`resolve!` macro**: Panics with a "Failed to resolve required service" message.
-*   **`container.get()` method**: Returns `None`.
-
-### Circular Dependencies
-
-The container automatically detects circular dependencies during resolution and will always panic, regardless of whether you use `resolve!` or `get()`. This prevents infinite recursion and stack overflows.
-
-```rust
-// This test will panic with a "Circular dependency detected" message.
-#[test]
-#[should_panic(expected = "Circular dependency detected")]
-fn test_circular_dependency() {
-    struct ServiceA { _b: Arc<ServiceB> }
-    struct ServiceB { _a: Arc<ServiceA> }
-
-    global().add_singleton_with_name("circular_a", || ServiceA {
-        _b: resolve!(ServiceB, "circular_b"),
-    });
-    global().add_singleton_with_name("circular_b", || ServiceB {
-        _a: resolve!(ServiceA, "circular_a"),
-    });
-
-    // Act: Resolving either service triggers the panic.
-    resolve!(ServiceA, "circular_a");
-}
-```
+*   **Missing Services**: `resolve!` panics. `get()` returns `None`.
+*   **Circular Dependencies**: The container automatically detects circular dependencies during resolution and will **always panic** with a "Circular dependency detected" message. This prevents infinite recursion and is not recoverable.
