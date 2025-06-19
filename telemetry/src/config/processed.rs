@@ -70,7 +70,7 @@ pub struct PatternEncoderInternal {
 
 #[derive(Debug, Clone)]
 pub struct JsonLinesEncoderInternal {
-  // No specific options for MVP
+  pub flatten_fields: bool,
 }
 
 // --- Processed Logger Config ---
@@ -228,9 +228,11 @@ fn process_encoder_config_raw(raw_encoder: EncoderConfigRaw) -> Result<EncoderIn
           .unwrap_or_else(|| "[%d] %p %t - %m%n".to_string()),
       }))
     }
-    EncoderConfigRaw::JsonLines(_raw_json) => {
-      Ok(EncoderInternal::JsonLines(JsonLinesEncoderInternal {}))
-    }
+    EncoderConfigRaw::JsonLines(raw_json) => Ok(EncoderInternal::JsonLines(
+      JsonLinesEncoderInternal {
+        flatten_fields: raw_json.flatten_fields,
+      },
+    ))
   }
 }
 

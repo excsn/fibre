@@ -113,8 +113,12 @@ pub struct PatternEncoderConfigRaw {
 #[derive(Debug, Deserialize, PartialEq, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct JsonLinesEncoderConfigRaw {
-  // For MVP, no specific options. Later: pretty_print, fields_to_include/exclude
+  // Later: pretty_print, fields_to_include/exclude
   // pub pretty: Option<bool>,
+  /// If true, custom fields are added to the top-level JSON object
+  /// instead of being nested under a "fields" key. Defaults to false.
+  #[serde(default)]
+  pub flatten_fields: bool,
 }
 
 // --- Logger Config ---

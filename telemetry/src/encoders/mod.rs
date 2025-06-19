@@ -18,14 +18,14 @@ pub trait EventFormatter: Send + Sync + 'static {
 }
 
 /// Creates an `EventFormatter` instance based on the processed encoder configuration.
+
 pub(crate) fn new_event_formatter(config: &EncoderInternal) -> Box<dyn EventFormatter> {
   match config {
     EncoderInternal::Pattern(pattern_conf) => {
       Box::new(pattern::PatternFormatter::new(&pattern_conf.pattern_string))
     }
-    EncoderInternal::JsonLines(_json_conf) => {
-      Box::new(json::JsonLinesFormatter::new())
-      // Later, pass _json_conf if it has options like pretty_print
+    EncoderInternal::JsonLines(json_conf) => {
+      Box::new(json::JsonLinesFormatter::new(json_conf.clone()))
     }
   }
 }

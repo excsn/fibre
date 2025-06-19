@@ -63,7 +63,15 @@ impl DispatchLayer {
     }
 
     let current_thread = std::thread::current();
-    telemetry_event.thread_id = Some(format!("{:?}", current_thread.id()));
+    // Extract the raw ID from the `Debug` output of `ThreadId`.
+    let debug_id = format!("{:?}", current_thread.id());
+    telemetry_event.thread_id = Some(
+      debug_id
+        .strip_prefix("ThreadId(")
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or(&debug_id) // Fallback to the full debug string if parsing fails
+        .to_string(),
+    );
     if let Some(name) = current_thread.name() {
       telemetry_event.thread_name = Some(name.to_string());
     }
