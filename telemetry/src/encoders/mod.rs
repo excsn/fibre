@@ -1,0 +1,31 @@
+// src/encoders/mod.rs
+// Defines strategies for formatting TelemetryEvents into byte streams.
+
+use crate::config::processed::{EncoderInternal, JsonLinesEncoderInternal, PatternEncoderInternal};
+use crate::error::Result; // Using crate::error::Result for formatting errors potentially
+use crate::model::TelemetryEvent; // To construct based on config
+
+pub mod json;
+pub mod pattern;
+pub mod util;
+
+/// Trait for types that can format a `TelemetryEvent` into a byte vector.
+/// This will be implemented by specific formatters like PatternFormatter or JsonLinesFormatter.
+pub trait EventFormatter: Send + Sync + 'static {
+  /// Formats the given `TelemetryEvent` into a `Vec<u8>`.
+  /// The output `Vec<u8>` should typically include a newline if it's line-based.
+  fn format_event(&self, event: &TelemetryEvent) -> Result<Vec<u8>>;
+}
+
+/// Creates an `EventFormatter` instance based on the processed encoder configuration.
+pub(crate) fn new_event_formatter(config: &EncoderInternal) -> Box<dyn EventFormatter> {
+  match config {
+    EncoderInternal::Pattern(pattern_conf) => {
+      Box::new(pattern::PatternFormatter::new(&pattern_conf.pattern_string))
+    }
+    EncoderInternal::JsonLines(_json_conf) => {
+      Box::new(json::JsonLinesFormatter::new())
+      // Later, pass _json_conf if it has options like pretty_print
+    }
+  }
+}

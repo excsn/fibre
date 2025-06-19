@@ -38,7 +38,7 @@ The `mpmc`, `mpsc`, `spmc`, and `spsc` channels support full interoperability be
 
 All channels are interacted with via sender and receiver handles (e.g., `Sender`, `Receiver`, `AsyncSender`, `AsyncReceiver`; SPSC uses `BoundedSyncSender`, etc.). These handles control access to the channel and manage its lifetime. When all senders for a channel are dropped, the channel becomes "disconnected" from the perspective of the receiver. When all receivers are dropped, the channel becomes "closed" from the perspective of the sender.
 
-**A key feature of all multi-item asynchronous receiver types (`mpmc::AsyncReceiver`, `mpsc::AsyncReceiver`, etc.) is that they implement the `futures::Stream` trait.** This allows them to be used with the rich set of combinators provided by `futures::StreamExt`, such as `next()`, `map()`, `filter()`, `for_each`, and `collect()`. The `oneshot::Receiver` is an exception, as it yields at most one item and is used by awaiting its `.recv()` future directly.
+**A key feature of all multi-item asynchronous receiver types (`mpmc::AsyncReceiver`, `mpsc::UnboundedAsyncReceiver`, etc.) is that they implement the `futures::Stream` trait.** This allows them to be used with the rich set of combinators provided by `futures::StreamExt`, such as `next()`, `map()`, `filter()`, `for_each`, and `collect()`. The `oneshot::Receiver` is an exception, as it yields at most one item and is used by awaiting its `.recv()` future directly.
 
 ## Quick Start Examples
 
@@ -110,7 +110,7 @@ use futures_util::StreamExt; // Import the StreamExt trait for .next()
 
 #[tokio::main]
 async fn main() {
-    let (tx, mut rx) = mpsc::unbounded_async(); // MPSC is unbounded
+    let (tx, mut rx) = mpsc::unbounded_async(); // Use the unbounded async MPSC constructor
     let num_producers = 3;
     let items_per_producer = 5;
 
@@ -198,13 +198,16 @@ A flexible channel for many-to-many communication.
 An optimized lock-free channel for many-to-one communication.
 
 *   **Constructors:**
-    *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`
-    *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`
-    *   `pub fn bounded<T: Send>(capacity: usize) -> (bounded_sync::Sender<T>, bounded_sync::Receiver<T>)`
-    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (bounded_async::AsyncSender<T>, bounded_async::AsyncReceiver<T>)`
-*   **Handles:**
-    *   `Sender<T: Send>` (sync, `Clone`) and `Receiver<T: Send>` (sync, `!Clone`).
-    *   `AsyncSender<T: Send>` (async, `Clone`) and `AsyncReceiver<T: Send>` (async, `!Clone`). `AsyncReceiver` implements `futures::Stream`.
+    *   `pub fn unbounded<T: Send>() -> (UnboundedSender<T>, UnboundedReceiver<T>)`
+    *   `pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>)`
+    *   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>)`
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)`
+*   **Handles (Unbounded):**
+    *   `UnboundedSender<T: Send>` (sync, `Clone`) and `UnboundedReceiver<T: Send>` (sync, `!Clone`).
+    *   `UnboundedAsyncSender<T: Send>` (async, `Clone`) and `UnboundedAsyncReceiver<T: Send>` (async, `!Clone`). `UnboundedAsyncReceiver` implements `futures::Stream`.
+*   **Handles (Bounded):**
+    *   `BoundedSender<T: Send>` (sync, `Clone`) and `BoundedReceiver<T: Send>` (sync, `!Clone`).
+    *   `BoundedAsyncSender<T: Send>` (async, `Clone`) and `BoundedAsyncReceiver<T: Send>` (async, `!Clone`). `BoundedAsyncReceiver` implements `futures::Stream`.
 *   **Key Methods:**
     *   `send(...)`: Sync sends block, async sends return a `Future`.
     *   `try_send(...)`
@@ -225,6 +228,7 @@ A broadcast-style channel for one-to-many communication (bounded). `T` must be `
 *   **Key Methods:**
     *   `send(&self, ...)`: Blocks if any consumer is slow and its buffer view is full. Async version returns a `Future`.
     *   `recv(&self, ...)`: Blocks if the consumer's view of the buffer is empty. Async version returns a `Future`.
+    *   `Sender::close(&mut self)` and `AsyncSender::close(&mut self)` take `&mut self`.
 
 ### Module: `fibre::spsc`
 
@@ -291,8 +295,8 @@ Fibre is a complex library with a high degree of concurrency. To aid in debuggin
 # Run all tests
 cargo nextest run
 
-# Run a specific test, e.g., in tests/spmc_repro.rs
-cargo nextest run spmc_deadlock_tests::looped_repro_spmc_sync_hang_4c_1cap
+# Run a specific test, e.g., in spmc/mod.rs
+cargo nextest run spmc::tests::spmc_sync_slow_consumer_blocks_producer
 ```
 
 ### Using ThreadSanitizer (TSan)
@@ -302,7 +306,7 @@ TSan is invaluable for detecting data races in the library's `unsafe` and atomic
 ```bash
 # Example: Run SPMC tests with TSan on an Apple Silicon Mac
 RUSTFLAGS="-Z sanitizer=thread" cargo +nightly nextest run \
-  --test spmc_sync \
+  --test spmc \
   --target aarch64-apple-darwin
 ```
 

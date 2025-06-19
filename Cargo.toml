@@ -3,6 +3,7 @@ members = [
   "channels",
   "cache",
   "ioc",
+  "telemetry",
 ]
 exclude = []
 

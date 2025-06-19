@@ -1,0 +1,27 @@
+# examples/fibre_telemetry.rolling.yaml
+version: 1
+
+appenders:
+  # A standard console appender for immediate visibility.
+  console:
+    kind: console
+    encoder:
+      kind: pattern
+      pattern: "[%d] %p - %m%n"
+
+  # A rolling file appender.
+  rolling_log:
+    kind: rolling_file
+    directory: "logs/rolling"
+    file_name_prefix: "app.log"
+    policy:
+      time_granularity: minutely
+    encoder:
+      kind: pattern
+      pattern: "[%d] [%p] [%t] %m%n" # A slightly different pattern for the file
+
+loggers:
+  # Send all INFO level events and higher to both appenders.
+  root:
+    level: info
+    appenders: [console, rolling_log]
