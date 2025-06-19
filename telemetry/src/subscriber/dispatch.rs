@@ -4,7 +4,7 @@
 use crate::{
   error_handling::{InternalErrorReport, InternalErrorSource},
   model::TelemetryEvent,
-  subscriber::actor::AppenderActor,
+  subscriber::actor::{ActorAction, AppenderActor},
   subscriber::visitor::TelemetryEventFieldVisitor,
 };
 use fibre::{
@@ -94,31 +94,62 @@ where
   S: Subscriber + for<'span> LookupSpan<'span>,
 {
   fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+    // 1. Build the TelemetryEvent once for efficiency.
     let telemetry_event = self.build_telemetry_event(event, ctx);
 
+    // 2. Loop through each configured actor.
     for actor in &self.actors {
+      // 3. Check if the event is enabled for this actor's specific filter.
       if actor.filter.enabled(event.metadata()) {
-        match actor.formatter.format_event(&telemetry_event) {
-          Ok(formatted_bytes) => {
-            let mut writer_guard = actor.writer.lock();
-            if let Err(e) = writer_guard.write_all(&formatted_bytes) {
-              self.send_error_report(
-                InternalErrorSource::AppenderWrite {
-                  appender_name: actor.name.clone(),
-                },
-                e,
-                Some(format!("Event target: {}", telemetry_event.target)),
-              );
+        // 4. Perform the action defined for this actor (Write or Send).
+        match &actor.action {
+          ActorAction::Write(writer) => {
+            // This actor writes formatted logs to a sink (file, console).
+            match actor.formatter.format_event(&telemetry_event) {
+              Ok(formatted_bytes) => {
+                let mut writer_guard = writer.lock();
+                if let Err(e) = writer_guard.write_all(&formatted_bytes) {
+                  // Formatting succeeded, but writing to the sink failed.
+                  self.send_error_report(
+                    InternalErrorSource::AppenderWrite {
+                      appender_name: actor.name.clone(),
+                    },
+                    e,
+                    Some(format!("Event target: {}", telemetry_event.target)),
+                  );
+                }
+              }
+              Err(e) => {
+                // Formatting the event itself failed.
+                self.send_error_report(
+                  InternalErrorSource::EventFormatting {
+                    appender_name: actor.name.clone(),
+                  },
+                  e,
+                  Some(format!("Event target: {}", telemetry_event.target)),
+                );
+              }
             }
           }
-          Err(e) => {
-            self.send_error_report(
-              InternalErrorSource::EventFormatting {
-                appender_name: actor.name.clone(),
-              },
-              e,
-              Some(format!("Event target: {}", telemetry_event.target)),
-            );
+          ActorAction::Send(sender) => {
+            // This actor sends the structured event to a channel.
+            // A clone is necessary because other actors might also need this event.
+            if let Err(e) = sender.try_send(telemetry_event.clone()) {
+              // We typically don't report an error if the channel is full or
+              // disconnected, as this would create a feedback loop of error
+              // messages. The application is responsible for consuming the
+              // channel buffer. We can log to stderr as a last resort if needed.
+              match e {
+                FibreTrySendError::Full(_) => {
+                  eprintln!("[fibre_telemetry:WARN] Custom appender channel for '{}' is full. Dropping event.", actor.name);
+                }
+                FibreTrySendError::Closed(_) => {
+                  // This is normal during shutdown, so we don't print anything.
+                }
+                // The 'Sent' variant is only for oneshot channels.
+                FibreTrySendError::Sent(_) => unreachable!(),
+              }
+            }
           }
         }
       }
@@ -166,11 +197,13 @@ mod tests {
     let formatter = CapturingFormatter::new();
     let filter = PerAppenderFilter::new(HashMap::new(), tracing_core::metadata::LevelFilter::TRACE);
 
+    // CORRECTED: Create an AppenderActor with the `ActorAction::Write` variant.
     let actor = AppenderActor {
       name: "test_appender".to_string(),
       filter,
       formatter: Box::new(formatter.clone()),
-      writer: Arc::new(Mutex::new(std::io::sink())), // A writer that does nothing
+      // The action is to write to a sink (a writer that discards all data).
+      action: ActorAction::Write(Arc::new(Mutex::new(std::io::sink()))),
     };
 
     let dispatch_layer = DispatchLayer::new(vec![actor], None);
@@ -206,11 +239,7 @@ mod tests {
       captured.fields.get("big_num"),
       Some(&LogValue::String(u64::MAX.to_string()))
     );
-
-    // The "message" field itself should NOT be in the fields map, as it became the primary message.
     assert!(captured.fields.get("message").is_none());
-
-    // Other string fields are present
     assert_eq!(
       captured.fields.get("extra_msg"),
       Some(&LogValue::String("another message".to_string()))

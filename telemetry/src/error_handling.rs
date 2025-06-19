@@ -1,5 +1,6 @@
 use std::fmt;
 
+
 #[derive(Debug)]
 pub enum InternalErrorSource {
   AppenderWrite { appender_name: String },
@@ -12,24 +13,16 @@ pub enum InternalErrorSource {
 impl fmt::Display for InternalErrorSource {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      InternalErrorSource::AppenderWrite { appender_name } => {
-        write!(
-          f,
-          "AppenderWrite {{ appender_name: \"{}\" }}",
-          appender_name
-        )
-      }
-      InternalErrorSource::EventFormatting { appender_name } => {
-        write!(
-          f,
-          "EventFormatting {{ appender_name: \"{}\" }}",
-          appender_name
-        )
-      }
-      InternalErrorSource::ConfigProcessing => write!(f, "ConfigProcessing"),
-      InternalErrorSource::CustomRollerIo { path } => {
-        write!(f, "CustomRollerIo {{ path: \"{}\" }}", path)
-      }
+            InternalErrorSource::AppenderWrite { appender_name } => {
+                write!(f, "AppenderWrite {{ appender_name: \"{}\" }}", appender_name)
+            }
+            InternalErrorSource::EventFormatting { appender_name } => {
+                write!(f, "EventFormatting {{ appender_name: \"{}\" }}", appender_name)
+            }
+            InternalErrorSource::ConfigProcessing => write!(f, "ConfigProcessing"),
+            InternalErrorSource::CustomRollerIo { path } => {
+                write!(f, "CustomRollerIo {{ path: \"{}\" }}", path)
+            }
     }
   }
 }

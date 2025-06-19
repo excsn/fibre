@@ -1,6 +1,14 @@
 use serde::Deserialize;
 use std::collections::HashMap; // Using HashMap for config keys as order doesn't matter much here
 
+#[derive(Debug, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct InternalErrorReportingRaw {
+  #[serde(default)] // Defaults to false if not present
+  pub enabled: bool,
+  // Later we could add buffer_size here.
+}
+
 // --- Top Level Config ---
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -11,6 +19,8 @@ pub struct ConfigRaw {
   pub appenders: HashMap<String, AppenderConfigRaw>,
   #[serde(default)] // Loggers can be empty, will imply a default root
   pub loggers: HashMap<String, LoggerConfigRaw>,
+  #[serde(default)]
+  pub internal_error_reporting: InternalErrorReportingRaw,
 }
 
 fn default_version() -> u32 {
@@ -24,15 +34,19 @@ pub enum AppenderConfigRaw {
   Console(ConsoleAppenderConfigRaw),
   File(FileAppenderConfigRaw),
   RollingFile(RollingFileAppenderConfigRaw),
+  Custom(CustomAppenderConfigRaw),
 }
 
-// Specific Appender Types
+// --- Console Appender ---
+
 #[derive(Debug, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ConsoleAppenderConfigRaw {
   #[serde(default)]
   pub encoder: Option<EncoderConfigRaw>,
 }
+
+// --- File Appender ---
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +55,8 @@ pub struct FileAppenderConfigRaw {
   #[serde(default)]
   pub encoder: Option<EncoderConfigRaw>,
 }
+
+// --- Rolling Appender ---
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -63,6 +79,20 @@ pub struct RollingPolicyRaw {
   /// Determines the time-based rotation frequency.
   /// Expected values: "minutely", "hourly", "daily", or "never".
   pub time_granularity: String,
+}
+
+// --- Custom Appender ---
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CustomAppenderConfigRaw {
+  /// The capacity of the underlying `fibre` channel.
+  #[serde(default = "default_buffer_size")]
+  pub buffer_size: usize,
+}
+
+fn default_buffer_size() -> usize {
+  256 // A sensible default buffer size
 }
 
 // --- Encoder Config ---
@@ -109,6 +139,7 @@ impl Default for ConfigRaw {
       version: default_version(),
       appenders: HashMap::new(),
       loggers: HashMap::new(),
+      internal_error_reporting: Default::default(),
     }
   }
 }
@@ -120,6 +151,7 @@ impl AppenderConfigRaw {
       AppenderConfigRaw::Console(c) => c.encoder.clone(),
       AppenderConfigRaw::File(f) => f.encoder.clone(),
       AppenderConfigRaw::RollingFile(r) => r.encoder.clone(),
+      AppenderConfigRaw::Custom(_) => None,
     }
   }
 }

@@ -22,13 +22,17 @@ pub use error_handling::{InternalErrorReport, InternalErrorSource};
 pub use guards::WorkerGuardCollection;
 pub use model::{LogValue, TelemetryEvent};
 
+use std::collections::HashMap;
+
+pub type CustomEventReceiver = fibre::mpsc::BoundedReceiver<TelemetryEvent>;
+
 // This will be the main struct returned by initialization.
 #[must_use = "The InitResult and its guards must be kept alive for logging to work correctly and flush on exit"]
 pub struct InitResult {
   pub guard_collection: WorkerGuardCollection,
   // If error reporting is enabled, this receiver can be used to get internal error reports.
   pub internal_error_rx: Option<fibre::mpsc::BoundedReceiver<InternalErrorReport>>,
-  // pub custom_streams: HashMap<String, CustomStreamSetup>,
+  pub custom_streams: HashMap<String, CustomEventReceiver>,
 }
 
 // Public initialization functions

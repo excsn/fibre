@@ -1,0 +1,48 @@
+# examples/fibre_telemetry.advanced.yaml
+version: 1
+
+# Enable the internal error reporting channel.
+internal_error_reporting:
+  enabled: true
+
+appenders:
+  # Standard console for most logs.
+  console:
+    kind: console
+    encoder:
+      kind: pattern
+      pattern: "[%d] %p %t - %m%n"
+
+  # A custom appender that will send events to our application code.
+  metrics_stream:
+    kind: custom
+    buffer_size: 100 # A small buffer for the example
+
+  # A file appender pointing to a directory that we will make read-only
+  # to intentionally trigger a write error.
+  failing_file:
+    kind: file
+    # NOTE: The example code will create this file and then remove write permissions.
+    path: "logs/failing_write.log"
+    encoder:
+      kind: pattern
+      pattern: "%m"
+
+
+loggers:
+  # The root logger sends INFO events to the console.
+  root:
+    level: info
+    appenders: [console]
+  
+  # A logger for our special "METRICS" target.
+  # It sends TRACE level events ONLY to the metrics_stream appender.
+  METRICS:
+    level: trace
+    appenders: [metrics_stream]
+
+  # A logger for our special "FAIL" target.
+  # It sends ERROR level events to the failing_file appender to trigger an error.
+  FAIL:
+    level: error
+    appenders: [failing_file]

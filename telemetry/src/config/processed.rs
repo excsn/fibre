@@ -15,6 +15,7 @@ use tracing_core::metadata::LevelFilter;
 pub struct ConfigInternal {
   pub appenders: HashMap<String, AppenderInternal>,
   pub loggers: HashMap<String, LoggerInternal>,
+  pub error_reporting_enabled: bool,
 }
 
 // --- Processed Appender Config ---
@@ -30,6 +31,7 @@ pub enum AppenderKindInternal {
   Console(ConsoleAppenderInternal),
   File(FileAppenderInternal),
   RollingFile(RollingFileAppenderInternal),
+  Custom(CustomAppenderInternal),
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +49,11 @@ pub struct RollingFileAppenderInternal {
   pub directory: PathBuf,
   pub file_name_prefix: String,
   pub rotation_policy: Rotation,
+}
+
+#[derive(Debug, Clone)]
+pub struct CustomAppenderInternal {
+  pub buffer_size: usize,
 }
 
 // --- Processed Encoder Config ---
@@ -136,7 +143,19 @@ pub fn process_raw_config(raw_config: crate::config::raw::ConfigRaw) -> Result<C
           rotation_policy,
         })
       }
+      AppenderConfigRaw::Custom(raw_custom) => {
+        if raw_custom.buffer_size == 0 {
+          return Err(Error::InvalidConfigValue {
+            field: format!("appenders.{}.buffer_size", name),
+            message: "Custom appender buffer_size cannot be zero.".to_string(),
+          });
+        }
+        AppenderKindInternal::Custom(CustomAppenderInternal {
+          buffer_size: raw_custom.buffer_size,
+        })
+      }
     };
+    
     processed_appenders.insert(
       name.clone(),
       AppenderInternal {
@@ -191,9 +210,12 @@ pub fn process_raw_config(raw_config: crate::config::raw::ConfigRaw) -> Result<C
     );
   }
 
+  let error_reporting_enabled = raw_config.internal_error_reporting.enabled;
+
   Ok(ConfigInternal {
     appenders: processed_appenders,
     loggers: processed_loggers,
+    error_reporting_enabled,
   })
 }
 
@@ -283,6 +305,7 @@ mod tests {
       version: 1,
       appenders: HashMap::new(),
       loggers: HashMap::new(), // No loggers specified
+      internal_error_reporting: Default::default(),
     };
     let internal_config = process_raw_config(raw_config).unwrap();
 
@@ -306,6 +329,7 @@ mod tests {
       version: 1,
       appenders: HashMap::new(),
       loggers,
+      internal_error_reporting: Default::default(),
     };
 
     let result = process_raw_config(raw_config);

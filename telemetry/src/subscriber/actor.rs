@@ -1,7 +1,8 @@
 // src/subscriber/actor.rs
 // Defines the simple, non-tracing-aware components for an appender.
 
-use crate::encoders::EventFormatter;
+use crate::{encoders::EventFormatter, TelemetryEvent};
+use fibre::mpsc::BoundedSender;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::Write;
@@ -61,11 +62,18 @@ impl PerAppenderFilter {
   }
 }
 
+pub(crate) enum ActorAction {
+  /// Write formatted bytes to a standard writer.
+  Write(Arc<Mutex<dyn Write + Send + Sync + 'static>>),
+  /// Send a structured TelemetryEvent to a channel.
+  Send(BoundedSender<TelemetryEvent>),
+}
+
 /// A self-contained "actor" that represents a single configured appender.
 /// It holds the name, filter, formatter, and writer, and has no generic parameters.
 pub(crate) struct AppenderActor {
   pub(crate) name: String,
   pub(crate) filter: PerAppenderFilter,
   pub(crate) formatter: Box<dyn EventFormatter>,
-  pub(crate) writer: Arc<Mutex<dyn Write + Send + Sync + 'static>>,
+  pub(crate) action: ActorAction,
 }

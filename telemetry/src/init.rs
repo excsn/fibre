@@ -9,10 +9,10 @@ use crate::{
   error::{Error, Result},
   guards::WorkerGuardCollection,
   subscriber::{
-    actor::{AppenderActor, PerAppenderFilter},
+    actor::{ActorAction, AppenderActor, PerAppenderFilter},
     DispatchLayer,
   },
-  InitResult,
+  CustomEventReceiver, InitResult, InternalErrorReport, TelemetryEvent,
 };
 
 use std::{
@@ -24,6 +24,7 @@ use std::{
   sync::Arc,
 };
 
+use fibre::mpsc;
 use tracing_appender::rolling;
 use tracing_core::metadata::LevelFilter;
 use tracing_subscriber::prelude::*;
@@ -90,14 +91,23 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
 
   let mut guard_collection = WorkerGuardCollection::new();
   let mut actors: Vec<AppenderActor> = Vec::new();
+  let mut custom_streams = HashMap::new();
 
-  let error_tx_channel = None;
+  let (error_tx_channel, error_rx_channel) = if internal_config.error_reporting_enabled {
+    println!("[fibre_telemetry] Internal error reporting is ENABLED.");
+    let (tx, rx) = mpsc::bounded::<InternalErrorReport>(256);
+    (Some(tx), Some(rx))
+  } else {
+    (None, None)
+  };
 
   for (appender_name, appender_config) in &internal_config.appenders {
     println!("[fibre_telemetry] Setting up appender: {}", appender_name);
 
-    let writer: Box<dyn Write + Send + Sync + 'static> = match &appender_config.kind {
-      AppenderKindInternal::Console(_console_config) => Box::new(io::stdout()),
+    let action = match &appender_config.kind {
+      AppenderKindInternal::Console(_console_config) => {
+        ActorAction::Write(Arc::new(parking_lot::Mutex::new(Box::new(io::stdout()))))
+      }
       AppenderKindInternal::File(file_config) => {
         if let Some(parent_dir) = file_config.path.parent() {
           if !parent_dir.exists() {
@@ -107,6 +117,7 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
             })?;
           }
         }
+
         let file_writer = OpenOptions::new()
           .create(true)
           .append(true)
@@ -115,9 +126,13 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
             appender_name: appender_name.clone(),
             reason: format!("Failed to open file {:?}: {}", file_config.path, e),
           })?;
+
         let (non_blocking_writer, guard) = tracing_appender::non_blocking(file_writer);
+
         guard_collection.add(guard);
-        Box::new(non_blocking_writer)
+        ActorAction::Write(Arc::new(parking_lot::Mutex::new(Box::new(
+          non_blocking_writer,
+        ))))
       }
       AppenderKindInternal::RollingFile(rolling_config) => {
         if !rolling_config.directory.exists() {
@@ -138,7 +153,20 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
 
         let (non_blocking_writer, guard) = tracing_appender::non_blocking(file_appender);
         guard_collection.add(guard);
-        Box::new(non_blocking_writer)
+        ActorAction::Write(Arc::new(parking_lot::Mutex::new(Box::new(
+          non_blocking_writer,
+        ))))
+      }
+
+      AppenderKindInternal::Custom(custom_config) => {
+        let (tx, rx): (mpsc::BoundedSender<TelemetryEvent>, CustomEventReceiver) =
+          mpsc::bounded(custom_config.buffer_size);
+
+        // Store the receiver for the user to retrieve.
+        custom_streams.insert(appender_name.clone(), rx);
+
+        // The action is to send to the channel.
+        ActorAction::Send(tx)
       }
     };
 
@@ -149,7 +177,7 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
       name: appender_name.clone(),
       filter,
       formatter,
-      writer: Arc::new(parking_lot::Mutex::new(writer)),
+      action,
     });
   }
 
@@ -163,7 +191,8 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
   println!("[fibre_telemetry] Initialization complete.");
   Ok(InitResult {
     guard_collection,
-    internal_error_rx: None,
+    internal_error_rx: error_rx_channel,
+    custom_streams,
   })
 }
 
