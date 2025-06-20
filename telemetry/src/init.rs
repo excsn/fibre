@@ -1,5 +1,3 @@
-// telemetry/src/init.rs
-
 // Contains the primary public initialization functions for fibre_telemetry.
 
 use crate::{
@@ -7,7 +5,7 @@ use crate::{
     processed::{process_raw_config, AppenderKindInternal, ConfigInternal, LoggerInternal},
     raw::ConfigRaw,
   },
-  debug::{print_report_logic, DebugEvent, DEBUG_REPORT_COLLECTOR},
+  debug_report::{print_report_logic, DebugEvent, DEBUG_REPORT_COLLECTOR},
   encoders,
   error::{Error, Result},
   roller::CustomRoller,
@@ -15,7 +13,7 @@ use crate::{
     actor::{ActorAction, AppenderActor, PerAppenderFilter},
     DispatchLayer, EventProcessor, LogHandler,
   },
-  AppenderTaskHandle, CustomEventReceiver, InitResult, InternalErrorReport, LogValue,
+  AppenderTaskHandle, InitResult, InternalErrorReport, LogValue,
   TelemetryEvent,
 };
 
@@ -119,6 +117,7 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
     let filter = build_filter_for_appender(appender_name, &internal_config.loggers);
 
     let action = match &appender_config.kind {
+      #[cfg(debug_assertions)]
       AppenderKindInternal::DebugReport(debug_config) => {
         let print_interval = debug_config.print_interval;
         // This appender receives raw TelemetryEvents, not formatted bytes.
@@ -385,14 +384,6 @@ mod tests {
   use tempfile::NamedTempFile;
   use tracing_core::metadata::{LevelFilter, Metadata};
   use tracing_core::{callsite, field, subscriber, Kind, Level};
-
-  fn create_dummy_config_file_for_find(path: &Path) {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    if !parent.exists() {
-      fs::create_dir_all(parent).expect("Failed to create parent directory for dummy config");
-    }
-    fs::write(path, "version: 1").expect("Failed to write dummy config");
-  }
 
   #[test]
   fn find_config_file_default() {

@@ -35,5 +35,5 @@ fn main() {
   println!("\n--- Application finished. Printing debug report. ---\n");
 
   // At the end of our test or run, we print the collected report.
-  fibre_telemetry::debug::print_debug_report();
+  fibre_telemetry::debug_report::print_debug_report();
 }

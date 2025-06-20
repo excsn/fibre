@@ -6,7 +6,6 @@
 
 // Declare modules following the file structure
 pub mod config;
-pub mod debug;
 pub mod encoders;
 pub mod error;
 pub mod error_handling;
@@ -15,12 +14,31 @@ pub mod model;
 mod roller;
 pub mod subscriber;
 
+#[cfg(debug_assertions)]
+pub mod debug_report;
+
+// This section defines what `debug_report` means in a release build.
+#[cfg(not(debug_assertions))]
+pub mod debug_report {
+  // In release mode, the functions exist but do nothing.
+  // They are marked `inline(always)` so the compiler can completely remove the calls.
+  #[inline(always)]
+  pub fn print_debug_report() {}
+
+  #[inline(always)]
+  pub fn clear_debug_report() {}
+}
+
 // Re-export key public types for easier use by library consumers.
 pub use error::{Error, Result};
 pub use error_handling::{InternalErrorReport, InternalErrorSource};
 pub use model::{LogValue, TelemetryEvent};
 
-use std::{collections::HashMap, sync::{atomic::AtomicBool, Arc}, thread::JoinHandle};
+use std::{
+  collections::HashMap,
+  sync::{atomic::AtomicBool, Arc},
+  thread::JoinHandle,
+};
 
 pub type CustomEventReceiver = fibre::mpsc::BoundedReceiver<TelemetryEvent>;
 

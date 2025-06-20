@@ -1,3 +1,6 @@
+// This entire module will only be compiled when debug_assertions are enabled.
+#![cfg(debug_assertions)]
+
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, MutexGuard};
 use std::collections::HashMap;
