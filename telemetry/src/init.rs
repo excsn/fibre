@@ -7,6 +7,7 @@ use crate::{
     processed::{process_raw_config, AppenderKindInternal, ConfigInternal, LoggerInternal},
     raw::ConfigRaw,
   },
+  debug::{print_report_logic, DebugEvent, DEBUG_REPORT_COLLECTOR},
   encoders,
   error::{Error, Result},
   roller::CustomRoller,
@@ -14,7 +15,8 @@ use crate::{
     actor::{ActorAction, AppenderActor, PerAppenderFilter},
     DispatchLayer, EventProcessor, LogHandler,
   },
-  AppenderTaskHandle, CustomEventReceiver, InitResult, InternalErrorReport, TelemetryEvent,
+  AppenderTaskHandle, CustomEventReceiver, InitResult, InternalErrorReport, LogValue,
+  TelemetryEvent,
 };
 
 use std::{
@@ -28,7 +30,7 @@ use std::{
     Arc,
   },
   thread,
-  time::Duration,
+  time::{Duration, Instant},
 };
 
 use fibre::{mpsc, TryRecvError};
@@ -117,6 +119,74 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
     let filter = build_filter_for_appender(appender_name, &internal_config.loggers);
 
     let action = match &appender_config.kind {
+      AppenderKindInternal::DebugReport(debug_config) => {
+        let print_interval = debug_config.print_interval;
+        // This appender receives raw TelemetryEvents, not formatted bytes.
+        let (tx, rx) = mpsc::bounded::<TelemetryEvent>(2048); // A generous buffer
+
+        // Spawn the collector thread.
+        thread::spawn(move || {
+          let mut last_print_time = Instant::now();
+
+          loop {
+            // We can use a simple blocking recv() here because this thread does nothing
+            // else. Its shutdown is triggered by the channel disconnecting when the
+            // EventProcessor is dropped.
+            match rx.try_recv() {
+              Ok(event) => {
+                let mut collector = DEBUG_REPORT_COLLECTOR.lock();
+                // Set the start time on the very first event received.
+                if collector.start_time.is_none() {
+                  collector.start_time = Some(Instant::now());
+                }
+
+                // Check for a special "counter" field.
+                if let Some(LogValue::String(counter_name)) = event.fields.get("counter") {
+                  let key = (event.target.clone(), counter_name.clone());
+                  *collector.counters.entry(key).or_insert(0) += 1;
+                } else {
+                  // Otherwise, record it as a regular event.
+                  let debug_event = DebugEvent {
+                    timestamp: Instant::now(), // Use time of collection for sorting
+                    level: event.level,
+                    target: event.target,
+                    message: event.message,
+                    fields: event.fields,
+                  };
+                  collector.events.push(debug_event);
+                }
+              }
+              Err(TryRecvError::Empty) => {
+                // Channel is empty. This is fine. We'll check the timer and sleep.
+              }
+              Err(TryRecvError::Disconnected) => {
+                // Senders are gone, shutdown is happening. Exit the loop.
+                break;
+              }
+            }
+
+            // --- Ticker Logic ---
+            // After checking for an event, check if it's time to print.
+            if let Some(interval) = print_interval {
+              if last_print_time.elapsed() >= interval {
+                let mut collector = DEBUG_REPORT_COLLECTOR.lock();
+                // We check if there's anything to print to avoid empty reports.
+                if collector.start_time.is_some() {
+                  print_report_logic(&mut collector);
+                  // Reset timer ONLY after a successful print.
+                  last_print_time = Instant::now();
+                }
+              }
+            }
+
+            // Sleep to prevent busy-waiting if the channel is empty.
+            thread::sleep(Duration::from_millis(100));
+          }
+        });
+
+        // The action is to send the full TelemetryEvent to our collector thread.
+        ActorAction::SendEvent(tx)
+      }
       AppenderKindInternal::Custom(custom_config) => {
         let (tx, rx) = mpsc::bounded(custom_config.buffer_size);
         custom_streams.insert(appender_name.clone(), rx);
@@ -159,6 +229,7 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
             Box::new(roller)
           }
           AppenderKindInternal::Custom(_) => unreachable!(),
+          AppenderKindInternal::DebugReport(_) => unreachable!(),
         };
 
         let appender_name_clone = appender_name.clone();

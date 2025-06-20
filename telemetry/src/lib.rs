@@ -6,6 +6,7 @@
 
 // Declare modules following the file structure
 pub mod config;
+pub mod debug;
 pub mod encoders;
 pub mod error;
 pub mod error_handling;

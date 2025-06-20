@@ -35,6 +35,7 @@ pub enum AppenderConfigRaw {
   File(FileAppenderConfigRaw),
   RollingFile(RollingFileAppenderConfigRaw),
   Custom(CustomAppenderConfigRaw),
+  DebugReport(DebugReportAppenderConfigRaw),
 }
 
 // --- Console Appender ---
@@ -60,7 +61,7 @@ pub struct FileAppenderConfigRaw {
 
 // Add new default function
 fn default_file_name_suffix() -> String {
-    ".log".to_string()
+  ".log".to_string()
 }
 
 fn default_file_name_prefix() -> String {
@@ -98,11 +99,11 @@ pub struct RollingPolicyRaw {
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CompressionPolicyRaw {
-    /// Suffix for compressed files, e.g., ".gz".
-    pub compressed_file_suffix: String,
-    /// Number of recent sequences to keep uncompressed.
-    #[serde(default)]
-    pub max_uncompressed_sequences: u32,
+  /// Suffix for compressed files, e.g., ".gz".
+  pub compressed_file_suffix: String,
+  /// Number of recent sequences to keep uncompressed.
+  #[serde(default)]
+  pub max_uncompressed_sequences: u32,
 }
 
 // --- Custom Appender ---
@@ -117,6 +118,15 @@ pub struct CustomAppenderConfigRaw {
 
 fn default_buffer_size() -> usize {
   256 // A sensible default buffer size
+}
+
+// --- Debug Appender ---
+
+#[derive(Debug, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DebugReportAppenderConfigRaw {
+  /// If set, prints a report automatically at this interval (e.g., "10s", "1m").
+  pub print_interval: Option<String>,
 }
 
 // --- Encoder Config ---
@@ -180,6 +190,7 @@ impl AppenderConfigRaw {
       AppenderConfigRaw::File(f) => f.encoder.clone(),
       AppenderConfigRaw::RollingFile(r) => r.encoder.clone(),
       AppenderConfigRaw::Custom(_) => None,
+      AppenderConfigRaw::DebugReport(_) => None,
     }
   }
 }

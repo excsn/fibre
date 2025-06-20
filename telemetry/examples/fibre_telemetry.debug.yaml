@@ -1,0 +1,24 @@
+version: 1
+
+appenders:
+  console:
+    kind: console
+    encoder:
+      kind: pattern
+      pattern: "[CONSOLE] %m%n"
+  
+  # The new appender kind
+  in_memory_report:
+    kind: debug_report
+    print_interval: 5s
+
+loggers:
+  root:
+    level: info
+    appenders: [console] # General logs go to console
+
+  # Specific logs for `my_app` will go ONLY to our new debug appender.
+  my_app:
+    level: debug
+    appenders: [in_memory_report]
+    additive: false

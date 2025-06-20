@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing::Level;
 use tracing_core::metadata::LevelFilter;
 
@@ -31,6 +32,12 @@ pub enum AppenderKindInternal {
   File(FileAppenderInternal),
   RollingFile(RollingPolicyInternal),
   Custom(CustomAppenderInternal),
+  DebugReport(DebugReportAppenderInternal),
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugReportAppenderInternal {
+  pub print_interval: Option<Duration>,
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +217,19 @@ pub fn process_raw_config(raw_config: crate::config::raw::ConfigRaw) -> Result<C
         AppenderKindInternal::Custom(CustomAppenderInternal {
           buffer_size: raw_custom.buffer_size,
         })
+      }
+      AppenderConfigRaw::DebugReport(raw_debug) => {
+        let print_interval = raw_debug
+          .print_interval
+          .map(|s| {
+            humantime::parse_duration(&s).map_err(|e| Error::InvalidConfigValue {
+              field: format!("appenders.{}.print_interval", name),
+              message: format!("Invalid duration string '{}': {}", s, e),
+            })
+          })
+          .transpose()?; // This turns Option<Result<T, E>> into Result<Option<T>, E>
+
+        AppenderKindInternal::DebugReport(DebugReportAppenderInternal { print_interval })
       }
     };
 

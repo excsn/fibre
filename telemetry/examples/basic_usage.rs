@@ -2,7 +2,6 @@
 
 use log::{debug, error, info, warn}; // Using the `log` facade
 use std::path::Path;
-use tracing::instrument; // Using `tracing` for structured logs and spans
 
 // A module to simulate our application's logic.
 mod my_app {
