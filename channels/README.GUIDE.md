@@ -312,11 +312,11 @@ RUSTFLAGS="-Z sanitizer=thread" cargo +nightly nextest run \
 
 ### Telemetry Feature
 
-When the `fibre_telemetry` feature is enabled, the library will log detailed internal events, such as when threads park, wake, or contend for resources. This is extremely useful for diagnosing deadlocks and performance issues.
+When the `fibre_logging` feature is enabled, the library will log detailed internal events, such as when threads park, wake, or contend for resources. This is extremely useful for diagnosing deadlocks and performance issues.
 
 ```bash
 # Run tests with telemetry enabled
-cargo nextest run --features fibre_telemetry
+cargo nextest run --features fibre_logging
 
 # After the test run, a detailed report is printed to the console.
 ```

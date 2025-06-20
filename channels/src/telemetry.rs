@@ -1,6 +1,6 @@
 // src/telemetry.rs
 
-#[cfg(feature = "fibre_telemetry")]
+#[cfg(feature = "fibre_logging")]
 pub mod enabled {
   use std::collections::HashMap;
   use std::fmt;
@@ -106,7 +106,7 @@ pub mod enabled {
 
   fn print_report_internal() {
     if let Ok(collector) = GLOBAL_COLLECTOR.lock() {
-      println!("\n--- Fibre Telemetry Report (Feature: fibre_telemetry) ---");
+      println!("\n--- Fibre Telemetry Report (Feature: fibre_logging) ---");
       println!("Report generated at: {:?}", Instant::now());
       println!("Collection started at: {:?}", collector.start_time);
 
@@ -202,7 +202,7 @@ pub mod enabled {
   }
 } // mod enabled
 
-#[cfg(not(feature = "fibre_telemetry"))]
+#[cfg(not(feature = "fibre_logging"))]
 pub mod disabled {
   // No TelemetrySpanGuard needed
   #[inline(always)]
@@ -222,7 +222,7 @@ pub mod disabled {
 }
 
 // Re-export the correct set of functions based on the feature flag
-#[cfg(feature = "fibre_telemetry")]
+#[cfg(feature = "fibre_logging")]
 pub use enabled::{
   clear_telemetry_fn as clear_telemetry,
   // enter_span_fn as enter_span, // Removed
@@ -232,7 +232,7 @@ pub use enabled::{
   // TelemetrySpanGuard, // Removed
 };
 
-#[cfg(not(feature = "fibre_telemetry"))]
+#[cfg(not(feature = "fibre_logging"))]
 pub use disabled::{
   clear_telemetry_fn as clear_telemetry,
   // enter_span_fn as enter_span, // Removed

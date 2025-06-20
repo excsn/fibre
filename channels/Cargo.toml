@@ -19,7 +19,7 @@ exclude = [
 
 [features]
 default = []
-fibre_telemetry = ["dep:tokio"]
+fibre_logging = ["dep:tokio"]
 
 [dependencies]
 lazy_static = "^1"

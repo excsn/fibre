@@ -1,0 +1,40 @@
+# examples/fibre_logging.yaml
+version: 1
+
+# Define two appenders: one for the console, one for a file.
+appenders:
+  # A standard console appender with a colorized pattern.
+  console:
+    kind: console
+    encoder:
+      kind: pattern
+      # Use the Logback/log4rs style pattern with '%'
+      # %d - date, %p - level, %t - target, %m - message, %n - newline
+      pattern: "[%d] %-5p %t - %m%n"
+
+  # A simple, non-rolling file appender with JSON output.
+  main_log_file:
+    kind: file
+    path: "logs/mvp_example.log"
+    encoder:
+      kind: json_lines
+
+# Define filtering rules for the appenders.
+loggers:
+  # The root logger sets the default level.
+  # It sends INFO and higher events to both the console and the file.
+  root:
+    level: info
+    appenders: [console, main_log_file]
+
+  # A specific logger for our application's modules.
+  # It sends more detailed DEBUG and higher events ONLY to the file.
+  my_app:
+    level: debug
+    appenders: [main_log_file]
+
+  # A logger to quiet a noisy dependency.
+  # It only sends WARN and higher events to the console.
+  noisy_crate:
+    level: warn
+    appenders: [console]
