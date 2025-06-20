@@ -1,3 +1,5 @@
+// telemetry/src/init.rs
+
 // Contains the primary public initialization functions for fibre_telemetry.
 
 use crate::{
@@ -7,12 +9,12 @@ use crate::{
   },
   encoders,
   error::{Error, Result},
-  guards::WorkerGuardCollection,
+  roller::CustomRoller,
   subscriber::{
     actor::{ActorAction, AppenderActor, PerAppenderFilter},
-    DispatchLayer,
+    DispatchLayer, EventProcessor, LogHandler,
   },
-  CustomEventReceiver, InitResult, InternalErrorReport, TelemetryEvent,
+  AppenderTaskHandle, CustomEventReceiver, InitResult, InternalErrorReport, TelemetryEvent,
 };
 
 use std::{
@@ -21,16 +23,22 @@ use std::{
   fs::{File as StdFsFile, OpenOptions},
   io::{self, Write},
   path::{Path, PathBuf},
-  sync::Arc,
+  sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+  },
+  thread,
+  time::Duration,
 };
 
-use fibre::mpsc;
-use tracing_appender::rolling;
+use fibre::{mpsc, TryRecvError};
+use log::LevelFilter as LogLevelFilter;
 use tracing_core::metadata::LevelFilter;
 use tracing_subscriber::prelude::*;
 
 const DEFAULT_CONFIG_BASE_NAME: &str = "fibre_telemetry";
 const DEFAULT_CONFIG_EXTENSION: &str = "yaml";
+const DEFAULT_CHANNEL_SIZE: usize = 1024;
 
 /// Finds the configuration file based on common patterns and an optional environment suffix.
 pub fn find_config_file(environment_suffix: Option<&str>) -> Result<PathBuf> {
@@ -86,12 +94,13 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
     internal_config
   );
 
-  tracing_log::LogTracer::init().map_err(|e| Error::LogBridgeInit(e.to_string()))?;
-  println!("[fibre_telemetry] tracing-log bridge initialized.");
-
-  let mut guard_collection = WorkerGuardCollection::new();
-  let mut actors: Vec<AppenderActor> = Vec::new();
+  let mut appender_task_handles = Vec::<AppenderTaskHandle>::new();
+  let mut actors = Vec::<AppenderActor>::new();
   let mut custom_streams = HashMap::new();
+
+  // --- Create the Shutdown Signal ---
+  // This is shared between the final InitResult and all spawned writer threads.
+  let shutdown_signal = Arc::new(AtomicBool::new(false));
 
   let (error_tx_channel, error_rx_channel) = if internal_config.error_reporting_enabled {
     println!("[fibre_telemetry] Internal error reporting is ENABLED.");
@@ -104,74 +113,132 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
   for (appender_name, appender_config) in &internal_config.appenders {
     println!("[fibre_telemetry] Setting up appender: {}", appender_name);
 
-    let action = match &appender_config.kind {
-      AppenderKindInternal::Console(_console_config) => {
-        ActorAction::Write(Arc::new(parking_lot::Mutex::new(Box::new(io::stdout()))))
-      }
-      AppenderKindInternal::File(file_config) => {
-        if let Some(parent_dir) = file_config.path.parent() {
-          if !parent_dir.exists() {
-            std::fs::create_dir_all(parent_dir).map_err(|e| Error::AppenderSetup {
-              appender_name: appender_name.clone(),
-              reason: format!("Failed to create directory {:?}: {}", parent_dir, e),
-            })?;
-          }
-        }
-
-        let file_writer = OpenOptions::new()
-          .create(true)
-          .append(true)
-          .open(&file_config.path)
-          .map_err(|e| Error::AppenderSetup {
-            appender_name: appender_name.clone(),
-            reason: format!("Failed to open file {:?}: {}", file_config.path, e),
-          })?;
-
-        let (non_blocking_writer, guard) = tracing_appender::non_blocking(file_writer);
-
-        guard_collection.add(guard);
-        ActorAction::Write(Arc::new(parking_lot::Mutex::new(Box::new(
-          non_blocking_writer,
-        ))))
-      }
-      AppenderKindInternal::RollingFile(rolling_config) => {
-        if !rolling_config.directory.exists() {
-          std::fs::create_dir_all(&rolling_config.directory).map_err(|e| Error::AppenderSetup {
-            appender_name: appender_name.clone(),
-            reason: format!(
-              "Failed to create directory {:?}: {}",
-              rolling_config.directory, e
-            ),
-          })?;
-        }
-
-        let file_appender = rolling::RollingFileAppender::new(
-          rolling_config.rotation_policy.clone(),
-          &rolling_config.directory,
-          &rolling_config.file_name_prefix,
-        );
-
-        let (non_blocking_writer, guard) = tracing_appender::non_blocking(file_appender);
-        guard_collection.add(guard);
-        ActorAction::Write(Arc::new(parking_lot::Mutex::new(Box::new(
-          non_blocking_writer,
-        ))))
-      }
-
-      AppenderKindInternal::Custom(custom_config) => {
-        let (tx, rx): (mpsc::BoundedSender<TelemetryEvent>, CustomEventReceiver) =
-          mpsc::bounded(custom_config.buffer_size);
-
-        // Store the receiver for the user to retrieve.
-        custom_streams.insert(appender_name.clone(), rx);
-
-        // The action is to send to the channel.
-        ActorAction::Send(tx)
-      }
-    };
-
     let formatter = encoders::new_event_formatter(&appender_config.encoder);
     let filter = build_filter_for_appender(appender_name, &internal_config.loggers);
+
+    let action = match &appender_config.kind {
+      AppenderKindInternal::Custom(custom_config) => {
+        let (tx, rx) = mpsc::bounded(custom_config.buffer_size);
+        custom_streams.insert(appender_name.clone(), rx);
+        ActorAction::SendEvent(tx)
+      }
+      kind => {
+        let (tx, rx) = mpsc::bounded::<Vec<u8>>(DEFAULT_CHANNEL_SIZE);
+
+        let mut writer: Box<dyn Write + Send> = match kind {
+          AppenderKindInternal::Console(_) => Box::new(io::stdout()),
+          AppenderKindInternal::File(file_config) => {
+            if let Some(parent_dir) = file_config.path.parent() {
+              if !parent_dir.exists() {
+                std::fs::create_dir_all(parent_dir).map_err(|e| Error::AppenderSetup {
+                  appender_name: appender_name.clone(),
+                  reason: format!("Failed to create directory {:?}: {}", parent_dir, e),
+                })?;
+              }
+            }
+            let file = OpenOptions::new()
+              .create(true)
+              .append(true)
+              .open(&file_config.path)
+              .map_err(|e| Error::AppenderSetup {
+                appender_name: appender_name.clone(),
+                reason: format!("Failed to open file {:?}: {}", file_config.path, e),
+              })?;
+
+            Box::new(io::BufWriter::new(file))
+          }
+          AppenderKindInternal::RollingFile(policy) => {
+            let directory = &policy.directory;
+            if !directory.exists() {
+              std::fs::create_dir_all(&directory).map_err(|e| Error::AppenderSetup {
+                appender_name: appender_name.clone(),
+                reason: format!("Failed to create directory {:?}: {}", directory, e),
+              })?;
+            }
+            let roller = CustomRoller::new(policy.clone())?;
+            Box::new(roller)
+          }
+          AppenderKindInternal::Custom(_) => unreachable!(),
+        };
+
+        let appender_name_clone = appender_name.clone();
+        let shutdown_clone = Arc::clone(&shutdown_signal); // Clone signal for the thread
+
+        // This is the corrected, non-blocking polling loop.
+        let handle = thread::spawn(move || {
+          // This flag tracks if the BufWriter has data that hasn't been flushed to disk yet.
+          let mut is_dirty = false;
+
+          loop {
+            // Check for the shutdown signal first for a fast exit.
+            if shutdown_clone.load(Ordering::Relaxed) {
+              break;
+            }
+
+            match rx.try_recv() {
+              Ok(bytes) => {
+                // We received a message. Write it to the buffer.
+                if writer.write_all(&bytes).is_ok() {
+                  // Mark the buffer as "dirty" since it now contains new, unflushed data.
+                  is_dirty = true;
+                } else {
+                  eprintln!(
+                    "[fibre_telemetry:ERROR] Appender write failed for '{}'",
+                    appender_name_clone
+                  );
+                }
+              }
+              Err(TryRecvError::Empty) => {
+                // The channel is empty. This is our moment of "downtime".
+                // If the buffer is dirty, flush it to disk now.
+                if is_dirty {
+                  if writer.flush().is_ok() {
+                    // The buffer is now clean.
+                    is_dirty = false;
+                  } else {
+                    eprintln!(
+                      "[fibre_telemetry:ERROR] Appender flush failed for '{}'",
+                      appender_name_clone
+                    );
+                  }
+                }
+                // Sleep to yield the CPU and prevent a tight spin loop.
+                thread::sleep(Duration::from_millis(50));
+              }
+              Err(TryRecvError::Disconnected) => {
+                // The channel has been closed by the senders, so we can exit.
+                break;
+              }
+            }
+          }
+
+          // --- Final Flush on Shutdown ---
+          // The loop has exited. Before the thread terminates, we must perform
+          // one last check to flush any remaining data.
+
+          // First, drain any messages that might have arrived just before shutdown.
+          while let Ok(bytes) = rx.try_recv() {
+            if writer.write_all(&bytes).is_ok() {
+              is_dirty = true;
+            }
+          }
+
+          // Now, if the buffer is dirty from either the main loop or the drain loop,
+          // perform one final, guaranteed flush.
+          if is_dirty {
+            if let Err(e) = writer.flush() {
+              eprintln!(
+                "[fibre_telemetry:ERROR] Final appender flush failed for '{}': {}",
+                appender_name_clone, e
+              );
+            }
+          }
+        });
+
+        appender_task_handles.push(handle);
+        ActorAction::SendBytes(tx)
+      }
+    };
 
     actors.push(AppenderActor {
       name: appender_name.clone(),
@@ -181,22 +248,29 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
     });
   }
 
-  let dispatch_layer = DispatchLayer::new(actors, error_tx_channel);
-  let subscriber = tracing_subscriber::registry().with(dispatch_layer);
+  let processor = Arc::new(EventProcessor::new(actors, error_tx_channel));
 
+  let dispatch_layer = DispatchLayer::new(Arc::clone(&processor));
+  let subscriber = tracing_subscriber::registry().with(dispatch_layer);
   tracing::subscriber::set_global_default(subscriber)
     .map_err(|e| Error::GlobalSubscriberSet(e.to_string()))?;
   println!("[fibre_telemetry] Global tracing subscriber set.");
 
+  let log_handler = LogHandler::new(processor);
+  log::set_boxed_logger(Box::new(log_handler))
+    .map(|()| log::set_max_level(LogLevelFilter::Trace))
+    .map_err(|e| Error::LogBridgeInit(e.to_string()))?;
+  println!("[fibre_telemetry] Custom log handler initialized.");
+
   println!("[fibre_telemetry] Initialization complete.");
   Ok(InitResult {
-    guard_collection,
+    appender_task_handles,
+    shutdown_signal, // Return the signal for the shutdown function
     internal_error_rx: error_rx_channel,
     custom_streams,
   })
 }
 
-/// Constructs a `PerAppenderFilter` for a specific appender by inspecting all logger configurations.
 fn build_filter_for_appender(
   appender_name_to_build: &str,
   loggers: &HashMap<String, LoggerInternal>,
@@ -218,12 +292,14 @@ fn build_filter_for_appender(
       continue;
     }
 
-    // CORRECTED: Using `appender_names` field.
     if logger_config
       .appender_names
       .contains(&appender_name_to_build.to_string())
     {
-      rules.insert(logger_config.name.clone(), logger_config.min_level);
+      rules.insert(
+        logger_config.name.clone(),
+        (logger_config.min_level, logger_config.additive),
+      );
     }
   }
 
@@ -245,13 +321,6 @@ mod tests {
       fs::create_dir_all(parent).expect("Failed to create parent directory for dummy config");
     }
     fs::write(path, "version: 1").expect("Failed to write dummy config");
-  }
-
-  fn safe_canonicalize(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|e| {
-      eprintln!("Warning: could not canonicalize path {:?}: {}", path, e);
-      path.to_path_buf()
-    })
   }
 
   #[test]
@@ -335,14 +404,12 @@ mod tests {
       },
     );
 
-    // Test filter for the "console" appender
     let console_filter = build_filter_for_appender("console", &loggers);
     assert!(console_filter.enabled(&mock_metadata(Level::WARN, "hyper::client")));
     assert!(!console_filter.enabled(&mock_metadata(Level::INFO, "hyper::client")));
     assert!(console_filter.enabled(&mock_metadata(Level::INFO, "another_crate")));
     assert!(!console_filter.enabled(&mock_metadata(Level::DEBUG, "another_crate")));
 
-    // Test filter for the "file_main" appender
     let file_filter = build_filter_for_appender("file_main", &loggers);
     assert!(file_filter.enabled(&mock_metadata(Level::DEBUG, "my_app::db::queries")));
     assert!(file_filter.enabled(&mock_metadata(Level::INFO, "my_app::db::queries")));
@@ -359,7 +426,7 @@ mod tests {
     let result = init_from_file(temp_file.path());
     assert!(result.is_ok(), "init_from_file failed: {:?}", result.err());
     if let Ok(init_res) = result {
-      assert!(init_res.guard_collection.is_empty());
+      assert!(init_res.appender_task_handles.is_empty());
     }
   }
 }

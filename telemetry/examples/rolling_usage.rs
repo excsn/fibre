@@ -1,36 +1,77 @@
 // examples/rolling_usage.rs
 
-use log::info;
+use log::{info, trace};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-fn main() {
-  // --- Initialization ---
-  let log_dir = Path::new("logs/rolling");
-  if !log_dir.exists() {
-    std::fs::create_dir_all(log_dir).expect("Failed to create rolling log directory");
-  }
-
-  // Find and initialize fibre_telemetry from our new rolling config file.
+fn main() -> fibre_telemetry::Result<()> {
+  // 1. Initialize the telemetry system from a configuration file.
   let config_path = Path::new(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/examples/fibre_telemetry.rolling.yaml"
   ));
   let _guards = fibre_telemetry::init::init_from_file(config_path)
     .expect("Failed to initialize fibre_telemetry");
+  // `_guards` must be kept alive to flush all logs on exit.
 
-  // --- Logging ---
-  println!("\n--- Logging every 5 seconds for 70 seconds to trigger rotation ---");
-  println!("A new log file should be created in 'logs/rolling/' after the minute changes.");
+  println!("\n--- Spawning ALL threads to run concurrently ---");
+  println!("This is a true stress test simulating a complex application.");
+  println!("Time-based and size-based logging will happen simultaneously.");
 
-  for i in 1..=14 {
-    info!("Logging message #{}", i);
-    thread::sleep(Duration::from_secs(5));
+  // A single vector to hold all thread handles.
+  let mut all_handles = vec![];
+
+  // --- Spawn the threads for the "time-based" test ---
+  // These threads will log to the 'console' and 'simple_time_log' appenders.
+  for thread_id in 0..3 {
+    let handle = thread::spawn(move || {
+      for i in 1..=10 {
+        info!("Thread {} | General Log Message #{}", thread_id, i);
+        thread::sleep(Duration::from_secs(thread_id + 1));
+      }
+    });
+    all_handles.push(handle);
   }
 
-  println!("\n--- Logging Complete ---");
-  println!("Check the 'logs/rolling' directory for multiple 'app.log.YYYY-MM-DD-HH-mm' files.");
+  // --- Spawn the threads for the "size-based" test ---
+  // These threads will log to the 'advanced_size_log' appender.
+  let large_string = "A".repeat(100);
+  for thread_id in 3..7 {
+    let large_string_clone = large_string.clone();
+    let handle = thread::spawn(move || {
+      // 4 threads * 20 messages = 80 total messages.
+      // Each message is ~155 bytes, so ~12.4KB total.
+      // With a 1KB file size, this should trigger ~12 rolls.
+      for i in 1..=20 {
+        // MODIFIED: A controlled loop of 20 messages per thread.
+        trace!(
+            target: "high_volume",
+            "Thread {} | High-Volume Message #{} | Data: {}",
+            thread_id,
+            i,
+            large_string_clone
+        );
+      }
+    });
+    all_handles.push(handle);
+  }
 
-  // The `_guards` variable is dropped here, flushing any buffered file writes.
+  println!(
+    "All {} threads have been spawned and are running in parallel.",
+    all_handles.len()
+  );
+
+  // --- Wait for ALL threads to complete at the very end ---
+  // The main thread will block here until every single spawned thread has finished.
+  for handle in all_handles {
+    handle.join().unwrap();
+  }
+
+  println!("\n--- All threads have completed. Test finished. ---");
+  trace!(target: "high_volume", "This is the very last message, post-roll.");
+  println!("Check the 'logs/rolling/simple' and 'logs/rolling/advanced' directories.");
+
+  // The `_guards` are dropped here, flushing any final log messages.
+  Ok(())
 }

@@ -9,42 +9,54 @@ pub mod config;
 pub mod encoders;
 pub mod error;
 pub mod error_handling;
-pub mod guards;
 pub mod init;
 pub mod model;
-// pub mod appenders;
+mod roller;
 pub mod subscriber;
-// pub mod core; // For 'fibre' channels or other core utilities
 
 // Re-export key public types for easier use by library consumers.
 pub use error::{Error, Result};
 pub use error_handling::{InternalErrorReport, InternalErrorSource};
-pub use guards::WorkerGuardCollection;
 pub use model::{LogValue, TelemetryEvent};
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::{atomic::AtomicBool, Arc}, thread::JoinHandle};
 
 pub type CustomEventReceiver = fibre::mpsc::BoundedReceiver<TelemetryEvent>;
+
+/// A handle to a spawned appender background task.
+/// The task will terminate when the sender half of its channel is dropped.
+pub type AppenderTaskHandle = JoinHandle<()>;
+
+// Public initialization functions
+pub use init::{find_config_file, init_from_file};
 
 // This will be the main struct returned by initialization.
 #[must_use = "The InitResult and its guards must be kept alive for logging to work correctly and flush on exit"]
 pub struct InitResult {
-  pub guard_collection: WorkerGuardCollection,
+  pub appender_task_handles: Vec<AppenderTaskHandle>,
+  pub(crate) shutdown_signal: Arc<AtomicBool>,
   // If error reporting is enabled, this receiver can be used to get internal error reports.
   pub internal_error_rx: Option<fibre::mpsc::BoundedReceiver<InternalErrorReport>>,
   pub custom_streams: HashMap<String, CustomEventReceiver>,
 }
 
-// Public initialization functions
-pub use init::{find_config_file, init_from_file}; // ADDED re-export
+impl Drop for InitResult {
+  fn drop(&mut self) {
+    // 1. SET THE SHUTDOWN SIGNAL. This tells all writer threads to stop their loops.
+    self
+      .shutdown_signal
+      .store(true, std::sync::atomic::Ordering::SeqCst);
 
-#[cfg(test)]
-mod tests {
-  use super::*; // To access InitResult etc. if needed in lib.rs tests
-
-  #[test]
-  fn it_compiles() {
-    let _ = find_config_file(None); // Basic check for find_config_file
-    assert_eq!(2 + 2, 4);
+    // 2. NOW, wait for them to finish.
+    println!("[fibre_telemetry] Shutting down. Waiting for appender tasks to flush...");
+    for handle in self.appender_task_handles.drain(..) {
+      if let Err(e) = handle.join() {
+        eprintln!(
+          "[fibre_telemetry:ERROR] Appender task panicked during shutdown: {:?}",
+          e
+        );
+      }
+    }
+    println!("[fibre_telemetry] Shutdown complete.");
   }
 }

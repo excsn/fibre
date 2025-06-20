@@ -1,7 +1,6 @@
-// src/encoders/mod.rs
 // Defines strategies for formatting TelemetryEvents into byte streams.
 
-use crate::config::processed::{EncoderInternal, JsonLinesEncoderInternal, PatternEncoderInternal};
+use crate::config::processed::EncoderInternal;
 use crate::error::Result; // Using crate::error::Result for formatting errors potentially
 use crate::model::TelemetryEvent; // To construct based on config
 

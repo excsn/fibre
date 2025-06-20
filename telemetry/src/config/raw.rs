@@ -58,15 +58,9 @@ pub struct FileAppenderConfigRaw {
 
 // --- Rolling Appender ---
 
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct RollingFileAppenderConfigRaw {
-  pub directory: String,
-  #[serde(default = "default_file_name_prefix")]
-  pub file_name_prefix: String,
-  pub policy: RollingPolicyRaw,
-  #[serde(default)]
-  pub encoder: Option<EncoderConfigRaw>,
+// Add new default function
+fn default_file_name_suffix() -> String {
+    ".log".to_string()
 }
 
 fn default_file_name_prefix() -> String {
@@ -75,10 +69,40 @@ fn default_file_name_prefix() -> String {
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct RollingFileAppenderConfigRaw {
+  pub directory: String,
+  #[serde(default = "default_file_name_prefix")]
+  pub file_name_prefix: String,
+  #[serde(default = "default_file_name_suffix")]
+  pub file_name_suffix: String,
+  pub policy: RollingPolicyRaw,
+  #[serde(default)]
+  pub encoder: Option<EncoderConfigRaw>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct RollingPolicyRaw {
   /// Determines the time-based rotation frequency.
   /// Expected values: "minutely", "hourly", "daily", or "never".
   pub time_granularity: String,
+  /// Max size of a single file before rolling. e.g. "50MB", "1GB".
+  pub max_file_size: Option<String>,
+  /// Max number of rolled files to keep (including compressed).
+  pub max_retained_sequences: Option<u32>,
+  /// Compression policy for rolled files.
+  pub compression: Option<CompressionPolicyRaw>,
+}
+
+// Add new struct CompressionPolicyRaw
+#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct CompressionPolicyRaw {
+    /// Suffix for compressed files, e.g., ".gz".
+    pub compressed_file_suffix: String,
+    /// Number of recent sequences to keep uncompressed.
+    #[serde(default)]
+    pub max_uncompressed_sequences: u32,
 }
 
 // --- Custom Appender ---

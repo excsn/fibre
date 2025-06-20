@@ -1,12 +1,9 @@
-// src/subscriber/actor.rs
+// telemetry/src/subscriber/actor.rs
 // Defines the simple, non-tracing-aware components for an appender.
 
 use crate::{encoders::EventFormatter, TelemetryEvent};
 use fibre::mpsc::BoundedSender;
-use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::io::Write;
-use std::sync::Arc;
 use tracing_core::{metadata::LevelFilter, Metadata};
 
 /// A struct holding the custom filtering rules for a single appender.
@@ -15,62 +12,63 @@ use tracing_core::{metadata::LevelFilter, Metadata};
 /// default level for events that don't match any specific target.
 pub(crate) struct PerAppenderFilter {
   /// A map where the key is a target prefix (e.g., "my_app::api") and the
-  /// value is the minimum level required for that target.
-  rules: HashMap<String, LevelFilter>,
+  /// value is a tuple of the minimum level required and the additive flag.
+  pub(crate) rules: HashMap<String, (LevelFilter, bool)>,
   /// The default minimum level for any event not matching a specific rule.
   /// This is often derived from the "root" logger's level for that appender.
-  default_level: LevelFilter,
+  pub(crate) default_level: LevelFilter,
 }
 
 impl PerAppenderFilter {
   /// Creates a new filter with a given set of rules and a default level.
-  /// This will be called from `init.rs` for each appender.
-  pub(crate) fn new(rules: HashMap<String, LevelFilter>, default_level: LevelFilter) -> Self {
+  pub(crate) fn new(rules: HashMap<String, (LevelFilter, bool)>, default_level: LevelFilter) -> Self {
     Self {
       rules,
       default_level,
     }
   }
 
-  /// Checks if an event, based on its metadata, should be processed by the
-  /// appender associated with this filter.
-  ///
-  /// The logic finds the most specific matching rule for the event's target.
-  pub(crate) fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-    let event_level = *metadata.level();
+  /// Finds the most specific matching rule for the given metadata.
+  pub(crate) fn find_most_specific_rule(
+    &self,
+    metadata: &Metadata<'_>,
+  ) -> Option<(&str, &(LevelFilter, bool))> {
     let event_target = metadata.target();
-
-    // Find the most specific matching rule for the event's target.
-    // For example, a rule for "my_app::api" is more specific than "my_app".
-    let most_specific_rule = self
+    self
       .rules
       .iter()
-      .filter(|(target, _)| event_target.starts_with(*target))
-      .max_by_key(|(target, _)| target.len());
+      .filter(|(target_prefix, _)| event_target.starts_with(*target_prefix))
+      .max_by_key(|(target_prefix, _)| target_prefix.len())
+      .map(|(k, v)| (k.as_str(), v))
+  }
 
-    let effective_level = if let Some((_target, level)) = most_specific_rule {
-      // A specific rule was found.
-      *level
-    } else {
-      // No specific rule matched, use the default level for this appender.
-      self.default_level
-    };
+  /// Checks if an event, based on its metadata, should be processed by the
+  /// appender associated with this filter.
+  pub(crate) fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+    let event_level = *metadata.level();
 
-    // The event is enabled if its level is at or below the effective level.
-    // (e.g., INFO is below DEBUG). LevelFilter implements `PartialOrd`.
-    event_level <= effective_level
+    if let Some((_target, (level_filter, _))) = self.find_most_specific_rule(metadata) {
+      // A specific rule was found. Use its level.
+      return event_level <= *level_filter;
+    }
+
+    // No specific rule, use the appender's default level (from root).
+    event_level <= self.default_level
   }
 }
 
+// REVISED: ActorAction is now simplified. It only holds a sender for raw bytes.
+// The distinction between a "console" or "file" appender now lives entirely
+// in the background task that is spawned during initialization.
 pub(crate) enum ActorAction {
-  /// Write formatted bytes to a standard writer.
-  Write(Arc<Mutex<dyn Write + Send + Sync + 'static>>),
-  /// Send a structured TelemetryEvent to a channel.
-  Send(BoundedSender<TelemetryEvent>),
+  /// Send formatted bytes to a dedicated appender task.
+  SendBytes(BoundedSender<Vec<u8>>),
+  /// Send a structured TelemetryEvent to a custom application stream.
+  SendEvent(BoundedSender<TelemetryEvent>),
 }
 
 /// A self-contained "actor" that represents a single configured appender.
-/// It holds the name, filter, formatter, and writer, and has no generic parameters.
+/// It holds the name, filter, formatter, and the channel to its background task.
 pub(crate) struct AppenderActor {
   pub(crate) name: String,
   pub(crate) filter: PerAppenderFilter,

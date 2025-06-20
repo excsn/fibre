@@ -12,7 +12,7 @@ pub enum Error {
   #[error("Failed to parse configuration: {0}")]
   ConfigParse(String), // Specific parsing errors might come from serde_yaml, etc.
 
-  #[error("Failed to initialize tracing_log bridge: {0}")]
+  #[error("Failed to initialize log bridge: {0}")]
   LogBridgeInit(String),
 
   #[error("Failed to set global tracing subscriber: {0}")]

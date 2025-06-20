@@ -1,13 +1,12 @@
-// src/config/processed.rs
-use crate::config::raw::{
-  AppenderConfigRaw, ConsoleAppenderConfigRaw, EncoderConfigRaw, FileAppenderConfigRaw,
-  JsonLinesEncoderConfigRaw, LoggerConfigRaw, PatternEncoderConfigRaw,
-};
+// telemetry/src/config/processed.rs
+
+use crate::config::raw::{AppenderConfigRaw, EncoderConfigRaw, LoggerConfigRaw};
 use crate::error::{Error, Result};
+
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::Level;
-use tracing_appender::rolling::Rotation;
 use tracing_core::metadata::LevelFilter;
 
 // --- Processed Top Level Config ---
@@ -30,7 +29,7 @@ pub struct AppenderInternal {
 pub enum AppenderKindInternal {
   Console(ConsoleAppenderInternal),
   File(FileAppenderInternal),
-  RollingFile(RollingFileAppenderInternal),
+  RollingFile(RollingPolicyInternal),
   Custom(CustomAppenderInternal),
 }
 
@@ -45,10 +44,48 @@ pub struct FileAppenderInternal {
 }
 
 #[derive(Debug, Clone)]
-pub struct RollingFileAppenderInternal {
+pub struct RollingPolicyInternal {
   pub directory: PathBuf,
   pub file_name_prefix: String,
-  pub rotation_policy: Rotation,
+  pub file_name_suffix: String,
+  pub time_granularity: String,
+  pub max_file_size: Option<u64>,
+  pub max_retained_sequences: Option<u32>,
+  pub compression: Option<CompressionPolicyInternal>,
+}
+
+impl RollingPolicyInternal {
+  // Helpers to generate paths
+  pub fn base_path(&self) -> PathBuf {
+    self.directory.join(format!(
+      "{}{}",
+      self.file_name_prefix, self.file_name_suffix
+    ))
+  }
+  pub fn format_period(&self, ts: DateTime<Utc>) -> String {
+    match self.time_granularity.as_str() {
+      "minutely" => ts.format("%Y-%m-%d_%H-%M-00").to_string(),
+      "hourly" => ts.format("%Y-%m-%d_%H-00-00").to_string(),
+      "daily" => ts.format("%Y-%m-%d").to_string(),
+      // The "never" case will just use the daily format, but the time check will fail.
+      _ => ts.format("%Y-%m-%d").to_string(),
+    }
+  }
+  pub fn rolled_path(&self, ts: DateTime<Utc>, sequence: u32) -> PathBuf {
+    self.directory.join(format!(
+      "{}.{}.{}{}",
+      self.file_name_prefix,
+      self.format_period(ts),
+      sequence,
+      self.file_name_suffix
+    ))
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct CompressionPolicyInternal {
+  pub compressed_file_suffix: String,
+  pub max_uncompressed_sequences: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -121,11 +158,26 @@ pub fn process_raw_config(raw_config: crate::config::raw::ConfigRaw) -> Result<C
         })
       }
       AppenderConfigRaw::RollingFile(raw_rolling) => {
-        let rotation_policy = match raw_rolling.policy.time_granularity.to_lowercase().as_str() {
-          "minutely" => Rotation::MINUTELY,
-          "hourly" => Rotation::HOURLY,
-          "daily" => Rotation::DAILY,
-          "never" => Rotation::NEVER,
+        let max_file_size = if let Some(s) = raw_rolling.policy.max_file_size {
+          Some(parse_size_str(&s).map_err(|msg| Error::InvalidConfigValue {
+            field: format!("appenders.{}.policy.max_file_size", name),
+            message: msg,
+          })?)
+        } else {
+          None
+        };
+
+        let compression = if let Some(raw_comp) = raw_rolling.policy.compression {
+          Some(CompressionPolicyInternal {
+            compressed_file_suffix: raw_comp.compressed_file_suffix,
+            max_uncompressed_sequences: raw_comp.max_uncompressed_sequences,
+          })
+        } else {
+          None
+        };
+
+        match raw_rolling.policy.time_granularity.to_lowercase().as_str() {
+          "minutely" | "hourly" | "daily" | "never" => (),
           other => {
             return Err(Error::InvalidConfigValue {
               field: format!("appenders.{}.policy.time_granularity", name),
@@ -137,11 +189,16 @@ pub fn process_raw_config(raw_config: crate::config::raw::ConfigRaw) -> Result<C
           }
         };
 
-        AppenderKindInternal::RollingFile(RollingFileAppenderInternal {
-          directory: PathBuf::from(raw_rolling.directory),
+        let policy = RollingPolicyInternal {
+          directory: PathBuf::from(&raw_rolling.directory),
           file_name_prefix: raw_rolling.file_name_prefix,
-          rotation_policy,
-        })
+          file_name_suffix: raw_rolling.file_name_suffix,
+          time_granularity: raw_rolling.policy.time_granularity.to_lowercase(),
+          max_file_size,
+          max_retained_sequences: raw_rolling.policy.max_retained_sequences,
+          compression,
+        };
+        AppenderKindInternal::RollingFile(policy)
       }
       AppenderConfigRaw::Custom(raw_custom) => {
         if raw_custom.buffer_size == 0 {
@@ -155,7 +212,7 @@ pub fn process_raw_config(raw_config: crate::config::raw::ConfigRaw) -> Result<C
         })
       }
     };
-    
+
     processed_appenders.insert(
       name.clone(),
       AppenderInternal {
@@ -228,11 +285,11 @@ fn process_encoder_config_raw(raw_encoder: EncoderConfigRaw) -> Result<EncoderIn
           .unwrap_or_else(|| "[%d] %p %t - %m%n".to_string()),
       }))
     }
-    EncoderConfigRaw::JsonLines(raw_json) => Ok(EncoderInternal::JsonLines(
-      JsonLinesEncoderInternal {
+    EncoderConfigRaw::JsonLines(raw_json) => {
+      Ok(EncoderInternal::JsonLines(JsonLinesEncoderInternal {
         flatten_fields: raw_json.flatten_fields,
-      },
-    ))
+      }))
+    }
   }
 }
 
@@ -253,6 +310,24 @@ fn parse_level_filter(level_str: &str, logger_name: &str) -> Result<LevelFilter>
         level_str
       ),
     })
+}
+
+// Add new helper function to parse size strings
+fn parse_size_str(size_str: &str) -> std::result::Result<u64, String> {
+  let lower = size_str.to_lowercase();
+  let (num_str, suffix) = lower.split_at(lower.trim_end_matches(|c: char| c.is_alphabetic()).len());
+  let num = num_str
+    .trim()
+    .parse::<u64>()
+    .map_err(|_| format!("Invalid number in size string: '{}'", num_str))?;
+
+  match suffix.trim() {
+    "kb" => Ok(num * 1024),
+    "mb" => Ok(num * 1024 * 1024),
+    "gb" => Ok(num * 1024 * 1024 * 1024),
+    "b" | "" => Ok(num),
+    _ => Err(format!("Unknown size suffix: '{}'", suffix)),
+  }
 }
 
 #[cfg(test)]
