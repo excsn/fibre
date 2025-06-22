@@ -74,10 +74,12 @@
 //! handle2.join().unwrap();
 //! ```
 
-use std::mem;
-use std::sync::atomic::AtomicBool;
 // No need to import Arc here if it's only used by ring_buffer types.
 mod ring_buffer;
+pub mod topic;
+
+use std::mem;
+use std::sync::atomic::AtomicBool;
 
 pub use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
 pub use ring_buffer::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender};
