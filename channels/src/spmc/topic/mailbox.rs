@@ -121,6 +121,16 @@ impl<T> MailboxProducer<T> {
       self.shared.wake_consumer(&mut guard);
     }
   }
+  
+  /// Returns the capacity of the mailbox.
+  pub(crate) fn capacity(&self) -> usize {
+    self.shared.internal.lock().unwrap().capacity
+  }
+
+  /// Returns true if the mailbox buffer is empty.
+  pub(crate) fn is_empty(&self) -> bool {
+    self.shared.internal.lock().unwrap().buffer.is_empty()
+  }
 }
 
 impl<T> Drop for MailboxProducer<T> {
@@ -198,10 +208,15 @@ impl<T> MailboxConsumer<T> {
   pub(crate) fn recv_async(&self) -> RecvFuture<'_, T> {
     RecvFuture { consumer: self }
   }
-
+  
   /// Returns the capacity of the mailbox.
   pub(crate) fn capacity(&self) -> usize {
     self.shared.internal.lock().unwrap().capacity
+  }
+
+  /// Returns true if the mailbox buffer is empty.
+  pub(crate) fn is_empty(&self) -> bool {
+    self.shared.internal.lock().unwrap().buffer.is_empty()
   }
 }
 

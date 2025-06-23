@@ -6,7 +6,7 @@ use super::core::{SpmcTopicDispatcher, SubscriberList};
 use super::mailbox::{self, RecvFuture};
 use crate::error::SendError;
 use crate::spmc::topic::sync_impl::{TopicReceiver, TopicSender};
-use crate::TryRecvError;
+use crate::{CloseError, TryRecvError};
 
 use std::borrow::Borrow;
 use std::collections::HashSet;
@@ -72,6 +72,31 @@ where
     Ok(())
   }
 
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&self) {
+    let pinned_map = self.dispatcher.subscriptions.pin();
+    for (_topic, list_arc) in pinned_map.iter() {
+      let subscribers_snapshot = list_arc.reader.enter();
+      for mailbox_weak in subscribers_snapshot.iter() {
+        if let Some(mailbox_strong) = mailbox_weak.upgrade() {
+          mailbox_strong.disconnect();
+        }
+      }
+    }
+  }
+  
   /// Returns `true` if all receivers for this channel have been dropped.
   pub fn is_closed(&self) -> bool {
     self.dispatcher.receiver_count.load(Ordering::Relaxed) == 0
@@ -95,21 +120,7 @@ where
   T: Send + Clone + 'static,
 {
   fn drop(&mut self) {
-    if !self.closed.swap(true, Ordering::AcqRel) {
-      // Sender is being dropped. We must notify all active subscribers that no
-      // more messages will come. We do this by iterating through all subscriber
-      // lists and calling `disconnect` on their mailboxes.
-      // We do NOT clear the map, as receivers need it to unsubscribe themselves.
-      let pinned_map = self.dispatcher.subscriptions.pin();
-      for (_topic, list_arc) in pinned_map.iter() {
-        let subscribers_snapshot = list_arc.reader.enter();
-        for mailbox_weak in subscribers_snapshot.iter() {
-          if let Some(mailbox_strong) = mailbox_weak.upgrade() {
-            mailbox_strong.disconnect();
-          }
-        }
-      }
-    }
+    let _ = self.close();
   }
 }
 
@@ -130,6 +141,7 @@ where
   pub(crate) producer_mailbox: Arc<mailbox::MailboxProducer<(K, T)>>,
   /// The set of topics this receiver is currently subscribed to.
   pub(crate) subscriptions: Arc<Mutex<HashSet<K>>>,
+  pub(crate) closed: AtomicBool,
 }
 
 impl<K, T> AsyncTopicReceiver<K, T>
@@ -209,6 +221,42 @@ where
     }
   }
 
+  pub fn is_closed(&self) -> bool {
+    self.closed.load(Ordering::Relaxed) ||
+    (self.dispatcher.upgrade().is_none() && self.consumer.is_empty())
+  }
+
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&self) {
+    if let Some(dispatcher) = self.dispatcher.upgrade() {
+      let topics_to_unsubscribe: Vec<K> = self.subscriptions.lock().drain().collect();
+      for topic in topics_to_unsubscribe {
+        self.unsubscribe(&topic);
+      }
+      dispatcher.receiver_count.fetch_sub(1, Ordering::Relaxed);
+    }
+  }
+
+  pub fn capacity(&self) -> usize {
+    return self.consumer.capacity();
+  }
+
+  pub fn is_empty(&self) -> bool {
+    return self.consumer.is_empty();
+  }
+
   /// Converts this asynchronous `AsyncTopicReceiver` into a `TopicReceiver`.
   ///
   /// This is a zero-cost conversion. The `Drop` implementation of the
@@ -225,6 +273,7 @@ where
       consumer,
       producer_mailbox,
       subscriptions,
+      closed: AtomicBool::new(false),
     }
   }
 }
@@ -248,6 +297,7 @@ where
         consumer: c,
         producer_mailbox: Arc::new(p),
         subscriptions: Arc::new(Mutex::new(HashSet::new())),
+        closed: AtomicBool::new(false),
       };
 
       for topic in topics_to_subscribe {
@@ -255,12 +305,14 @@ where
       }
       new_receiver
     } else {
+      // If the dispatcher is gone, create a dead receiver.
       let (p, c) = mailbox::channel(0);
       Self {
         dispatcher: Weak::new(),
         consumer: c,
         producer_mailbox: Arc::new(p),
         subscriptions: Arc::new(Mutex::new(HashSet::new())),
+        closed: AtomicBool::new(true),
       }
     }
   }

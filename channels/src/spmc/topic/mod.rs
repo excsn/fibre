@@ -64,6 +64,7 @@ where
     consumer: c,
     producer_mailbox: Arc::new(p),
     subscriptions: Arc::new(Mutex::new(HashSet::new())),
+    closed: AtomicBool::new(false),
   };
 
   (sender, receiver)
@@ -95,6 +96,7 @@ where
     consumer: c,
     producer_mailbox: Arc::new(p),
     subscriptions: Arc::new(Mutex::new(HashSet::new())),
+    closed: AtomicBool::new(false),
   };
 
   (sender, receiver)

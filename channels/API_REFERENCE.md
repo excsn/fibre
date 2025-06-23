@@ -7,7 +7,7 @@
 *   **Specialized Channels**: The library offers distinct channel types, each optimized for a specific concurrency pattern to ensure maximum performance and low overhead:
     *   `spsc`: **S**ingle-**P**roducer, **S**ingle-**C**onsumer. The fastest channel for 1-to-1 communication, implemented with a lock-free ring buffer.
     *   `mpsc`: **M**ulti-**P**roducer, **S**ingle-**C**onsumer. Ideal for collecting work from many sources into one processor. Supports both bounded and unbounded modes.
-    *   `spmc`: **S**ingle-**P**roducer, **M**ulti-**C**onsumer. A "broadcast" or "fan-out" channel where one producer sends cloned messages to many consumers.
+    *   `spmc`: **S**ingle-**P**roducer, **M**ulti-**C**onsumer. A "broadcast" or "fan-out" channel where one producer sends cloned messages to many consumers. It also includes a `topic`-based pub/sub variant.
     *   `mpmc`: **M**ulti-**P**roducer, **M**ulti-**C**onsumer. The most flexible channel for many-to-many communication, supporting both bounded and unbounded modes.
     *   `oneshot`: A channel for sending a single value, exactly once.
 
@@ -15,7 +15,7 @@
 
 *   **Sender and Receiver Handles**: Interaction with channels is done through `Sender` and `Receiver` handles. These handles control access and lifetime. When all `Sender` handles for a channel are dropped, it becomes "disconnected." When all `Receiver` handles are dropped, it becomes "closed." Handle cloning semantics vary by channel type (e.g., `mpmc::Sender` is `Clone`, but `spsc::BoundedSyncSender` is not).
 
-*   **Stream API**: All asynchronous receivers that can yield multiple items (`mpmc::AsyncReceiver`, `mpsc::UnboundedAsyncReceiver`, `mpsc::BoundedAsyncReceiver`, `spmc::AsyncReceiver`, `spsc::AsyncBoundedSpscReceiver`) implement the `futures::Stream` trait, allowing them to be used with the rich combinator library from `futures-util`.
+*   **Stream API**: All asynchronous receivers that can yield multiple items (`mpmc::AsyncReceiver`, `mpsc::UnboundedAsyncReceiver`, `mpsc::BoundedAsyncReceiver`, `spmc::AsyncReceiver`, `spsc::AsyncBoundedSpscReceiver`, `spmc::topic::AsyncTopicReceiver`) implement the `futures::Stream` trait, allowing them to be used with the rich combinator library from `futures-util`.
 
 ## 2. Error Handling
 
@@ -169,6 +169,7 @@ An optimized channel for multiple producers and one consumer.
     *   Methods: `try_send`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `to_async`.
 *   **Struct `UnboundedReceiver<T: Send>`**: A non-cloneable, sync handle.
     *   `recv(&self) -> Result<T, RecvError>`: Blocks if empty.
+    *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
     *   Methods: `try_recv`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `to_async`.
 *   **Struct `UnboundedAsyncSender<T: Send>`**: A cloneable, async handle.
     *   `send(&self, value: T) -> UnboundedSendFuture<'_, T>`: Non-blocking future.
@@ -184,6 +185,7 @@ An optimized channel for multiple producers and one consumer.
     *   Methods: `try_send`, `clone`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `capacity`, `is_full`, `to_async`.
 *   **Struct `BoundedReceiver<T: Send>`**: A non-cloneable, sync handle.
     *   `recv(&self) -> Result<T, RecvError>`: Blocks if empty.
+    *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
     *   Methods: `try_recv`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `capacity`, `is_full`, `to_async`.
 *   **Struct `BoundedAsyncSender<T: Send>`**: A cloneable, async handle.
     *   `send(&self, value: T) -> BoundedSendFuture<'_, T>`: Returns a future that waits for capacity.
@@ -217,6 +219,7 @@ The synchronous, cloneable receiving handle.
 
 *   **Methods**:
     *   `recv(&self) -> Result<T, RecvError>`: Blocks if this consumer's buffer is empty.
+    *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
     *   `try_recv(&self) -> Result<T, TryRecvError>`
     *   `close(&self) -> Result<(), CloseError>`
     *   `to_async`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
@@ -264,6 +267,7 @@ The synchronous, cloneable receiving handle.
 
 *   **Methods**:
     *   `recv(&self) -> Result<T, RecvError>`: Blocks if the channel is empty.
+    *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
     *   `try_recv(&self) -> Result<T, TryRecvError>`
     *   `close(&self) -> Result<(), CloseError>`
     *   `to_async`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
@@ -283,3 +287,69 @@ The asynchronous, cloneable receiving handle. Implements `futures::Stream`.
 *   **Methods**:
     *   `recv(&self) -> RecvFuture<'_, T>`
     *   `try_recv`, `close`, `to_sync`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
+
+## 8. Module `fibre::spmc::topic`
+
+A multi-consumer "topic" or "publish-subscribe" channel. This channel allows a single producer to broadcast messages to multiple consumers, where each consumer subscribes to specific "topics". A message sent to a topic is delivered to all consumers subscribed to that topic.
+
+*   **Behavior**:
+    *   **Topic-Based Filtering**: Consumers only receive messages for topics they explicitly subscribe to.
+    *   **Non-Blocking Sender**: The sender is not blocked by slow consumers. If a consumer's internal message buffer (mailbox) is full, new messages for that consumer are dropped, ensuring the sender and other consumers are not impacted.
+    *   **`Clone` Requirement**: Since a message can be delivered to multiple subscribers, the message type `T` and topic key `K` must implement `Clone`.
+    *   **Sync/Async Agnostic**: Full interoperability between sync and async code.
+
+### Functions
+
+*   `pub fn channel<K, T>(mailbox_capacity: usize) -> (TopicSender<K, T>, TopicReceiver<K, T>)`
+*   `pub fn channel_async<K, T>(mailbox_capacity: usize) -> (AsyncTopicSender<K, T>, AsyncTopicReceiver<K, T>)`
+
+### Struct `TopicSender<K, T>`
+
+The synchronous, cloneable sending handle.
+
+*   **Methods**:
+    *   `pub fn send(&self, topic: K, value: T) -> Result<(), SendError>`: Non-blocking send. Drops message for slow consumers.
+    *   `pub fn close(&self) -> Result<(), CloseError>`
+    *   `pub fn is_closed(&self) -> bool`
+    *   `pub fn to_async(self) -> AsyncTopicSender<K, T>`
+
+### Struct `TopicReceiver<K, T>`
+
+The synchronous, cloneable receiving handle.
+
+*   **Methods**:
+    *   `pub fn subscribe(&self, topic: K)`
+    *   `pub fn unsubscribe<Q: ?Sized>(&self, topic: &Q)`
+    *   `pub fn recv(&self) -> Result<(K, T), RecvError>`: Blocks if this receiver's mailbox is empty.
+    *   `pub fn try_recv(&self) -> Result<(K, T), TryRecvError>`
+    *   `pub fn recv_timeout(&self, timeout: std::time::Duration) -> Result<(K, T), RecvErrorTimeout>`
+    *   `pub fn close(&self) -> Result<(), CloseError>`
+    *   `pub fn is_closed(&self) -> bool`
+    *   `pub fn capacity(&self) -> usize`: Returns the capacity of this receiver's mailbox.
+    *   `pub fn is_empty(&self) -> bool`: Returns `true` if this receiver's mailbox is empty.
+    *   `pub fn to_async(self) -> AsyncTopicReceiver<K, T>`
+
+### Struct `AsyncTopicSender<K, T>`
+
+The asynchronous, cloneable sending handle.
+
+*   **Methods**:
+    *   `pub fn send(&self, topic: K, value: T) -> Result<(), SendError>`: Non-blocking, fire-and-forget send.
+    *   `pub fn close(&self) -> Result<(), CloseError>`
+    *   `pub fn is_closed(&self) -> bool`
+    *   `pub fn to_sync(self) -> TopicSender<K, T>`
+
+### Struct `AsyncTopicReceiver<K, T>`
+
+The asynchronous, cloneable receiving handle. Implements `futures::Stream`.
+
+*   **Methods**:
+    *   `pub fn subscribe(&self, topic: K)`
+    *   `pub fn unsubscribe<Q: ?Sized>(&self, topic: &Q)`
+    *   `pub fn recv(&self) -> RecvFuture<'_, (K, T)>`: Returns a future that waits for a message.
+    *   `pub fn try_recv(&self) -> Result<(K, T), TryRecvError>`
+    *   `pub fn close(&self) -> Result<(), CloseError>`
+    *   `pub fn is_closed(&self) -> bool`
+    *   `pub fn capacity(&self) -> usize`: Returns the capacity of this receiver's mailbox.
+    *   `pub fn is_empty(&self) -> bool`: Returns `true` if this receiver's mailbox is empty.
+    *   `pub fn to_sync(self) -> TopicReceiver<K, T>`

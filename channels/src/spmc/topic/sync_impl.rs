@@ -6,7 +6,7 @@ use super::core::{SpmcTopicDispatcher, SubscriberList};
 use super::mailbox;
 use crate::error::{RecvError, SendError};
 use crate::spmc::topic::async_impl::{AsyncTopicReceiver, AsyncTopicSender};
-use crate::{RecvErrorTimeout, TryRecvError};
+use crate::{CloseError, RecvErrorTimeout, TryRecvError};
 
 use std::borrow::Borrow;
 use std::collections::HashSet;
@@ -84,6 +84,41 @@ where
     self.dispatcher.receiver_count.load(Ordering::Relaxed) == 0
   }
 
+  /// Closes this sender handle.
+  ///
+  /// This is an explicit alternative to `drop`. If the channel is already
+  /// closed, this will return an error.
+  ///
+  /// # Errors
+  ///
+  /// - `Err(CloseError)` if the sender handle was already closed.
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&self) {
+    // Drop logic is now just the close logic.
+    // The drop impl will call this.
+    let pinned_map = self.dispatcher.subscriptions.pin();
+    for (_topic, list_arc) in pinned_map.iter() {
+      let subscribers_snapshot = list_arc.reader.enter();
+      for mailbox_weak in subscribers_snapshot.iter() {
+        if let Some(mailbox_strong) = mailbox_weak.upgrade() {
+          mailbox_strong.disconnect();
+        }
+      }
+    }
+  }
+
   /// Converts this synchronous `TopicSender` into an `AsyncTopicSender`.
   ///
   /// This is a zero-cost conversion. The `Drop` implementation of the
@@ -96,27 +131,26 @@ where
   }
 }
 
+impl<K, T> Clone for TopicSender<K, T>
+where
+  K: Eq + Hash + Clone + Send + Sync + 'static,
+  T: Send + Clone + 'static,
+{
+  fn clone(&self) -> Self {
+    Self {
+      dispatcher: self.dispatcher.clone(),
+      closed: AtomicBool::new(false),
+    }
+  }
+}
+
 impl<K, T> Drop for TopicSender<K, T>
 where
   K: Eq + Hash + Clone + Send + Sync + 'static,
   T: Send + Clone + 'static,
 {
   fn drop(&mut self) {
-    if !self.closed.swap(true, Ordering::AcqRel) {
-      // Sender is being dropped. We must notify all active subscribers that no
-      // more messages will come. We do this by iterating through all subscriber
-      // lists and calling `disconnect` on their mailboxes.
-      // We do NOT clear the map, as receivers need it to unsubscribe themselves.
-      let pinned_map = self.dispatcher.subscriptions.pin();
-      for (_topic, list_arc) in pinned_map.iter() {
-        let subscribers_snapshot = list_arc.reader.enter();
-        for mailbox_weak in subscribers_snapshot.iter() {
-          if let Some(mailbox_strong) = mailbox_weak.upgrade() {
-            mailbox_strong.disconnect();
-          }
-        }
-      }
-    }
+    let _ = self.close();
   }
 }
 
@@ -137,6 +171,7 @@ where
   pub(crate) producer_mailbox: Arc<mailbox::MailboxProducer<(K, T)>>,
   /// The set of topics this receiver is currently subscribed to.
   pub(crate) subscriptions: Arc<Mutex<HashSet<K>>>,
+  pub(crate) closed: AtomicBool,
 }
 
 impl<K, T> TopicReceiver<K, T>
@@ -174,6 +209,12 @@ where
   /// - `Err(RecvErrorTimeout::Timeout)` if the timeout is reached.
   /// - `Err(RecvErrorTimeout::Disconnected)` if the channel is disconnected.
   pub fn recv_timeout(&self, timeout: Duration) -> Result<(K, T), RecvErrorTimeout> {
+    if self.closed.load(Ordering::Relaxed) {
+      return self
+        .consumer
+        .try_recv()
+        .map_err(|_| RecvErrorTimeout::Disconnected);
+    }
     self.consumer.recv_timeout_sync(timeout)
   }
 
@@ -240,6 +281,52 @@ where
     }
   }
 
+  /// Returns `true` if the `TopicSender` has been dropped and the receiver's
+  /// internal mailbox is empty.
+  pub fn is_closed(&self) -> bool {
+    self.closed.load(Ordering::Relaxed)
+      || (self.dispatcher.upgrade().is_none() && self.consumer.is_empty())
+  }
+
+  /// Closes the receiving end of the channel.
+  ///
+  /// This is an explicit alternative to `drop`. It will unsubscribe this
+  /// receiver from all topics it is subscribed to.
+  ///
+  /// # Errors
+  ///
+  /// - `Err(CloseError)` if the receiver handle was already closed.
+  pub fn close(&self) -> Result<(), CloseError> {
+    if self
+      .closed
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok()
+    {
+      self.close_internal();
+      Ok(())
+    } else {
+      Err(CloseError)
+    }
+  }
+
+  fn close_internal(&self) {
+    if let Some(dispatcher) = self.dispatcher.upgrade() {
+      let topics_to_unsubscribe: Vec<K> = self.subscriptions.lock().drain().collect();
+      for topic in topics_to_unsubscribe {
+        self.unsubscribe(&topic);
+      }
+      dispatcher.receiver_count.fetch_sub(1, Ordering::Relaxed);
+    }
+  }
+
+  pub fn capacity(&self) -> usize {
+    return self.consumer.capacity();
+  }
+
+  pub fn is_empty(&self) -> bool {
+    return self.consumer.is_empty();
+  }
+
   /// Converts this synchronous `TopicReceiver` into an `AsyncTopicReceiver`.
   ///
   /// This is a zero-cost conversion. The `Drop` implementation of the
@@ -256,6 +343,7 @@ where
       consumer,
       producer_mailbox,
       subscriptions,
+      closed: AtomicBool::new(false),
     }
   }
 }
@@ -282,6 +370,7 @@ where
         consumer: c,
         producer_mailbox: Arc::new(p),
         subscriptions: Arc::new(Mutex::new(HashSet::new())),
+        closed: AtomicBool::new(false),
       };
 
       // Now subscribe to each topic. `subscribe` will populate the new receiver's
@@ -299,6 +388,7 @@ where
         consumer: c,
         producer_mailbox: Arc::new(p),
         subscriptions: Arc::new(Mutex::new(HashSet::new())),
+        closed: AtomicBool::new(true),
       }
     }
   }
@@ -310,18 +400,8 @@ where
   T: Send + Clone + 'static,
 {
   fn drop(&mut self) {
-    if let Some(dispatcher) = self.dispatcher.upgrade() {
-      // First, get the list of topics to unsubscribe from.
-      // This holds the lock for a minimal amount of time.
-      let topics_to_unsubscribe: Vec<K> = self.subscriptions.lock().drain().collect();
-
-      // Now, iterate and call unsubscribe for each. The lock is released.
-      for topic in topics_to_unsubscribe {
-        // The unsubscribe method has already been fixed to not hold nested locks.
-        self.unsubscribe(&topic);
-      }
-      // Decrement the global receiver count.
-      dispatcher.receiver_count.fetch_sub(1, Ordering::Relaxed);
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
     }
   }
 }

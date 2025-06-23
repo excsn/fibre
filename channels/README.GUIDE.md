@@ -9,10 +9,12 @@ This guide provides detailed examples and an overview of the core concepts and A
     *   [MPMC Sync Example](#mpmc-sync-example)
     *   [MPSC Async Stream Example](#mpsc-async-stream-example)
     *   [SPSC Hybrid Example](#spsc-hybrid-example)
+    *   [SPMC Topic Example](#spmc-topic-example)
 *   [API by Channel Type](#api-by-channel-type)
     *   [Module: `fibre::mpmc`](#module-fibrempmc)
     *   [Module: `fibre::mpsc`](#module-fibrempsc)
     *   [Module: `fibre::spmc`](#module-fibrespmc)
+    *   [Module: `fibre::spmc::topic`](#module-fibrespmctopic)
     *   [Module: `fibre::spsc`](#module-fibrespsc)
     *   [Module: `fibre::oneshot`](#module-fibreoneshot)
 *   [Error Handling](#error-handling)
@@ -26,7 +28,7 @@ Fibre's main philosophy is to provide the right tool for the job. Instead of usi
 
 *   **SPSC (Single-Producer, Single-Consumer):** The fastest pattern for 1-to-1 communication. Implemented with a lock-free ring buffer. It's bounded and requires `T: Send`.
 *   **MPSC (Multi-Producer, Single-Consumer):** Many threads/tasks send to one receiver. Great for collecting results or distributing work to a single processor. Implemented with a lock-free linked list and supports both bounded and unbounded modes. Requires `T: Send`.
-*   **SPMC (Single-Producer, Multi-Consumer):** One thread/task broadcasts the same message to many receivers. Each consumer gets a clone of the message. Implemented with a specialized ring buffer that tracks individual consumer progress. It's bounded and requires `T: Send + Clone`.
+*   **SPMC (Single-Producer, Multi-Consumer):** One thread/task broadcasts the same message to many receivers. Each consumer gets a clone of the message. Implemented with a specialized ring buffer that tracks individual consumer progress. It's bounded and requires `T: Send + Clone`. For a more flexible pub/sub model, see `spmc::topic`.
 *   **MPMC (Multi-Producer, Multi-Consumer):** The most flexible pattern, allowing many-to-many communication. Implemented with a `parking_lot::Mutex` for robust state management and support for mixed sync/async waiters. Supports bounded (including rendezvous) and "unbounded" (memory-limited) capacities. Requires `T: Send`.
 *   **Oneshot:** A channel for sending a single value, once, from one of potentially many senders to a single receiver. Requires `T: Send`.
 
@@ -38,7 +40,7 @@ The `mpmc`, `mpsc`, `spmc`, and `spsc` channels support full interoperability be
 
 All channels are interacted with via sender and receiver handles (e.g., `Sender`, `Receiver`, `AsyncSender`, `AsyncReceiver`; SPSC uses `BoundedSyncSender`, etc.). These handles control access to the channel and manage its lifetime. When all senders for a channel are dropped, the channel becomes "disconnected" from the perspective of the receiver. When all receivers are dropped, the channel becomes "closed" from the perspective of the sender.
 
-**A key feature of all multi-item asynchronous receiver types (`mpmc::AsyncReceiver`, `mpsc::UnboundedAsyncReceiver`, etc.) is that they implement the `futures::Stream` trait.** This allows them to be used with the rich set of combinators provided by `futures::StreamExt`, such as `next()`, `map()`, `filter()`, `for_each`, and `collect()`. The `oneshot::Receiver` is an exception, as it yields at most one item and is used by awaiting its `.recv()` future directly.
+**A key feature of all multi-item asynchronous receiver types (`mpmc::AsyncReceiver`, `mpsc::UnboundedAsyncReceiver`, `mpsc::BoundedAsyncReceiver`, `spmc::AsyncReceiver`, `spmc::topic::AsyncTopicReceiver`, `spsc::AsyncBoundedSpscReceiver`) is that they implement the `futures::Stream` trait.** This allows them to be used with the rich set of combinators provided by `futures::StreamExt`, such as `next()`, `map()`, `filter()`, `for_each`, and `collect()`. The `oneshot::Receiver` is an exception, as it yields at most one item and is used by awaiting its `.recv()` future directly.
 
 ## Quick Start Examples
 
@@ -170,6 +172,58 @@ fn main() {
 }
 ```
 
+### SPMC Topic Example
+
+An example of a publish-subscribe pattern where consumers listen to specific topics. The sender is non-blocking and will drop messages for slow consumers.
+
+```rust
+use fibre::spmc::topic;
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    // Each receiver gets a private mailbox of capacity 16.
+    let (tx, rx_news) = topic::channel_async(16);
+    let rx_weather = rx_news.clone();
+
+    // Subscribe to topics.
+    rx_news.subscribe("news");
+    rx_weather.subscribe("weather");
+
+    // Start a news listener.
+    let news_handle = task::spawn(async move {
+        loop {
+            match rx_news.recv().await {
+                Ok((topic, msg)) => println!("[News] Got '{:?}' on topic '{}'", msg, topic),
+                Err(_) => {
+                    println!("[News] Channel disconnected.");
+                    break;
+                }
+            }
+        }
+    });
+
+    // Start a weather listener.
+    let weather_handle = task::spawn(async move {
+        match rx_weather.recv().await {
+            Ok((topic, msg)) => println!("[Weather] Got '{:?}' on topic '{}'", msg, topic),
+            Err(_) => println!("[Weather] Channel disconnected."),
+        }
+    });
+
+    // Publish messages to different topics.
+    tx.send("news", "Fibre v1.0 released!").unwrap();
+    tx.send("weather", "Sunny with a high of 75°F").unwrap();
+    tx.send("news", "Library gains popularity.").unwrap();
+
+    // Drop the sender to allow consumers to terminate.
+    drop(tx);
+
+    news_handle.await.unwrap();
+    weather_handle.await.unwrap();
+}
+```
+
 ## API by Channel Type
 
 _(Note: `T` must generally be `Send`. Specific trait bounds like `Clone` are noted.)_
@@ -190,6 +244,7 @@ A flexible channel for many-to-many communication.
     *   `send(...)`: Sync sends block, async sends return a `Future`.
     *   `try_send(&self, item: T) -> Result<(), TrySendError<T>>`
     *   `recv(...)`: Sync receives block, async receives return a `Future`.
+    *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
     *   `try_recv(&self) -> Result<T, TryRecvError>`
     *   `to_async(self)` / `to_sync(self)`
 
@@ -212,6 +267,7 @@ An optimized lock-free channel for many-to-one communication.
     *   `send(...)`: Sync sends block, async sends return a `Future`.
     *   `try_send(...)`
     *   `recv(...)`: Sync receives block, async receives return a `Future`.
+    *   `recv_timeout(...)`: Sync receives block with a timeout.
 
 ### Module: `fibre::spmc`
 
@@ -228,7 +284,25 @@ A broadcast-style channel for one-to-many communication (bounded). `T` must be `
 *   **Key Methods:**
     *   `send(&self, ...)`: Blocks if any consumer is slow and its buffer view is full. Async version returns a `Future`.
     *   `recv(&self, ...)`: Blocks if the consumer's view of the buffer is empty. Async version returns a `Future`.
+    *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
     *   `Sender::close(&mut self)` and `AsyncSender::close(&mut self)` take `&mut self`.
+
+### Module: `fibre::spmc::topic`
+
+A flexible publish-subscribe channel for one-to-many communication. Messages are sent to topics, and consumers subscribe to topics they are interested in.
+
+*   **Constructors:**
+    *   `pub fn channel<K, T>(mailbox_capacity: usize) -> (TopicSender<K, T>, TopicReceiver<K, T>)`
+    *   `pub fn channel_async<K, T>(mailbox_capacity: usize) -> (AsyncTopicSender<K, T>, AsyncTopicReceiver<K, T>)`
+*   **Handles:**
+    *   `TopicSender<K, T>` (sync, `Clone`) and `TopicReceiver<K, T>` (sync, `Clone`).
+    *   `AsyncTopicSender<K, T>` (async, `Clone`) and `AsyncTopicReceiver<K, T>` (async, `Clone`). `AsyncTopicReceiver` implements `futures::Stream`.
+*   **Key Methods:**
+    *   `send(&self, topic: K, value: T)`: Non-blocking. Drops messages for slow consumers.
+    *   `subscribe(&self, topic: K)` and `unsubscribe(&self, topic: &Q)`.
+    *   `recv()`: Blocks if this receiver's private mailbox is empty. Async version returns a `Future`.
+    *   `recv_timeout(...)`
+    *   `to_async(self)` / `to_sync(self)`
 
 ### Module: `fibre::spsc`
 

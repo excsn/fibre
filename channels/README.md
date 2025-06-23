@@ -19,6 +19,7 @@ Fibre offers a wide range of channel types, each optimized for a specific produc
 *   **`spsc`**: A lock-free Single-Producer, Single-Consumer ring buffer, ideal for maximum throughput in 1-to-1 communication. Bounded. Requires `T: Send`.
 *   **`mpsc`**: A lock-free Multi-Producer, Single-Consumer channel, perfect for scenarios where many tasks need to send work to a single processing task. Supports both bounded and unbounded modes. Requires `T: Send`.
 *   **`spmc`**: A "broadcast" style Single-Producer, Multi-Consumer channel where each message is cloned and delivered to every active consumer. Bounded. Requires `T: Send + Clone`.
+*   **`spmc::topic`**: A "publish-subscribe" variant of SPMC where the producer sends messages to named topics, and consumers subscribe to the topics they're interested in. The sender is non-blocking, dropping messages for slow consumers. Requires `K: Send + Sync + Hash + Eq + Clone` and `T: Send + Clone`.
 *   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic. Supports bounded (including rendezvous) and "unbounded" capacities. Requires `T: Send`.
 *   **`oneshot`**: A channel for sending a single value once, perfect for futures and promise-style patterns. Requires `T: Send`.
 
@@ -36,31 +37,33 @@ The following tables summarize the consistent API surface across all channel sen
 
 **Sender API**
 
-| Method | MPMC Sender | MPSC Sender | SPMC Sender | SPSC Sender | Oneshot Sender |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| `send()`/`send().await` | ✅ | ✅ | ✅ | ✅ | ✅ (Consumes self) |
-| `try_send()` | ✅ | ✅ | ✅ | ✅ | ✅ (send is try) |
-| `close()` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `is_closed()` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `len()` | ✅ | ✅ | ✅ | ✅ | N/A |
-| `is_empty()` | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `is_full()` | ✅ | ✅ (bounded) | ✅ | ✅ | N/A |
-| `capacity()` | ✅ | ✅ (bounded) | ✅ | ✅ | N/A |
-| `clone()` | ✅ | ✅ | ❌ | ❌ | ✅ |
+| Method | MPMC Sender | MPSC Sender (B/U) | SPMC Sender | SPMC Topic Sender | SPSC Sender | Oneshot Sender |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `send()`/`send().await` | ✅ | ✅ | ✅ | ✅ (non-blocking) | ✅ | ✅ (Consumes self) |
+| `try_send()` | ✅ | ✅ | ✅ | N/A | ✅ | ✅ (send is try) |
+| `close()` | ✅ | ✅ | ✅ (`&mut self`) | ✅ | ✅ | ✅ |
+| `is_closed()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `len()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
+| `is_empty()` | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
+| `is_full()` | ✅ | ✅ (bounded) | ✅ | ❌ | ✅ | N/A |
+| `capacity()` | ✅ | ✅ (bounded) | ✅ | ❌ | ✅ | N/A |
+| `clone()` | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
 
 **Receiver API**
 
-| Method | MPMC Receiver | MPSC Receiver | SPMC Receiver | SPSC Receiver | Oneshot Receiver |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| `recv()`/`recv().await` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `try_recv()` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `close()` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `is_closed()` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `len()` | ✅ | ✅ | ✅ | ✅ | N/A |
-| `is_empty()` | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `is_full()` | ✅ | ✅ (bounded) | ✅ | ✅ | N/A |
-| `capacity()` | ✅ | ✅ (bounded) | ✅ | ✅ | N/A |
-| `clone()` | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Method | MPMC Receiver | MPSC Receiver (B/U) | SPMC Receiver | SPMC Topic Receiver | SPSC Receiver | Oneshot Receiver |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `recv()`/`recv().await` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `try_recv()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `recv_timeout()` | ✅ | ✅ | ✅ | ✅ | ✅ (`&mut self`) | N/A |
+| `subscribe/unsubscribe`| N/A | N/A | N/A | ✅ | N/A | N/A |
+| `close()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `is_closed()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `len()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
+| `is_empty()` | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `is_full()` | ✅ | ✅ (bounded) | ✅ | ❌ | ✅ | N/A |
+| `capacity()` | ✅ | ✅ (bounded) | ✅ | ✅ | ✅ | N/A |
+| `clone()` | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ |
 
 ### Performance-Oriented Design
 
@@ -68,6 +71,7 @@ Performance is a primary goal. Fibre uses proven, high-performance algorithms fo
 *   Lock-free ring buffers for SPSC.
 *   Lock-free linked lists for MPSC.
 *   A specialized ring buffer for SPMC that tracks individual consumer progress, ensuring backpressure from the slowest consumer.
+*   A non-blocking, topic-based SPMC variant built on a concurrent hash map, copy-on-write lists, and individual mailboxes for high-performance pub/sub.
 *   A fair, hybrid semaphore built on `parking_lot::Mutex` for MPMC and bounded MPSC channels.
 *   Cache-line padding on critical atomic data to minimize false sharing and maximize throughput on multi-core systems.
 
@@ -83,7 +87,7 @@ Add Fibre to your project by including it in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fibre = "0.3.0" # Replace with the latest version
+fibre = "0.5.0" # Replace with the latest version
 ```
 
 Or by using the command line:

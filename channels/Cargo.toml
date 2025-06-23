@@ -1,6 +1,6 @@
 [package]
 name = "fibre"
-version = "0.4.3"
+version = "0.5.0"
 
 description = "High-performance, safe, memory-efficient sync/async channels built for real-time, low-overhead communication in concurrent Rust applications."
 readme = "README.md"
@@ -19,7 +19,7 @@ exclude = [
 
 [features]
 default = ["topic"]
-topic = ["dep:papaya", "dep:left-right"]
+topic = ["dep:papaya"]
 fibre_logging = ["dep:tokio"]
 
 [dependencies]
@@ -32,7 +32,6 @@ parking_lot = "^0.12"
 tokio = { version = "^1", features = ["full"], optional = true }
 
 papaya = { version = "^0", optional = true }
-left-right = { version = "^0", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -76,6 +75,24 @@ harness = false
 [[bench]]
 name = "spsc_sync"
 harness = false
+
+[[bench]]
+name = "topic_spmc_async"
+harness = false
+required-features = ["topic"]
+
+[[bench]]
+name = "topic_spmc_sync"
+harness = false
+required-features = ["topic"]
+
+[[test]]
+name = "topic_spmc_async"
+required-features = ["topic"]
+
+[[test]]
+name = "topic_spmc_sync"
+required-features = ["topic"]
 
 # Optional: For faster compile times during development
 [profile.dev]

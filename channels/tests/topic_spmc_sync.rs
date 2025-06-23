@@ -1,5 +1,3 @@
-// tests/topic_spmc_sync.rs
-
 mod common;
 use common::*;
 
