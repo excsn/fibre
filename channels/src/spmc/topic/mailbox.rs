@@ -1,12 +1,14 @@
 #![cfg(feature = "topic")]
 
 use crate::error::{RecvError, TryRecvError};
+use crate::RecvErrorTimeout;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::thread::{self, Thread};
+use std::time::{Duration, Instant};
 
 // --- Waiter & Internal State ---
 
@@ -110,6 +112,15 @@ impl<T> MailboxProducer<T> {
     guard.buffer.push_back(value);
     self.shared.wake_consumer(&mut guard);
   }
+
+  /// Signals to the consumer that the channel is disconnected.
+  pub(crate) fn disconnect(&self) {
+    let mut guard = self.shared.internal.lock().unwrap();
+    if !guard.is_disconnected {
+      guard.is_disconnected = true;
+      self.shared.wake_consumer(&mut guard);
+    }
+  }
 }
 
 impl<T> Drop for MailboxProducer<T> {
@@ -117,9 +128,7 @@ impl<T> Drop for MailboxProducer<T> {
     // When the producer is dropped, it means the main TopicSender is gone.
     // We mark the channel as disconnected and wake the consumer so it can
     // receive an error instead of waiting forever.
-    let mut guard = self.shared.internal.lock().unwrap();
-    guard.is_disconnected = true;
-    self.shared.wake_consumer(&mut guard);
+    self.disconnect();
   }
 }
 
@@ -158,9 +167,41 @@ impl<T> MailboxConsumer<T> {
     }
   }
 
+  /// Receives a message, blocking the current thread for at most `timeout` duration.
+  pub(crate) fn recv_timeout_sync(&self, timeout: Duration) -> Result<T, RecvErrorTimeout> {
+    let start_time = Instant::now();
+    loop {
+      let mut guard = self.shared.internal.lock().unwrap();
+      match guard.buffer.pop_front() {
+        Some(value) => return Ok(value),
+        None => {
+          if guard.is_disconnected {
+            return Err(RecvErrorTimeout::Disconnected);
+          }
+
+          let elapsed = start_time.elapsed();
+          if elapsed >= timeout {
+            return Err(RecvErrorTimeout::Timeout);
+          }
+          let remaining_timeout = timeout - elapsed;
+
+          // Park the thread and wait.
+          guard.consumer_waiter = Some(Waiter::Sync(thread::current()));
+          drop(guard); // Unlock before parking.
+          thread::park_timeout(remaining_timeout);
+        }
+      }
+    }
+  }
+
   /// Receives a message asynchronously.
   pub(crate) fn recv_async(&self) -> RecvFuture<'_, T> {
     RecvFuture { consumer: self }
+  }
+
+  /// Returns the capacity of the mailbox.
+  pub(crate) fn capacity(&self) -> usize {
+    self.shared.internal.lock().unwrap().capacity
   }
 }
 

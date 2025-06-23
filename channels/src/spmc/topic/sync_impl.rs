@@ -6,7 +6,7 @@ use super::core::{SpmcTopicDispatcher, SubscriberList};
 use super::mailbox;
 use crate::error::{RecvError, SendError};
 use crate::spmc::topic::async_impl::{AsyncTopicReceiver, AsyncTopicSender};
-use crate::TryRecvError;
+use crate::{RecvErrorTimeout, TryRecvError};
 
 use std::borrow::Borrow;
 use std::collections::HashSet;
@@ -16,6 +16,7 @@ use std::sync::{
   atomic::{AtomicBool, Ordering},
   Arc, Weak,
 };
+use std::time::Duration;
 
 use papaya::Equivalent;
 use parking_lot::Mutex;
@@ -102,9 +103,19 @@ where
 {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
-      // Get a guard to safely clear the map.
-      let guard = self.dispatcher.subscriptions.guard();
-      self.dispatcher.subscriptions.clear(&guard);
+      // Sender is being dropped. We must notify all active subscribers that no
+      // more messages will come. We do this by iterating through all subscriber
+      // lists and calling `disconnect` on their mailboxes.
+      // We do NOT clear the map, as receivers need it to unsubscribe themselves.
+      let pinned_map = self.dispatcher.subscriptions.pin();
+      for (_topic, list_arc) in pinned_map.iter() {
+        let subscribers_snapshot = list_arc.reader.enter();
+        for mailbox_weak in subscribers_snapshot.iter() {
+          if let Some(mailbox_strong) = mailbox_weak.upgrade() {
+            mailbox_strong.disconnect();
+          }
+        }
+      }
     }
   }
 }
@@ -156,16 +167,29 @@ where
     self.consumer.try_recv()
   }
 
+  /// Receives a message, blocking for at most `timeout` duration.
+  ///
+  /// # Errors
+  ///
+  /// - `Err(RecvErrorTimeout::Timeout)` if the timeout is reached.
+  /// - `Err(RecvErrorTimeout::Disconnected)` if the channel is disconnected.
+  pub fn recv_timeout(&self, timeout: Duration) -> Result<(K, T), RecvErrorTimeout> {
+    self.consumer.recv_timeout_sync(timeout)
+  }
+
   /// Subscribes this receiver to a new topic.
   ///
   /// If the receiver is already subscribed to this topic, this is a no-op.
   pub fn subscribe(&self, topic: K) {
+    // First, check if we are already subscribed and add the topic to our local set.
+    // The lock is held for a very short duration.
     let mut subs = self.subscriptions.lock();
     if !subs.insert(topic.clone()) {
       return; // Already subscribed.
     }
-    drop(subs);
+    drop(subs); // Release the lock before interacting with the dispatcher.
 
+    // Now, interact with the dispatcher without holding our local subscription lock.
     if let Some(dispatcher) = self.dispatcher.upgrade() {
       let list_arc = dispatcher
         .subscriptions
@@ -173,7 +197,7 @@ where
         .get_or_insert_with(topic, || Arc::new(SubscriberList::new()))
         .clone();
 
-      // Use the new `modify` API to perform a copy-on-write update.
+      // This acquires the left_right writer lock, but no other locks are held.
       list_arc.writer.modify(|list| {
         // Prune dead weak pointers from the list.
         list.retain(|w| w.upgrade().is_some());
@@ -195,15 +219,17 @@ where
     K: Borrow<Q> + Equivalent<Q>,
     Q: Hash + Eq,
   {
+    // Check if we are subscribed and remove from our local set first.
     let mut subs = self.subscriptions.lock();
     if !subs.remove(topic) {
       return; // Not subscribed, nothing to do.
     }
-    drop(subs);
+    drop(subs); // Release the lock.
 
+    // Now, interact with the dispatcher.
     if let Some(dispatcher) = self.dispatcher.upgrade() {
       if let Some(list_arc) = dispatcher.subscriptions.pin().get(topic) {
-        // Use the `modify` API to safely remove our mailbox.
+        // This acquires the left_right writer lock, but no other locks are held.
         list_arc.writer.modify(|list| {
           list.retain(|w| {
             w.upgrade()
@@ -243,21 +269,25 @@ where
     if let Some(dispatcher) = self.dispatcher.upgrade() {
       dispatcher.receiver_count.fetch_add(1, Ordering::Relaxed);
 
-      // A better way to get capacity would be a method on the MailboxConsumer.
-      // For now, this is a placeholder. Assume a default or fetch it.
-      let mailbox_capacity = 16; // TODO: Plumb capacity from original receiver.
+      // Get the capacity from the existing consumer.
+      let mailbox_capacity = self.consumer.capacity();
       let (p, c) = mailbox::channel(mailbox_capacity);
 
+      // Get the list of topics to subscribe to, then release the lock.
+      let topics_to_subscribe: Vec<K> = self.subscriptions.lock().iter().cloned().collect();
+
+      // Create the new receiver with an EMPTY subscription set.
       let new_receiver = Self {
         dispatcher: self.dispatcher.clone(),
         consumer: c,
         producer_mailbox: Arc::new(p),
-        subscriptions: Arc::new(Mutex::new(self.subscriptions.lock().clone())),
+        subscriptions: Arc::new(Mutex::new(HashSet::new())),
       };
 
-      // Re-subscribe the new clone to all the same topics.
-      for topic in new_receiver.subscriptions.lock().iter() {
-        new_receiver.subscribe(topic.clone());
+      // Now subscribe to each topic. `subscribe` will populate the new receiver's
+      // subscription set and register it with the dispatcher. No nested locks.
+      for topic in topics_to_subscribe {
+        new_receiver.subscribe(topic);
       }
 
       new_receiver
@@ -281,9 +311,13 @@ where
 {
   fn drop(&mut self) {
     if let Some(dispatcher) = self.dispatcher.upgrade() {
-      // Unsubscribe from all topics this receiver was listening to.
-      let subs_to_drop = self.subscriptions.lock().drain().collect::<Vec<_>>();
-      for topic in subs_to_drop {
+      // First, get the list of topics to unsubscribe from.
+      // This holds the lock for a minimal amount of time.
+      let topics_to_unsubscribe: Vec<K> = self.subscriptions.lock().drain().collect();
+
+      // Now, iterate and call unsubscribe for each. The lock is released.
+      for topic in topics_to_unsubscribe {
+        // The unsubscribe method has already been fixed to not hold nested locks.
         self.unsubscribe(&topic);
       }
       // Decrement the global receiver count.

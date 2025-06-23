@@ -1,9 +1,10 @@
 use crate::async_util::AtomicWaker;
 use crate::error::{CloseError, RecvError, SendError, TryRecvError};
 use crate::internal::cache_padded::CachePadded;
-use crate::{sync_util, TrySendError};
+use crate::{sync_util, RecvErrorTimeout, TrySendError};
 
 use core::marker::PhantomPinned;
+use std::time::{Duration, Instant};
 use futures_util::stream::Stream;
 use std::cell::UnsafeCell;
 use std::fmt;
@@ -244,7 +245,7 @@ impl<T: Send> Sender<T> {
   }
 
   pub fn sender_count(&self) -> usize {
-     self.shared.sender_count.load(Ordering::Relaxed)
+    self.shared.sender_count.load(Ordering::Relaxed)
   }
 
   pub fn len(&self) -> usize {
@@ -264,12 +265,12 @@ impl<T: Send> Sender<T> {
   pub fn is_empty(&self) -> bool {
     self.shared.current_len.load(Ordering::Relaxed) == 0
   }
-  
+
   /// Converts this synchronous `Sender` into an asynchronous `AsyncSender`.
   pub fn to_async(self) -> AsyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     std::mem::forget(self);
-    
+
     AsyncSender {
       shared,
       closed: AtomicBool::new(false),
@@ -327,7 +328,7 @@ impl<T: Send> AsyncSender<T> {
   }
 
   pub fn sender_count(&self) -> usize {
-     self.shared.sender_count.load(Ordering::Relaxed)
+    self.shared.sender_count.load(Ordering::Relaxed)
   }
 
   pub fn len(&self) -> usize {
@@ -347,7 +348,7 @@ impl<T: Send> AsyncSender<T> {
   pub fn is_empty(&self) -> bool {
     self.shared.current_len.load(Ordering::Relaxed) == 0
   }
-  
+
   /// Converts this asynchronous `AsyncSender` into a synchronous `Sender`.
   pub fn to_sync(self) -> Sender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
@@ -468,6 +469,65 @@ impl<T: Send> Receiver<T> {
     }
   }
 
+  pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvErrorTimeout> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(RecvErrorTimeout::Disconnected);
+    }
+    let start_time = Instant::now();
+    loop {
+      match self.try_recv() {
+        Ok(value) => return Ok(value),
+        Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+        Err(TryRecvError::Empty) => {}
+      }
+
+      let elapsed = start_time.elapsed();
+      if elapsed >= timeout {
+        return Err(RecvErrorTimeout::Timeout);
+      }
+      let remaining_timeout = timeout - elapsed;
+
+      *self.shared.consumer_thread.lock().unwrap() = Some(thread::current());
+      self.shared.consumer_parked.store(true, Ordering::Release);
+
+      match self.try_recv() {
+        Ok(value) => {
+          if self
+            .shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *self.shared.consumer_thread.lock().unwrap() = None;
+          }
+          return Ok(value);
+        }
+        Err(TryRecvError::Disconnected) => {
+          if self
+            .shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *self.shared.consumer_thread.lock().unwrap() = None;
+          }
+          return Err(RecvErrorTimeout::Disconnected);
+        }
+        Err(TryRecvError::Empty) => {
+          sync_util::park_thread_timeout(remaining_timeout);
+          if self
+            .shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *self.shared.consumer_thread.lock().unwrap() = None;
+          }
+        }
+      }
+    }
+  }
+
   pub fn is_closed(&self) -> bool {
     self.shared.sender_count.load(Ordering::Acquire) == 0 && self.is_empty()
   }
@@ -493,7 +553,7 @@ impl<T: Send> Receiver<T> {
   }
 
   pub fn sender_count(&self) -> usize {
-     self.shared.sender_count.load(Ordering::Relaxed)
+    self.shared.sender_count.load(Ordering::Relaxed)
   }
 
   pub fn len(&self) -> usize {
@@ -557,7 +617,7 @@ impl<T: Send> AsyncReceiver<T> {
   }
 
   pub fn sender_count(&self) -> usize {
-     self.shared.sender_count.load(Ordering::Relaxed)
+    self.shared.sender_count.load(Ordering::Relaxed)
   }
 
   pub fn len(&self) -> usize {

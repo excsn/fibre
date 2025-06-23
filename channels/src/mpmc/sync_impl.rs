@@ -5,10 +5,12 @@ use super::core::{SyncWaiter, WaiterData};
 use super::{Receiver, Sender};
 use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
 use crate::mpmc::backoff;
+use crate::RecvErrorTimeout;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 /// The synchronous, blocking send operation.
 ///
@@ -156,5 +158,72 @@ pub(crate) fn recv_sync<T: Send>(receiver: &Receiver<T>) -> Result<T, RecvError>
 
     // --- Phase 5: Handle wake-up ---
     // Being woken means an item is likely available. Loop to the top to `try_recv_core` again.
+  }
+}
+
+/// The synchronous, blocking receive operation with a timeout.
+pub(crate) fn recv_timeout_sync<T: Send>(
+  receiver: &Receiver<T>,
+  timeout: Duration,
+) -> Result<T, RecvErrorTimeout> {
+  let start_time = Instant::now();
+
+  // First, try a non-blocking receive.
+  match receiver.shared.try_recv_core() {
+    Ok(item) => return Ok(item),
+    Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+    Err(TryRecvError::Empty) => { /* Continue to blocking path */ }
+  }
+
+  loop {
+    let elapsed = start_time.elapsed();
+    if elapsed >= timeout {
+      return Err(RecvErrorTimeout::Timeout);
+    }
+    let remaining_timeout = timeout - elapsed;
+
+    // --- Phase 2: Prepare to park ---
+    let done_flag = Arc::new(AtomicBool::new(false));
+    let waiter = SyncWaiter {
+      thread: thread::current(),
+      data: None, // Receivers never hold data.
+      done: done_flag.clone(),
+    };
+
+    // --- Phase 3: Lock, re-check, and commit to parking ---
+    {
+      let mut guard = receiver.shared.internal.lock();
+
+      // Re-check state under lock.
+      if !guard.queue.is_empty()
+        || (receiver.shared.capacity == 0
+          && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
+      {
+        drop(guard);
+        // An item might be available, loop to try_recv_core again without parking
+        match receiver.shared.try_recv_core() {
+          Ok(item) => return Ok(item),
+          Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+          Err(TryRecvError::Empty) => continue,
+        }
+      }
+
+      if guard.sender_count == 0 {
+        return Err(RecvErrorTimeout::Disconnected);
+      }
+
+      guard.waiting_sync_receivers.push_back(waiter);
+    }
+
+    // --- Phase 4: Wait with timeout ---
+    thread::park_timeout(remaining_timeout);
+
+    // --- Phase 5: Handle wake-up ---
+    // After waking (or timeout), try again. The loop will check the timeout.
+    match receiver.shared.try_recv_core() {
+      Ok(item) => return Ok(item),
+      Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+      Err(TryRecvError::Empty) => { /* Loop to check timeout and maybe park again */ }
+    }
   }
 }

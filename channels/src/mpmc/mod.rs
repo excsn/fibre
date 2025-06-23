@@ -323,6 +323,20 @@ impl<T: Send> Receiver<T> {
     self.shared.try_recv_core()
   }
 
+  /// Receives a value from the channel, blocking for at most `timeout` duration.
+  ///
+  /// # Errors
+  ///
+  /// - `Err(RecvErrorTimeout::Timeout)` if the timeout is reached.
+  /// - `Err(RecvErrorTimeout::Disconnected)` if the channel is disconnected.
+  pub fn recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout> {
+    if self.closed.load(Ordering::Relaxed) {
+      // If the handle is closed, we can still try_recv to drain remaining items.
+      // The implementation logic will handle the final disconnected state correctly.
+    }
+    sync_impl::recv_timeout_sync(self, timeout)
+  }
+
   /// Closes this handle to the receiving end of the channel.
   ///
   /// This is an explicit alternative to `drop`. After this is called, any subsequent

@@ -5,7 +5,7 @@ use futures_core::Stream;
 use crate::async_util::AtomicWaker;
 use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
 use crate::internal::cache_padded::CachePadded;
-use crate::sync_util;
+use crate::{sync_util, RecvErrorTimeout};
 use crate::telemetry;
 
 use core::marker::PhantomPinned;
@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, Thread};
+use std::time::{Duration, Instant};
 
 // --- Telemetry Constants (unchanged) ---
 const LOC_P_SEND: &str = "Sender::send";
@@ -554,6 +555,71 @@ impl<T: Send + Clone> Receiver<T> {
         }
         Err(TryRecvError::Disconnected) => {
           return Err(RecvError::Disconnected);
+        }
+      }
+    }
+  }
+
+  pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvErrorTimeout> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(RecvErrorTimeout::Disconnected);
+    }
+    let start_time = Instant::now();
+
+    loop {
+      match try_recv_internal(&self.shared, &self.tail) {
+        Ok(value) => return Ok(value),
+        Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+        Err(TryRecvError::Empty) => {
+          let elapsed = start_time.elapsed();
+          if elapsed >= timeout {
+            return Err(RecvErrorTimeout::Timeout);
+          }
+          let remaining_timeout = timeout - elapsed;
+
+          let current_tail_val = self.tail.load(Ordering::Relaxed);
+          let slot_idx = current_tail_val % self.shared.capacity;
+          let slot = &self.shared.buffer[slot_idx];
+          let waker_for_slot = sync_waker(thread::current());
+          slot.wakers.lock().unwrap().push(waker_for_slot.clone());
+
+          // Re-check after registration
+          match try_recv_internal(&self.shared, &self.tail) {
+            Ok(value) => {
+              // Clean up waker we just pushed
+              slot
+                .wakers
+                .lock()
+                .unwrap()
+                .retain(|w| !w.will_wake(&waker_for_slot));
+              return Ok(value);
+            }
+            Err(TryRecvError::Disconnected) => {
+              // Clean up waker we just pushed
+              slot
+                .wakers
+                .lock()
+                .unwrap()
+                .retain(|w| !w.will_wake(&waker_for_slot));
+              return Err(RecvErrorTimeout::Disconnected);
+            }
+            Err(TryRecvError::Empty) => {
+              if self.shared.producer_dropped.load(Ordering::Acquire) {
+                let head = unsafe { *self.shared.head.get() };
+                if self.tail.load(Ordering::Relaxed) >= head {
+                  // Clean up waker we just pushed
+                  slot
+                    .wakers
+                    .lock()
+                    .unwrap()
+                    .retain(|w| !w.will_wake(&waker_for_slot));
+                  return Err(RecvErrorTimeout::Disconnected);
+                }
+              }
+            }
+          }
+
+          thread::park_timeout(remaining_timeout);
         }
       }
     }

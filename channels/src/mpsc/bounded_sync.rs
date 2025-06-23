@@ -3,12 +3,13 @@
 use crate::coord::CapacityGate;
 use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
 use crate::mpsc::unbounded;
-use crate::sync_util;
+use crate::{sync_util, RecvErrorTimeout};
 
 use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 // Import the async types for `to_async` conversions.
 use super::bounded_async::{AsyncReceiver, AsyncSender};
@@ -288,6 +289,84 @@ impl<T: Send> Receiver<T> {
             *lf_shared.consumer_thread.lock().unwrap() = None;
           }
         }
+      }
+    }
+  }
+
+  /// Receives a value, blocking for at most `timeout` duration.
+  pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvErrorTimeout> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(RecvErrorTimeout::Disconnected);
+    }
+
+    let start_time = Instant::now();
+
+    // First, try a non-blocking receive.
+    if self.capacity() == 0 {
+      self.shared.gate.release();
+    }
+    match self.try_recv_internal_no_release() {
+      Ok(value) => return Ok(value),
+      Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+      Err(TryRecvError::Empty) => {} // Continue to blocking path.
+    }
+
+    loop {
+      let elapsed = start_time.elapsed();
+      if elapsed >= timeout {
+        return Err(RecvErrorTimeout::Timeout);
+      }
+      let remaining_timeout = timeout - elapsed;
+
+      if self.capacity() == 0 {
+        self.shared.gate.release();
+      }
+
+      let lf_shared = &self.shared.channel;
+      *lf_shared.consumer_thread.lock().unwrap() = Some(thread::current());
+      lf_shared.consumer_parked.store(true, Ordering::Release);
+
+      // Re-check state after arming the parker.
+      match self.try_recv_internal_no_release() {
+        Ok(value) => {
+          if lf_shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *lf_shared.consumer_thread.lock().unwrap() = None;
+          }
+          return Ok(value);
+        }
+        Err(TryRecvError::Disconnected) => {
+          // Disarm parker before returning.
+          if lf_shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *lf_shared.consumer_thread.lock().unwrap() = None;
+          }
+          return Err(RecvErrorTimeout::Disconnected);
+        }
+        Err(TryRecvError::Empty) => {
+          // Park with a timeout.
+          sync_util::park_thread_timeout(remaining_timeout);
+          if lf_shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *lf_shared.consumer_thread.lock().unwrap() = None;
+          }
+        }
+      }
+
+      // After waking, try to receive again in the next loop iteration.
+      match self.try_recv_internal_no_release() {
+        Ok(value) => return Ok(value),
+        Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+        Err(TryRecvError::Empty) => {} // Loop again to check timeout.
       }
     }
   }

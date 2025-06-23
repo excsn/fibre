@@ -96,9 +96,19 @@ where
 {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
-      // Get a guard to safely clear the map.
-      let guard = self.dispatcher.subscriptions.guard();
-      self.dispatcher.subscriptions.clear(&guard);
+      // Sender is being dropped. We must notify all active subscribers that no
+      // more messages will come. We do this by iterating through all subscriber
+      // lists and calling `disconnect` on their mailboxes.
+      // We do NOT clear the map, as receivers need it to unsubscribe themselves.
+      let pinned_map = self.dispatcher.subscriptions.pin();
+      for (_topic, list_arc) in pinned_map.iter() {
+        let subscribers_snapshot = list_arc.reader.enter();
+        for mailbox_weak in subscribers_snapshot.iter() {
+          if let Some(mailbox_strong) = mailbox_weak.upgrade() {
+            mailbox_strong.disconnect();
+          }
+        }
+      }
     }
   }
 }
@@ -163,12 +173,8 @@ where
         .get_or_insert_with(topic, || Arc::new(SubscriberList::new()))
         .clone();
 
-      // Use the new `modify` API to perform a copy-on-write update.
       list_arc.writer.modify(|list| {
-        // Prune dead weak pointers from the list.
         list.retain(|w| w.upgrade().is_some());
-
-        // Add self to the list if not already present.
         if !list
           .iter()
           .any(|w| w.ptr_eq(&Arc::downgrade(&self.producer_mailbox)))
@@ -193,7 +199,6 @@ where
 
     if let Some(dispatcher) = self.dispatcher.upgrade() {
       if let Some(list_arc) = dispatcher.subscriptions.pin().get(topic) {
-        // Use the `modify` API to safely remove our mailbox.
         list_arc.writer.modify(|list| {
           list.retain(|w| {
             w.upgrade()
@@ -233,18 +238,20 @@ where
     if let Some(dispatcher) = self.dispatcher.upgrade() {
       dispatcher.receiver_count.fetch_add(1, Ordering::Relaxed);
 
-      let mailbox_capacity = 16; // TODO: Plumb capacity from original receiver.
+      let mailbox_capacity = self.consumer.capacity();
       let (p, c) = mailbox::channel(mailbox_capacity);
+
+      let topics_to_subscribe: Vec<K> = self.subscriptions.lock().iter().cloned().collect();
 
       let new_receiver = Self {
         dispatcher: self.dispatcher.clone(),
         consumer: c,
         producer_mailbox: Arc::new(p),
-        subscriptions: Arc::new(Mutex::new(self.subscriptions.lock().clone())),
+        subscriptions: Arc::new(Mutex::new(HashSet::new())),
       };
 
-      for topic in new_receiver.subscriptions.lock().iter() {
-        new_receiver.subscribe(topic.clone());
+      for topic in topics_to_subscribe {
+        new_receiver.subscribe(topic);
       }
       new_receiver
     } else {
@@ -266,10 +273,12 @@ where
 {
   fn drop(&mut self) {
     if let Some(dispatcher) = self.dispatcher.upgrade() {
-      let subs_to_drop = self.subscriptions.lock().drain().collect::<Vec<_>>();
-      for topic in subs_to_drop {
+      let topics_to_unsubscribe: Vec<K> = self.subscriptions.lock().drain().collect();
+
+      for topic in topics_to_unsubscribe {
         self.unsubscribe(&topic);
       }
+
       dispatcher.receiver_count.fetch_sub(1, Ordering::Relaxed);
     }
   }

@@ -120,7 +120,9 @@ mod tests {
     });
     thread::sleep(Duration::from_millis(50));
     tx.send(123).unwrap();
-    assert_eq!(tx.len(), 1);
+    // This assertion is racy. The consumer thread can receive the item and
+    // change the length to 0 before this line executes.
+    // assert_eq!(tx.len(), 1);
     assert_eq!(handle.join().unwrap(), 123);
     // rx is consumed by the thread, cannot access its len() here
   }
@@ -137,7 +139,9 @@ mod tests {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     tx.send(456).await.unwrap();
-    assert_eq!(tx.len(), 1);
+    // This assertion is racy. The consumer task can receive the item and
+    // change the length to 0 before this line executes.
+    // assert_eq!(tx.len(), 1);
     assert_eq!(handle.await.unwrap(), 456);
     // rx is consumed by the task
   }
