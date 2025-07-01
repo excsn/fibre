@@ -9,7 +9,7 @@ appenders:
       kind: pattern
       pattern: "[%d] %p - %m%n"
 
-  # B. Simple Time-Based Rolling Appender (using tracing-appender)
+  # B. Simple Time-Based Rolling Appender
   # This appender will roll over every minute.
   simple_time_log:
     kind: rolling_file
