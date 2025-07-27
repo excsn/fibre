@@ -1,6 +1,6 @@
 [package]
 name = "fibre_logging"
-version = "0.5.1"
+version = "0.5.2"
 
 description = "A flexible, multimode sync/async logging library that unifies the log and tracing ecosystems, driven by external configuration and featuring powerful debug instrumentation."
 readme = "README.md"

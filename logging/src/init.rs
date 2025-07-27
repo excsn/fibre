@@ -5,7 +5,6 @@ use crate::{
     processed::{process_raw_config, AppenderKindInternal, ConfigInternal, LoggerInternal},
     raw::ConfigRaw,
   },
-  debug_report::{print_report_logic, DebugEvent, DEBUG_REPORT_COLLECTOR},
   encoders,
   error::{Error, Result},
   roller::CustomRoller,
@@ -16,6 +15,9 @@ use crate::{
   AppenderTaskHandle, InitResult, InternalErrorReport, LogValue,
   LogEvent,
 };
+
+#[cfg(debug_assertions)]
+use crate::debug_report::{print_report_logic, DebugEvent, DEBUG_REPORT_COLLECTOR};
 
 use std::{
   collections::HashMap,
