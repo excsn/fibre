@@ -1,0 +1,201 @@
+# yaml-language-server: $schema=http://json-schema.org/draft-07/schema#
+$schema: "http://json-schema.org/draft-07/schema#"
+title: "Fibre Logging Configuration"
+description: "Configuration for the fibre_logging library."
+type: object
+properties:
+  version:
+    description: "The configuration schema version. Must be 1."
+    type: integer
+    const: 1
+  
+  internal_error_reporting:
+    description: "Configuration for reporting internal library errors back to the application."
+    type: object
+    properties:
+      enabled:
+        description: "If true, a channel is created to send internal error reports to the application."
+        type: boolean
+        default: false
+    additionalProperties: false
+
+  appenders:
+    description: "A map of uniquely named appenders that define where and how logs are written."
+    type: object
+    additionalProperties:
+      $ref: "#/$defs/appender"
+
+  loggers:
+    description: "A map of logger names (targets) to their filtering and routing configurations. A 'root' logger is highly recommended."
+    type: object
+    additionalProperties:
+      $ref: "#/$defs/logger"
+
+additionalProperties: false
+
+# Reusable definitions for different configuration components.
+$defs:
+  appender:
+    description: "An appender configuration."
+    type: object
+    required: [ "kind" ]
+    oneOf:
+      - $ref: "#/$defs/appender_console"
+      - $ref: "#/$defs/appender_file"
+      - $ref: "#/$defs/appender_rolling_file"
+      - $ref: "#/$defs/appender_custom"
+      - $ref: "#/$defs/appender_debug_report"
+
+  appender_console:
+    properties:
+      kind:
+        description: "Writes logs to the standard console (stdout)."
+        const: "console"
+      encoder:
+        $ref: "#/$defs/encoder"
+    additionalProperties: false
+
+  appender_file:
+    properties:
+      kind:
+        description: "Writes logs to a single, non-rolling file."
+        const: "file"
+      path:
+        description: "The full path to the log file."
+        type: string
+      encoder:
+        $ref: "#/$defs/encoder"
+    required: [ "path" ]
+    additionalProperties: false
+    
+  appender_rolling_file:
+    properties:
+      kind:
+        description: "Writes logs to files that roll over based on time or size."
+        const: "rolling_file"
+      directory:
+        description: "The directory where log files will be stored."
+        type: string
+      file_name_prefix:
+        description: "The prefix for the log file names."
+        type: string
+        default: "fibre_logging.log"
+      file_name_suffix:
+        description: "The suffix for the base log file name."
+        type: string
+        default: ".log"
+      policy:
+        $ref: "#/$defs/rolling_policy"
+      encoder:
+        $ref: "#/$defs/encoder"
+    required: [ "directory", "policy" ]
+    additionalProperties: false
+    
+  appender_custom:
+    properties:
+      kind:
+        description: "Sends structured LogEvent objects to a channel for custom processing in application code."
+        const: "custom"
+      buffer_size:
+        description: "The capacity of the MPSC channel for the custom stream."
+        type: integer
+        default: 256
+        minimum: 1
+    additionalProperties: false
+
+  appender_debug_report:
+    properties:
+      kind:
+        description: "A debug-only appender that collects events in memory for later inspection."
+        const: "debug_report"
+      print_interval:
+        description: "If set, automatically prints a report at this interval (e.g., '5s', '1m')."
+        type: string
+        pattern: "^\\d+\\s*(s|ms|m|h)$"
+    additionalProperties: false
+        
+  encoder:
+    description: "Defines the format for log output."
+    type: object
+    required: [ "kind" ]
+    oneOf:
+      - $ref: "#/$defs/encoder_pattern"
+      - $ref: "#/$defs/encoder_json_lines"
+
+  encoder_pattern:
+    properties:
+      kind:
+        description: "Formats logs using a Logback-style pattern string."
+        const: "pattern"
+      pattern:
+        description: "The pattern string. Specifiers: %d (date), %p (level), %t (target), %m (message), %n (newline), %T (thread name). Padding is supported (e.g., %-5p)."
+        type: string
+        default: "[%d] %-5p %t - %m%n"
+    additionalProperties: false
+
+  encoder_json_lines:
+    properties:
+      kind:
+        description: "Formats logs as a stream of newline-delimited JSON objects."
+        const: "json_lines"
+      flatten_fields:
+        description: "If true, custom fields are added to the top-level JSON object instead of being nested under a 'fields' key."
+        type: boolean
+        default: false
+    additionalProperties: false
+    
+  rolling_policy:
+    description: "Defines the rules for when and how to roll log files."
+    type: object
+    properties:
+      time_granularity:
+        description: "The time-based frequency for rolling."
+        type: string
+        enum: [ "minutely", "hourly", "daily", "never" ]
+      max_file_size:
+        description: "The maximum size of a single file before it rolls (e.g., '10KB', '50MB')."
+        type: string
+        pattern: "^\\d+\\s*(b|kb|mb|gb)$"
+      max_retained_sequences:
+        description: "The maximum number of rolled log files to keep."
+        type: integer
+        minimum: 0
+      compression:
+        $ref: "#/$defs/compression_policy"
+    required: [ "time_granularity" ]
+    additionalProperties: false
+    
+  compression_policy:
+    description: "Defines the policy for compressing rolled files."
+    type: object
+    properties:
+      compressed_file_suffix:
+        description: "The file suffix to use for compressed archives (e.g., '.gz', '.zip')."
+        type: string
+      max_uncompressed_sequences:
+        description: "The number of recent rolled files to keep uncompressed for quick access."
+        type: integer
+        default: 0
+        minimum: 0
+    required: [ "compressed_file_suffix" ]
+    additionalProperties: false
+    
+  logger:
+    description: "Defines a filtering level and appender routing for a specific log target."
+    type: object
+    properties:
+      level:
+        description: "The minimum level of logs to process for this target. Case-insensitive."
+        type: string
+        enum: [ "trace", "debug", "info", "warn", "error", "off", "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "OFF" ]
+      appenders:
+        description: "A list of appender names to which logs matching this logger should be sent."
+        type: array
+        items:
+          type: string
+      additive:
+        description: "If false, logs matching this logger will NOT be sent to the appenders of the parent (root) logger."
+        type: boolean
+        default: true
+    required: [ "level" ]
+    additionalProperties: false
