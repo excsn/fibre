@@ -129,6 +129,37 @@ impl PatternFormatter {
         buf.push('\n');
         return; // Early return as padding is not applicable.
       }
+      'X' => {
+        if let Some(field_name) = &spec.options {
+          // This handles the %X{field_name} case.
+          if let Some(log_value) = event.fields.get(field_name) {
+            let _ = write!(target_buf, "{}", log_value);
+          }
+        } else {
+          // This handles the %X case (print all fields).
+          if !event.fields.is_empty() {
+            target_buf.push('{');
+
+            // Sort keys for consistent output order.
+            let mut sorted_keys: Vec<_> = event.fields.keys().collect();
+            sorted_keys.sort();
+
+            for (i, key) in sorted_keys.iter().enumerate() {
+              if let Some(value) = event.fields.get(*key) {
+                // We don't print the "message" field here as it's
+                // already handled by the %m specifier.
+                if key.as_str() != "message" {
+                  let _ = write!(target_buf, "{}={}", key, value);
+                  if i < sorted_keys.len() - 1 {
+                    target_buf.push_str(", ");
+                  }
+                }
+              }
+            }
+            target_buf.push('}');
+          }
+        }
+      }
       // Unknown specifiers are ignored.
       _ => {}
     }

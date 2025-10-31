@@ -9,7 +9,7 @@ appenders:
       kind: pattern
       # A simple pattern for the console output.
       # %p - level, %t - target, %m - message
-      pattern: "%p %t: %m"
+      pattern: "%p %t: %m %X%n"
 
   # A file appender to capture all tracing details in a structured format.
   json_log:

@@ -187,18 +187,58 @@ appenders:
 
 #### `pattern`
 Uses Log4j-style format specifiers.
-*   `%d`: Timestamp (e.g., `2023-01-01T12:00:00.000Z`). Custom formats with `{%Y-%m-%d}`.
+
+*   `%d`: Timestamp (e.g., `2023-01-01T12:00:00.000Z`). Can be customized with a format string inside braces, like `%d{%Y-%m-%d %H:%M}`.
 *   `%p` or `%l`: Log level (e.g., `INFO`).
-*   `%t`: Target/module path.
-*   `%m`: The log message.
-*   `%T`: The thread name.
-*   `%n`: A newline.
-*   `%-5p`: Padding (left-align level to 5 characters).
+*   `%t`: The event's target (typically the module path).
+*   `%m`: The primary log message.
+*   `%T`: The name of the thread on which the event occurred.
+*   `%n`: A platform-specific newline character.
+*   `%-5p`: Padding can be applied to specifiers (e.g., left-align the level to 5 characters).
+*   `%%`: An escaped literal percent sign.
+
+**Structured Fields with `%X`**
+
+The `%X` specifier is used to include structured fields from `tracing` events in the log line. It has two forms:
+
+1.  **`%X{field_name}` (Specific Field):** This is the recommended way to include specific, important context. If the field doesn't exist on a given event, nothing is printed.
+
+    ```yaml
+    # fibre_logging.yaml
+    appenders:
+      console:
+        kind: console
+        encoder:
+          kind: pattern
+          pattern: "[%d] %p - [peer=%X{peer_id}, ballot=%X{ballot}] - %m%n"
+    ```
+    With the `tracing` event `warn!(peer_id = 1, ballot = "B(1,2)", "Contention detected");`, the output would be:
+    ```log
+    [2025-11-01T10:00:00.123Z] WARN - [peer=1, ballot=B(1,2)] - Contention detected
+    ```
+
+2.  **`%X` (All Fields):** This will print all fields attached to the event in a `{key=value}` format, sorted alphabetically by key. This is useful for debugging but can be very verbose for production logs.
+
+    ```yaml
+    # fibre_logging.yaml
+    appenders:
+      console_debug:
+        kind: console
+        encoder:
+          kind: pattern
+          pattern: "[%d] %p - %m %X%n"
+    ```
+    The same `tracing` event would produce:
+    ```log
+    [2025-11-01T10:00:00.123Z] WARN - Contention detected {ballot=B(1,2), peer_id=1}
+    ```
+
+**Example Pattern:**
 
 ```yaml
 encoder:
   kind: pattern
-  pattern: "[%d{%Y-%m-%d %H:%M:%S}] %-5p [%T] %t - %m%n"
+  pattern: "[%d{%Y-%m-%d %H:%M:%S}] %-5p [%T] %t - %m {span_id=%X{span_id}}%n"
 ```
 
 #### `json_lines`

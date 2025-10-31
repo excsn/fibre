@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use core::fmt;
 use std::collections::HashMap;
 use tracing::Level;
 
@@ -10,6 +11,18 @@ pub enum LogValue {
   Float(f64),
   Bool(bool),
   Debug(String),
+}
+
+impl fmt::Display for LogValue {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      LogValue::String(s) => write!(f, "{}", s),
+      LogValue::Int(i) => write!(f, "{}", i),
+      LogValue::Float(f_val) => write!(f, "{}", f_val),
+      LogValue::Bool(b) => write!(f, "{}", b),
+      LogValue::Debug(d) => write!(f, "{}", d),
+    }
+  }
 }
 
 /// The internal structured representation of a log event within `fibre_logging`.
@@ -40,12 +53,7 @@ pub struct LogEvent {
 impl LogEvent {
   /// Creates a new `LogEvent` with minimal required fields.
   /// Accepts any string-like type for target, name, and message.
-  pub fn new<S1, S2>(
-    level: Level,
-    target: S1,
-    name: S2,
-    message: Option<String>,
-  ) -> Self
+  pub fn new<S1, S2>(level: Level, target: S1, name: S2, message: Option<String>) -> Self
   where
     S1: Into<String>,
     S2: Into<String>,
