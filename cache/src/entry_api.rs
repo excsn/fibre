@@ -1,4 +1,4 @@
-use crate::policy::{AccessEvent, AdmissionDecision};
+use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
 use crate::sync::WriteGuard;
 use std::hash::{BuildHasher, Hash};

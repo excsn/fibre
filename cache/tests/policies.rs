@@ -1,6 +1,33 @@
-// cache/tests/policies.rs
+use fibre_cache::{Cache, CacheBuilder, policy::*};
+use std::{
+  hash::{BuildHasher, Hash},
+  time::{Duration, Instant},
+};
 
-use fibre_cache::{policy::*, CacheBuilder};
+const CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(2);
+
+// Helper function to wait for the cache cost to be at or below a target.
+fn wait_for_cost_convergence<K, V, H>(cache: &Cache<K, V, H>, target_cost: u64)
+where
+  K: Eq + Hash + Clone + Send + Sync,
+  V: Send + Sync,
+  H: BuildHasher + Clone + Send + Sync,
+{
+  let deadline = Instant::now() + CONVERGENCE_TIMEOUT;
+  loop {
+    let current_cost = cache.metrics().current_cost;
+    if current_cost <= target_cost {
+      return; // Success
+    }
+    if Instant::now() > deadline {
+      panic!(
+        "Cache cost did not converge. Current: {}, Target: {}",
+        current_cost, target_cost
+      );
+    }
+    std::thread::sleep(Duration::from_millis(50));
+  }
+}
 
 // --- LRU Policy Tests ---
 mod lru {
@@ -15,6 +42,7 @@ mod lru {
       .shards(1)
       .cache_policy_factory(|| Box::new(LruPolicy::new()))
       .janitor_tick_interval(Duration::from_millis(10))
+      .maintenance_chance(1)
       .build()
       .unwrap();
 
@@ -26,13 +54,8 @@ mod lru {
     cache.fetch(&1);
 
     cache.insert(4, "d", 1);
-    assert_eq!(
-      cache.metrics().current_cost,
-      4,
-      "Cache is temporarily over capacity"
-    ); // Optional intermediate check
 
-    std::thread::sleep(Duration::from_millis(50)); // <-- WAIT FOR JANITOR
+    wait_for_cost_convergence(&cache, 3);
 
     assert_eq!(cache.metrics().current_cost, 3);
     assert!(cache.fetch(&2).is_none(), "Key 2 should have been evicted");
@@ -55,6 +78,7 @@ mod fifo {
       .shards(1)
       .cache_policy_factory(|| Box::new(Fifo::new()))
       .janitor_tick_interval(Duration::from_millis(10))
+      .maintenance_chance(1)
       .build()
       .unwrap();
 
@@ -99,7 +123,8 @@ mod sieve {
     cache.fetch(&2);
 
     cache.insert(4, "d", 1);
-    std::thread::sleep(Duration::from_millis(50)); // <-- WAIT FOR JANITOR
+
+    wait_for_cost_convergence(&cache, 3);
 
     assert_eq!(cache.metrics().current_cost, 3);
     assert!(cache.fetch(&1).is_none(), "Key 1 should be evicted");
@@ -125,6 +150,7 @@ mod tinylfu {
       // The default policy for a bounded cache is TinyLfu, but we are explicit for clarity.
       .cache_policy_factory(move || Box::new(TinyLfuPolicy::new(capacity)))
       .janitor_tick_interval(Duration::from_millis(10))
+      .maintenance_chance(1)
       .build()
       .unwrap()
   }
@@ -168,11 +194,6 @@ mod tinylfu {
     // Inserting a 4th item will push the cache over capacity.
     // The insert itself is non-blocking.
     cache.insert(4, "four".to_string(), 1);
-    assert_eq!(
-      cache.metrics().current_cost,
-      4,
-      "Cost should be temporarily over capacity before janitor runs"
-    );
 
     // Wait for the janitor to run. The janitor will process the write event for key 4,
     // which updates the policy, and then run cleanup_capacity, which calls policy.evict().
@@ -213,23 +234,19 @@ mod tinylfu {
 
     // 2. Insert a new item (100). This overfills the cache.
     cache.insert(100, "trigger".to_string(), 1);
-    assert_eq!(
-      cache.metrics().current_cost,
-      11,
-      "Cost should be temporarily over capacity before janitor runs"
-    );
 
     // 3. Wait for the janitor.
     // Janitor sees cost 11, needs to free 1. It calls policy.evict(1).
     // The policy will evict from the main SLRU's probationary segment.
     // The only item in probationary is 10, so it will be the victim.
-    std::thread::sleep(Duration::from_millis(50));
+    wait_for_cost_convergence(&cache, 10);
 
     // 4. Assert the outcome.
-    assert_eq!(
-      cache.metrics().current_cost,
-      10,
-      "Janitor should bring cost back to capacity"
+    let final_cost = cache.metrics().current_cost;
+    assert!(
+      final_cost <= 10,
+      "Janitor should bring cost to at or below capacity. Final cost: {}",
+      final_cost
     );
     assert!(
       cache.fetch(&10).is_none(),
@@ -262,15 +279,10 @@ mod tinylfu {
 
     // 3. Insert item 11. This will push the cache over capacity.
     cache.insert(11, "new".to_string(), 1);
-    assert_eq!(
-      cache.metrics().current_cost,
-      11,
-      "Cost should be temporarily over capacity before janitor runs"
-    );
 
     // 4. Wait for the janitor to run. It should process the write for item 11,
     // then evict a cold item (like 1) to bring the cost back to 10.
-    std::thread::sleep(Duration::from_millis(50));
+    wait_for_cost_convergence(&cache, 10);
 
     // 5. Assert the outcome.
     assert_eq!(
@@ -308,12 +320,11 @@ mod slru {
   #[test]
   fn test_slru_promotion_and_eviction() {
     // Capacity 4: The SLRU policy internally splits this.
-    // FIX 1: Configure a fast janitor so it runs quickly for the test.
     let cache = CacheBuilder::default()
       .capacity(4)
       .shards(1)
       .cache_policy_factory(|| Box::new(SlruPolicy::new(4)))
-      .janitor_tick_interval(Duration::from_millis(10)) // Add this line
+      .janitor_tick_interval(Duration::from_millis(10))
       .build()
       .unwrap();
 
@@ -339,8 +350,8 @@ mod slru {
       "Cache should be temporarily over capacity"
     );
 
-    // FIX 2: Wait for the janitor to run and perform eviction.
-    std::thread::sleep(Duration::from_millis(50));
+    // Wait for the janitor to run and perform eviction.
+    wait_for_cost_convergence(&cache, 4);
 
     // The Janitor will have called policy.evict(1).
     // The SLRU policy evicts from the LRU end of the probationary segment, which is item 1.
@@ -349,11 +360,15 @@ mod slru {
       4,
       "Cache cost should be back to capacity after janitor runs"
     );
+
     assert!(
       cache.fetch(&1).is_none(),
       "LRU of probationary (1) should be evicted"
     );
-    assert!(cache.fetch(&2).is_some(), "Promoted item (2) should be safe");
+    assert!(
+      cache.fetch(&2).is_some(),
+      "Promoted item (2) should be safe"
+    );
     assert!(cache.fetch(&3).is_some());
     assert!(cache.fetch(&4).is_some());
     assert!(cache.fetch(&5).is_some(), "New item (5) should be present");

@@ -36,7 +36,7 @@ pub(crate) struct PersistentEntry<K, V> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheSnapshot<K, V> {
   // We store the data in the internal persistent format.
-  pub(crate) entries: Vec<PersistentEntry<K, V>>,
+  pub entries: Vec<PersistentEntry<K, V>>,
   // We can also store key metadata about the cache itself.
   capacity: u64,
   shards: usize,
@@ -56,7 +56,7 @@ impl<K, V> CacheSnapshot<K, V> {
 #[cfg(test)]
 impl<K, V> CacheSnapshot<K, V> {
   /// Exposes the internal entries slice for testing purposes only.
-  pub fn test_get_entries(&self) -> &[PersistentEntry<K, V>] {
+  pub(crate) fn test_get_entries(&self) -> &[PersistentEntry<K, V>] {
     &self.entries
   }
 }

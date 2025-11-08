@@ -1,5 +1,5 @@
 use fibre_cache::{builder::CacheBuilder, policy::lru::LruPolicy, Cache};
-use std::{collections::HashMap, sync::Arc, thread, time::Duration};
+use std::{sync::Arc, thread, time::Duration};
 
 fn new_test_cache(capacity: u64) -> Cache<i32, String> {
   CacheBuilder::new()
@@ -7,6 +7,7 @@ fn new_test_cache(capacity: u64) -> Cache<i32, String> {
     .shards(4) // Use multiple shards to test cross-shard logic
     .cache_policy_factory(|| Box::new(LruPolicy::new()))
     .janitor_tick_interval(Duration::from_millis(50))
+    .maintenance_chance(1)
     .build()
     .unwrap()
 }

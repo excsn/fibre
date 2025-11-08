@@ -1,6 +1,7 @@
 use crate::entry::CacheEntry;
 use crate::entry_api_async::{AsyncEntry, AsyncOccupiedEntry, AsyncVacantEntry};
 use crate::error::ComputeResult;
+use crate::iter::{AsyncSnapshotIter, IterStream, DEFAULT_ITER_BATCH_SIZE};
 use crate::loader::LoadFuture;
 use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
@@ -30,6 +31,19 @@ thread_local! {
 #[derive(Debug)]
 pub struct AsyncCache<K: Send, V: Send + Sync, H = ahash::RandomState> {
   pub(crate) shared: Arc<CacheShared<K, V, H>>,
+}
+
+impl<K, V, H> Clone for AsyncCache<K, V, H>
+where
+  K: Send,
+  V: Send + Sync,
+  H: BuildHasher,
+{
+  fn clone(&self) -> Self {
+    Self {
+      shared: self.shared.clone(),
+    }
+  }
 }
 
 impl<K, V, H> AsyncCache<K, V, H>
@@ -582,8 +596,75 @@ where
 impl<K: Send, V: Send, H> AsyncCache<K, V, H>
 where
   K: Eq + Hash + Clone + Send + Sync + 'static,
+  V: Send + Sync + 'static,
+  H: BuildHasher + Clone + Send + 'static,
+{
+  /// Returns a concurrent-safe stream over the key-value pairs in the cache.
+  ///
+  /// The stream fetches items in batches with a default size, holding an async
+  /// lock on only one shard at a time.
+  ///
+  /// # Consistency
+  /// This stream does **not** provide a point-in-time snapshot of the cache.
+  /// Items inserted after a shard has been scanned will be missed. Items may be
+  /// modified or deleted by other threads while iteration is in progress.
+  ///
+  /// # Example
+  /// ```
+  /// # use fibre_cache::{AsyncCache, CacheBuilder};
+  /// # use futures_util::stream::StreamExt;
+  /// # #[tokio::main]
+  /// # async fn main() {
+  /// let cache = CacheBuilder::<u32, String>::new().build_async().unwrap();
+  /// cache.insert(1, "one".to_string(), 1).await;
+  ///
+  /// let mut stream = cache.iter_stream();
+  /// while let Some((key, value)) = stream.next().await {
+  ///     println!("{}: {}", key, &*value);
+  /// }
+  /// # }
+  /// ```
+  pub fn iter_stream(&self) -> IterStream<K, V, H> {
+    IterStream::new(self, DEFAULT_ITER_BATCH_SIZE)
+  }
+
+  /// Returns a concurrent-safe stream with a custom batch size.
+  ///
+  /// A larger batch size may have better throughput but will hold shard locks
+  /// for slightly longer during batch-refill operations.
+  pub fn iter_stream_with_batch_size(&self, batch_size: usize) -> IterStream<K, V, H> {
+    IterStream::new(self, batch_size.max(1))
+  }
+  
+  /// Returns an async iterator over a semi-consistent snapshot of the cache.
+  ///
+  /// This iterator is created by taking a point-in-time snapshot of keys from one
+  /// shard at a time. It has stronger consistency than `iter_stream()` and is useful
+  /// when you need a more stable view of the cache during iteration.
+  ///
+  /// # Consistency
+  /// - For any given shard, the set of keys visited is fixed when that shard is
+  ///   first scanned.
+  /// - It may see items that are inserted into shards it has not yet visited.
+  /// - It will not see items inserted into shards it has already passed.
+  ///
+  /// # Usage
+  /// ```ignore
+  /// let mut iter = cache.iter_snapshot_async();
+  /// while let Some((key, value)) = iter.next().await {
+  ///     // ...
+  /// }
+  /// ```
+  pub fn iter_snapshot_async(&self) -> AsyncSnapshotIter<'_, K, V, H> {
+    AsyncSnapshotIter::new(self)
+  }
+}
+
+impl<K: Send, V: Send, H> AsyncCache<K, V, H>
+where
+  K: Eq + Hash + Clone + Send + Sync + 'static,
   V: Send + Sync,
-  H: BuildHasher + Clone + Send + Sync,
+  H: BuildHasher + Clone + Send,
 {
   /// Asynchronously retrieves multiple values from the cache.
   ///

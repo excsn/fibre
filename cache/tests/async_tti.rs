@@ -1,16 +1,18 @@
 use fibre_cache::CacheBuilder;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 const TINY_TTI: Duration = Duration::from_millis(200);
-const JANITOR_TICK: Duration = Duration::from_millis(50);
+const JANITOR_TICK: Duration = Duration::from_millis(10);
 // A sleep duration safely longer than the TTI
 const SLEEP_DURATION: Duration = Duration::from_millis(400);
 
 #[tokio::test]
 async fn test_async_item_expires_after_tti() {
   let cache = CacheBuilder::<&str, &str>::new()
+    .shards(1)
     .time_to_idle(TINY_TTI)
     .janitor_tick_interval(JANITOR_TICK)
+    .maintenance_chance(1)
     .build_async()
     .unwrap();
 
@@ -25,9 +27,6 @@ async fn test_async_item_expires_after_tti() {
     "Item should expire after being idle"
   );
 
-  // Wait a little longer to give the janitor time to run and update the eviction metric.
-  sleep(JANITOR_TICK * 4).await;
-
   assert_eq!(
     cache.metrics().evicted_by_tti,
     1,
@@ -40,6 +39,7 @@ async fn test_async_tti_is_reset_on_access() {
   let cache = CacheBuilder::<&str, &str>::new()
     .time_to_idle(TINY_TTI)
     .janitor_tick_interval(JANITOR_TICK)
+    .maintenance_chance(1)
     .build_async()
     .unwrap();
 

@@ -24,6 +24,7 @@ pub mod policy;
 // Internal, crate-only modules
 // mod backpressure;
 mod entry;
+mod iter;
 mod loader;
 mod rng;
 mod shared;

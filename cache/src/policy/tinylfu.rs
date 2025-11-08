@@ -1,7 +1,7 @@
 use super::CachePolicy;
-use crate::policy::lru_list::LruList;
-use crate::policy::AdmissionDecision;
 use super::slru::SlruPolicy;
+use crate::policy::AdmissionDecision;
+use crate::policy::lru_list::LruList;
 
 use parking_lot::Mutex;
 use std::hash::Hash;
@@ -196,7 +196,8 @@ mod cms {
         let index = hasher.finish() as usize % self.counters[i].len();
         self.counters[i][index].fetch_add(1, Ordering::Relaxed);
       }
-      if self.increments.fetch_add(1, Ordering::Relaxed) >= self.capacity {
+      let prev = self.increments.fetch_add(1, Ordering::Relaxed) + 1;
+      if prev >= self.capacity {
         self.reset();
       }
     }

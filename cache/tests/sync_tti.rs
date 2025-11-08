@@ -9,8 +9,10 @@ const SLEEP_DURATION: Duration = Duration::from_millis(400);
 #[test]
 fn test_sync_item_expires_after_tti() {
   let cache = CacheBuilder::<&str, &str>::new()
+    .shards(1)
     .time_to_idle(TINY_TTI)
     .janitor_tick_interval(JANITOR_TICK)
+    .maintenance_chance(1)
     .build()
     .unwrap();
 
@@ -39,8 +41,10 @@ fn test_sync_item_expires_after_tti() {
 #[test]
 fn test_sync_tti_is_reset_on_access() {
   let cache = CacheBuilder::<&str, &str>::new()
+    .shards(1)
     .time_to_idle(TINY_TTI)
     .janitor_tick_interval(JANITOR_TICK)
+    .maintenance_chance(1)
     .build()
     .unwrap();
 

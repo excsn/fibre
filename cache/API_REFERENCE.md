@@ -182,6 +182,12 @@ A handle to the cache for synchronous operations.
 *   `pub fn to_snapshot(&self) -> CacheSnapshot<K, V>`
     *   *(feature: `serde`)*
     *   Creates a serializable snapshot of the cache's current state. Pauses all other operations during creation.
+*   `pub fn iter(&self) -> Iter<'_, K, V, H>`
+    *   Returns a weakly-consistent iterator over the key-value pairs in the cache.
+*   `pub fn iter_with_batch_size(&self, batch_size: usize) -> Iter<'_, K, V, H>`
+    *   Returns a weakly-consistent iterator with a custom batch size.
+*   `pub fn iter_snapshot(&self) -> SnapshotIter<'_, K, V, H>`
+    *   Returns a semi-consistent iterator that snapshots keys one shard at a time.
 *   `pub fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
     *   *(feature: `bulk`)*
     *   Retrieves multiple values from the cache, parallelizing lookups across shards.
@@ -215,6 +221,12 @@ A handle to the cache for asynchronous operations. All methods are async equival
 *   `pub async fn clear(&self)`
 *   `pub async fn to_snapshot(&self) -> CacheSnapshot<K, V>`
     *   *(feature: `serde`)*
+*   `pub fn iter_stream(&self) -> IterStream<K, V, H>`
+    *   Returns a weakly-consistent `Stream` over the key-value pairs in the cache.
+*   `pub fn iter_stream_with_batch_size(&self, batch_size: usize) -> IterStream<K, V, H>`
+    *   Returns a weakly-consistent `Stream` with a custom batch size.
+*   `pub fn iter_snapshot_async(&self) -> AsyncSnapshotIter<'_, K, V, H>`
+    *   Returns a semi-consistent async iterator that snapshots keys one shard at a time.
 *   `pub async fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
 *   `pub async fn multi_insert<I>(&self, items: I)`
     *   *(feature: `bulk`)*
@@ -299,11 +311,36 @@ The result of a `compute_val` or `try_compute_val` operation.
 
 #### **struct** `MetricsSnapshot`
 
-A point-in-time, public-facing snapshot of the cache's performance metrics.
+A point-in-time, public-facing snapshot of the cache's performance metrics. This struct is returned by the `.metrics()` method on both `Cache` and `AsyncCache`.
+
 *   `pub hits: u64`
+    *   The number of successful lookups for keys that were present in the cache.
 *   `pub misses: u64`
+    *   The number of failed lookups for keys that were not present in the cache.
 *   `pub hit_ratio: f64`
-*   ...and many others for insertions, evictions, cost, and uptime.
+    *   The cache hit ratio, calculated as `hits / (hits + misses)`. A value between `0.0` and `1.0`.
+*   `pub inserts: u64`
+    *   The total number of items inserted into the cache. This includes both new items and replacements of existing items.
+*   `pub updates: u64`
+    *   The total number of in-place updates performed via the `compute` methods.
+*   `pub invalidations: u64`
+    *   The total number of items that have been manually removed via `invalidate` or `multi_invalidate`.
+*   `pub evicted_by_capacity: u64`
+    *   The number of items evicted by the janitor or opportunistic maintenance because the cache's total cost exceeded its capacity.
+*   `pub evicted_by_ttl: u64`
+    *   The number of items evicted because their Time-To-Live (TTL) expired.
+*   `pub evicted_by_tti: u64`
+    *   The number of items evicted because their Time-To-Idle (TTI) expired.
+*   `pub keys_admitted: u64`
+    *   The number of keys admitted by the admission policy (e.g., TinyLFU). For simpler policies like LRU, this will be equal to `inserts`.
+*   `pub keys_rejected: u64`
+    *   The number of keys that were candidates for insertion but were rejected by the admission policy to protect more valuable items already in the cache.
+*   `pub current_cost: u64`
+    *   The current total cost of all items in the cache.
+*   `pub total_cost_added: u64`
+    *   The cumulative cost of all items ever inserted into the cache.
+*   `pub uptime_secs: u64`
+    *   The number of seconds the cache has been running since it was created.
 
 #### **struct** `CacheSnapshot<K, V>`
 

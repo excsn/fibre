@@ -54,15 +54,14 @@ where
   }
 
   /// Evict the least recently used items until enough cost is freed.
-  fn evict(&self, mut cost_to_free: u64) -> (Vec<K>, u64) {
+  fn evict(&self, cost_to_free: u64) -> (Vec<K>, u64) {
     let mut victims = Vec::new();
     let mut total_cost_freed = 0;
     let mut list = self.list.lock();
 
-    while cost_to_free > 0 {
+    while total_cost_freed < cost_to_free {
       // pop_back is O(1).
       if let Some((key, cost)) = list.pop_back() {
-        cost_to_free = cost_to_free.saturating_sub(cost);
         total_cost_freed += cost;
         victims.push(key);
       } else {

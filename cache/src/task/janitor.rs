@@ -1,15 +1,15 @@
+use crate::EvictionReason;
 use crate::metrics::Metrics;
 use crate::policy::{AccessEvent, AdmissionDecision, CachePolicy};
 use crate::store::{Shard, ShardedStore};
 use crate::task::notifier::Notification;
-use crate::EvictionReason;
 
 use fibre::mpsc;
 use rand::Rng;
 use std::collections::HashSet;
 use std::hash::{BuildHasher, Hash};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -41,7 +41,7 @@ pub(crate) struct JanitorContext<K: Send, V: Send + Sync, H> {
 
 /// The background task responsible for periodic cleanup and maintenance of the cache.
 pub(crate) struct Janitor {
-  handle: JoinHandle<()>,
+  handle: JoinHandle<()>, // When janitor is dropped, thread is exited
   stop_flag: Arc<AtomicBool>,
 }
 
@@ -224,24 +224,29 @@ impl Janitor {
       return;
     }
 
-    let cost_to_free = current_cost - context.capacity;
+    let mut cost_to_free = current_cost - context.capacity;
     let num_shards = context.store.shards.len();
-    let cost_to_free_per_shard = (cost_to_free as f64 / num_shards as f64).ceil() as u64;
-
-    if cost_to_free_per_shard == 0 {
-      return;
-    }
-
     let mut total_cost_released = 0;
     let mut total_victims_count = 0;
 
+    // Iterate through each shard to distribute the eviction load.
     for i in 0..num_shards {
-      let (victims, cost_released) = context.cache_policy[i].evict(cost_to_free_per_shard);
+      // If we've already freed enough space, stop.
+      if cost_to_free == 0 {
+        break;
+      }
+
+      // Calculate a proportional amount for this shard to free.
+      let amount_for_this_shard = (cost_to_free as f64 / (num_shards - i) as f64).ceil() as u64;
+
+      let (victims, cost_released) = context.cache_policy[i].evict(amount_for_this_shard);
       if victims.is_empty() {
         continue;
       }
+
       total_cost_released += cost_released;
       total_victims_count += victims.len();
+      cost_to_free = cost_to_free.saturating_sub(cost_released);
 
       let shard = &context.store.shards[i];
       let mut guard = shard.map.write();

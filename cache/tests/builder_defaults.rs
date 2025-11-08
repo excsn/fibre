@@ -38,6 +38,7 @@ fn test_bounded_cache_defaults_to_tinylfu() {
     .shards(1)
     .capacity(2)
     .janitor_tick_interval(std::time::Duration::from_millis(50))
+    .maintenance_chance(1)
     .build()
     .unwrap();
 
@@ -53,13 +54,14 @@ fn test_bounded_cache_defaults_to_tinylfu() {
   // At this point, cost is 2. The cache is full.
   assert_eq!(cache.metrics().current_cost, 2);
 
+  // By performing a dummy insert on the "hot" key, we trigger the now-100%-guaranteed
+  // opportunistic maintenance. This maintenance task will drain the batcher of
+  // read events, making the policy aware that item 1 is "hot" BEFORE we
+  // proceed to the next step.
+  cache.insert(1, 1, 1); // This is effectively a "flush" operation now.
+
   // Insert a third item. This will go into the policy's write buffer.
   cache.insert(3, 3, 1);
-  assert_eq!(
-    cache.metrics().current_cost,
-    3,
-    "Cost should be temporarily over capacity"
-  );
 
   // Wait for the janitor to run. It will process the write for item 3.
   // The TinyLFU policy should decide to evict the "cold" item 2, not the "hot" item 1.

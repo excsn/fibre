@@ -25,6 +25,7 @@ async fn test_async_listener_for_capacity() {
     .eviction_listener(TestListener { sender: tx })
     // Add a fast janitor tick to ensure eviction happens promptly for the test
     .janitor_tick_interval(Duration::from_millis(10))
+    .maintenance_chance(1) 
     .build_async()
     .unwrap();
 
@@ -48,6 +49,7 @@ async fn test_async_listener_for_invalidation() {
   let (tx, rx) = mpsc::bounded(10);
   let cache = CacheBuilder::default()
     .eviction_listener(TestListener { sender: tx })
+    .maintenance_chance(1) 
     .build_async()
     .unwrap();
 
@@ -66,6 +68,7 @@ async fn test_async_listener_for_ttl() {
   let cache = CacheBuilder::default()
     .time_to_live(Duration::from_millis(100))
     .janitor_tick_interval(Duration::from_millis(10))
+    .maintenance_chance(1) 
     .eviction_listener(TestListener { sender: tx })
     .build_async()
     .unwrap();

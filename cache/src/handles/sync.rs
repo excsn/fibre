@@ -1,17 +1,18 @@
 use crate::entry::CacheEntry;
 use crate::entry_api::{OccupiedEntry, VacantEntry};
 use crate::error::ComputeResult;
+use crate::iter::{DEFAULT_ITER_BATCH_SIZE, Iter, SnapshotIter};
 use crate::loader::LoadFuture;
 use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
 use crate::task::janitor::COOPERATIVE_MAINTENANCE_DRAIN_LIMIT;
-use crate::{time, AsyncCache, Entry, EvictionReason, MetricsSnapshot};
+use crate::{AsyncCache, Entry, EvictionReason, MetricsSnapshot, time};
 
 use std::borrow::Borrow;
 use std::cell::Cell;
 use std::hash::{BuildHasher, Hash};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
@@ -34,9 +35,22 @@ pub struct Cache<K: Send, V: Send + Sync, H = ahash::RandomState> {
   pub(crate) shared: Arc<CacheShared<K, V, H>>,
 }
 
+impl<K, V, H> Clone for Cache<K, V, H>
+where
+  K: Send,
+  V: Send + Sync,
+  H: BuildHasher,
+{
+  fn clone(&self) -> Self {
+    Self {
+      shared: self.shared.clone(),
+    }
+  }
+}
+
 impl<K, V, H> Cache<K, V, H>
 where
-  K: Eq + Hash + Clone + Send + 'static,
+  K: Eq + Hash + Clone + Send,
   V: Send + Sync,
   H: BuildHasher + Clone,
 {
@@ -94,6 +108,8 @@ where
 
     if let Some((found_key, entry_arc)) = hit_info {
       self.on_hit(found_key, &entry_arc, shard_index);
+
+      self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
     } else if result.is_none() {
       // Only count a miss if we didn't get a result inside the lock.
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
@@ -136,6 +152,9 @@ where
 
     if let Some((found_key, entry_arc)) = hit_info {
       self.on_hit(found_key, &entry_arc, shard_index);
+
+      self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+
       Some(entry_arc.value())
     } else {
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
@@ -556,6 +575,61 @@ where
       .store(0, std::sync::atomic::Ordering::Relaxed);
   }
 
+  /// Returns a concurrent-safe iterator over the key-value pairs in the cache.
+  ///
+  /// The iterator fetches items in batches, holding a lock on only one shard
+  /// at a time for a very brief period.
+  ///
+  /// # Consistency
+  ///
+  /// This iterator does **not** provide a point-in-time snapshot of the cache.
+  /// Items inserted after a shard has been scanned will be missed. Items may be
+  /// modified or deleted by other threads while iteration is in progress.
+  ///
+  /// # Example
+  /// ```
+  /// # use fibre_cache::{Cache, CacheBuilder};
+  /// // The Cache must be constructed from the builder using .build()
+  /// let cache = CacheBuilder::<u32, String>::new().build().unwrap();
+  ///
+  /// cache.insert(1, "one".to_string(), 1);
+  /// cache.insert(2, "two".to_string(), 1);
+  ///
+  /// for (key, value) in cache.iter() {
+  ///     println!("{}: {}", key, &*value);
+  /// }
+  /// ```
+  pub fn iter(&self) -> Iter<'_, K, V, H> {
+    Iter::new(self, DEFAULT_ITER_BATCH_SIZE)
+  }
+
+  /// Returns a concurrent-safe iterator with a custom batch size.
+  ///
+  /// A larger batch size may have better throughput but will hold shard locks
+  /// for slightly longer during batch-refill operations.
+  pub fn iter_with_batch_size(&self, batch_size: usize) -> Iter<'_, K, V, H> {
+    Iter::new(self, batch_size.max(1))
+  }
+
+  /// Returns an iterator over a semi-consistent snapshot of the cache.
+  ///
+  /// This iterator is created by taking a point-in-time snapshot of keys from one
+  /// shard at a time. It has stronger consistency than `iter()` and is useful
+  /// when you need a more stable view of the cache during iteration.
+  ///
+  /// # Consistency
+  /// - For any given shard, the set of keys visited is fixed when that shard is
+  ///   first scanned.
+  /// - It may see items that are inserted into shards it has not yet visited.
+  /// - It will not see items inserted into shards it has already passed.
+  ///
+  /// # Performance
+  /// This iterator is more memory-efficient than snapshotting the entire key set
+  /// at once, using memory proportional to the size of the largest shard.
+  pub fn iter_snapshot(&self) -> SnapshotIter<'_, K, V, H> {
+    SnapshotIter::new(self)
+  }
+
   /// Private helper method to run common logic on a cache hit.
   /// This includes updating metadata for TTI and notifying the eviction policy.
   fn on_hit(&self, key: K, entry: &Arc<CacheEntry<V>>, shard_idx: usize) {
@@ -569,8 +643,6 @@ where
     shard
       .read_access_batcher
       .record_access(key, entry.cost(), &self.shared.store.hasher);
-
-    self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
   }
 
   /// Helper to run maintenance on a shard if the maintenance lock is not contended.
@@ -636,6 +708,8 @@ where
       if expires_at_nanos == 0 {
         // No TTL, it's a fresh hit
         self.on_hit(found_key.clone(), entry, shard_index);
+
+        self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
         return entry.value();
       }
 
@@ -644,6 +718,8 @@ where
       // CASE A: Fresh Hit
       if now_nanos < expires_at_nanos {
         self.on_hit(found_key.clone(), entry, shard_index);
+
+        self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
         return entry.value();
       }
 

@@ -1,6 +1,6 @@
-use fibre_cache::{builder::CacheBuilder, policy::lru::LruPolicy, EvictionReason};
+use fibre_cache::{EvictionReason, builder::CacheBuilder, policy::lru::LruPolicy};
 use std::{
-  sync::{mpsc, Arc},
+  sync::{Arc, mpsc},
   thread,
   time::Duration,
 };
@@ -25,6 +25,7 @@ fn test_sync_listener_for_capacity() {
     .capacity(2)
     .shards(1)
     .cache_policy_factory(|| Box::new(LruPolicy::new()))
+    .maintenance_chance(1)
     .eviction_listener(TestListener { sender: tx })
     .build()
     .unwrap();
@@ -60,8 +61,10 @@ fn test_sync_listener_for_invalidation() {
 fn test_sync_listener_for_ttl() {
   let (tx, rx) = mpsc::channel();
   let cache = CacheBuilder::default()
+    .shards(1)
     .time_to_live(Duration::from_millis(100))
     .janitor_tick_interval(Duration::from_millis(10))
+    .maintenance_chance(1)
     .eviction_listener(TestListener { sender: tx })
     .build()
     .unwrap();

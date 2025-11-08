@@ -4,7 +4,7 @@ use std::{
   ops::{Deref, DerefMut},
   pin::Pin,
   ptr,
-  sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
+  sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
   task::{Context, Poll, Waker},
   thread::{self, Thread},
 };
@@ -19,8 +19,6 @@ struct WaiterNode {
   waiter: Waiter,
   // Pointer to the next node in the stack.
   next: AtomicPtr<WaiterNode>,
-  // The "intent" of the waiter, crucial for the RwLock.
-  is_writer: bool,
 }
 
 // An enum abstracting over the two types of waiters we support.
@@ -146,7 +144,6 @@ impl<T> HybridMutex<T> {
         let node = Box::into_raw(Box::new(WaiterNode {
           waiter: Waiter::Thread(thread::current()),
           next: AtomicPtr::new(ptr::null_mut()),
-          is_writer: true, // Mutex lock is a write lock
         }));
         self.waiters.push(node);
 
@@ -251,7 +248,6 @@ impl<'a, T> Future for MutexFuture<'a, T> {
     let node = Box::into_raw(Box::new(WaiterNode {
       waiter: Waiter::Task(cx.waker().clone()),
       next: AtomicPtr::new(ptr::null_mut()),
-      is_writer: true,
     }));
     self.lock.waiters.push(node);
 
@@ -298,7 +294,7 @@ impl<T> HybridRwLock<T> {
   // --- Read Lock ---
   #[inline]
   pub fn read(&self) -> ReadGuard<'_, T> {
-    let mut s = self.state.load(Ordering::Relaxed);
+    let s = self.state.load(Ordering::Relaxed);
     // Fast path: No writer, just increment reader count.
     if s & RW_WRITE_LOCKED == 0 {
       if self
@@ -344,7 +340,6 @@ impl<T> HybridRwLock<T> {
         let node = Box::into_raw(Box::new(WaiterNode {
           waiter: Waiter::Thread(thread::current()),
           next: AtomicPtr::new(ptr::null_mut()),
-          is_writer: false,
         }));
         self.waiters.push(node);
 
@@ -421,7 +416,6 @@ impl<T> HybridRwLock<T> {
         let node = Box::into_raw(Box::new(WaiterNode {
           waiter: Waiter::Thread(thread::current()),
           next: AtomicPtr::new(ptr::null_mut()),
-          is_writer: true,
         }));
         self.waiters.push(node);
 
@@ -580,7 +574,6 @@ impl<'a, T> Future for ReadFuture<'a, T> {
     let node = Box::into_raw(Box::new(WaiterNode {
       waiter: Waiter::Task(cx.waker().clone()),
       next: AtomicPtr::new(ptr::null_mut()),
-      is_writer: false,
     }));
     self.lock.waiters.push(node);
 
@@ -624,7 +617,6 @@ impl<'a, T> Future for WriteFuture<'a, T> {
     let node = Box::into_raw(Box::new(WaiterNode {
       waiter: Waiter::Task(cx.waker().clone()),
       next: AtomicPtr::new(ptr::null_mut()),
-      is_writer: true,
     }));
     self.lock.waiters.push(node);
 

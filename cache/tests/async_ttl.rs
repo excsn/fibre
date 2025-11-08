@@ -1,5 +1,5 @@
-use fibre_cache::{builder::TimerWheelMode, CacheBuilder};
-use tokio::time::{sleep, Duration};
+use fibre_cache::{CacheBuilder, builder::TimerWheelMode};
+use tokio::time::{Duration, sleep};
 
 const TINY_TTL: Duration = Duration::from_millis(150);
 const JANITOR_TICK: Duration = Duration::from_millis(10);
@@ -8,9 +8,11 @@ const SLEEP_MARGIN: Duration = Duration::from_millis(150);
 #[tokio::test]
 async fn test_async_item_expires_after_ttl() {
   let cache = CacheBuilder::<&str, &str>::new()
+    .shards(1)
     .time_to_live(TINY_TTL)
     .timer_mode(TimerWheelMode::HighPrecisionShortLived)
     .janitor_tick_interval(JANITOR_TICK)
+    .maintenance_chance(1)
     .build_async()
     .unwrap();
 
@@ -23,7 +25,10 @@ async fn test_async_item_expires_after_ttl() {
   sleep(TINY_TTL + SLEEP_MARGIN).await;
 
   // 3. The janitor should have run and removed the expired item.
-  assert!(cache.fetch(&"key").await.is_none(), "Item should have expired");
+  assert!(
+    cache.fetch(&"key").await.is_none(),
+    "Item should have expired"
+  );
 
   // 4. Verify metrics
   let metrics = cache.metrics();

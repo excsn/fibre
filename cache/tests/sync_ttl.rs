@@ -1,4 +1,4 @@
-use fibre_cache::{builder::TimerWheelMode, CacheBuilder};
+use fibre_cache::{CacheBuilder, builder::TimerWheelMode};
 use std::{thread, time::Duration};
 
 const TINY_TTL: Duration = Duration::from_millis(150);
@@ -8,9 +8,11 @@ const SLEEP_MARGIN: Duration = Duration::from_millis(150);
 #[test]
 fn test_sync_item_expires_after_ttl() {
   let cache = CacheBuilder::<&str, &str>::new()
+    .shards(1)
     .time_to_live(TINY_TTL)
-    .timer_mode(TimerWheelMode::HighPrecisionShortLived) // Add this line
-    .janitor_tick_interval(JANITOR_TICK) // Set fast tick
+    .timer_mode(TimerWheelMode::HighPrecisionShortLived)
+    .janitor_tick_interval(JANITOR_TICK)
+    .maintenance_chance(1)
     .build()
     .unwrap();
 
@@ -29,10 +31,11 @@ fn test_sync_item_expires_after_ttl() {
 #[test]
 fn test_sync_ttl_is_not_reset_on_access() {
   let cache = CacheBuilder::<&str, &str>::new()
+    .shards(1)
     .time_to_live(TINY_TTL)
-    // --- FIX: Add high-precision timer mode ---
     .timer_mode(TimerWheelMode::HighPrecisionShortLived)
-    .janitor_tick_interval(JANITOR_TICK) // Set fast tick
+    .janitor_tick_interval(JANITOR_TICK)
+    .maintenance_chance(1)
     .build()
     .unwrap();
 
