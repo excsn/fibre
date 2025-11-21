@@ -2,7 +2,7 @@
 
 use crate::coord::CapacityGate;
 use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
-use crate::mpsc::unbounded;
+use crate::mpsc::unbounded_v2;
 use crate::{sync_util, RecvErrorTimeout};
 
 use std::mem;
@@ -51,7 +51,7 @@ pub(crate) struct BoundedMessage<T> {
 pub(crate) struct BoundedMpscShared<T: Send> {
   pub(crate) gate: Arc<CapacityGate>,
   // The underlying lock-free channel that transports BoundedMessage<T>
-  pub(crate) channel: Arc<unbounded::MpscShared<BoundedMessage<T>>>,
+  pub(crate) channel: Arc<unbounded_v2::MpscShared<BoundedMessage<T>>>,
 }
 
 // --- Public Channel Handles (Sync) ---
@@ -94,7 +94,8 @@ impl<T: Send> Sender<T> {
 
     // The underlying send is lock-free and won't block.
     // It can only fail if the receiver was dropped.
-    if unbounded::send_internal(&self.shared.channel, message).is_err() {
+    let mut cache = None;
+    if unbounded_v2::send_internal(&self.shared.channel, message, &mut cache).is_err() {
       // The receiver was dropped. The `Permit` inside our `message` is dropped here.
       // For capacity > 0, this correctly releases the permit.
       // For capacity == 0, it does nothing, which is also correct.
@@ -126,7 +127,8 @@ impl<T: Send> Sender<T> {
       _permit: permit,
     };
 
-    if let Err(msg) = unbounded::send_internal(&self.shared.channel, message) {
+    let mut cache = None;
+    if let Err(msg) = unbounded_v2::send_internal(&self.shared.channel, message, &mut cache) {
       // Receiver dropped, `msg._permit` is dropped, releasing the gate slot.
       return Err(TrySendError::Closed(msg.value));
     }

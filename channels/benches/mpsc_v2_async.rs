@@ -1,12 +1,15 @@
 use bench_matrix::{
-  criterion_runner::sync_suite::SyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
+  criterion_runner::async_suite::AsyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use fibre::mpsc;
 use std::{
-  thread::{self, available_parallelism},
+  future::Future,
+  pin::Pin,
+  thread::available_parallelism,
   time::{Duration, Instant},
 };
+use tokio::runtime::Runtime;
 
 const ITEM_VALUE: u64 = 42;
 
@@ -22,8 +25,7 @@ struct BenchContext {
   actual_items_processed: usize,
 }
 
-// State for Sync benchmark. The channel must be re-created each time
-// because `thread::scope` consumes the handles. So state is minimal.
+// State is minimal as we create a new channel each time to avoid interference.
 #[derive(Clone)]
 struct MpscBenchState;
 
@@ -35,55 +37,67 @@ fn extract_mpsc_config(combo: &AbstractCombination) -> Result<MpscBenchConfig, S
   })
 }
 
-// --- Sync Benchmark ---
+// --- Async Benchmark ---
 
-fn setup_fn_mpsc_sync(_cfg: &MpscBenchConfig) -> Result<(BenchContext, MpscBenchState), String> {
-  Ok((BenchContext::default(), MpscBenchState))
+fn setup_fn_mpsc_async(
+  _rt: &Runtime,
+  _cfg: &MpscBenchConfig,
+) -> Pin<Box<dyn Future<Output = Result<(BenchContext, MpscBenchState), String>> + Send>> {
+  Box::pin(async move { Ok((BenchContext::default(), MpscBenchState)) })
 }
 
-fn benchmark_logic_mpsc_sync(
+fn benchmark_logic_mpsc_async(
   mut ctx: BenchContext,
   state: MpscBenchState,
   cfg: &MpscBenchConfig,
-) -> (BenchContext, MpscBenchState, Duration) {
-  // Create a fresh channel for each iteration of the benchmark.
-  let (tx, rx) = mpsc::unbounded();
+) -> Pin<Box<dyn Future<Output = (BenchContext, MpscBenchState, Duration)> + Send>> {
+  let cfg_clone = cfg.clone();
+  Box::pin(async move {
+    // Create a fresh channel for each iteration.
+    let (tx, rx) = mpsc::unbounded_v2_async();
 
-  let start_time = Instant::now();
+    let start_time = Instant::now();
 
-  thread::scope(|s| {
+    let consumer_handle = tokio::spawn(async move {
+      for _ in 0..cfg_clone.total_items {
+        rx.recv().await.unwrap();
+      }
+    });
+
+    let mut producer_handles = Vec::new();
     // Correctly distribute items, including remainder, across producers.
-    let total_items = cfg.total_items;
-    let num_producers = cfg.num_producers;
+    let total_items = cfg_clone.total_items;
+    let num_producers = cfg_clone.num_producers;
     let base_items = total_items / num_producers;
     let remainder = total_items % num_producers;
 
-    // Spawn producers
     for p_idx in 0..num_producers {
       let items_this_producer = base_items + if p_idx < remainder { 1 } else { 0 };
       if items_this_producer > 0 {
         let tx_clone = tx.clone();
-        s.spawn(move || {
+        producer_handles.push(tokio::spawn(async move {
           for _ in 0..items_this_producer {
-            tx_clone.send(ITEM_VALUE).unwrap();
+            tx_clone.send(ITEM_VALUE).await.unwrap();
           }
-        });
+        }));
       }
     }
-    drop(tx); // Drop the original sender handle
+    drop(tx);
 
-    // Receiver runs in the current scoped thread
-    for _ in 0..cfg.total_items {
-      rx.recv().unwrap();
+    for handle in producer_handles {
+      handle.await.unwrap();
     }
-  });
+    consumer_handle.await.unwrap();
 
-  let duration = start_time.elapsed();
-  ctx.actual_items_processed += cfg.total_items;
-  (ctx, state, duration)
+    let duration = start_time.elapsed();
+    ctx.actual_items_processed += cfg_clone.total_items;
+
+    (ctx, state, duration)
+  })
 }
 
-fn mpsc_sync_benches(c: &mut Criterion) {
+fn mpsc_async_benches(c: &mut Criterion) {
+  let rt = Runtime::new().unwrap();
   let core_count = usize::from(available_parallelism().unwrap()) as u64;
   let parameter_axes = vec![
     vec![
@@ -98,19 +112,20 @@ fn mpsc_sync_benches(c: &mut Criterion) {
   ];
   let parameter_names = vec!["Prod".to_string(), "Items".to_string()];
 
-  SyncBenchmarkSuite::new(
+  AsyncBenchmarkSuite::new(
     c,
-    "MpscSync".to_string(),
+    &rt,
+    "MpscV2Async".to_string(),
     Some(parameter_names),
     parameter_axes,
     Box::new(extract_mpsc_config),
-    setup_fn_mpsc_sync,
-    benchmark_logic_mpsc_sync,
-    |_, _, _| {}, // Teardown
+    setup_fn_mpsc_async,
+    benchmark_logic_mpsc_async,
+    |_, _, _, _| Box::pin(async {}), // Teardown
   )
   .throughput(|cfg: &MpscBenchConfig| Throughput::Elements(cfg.total_items as u64))
   .run();
 }
 
-criterion_group!(benches, mpsc_sync_benches);
+criterion_group!(benches, mpsc_async_benches);
 criterion_main!(benches);

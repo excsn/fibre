@@ -2,7 +2,7 @@
 
 use super::bounded_sync::{BoundedMessage, BoundedMpscShared, Permit, Receiver, Sender};
 use crate::error::{RecvError, SendError, TrySendError};
-use crate::mpsc::unbounded;
+use crate::mpsc::unbounded_v2;
 use crate::{CloseError, TryRecvError};
 use futures_core::Stream;
 
@@ -61,7 +61,8 @@ impl<T: Send> AsyncSender<T> {
       value,
       _permit: permit,
     };
-    if let Err(msg) = unbounded::send_internal(&self.shared.channel, message) {
+    let mut cache = None;
+    if let Err(msg) = unbounded_v2::send_internal(&self.shared.channel, message, &mut cache) {
       return Err(TrySendError::Closed(msg.value));
     }
     Ok(())
@@ -301,7 +302,8 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
           _permit: permit,
         };
 
-        match unbounded::send_internal(&this.sender.shared.channel, message) {
+        let mut cache = None;
+        match unbounded_v2::send_internal(&this.sender.shared.channel, message, &mut cache) {
           Ok(()) => Poll::Ready(Ok(())),
           Err(_) => Poll::Ready(Err(SendError::Closed)),
         }
