@@ -1,6 +1,6 @@
 [package]
 name = "fibre_cache"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 license = "MPL-2.0"
 authors = ["Excerion Sun <dev@excsn.com>"]
@@ -19,7 +19,7 @@ exclude = [
 full = ["serde", "random", "bulk", "tokio", "rapidhash"]
 default = ["serde", "random", "bulk", "tokio"]
 serde = ["dep:serde"]
-random = ["dep:rand"]
+random = []
 bulk = ["dep:rayon"]
 tokio = ["dep:tokio"]
 rapidhash = ["dep:rapidhash"]
@@ -41,7 +41,7 @@ num_cpus = "^1"
 generational-arena = "^0.2"
 
 rayon = { version = "1.8", optional = true }
-rand = { version = "^0.9", optional = true }
+rand = { version = "^0.9" }
 serde = { version = "^1.0", features = ["derive"], optional = true }
 tokio = { version = "^1", features = ["rt", "rt-multi-thread"], optional = true }
 

@@ -9,6 +9,7 @@ use crate::loader::Loader;
 use crate::metrics::Metrics;
 use crate::policy::CachePolicy;
 use crate::shared::CacheShared;
+#[cfg(feature = "serde")]
 use crate::snapshot::CacheSnapshot;
 use crate::store::{hash_key, ShardedStore};
 use crate::task::janitor::{Janitor, JanitorContext};
@@ -353,7 +354,10 @@ where
   /// Central logic to construct the shared core of the cache.
   pub(crate) fn build_shared_core(
     &mut self,
+    #[cfg(feature = "serde")]
     snapshot: Option<CacheSnapshot<K, V>>,
+    #[cfg(not(feature = "serde"))]
+    _snapshot: Option<()>,
   ) -> Result<Arc<CacheShared<K, V, H>>, BuildError> {
     let mut spawner = self.spawner.take();
     if matches!(self.loader, Some(Loader::Async(_))) && spawner.is_none() {
@@ -414,6 +418,7 @@ where
     };
 
     // --- Populate from Snapshot if it exists ---
+    #[cfg(feature = "serde")]
     if let Some(snap) = snapshot {
       let now_duration = time::now_duration();
       let mut total_cost = 0;
