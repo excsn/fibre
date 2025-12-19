@@ -10,9 +10,8 @@ use std::sync::Arc;
 use std::thread::{self};
 use std::time::{Duration, Instant};
 
-// Import async types for conversion methods
 use super::bounded_async::{AsyncBoundedSpscReceiver, AsyncBoundedSpscSender};
-use std::mem; // For mem::forget
+use std::mem;
 
 /// The synchronous sending end of a bounded SPSC channel.
 #[derive(Debug)]
