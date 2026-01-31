@@ -23,9 +23,9 @@
 
 use crate::error::{TryRecvError, TrySendError};
 use crate::RecvError;
-use parking_lot::Mutex;
 use core::future::PollFn;
 use core::task::{Context, Poll};
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -253,12 +253,23 @@ impl<T: Send> MpmcShared<T> {
           return Poll::Ready(Err(RecvError::Disconnected));
         }
 
-        // Safe to park.
-        let waiter = AsyncWaiter {
-          waker: cx.waker().clone(),
-          data: None, // Receivers never hold data.
-        };
-        guard.waiting_async_receivers.push_back(waiter);
+        let new_waker = cx.waker();
+
+        // just update waker if exists
+        if let Some(existing_waiter) = guard
+          .waiting_async_receivers
+          .iter_mut()
+          .find(|w| w.waker.will_wake(new_waker))
+        {
+          existing_waiter.waker = new_waker.clone(); // Update in case it changed
+        } else {
+          let waiter = AsyncWaiter {
+            waker: new_waker.clone(),
+            data: None, // Receivers never have data
+          };
+          guard.waiting_async_receivers.push_back(waiter);
+        }
+
         return Poll::Pending;
       }
     }

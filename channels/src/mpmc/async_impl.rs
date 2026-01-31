@@ -84,16 +84,33 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
           return Poll::Ready(Err(SendError::Closed));
         }
 
-        // Safe to park. Create the waiter and add it to the async queue.
-        let waiter = AsyncWaiter {
-          waker: cx.waker().clone(),
-          data: if is_rendezvous {
-            Some(WaiterData::SenderItem(this.item.take()))
-          } else {
-            None
-          },
-        };
-        guard.waiting_async_senders.push_back(waiter);
+        let new_waker = cx.waker();
+
+        // Try to find existing waiter for this task
+        if let Some(existing_waiter) = guard
+          .waiting_async_senders
+          .iter_mut()
+          .find(|w| w.waker.will_wake(new_waker))
+        {
+          // Update the waker (in case it changed)
+          existing_waiter.waker = new_waker.clone();
+
+          // Update the data for rendezvous channels!
+          if is_rendezvous {
+            existing_waiter.data = Some(WaiterData::SenderItem(this.item.take()));
+          }
+        } else {
+          // Safe to park. Create the waiter and add it to the async queue.
+          let waiter = AsyncWaiter {
+            waker: new_waker.clone(),
+            data: if is_rendezvous {
+              Some(WaiterData::SenderItem(this.item.take()))
+            } else {
+              None
+            },
+          };
+          guard.waiting_async_senders.push_back(waiter);
+        }
         return Poll::Pending;
       }
     }

@@ -121,7 +121,7 @@ impl<T> MailboxProducer<T> {
       self.shared.wake_consumer(&mut guard);
     }
   }
-  
+
   /// Returns the capacity of the mailbox.
   pub(crate) fn capacity(&self) -> usize {
     self.shared.internal.lock().unwrap().capacity
@@ -208,7 +208,7 @@ impl<T> MailboxConsumer<T> {
   pub(crate) fn recv_async(&self) -> RecvFuture<'_, T> {
     RecvFuture { consumer: self }
   }
-  
+
   /// Returns the capacity of the mailbox.
   pub(crate) fn capacity(&self) -> usize {
     self.shared.internal.lock().unwrap().capacity
@@ -244,7 +244,15 @@ impl<'a, T> Future for RecvFuture<'a, T> {
     }
 
     // If empty and not disconnected, register the waker and pend.
-    guard.consumer_waiter = Some(Waiter::Async(cx.waker().clone()));
+    match &guard.consumer_waiter {
+      Some(Waiter::Async(existing_waker)) if existing_waker.will_wake(cx.waker()) => {
+        // Same waker, no need to update
+      }
+      _ => {
+        guard.consumer_waiter = Some(Waiter::Async(cx.waker().clone()));
+      }
+    }
+
     Poll::Pending
   }
 }

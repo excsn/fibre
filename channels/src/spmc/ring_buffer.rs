@@ -5,8 +5,8 @@ use futures_core::Stream;
 use crate::async_util::AtomicWaker;
 use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
 use crate::internal::cache_padded::CachePadded;
-use crate::{sync_util, RecvErrorTimeout};
 use crate::telemetry;
+use crate::{sync_util, RecvErrorTimeout};
 
 use core::marker::PhantomPinned;
 use std::cell::UnsafeCell;
@@ -463,7 +463,12 @@ fn poll_recv_internal<T: Send + Clone>(
       let slot_idx = current_tail_val % shared.capacity;
       let slot = &shared.buffer[slot_idx];
 
-      slot.wakers.lock().unwrap().push(cx.waker().clone());
+      let new_waker = cx.waker();
+      let mut wakers_guard = slot.wakers.lock().unwrap();
+      if !wakers_guard.iter().any(|w| w.will_wake(new_waker)) {
+        wakers_guard.push(new_waker.clone());
+      }
+      drop(wakers_guard);
 
       match try_recv_internal(shared, tail) {
         Ok(value) => Poll::Ready(Ok(value)),
