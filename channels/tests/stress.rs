@@ -2,7 +2,7 @@
 #[cfg(not(debug_assertions))]
 fn mpsc_tsan_stress_test() {
   // Run witn RUSTFLAGS="-Z sanitizer=thread" cargo +nightly test --release mpsc_tsan_stress_test --target aarch64-apple-darwin
-  let (tx, mut rx) = fibre::mpsc::unbounded();
+  let (tx, mut rx) = fibre::mpsc::unbounded_v1();
   let num_threads = 16;
   let items_per_thread = 1000000;
   let mut handles = vec![];

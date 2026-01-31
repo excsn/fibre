@@ -54,7 +54,7 @@ fn benchmark_logic_mpsc_async(
   let cfg_clone = cfg.clone();
   Box::pin(async move {
     // Create a fresh channel for each iteration.
-    let (tx, rx) = mpsc::unbounded_v2_async();
+    let (tx, rx) = mpsc::unbounded_async();
 
     let start_time = Instant::now();
 

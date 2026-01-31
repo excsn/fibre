@@ -47,7 +47,7 @@ fn benchmark_logic_mpsc_sync(
   cfg: &MpscBenchConfig,
 ) -> (BenchContext, MpscBenchState, Duration) {
   // Create a fresh channel for each iteration of the benchmark.
-  let (tx, rx) = mpsc::unbounded_v2();
+  let (tx, rx) = mpsc::unbounded();
 
   let start_time = Instant::now();
 

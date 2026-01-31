@@ -108,6 +108,7 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
               None
             },
           };
+          
           guard.waiting_async_senders.push_back(waiter);
         }
         return Poll::Pending;

@@ -7,14 +7,14 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn mpsc_async_smoke() {
-  let (tx, mut rx) = mpsc::unbounded_v2_async();
+  let (tx, mut rx) = mpsc::unbounded_async();
   tx.send(10).await.unwrap();
   assert_eq!(rx.recv().await.unwrap(), 10);
 }
 
 #[tokio::test]
 async fn mpsc_async_try_recv() {
-  let (tx, mut rx) = mpsc::unbounded_v2_async::<i32>();
+  let (tx, mut rx) = mpsc::unbounded_async::<i32>();
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));
   tx.send(1).await.unwrap();
   // After an await, the item will be in the queue.
@@ -24,7 +24,7 @@ async fn mpsc_async_try_recv() {
 
 #[tokio::test]
 async fn mpsc_async_recv_blocks() {
-  let (tx, mut rx) = mpsc::unbounded_v2_async();
+  let (tx, mut rx) = mpsc::unbounded_async();
   let handle = tokio::spawn(async move {
     tokio::time::sleep(SHORT_TIMEOUT).await;
     tx.send("hello").await.unwrap();
@@ -35,7 +35,7 @@ async fn mpsc_async_recv_blocks() {
 
 #[tokio::test]
 async fn mpsc_async_all_producers_drop_signals_disconnect() {
-  let (tx, mut rx) = mpsc::unbounded_v2_async::<()>();
+  let (tx, mut rx) = mpsc::unbounded_async::<()>();
   let tx2 = tx.clone();
   drop(tx);
   drop(tx2);
@@ -52,7 +52,7 @@ async fn mpsc_async_consumer_drop_cleans_up() {
     }
   }
 
-  let (tx, rx) = mpsc::unbounded_v2_async();
+  let (tx, rx) = mpsc::unbounded_async();
   tx.send(DropCounter(drop_count.clone())).await.unwrap();
   tx.send(DropCounter(drop_count.clone())).await.unwrap();
 
@@ -66,7 +66,7 @@ async fn mpsc_async_consumer_drop_cleans_up() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mpsc_async_multi_producer_stress() {
-  let (tx, mut rx) = mpsc::unbounded_v2_async();
+  let (tx, mut rx) = mpsc::unbounded_async();
   let num_producers = 8;
   let items_per_producer = ITEMS_HIGH;
   let total_items = num_producers * items_per_producer;
@@ -101,7 +101,7 @@ async fn mpsc_async_multi_producer_stress() {
 
 #[tokio::test]
 async fn mpsc_sync_producer_to_async_consumer() {
-  let (tx_async, mut rx_async) = mpsc::unbounded_v2_async();
+  let (tx_async, mut rx_async) = mpsc::unbounded_async();
   let tx_sync = tx_async.to_sync();
 
   // Use tokio's blocking thread pool for the sync operation

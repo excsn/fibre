@@ -1,5 +1,3 @@
-// channels/src/mpsc/block_queue.rs
-
 use crate::internal::cache_padded::CachePadded;
 use parking_lot::Mutex;
 use core::fmt;

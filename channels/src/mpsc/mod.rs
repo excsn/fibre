@@ -36,7 +36,7 @@ pub use bounded_sync::{Receiver as BoundedReceiver, Sender as BoundedSender};
 
 // --- Unbounded V2 (Segmented Linked List) Constructors ---
 /// Creates a new unbounded synchronous MPSC channel.
-pub fn unbounded_v2<T: Send>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
+pub fn unbounded<T: Send>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
   let shared = Arc::new(unbounded_v2::MpscShared::new());
   let producer = UnboundedSender {
     shared: Arc::clone(&shared),
@@ -51,7 +51,7 @@ pub fn unbounded_v2<T: Send>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
 }
 
 /// Creates a new unbounded asynchronous MPSC channel.
-pub fn unbounded_v2_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>) {
+pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>) {
   let shared = Arc::new(unbounded_v2::MpscShared::new());
   let producer = UnboundedAsyncSender {
     shared: Arc::clone(&shared),
@@ -67,7 +67,7 @@ pub fn unbounded_v2_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsync
 
 // --- Unbounded V1 (Lock Free Linked List Approach) Constructors ---
 /// Creates a new unbounded synchronous MPSC channel.
-pub fn unbounded<T: Send>() -> (unbounded::Sender<T>, unbounded::Receiver<T>) {
+pub fn unbounded_v1<T: Send>() -> (unbounded::Sender<T>, unbounded::Receiver<T>) {
   let shared = Arc::new(unbounded::MpscShared::new());
   let producer = unbounded::Sender {
     shared: Arc::clone(&shared),
@@ -81,7 +81,7 @@ pub fn unbounded<T: Send>() -> (unbounded::Sender<T>, unbounded::Receiver<T>) {
 }
 
 /// Creates a new unbounded asynchronous MPSC channel.
-pub fn unbounded_async<T: Send>() -> (unbounded::AsyncSender<T>, unbounded::AsyncReceiver<T>) {
+pub fn unbounded_v1_async<T: Send>() -> (unbounded::AsyncSender<T>, unbounded::AsyncReceiver<T>) {
   let shared = Arc::new(unbounded::MpscShared::new());
   let producer = unbounded::AsyncSender {
     shared: Arc::clone(&shared),
@@ -143,7 +143,7 @@ mod tests {
 
   #[test]
   fn sync_to_sync_blocking() {
-    let (tx, rx) = unbounded::<i32>();
+    let (tx, rx) = unbounded_v1::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
     let handle = thread::spawn(move || {
@@ -162,7 +162,7 @@ mod tests {
 
   #[tokio::test]
   async fn async_to_async() {
-    let (tx, rx) = unbounded_async::<i32>();
+    let (tx, rx) = unbounded_v1_async::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
     let handle = tokio::spawn(async move {
@@ -181,7 +181,7 @@ mod tests {
 
   #[tokio::test]
   async fn sync_to_async_conversion() {
-    let (tx_async, rx_async) = unbounded_async::<i32>();
+    let (tx_async, rx_async) = unbounded_v1_async::<i32>();
     assert_eq!(tx_async.len(), 0);
     assert!(rx_async.is_empty());
     let tx_sync = tx_async.to_sync();
@@ -200,7 +200,7 @@ mod tests {
 
   #[test]
   fn async_to_sync_conversion() {
-    let (tx_async, rx_sync_orig) = unbounded_async::<i32>();
+    let (tx_async, rx_sync_orig) = unbounded_v1_async::<i32>();
     assert_eq!(tx_async.len(), 0);
     let rx_sync = rx_sync_orig.to_sync();
     assert!(rx_sync.is_empty());
@@ -217,7 +217,7 @@ mod tests {
 
   #[test]
   fn len_and_is_empty_sync() {
-    let (tx, rx) = unbounded::<i32>();
+    let (tx, rx) = unbounded_v1::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
 
@@ -248,7 +248,7 @@ mod tests {
 
   #[tokio::test]
   async fn len_and_is_empty_async() {
-    let (tx, rx) = unbounded_async::<i32>();
+    let (tx, rx) = unbounded_v1_async::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
 
@@ -280,7 +280,7 @@ mod tests {
   #[test]
   fn close_and_is_closed() {
     // Test sender close
-    let (tx, rx) = unbounded::<i32>();
+    let (tx, rx) = unbounded_v1::<i32>();
     let tx2 = tx.clone();
 
     assert!(!tx.is_closed());
@@ -299,7 +299,7 @@ mod tests {
     assert_eq!(rx.recv(), Err(RecvError::Disconnected));
 
     // Test receiver close
-    let (tx, rx) = unbounded::<i32>();
+    let (tx, rx) = unbounded_v1::<i32>();
     assert!(!tx.is_closed());
     rx.close().unwrap();
     assert!(tx.is_closed()); // Sender sees receiver is gone

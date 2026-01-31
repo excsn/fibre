@@ -1,6 +1,6 @@
 [package]
 name = "fibre"
-version = "0.5.2"
+version = "0.5.1"
 
 description = "High-performance, safe, memory-efficient sync/async channels built for real-time, low-overhead communication in concurrent Rust applications."
 readme = "README.md"
