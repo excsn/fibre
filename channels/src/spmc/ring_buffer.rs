@@ -1,6 +1,7 @@
 // src/spmc/ring_buffer.rs
 
 use futures_core::Stream;
+use parking_lot::Mutex;
 
 use crate::async_util::AtomicWaker;
 use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
@@ -15,7 +16,7 @@ use std::future::Future;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
@@ -159,7 +160,7 @@ impl<T: Send + Clone> fmt::Debug for SpmcShared<T> {
     f.debug_struct("SpmcShared")
       .field("capacity", &self.capacity)
       .field("head", &unsafe { *self.head.get() })
-      .field("tails_count", &self.tails.lock().unwrap().list.len())
+      .field("tails_count", &self.tails.lock().list.len())
       .field(
         "producer_parked",
         &self.producer_parked.load(Ordering::Relaxed),
@@ -214,7 +215,7 @@ impl<T: Send + Clone> SpmcShared<T> {
         .is_ok()
       {
         telemetry::log_event(None, LOC_WAKEP, EVT_WAKEP_CAS_OK, None);
-        if let Some(thread_to_unpark) = self.producer_thread.lock().unwrap().take() {
+        if let Some(thread_to_unpark) = self.producer_thread.lock().take() {
           telemetry::log_event(
             None,
             LOC_WAKEP,
@@ -251,7 +252,7 @@ impl<T: Send + Clone> SpmcShared<T> {
     telemetry::increment_counter("SpmcShared", CTR_GLOBAL_CONSUMER_WAKES_ON_P_DROP);
     for slot_idx in 0..self.capacity {
       let slot = &self.buffer[slot_idx];
-      let mut wakers_guard = slot.wakers.lock().unwrap();
+      let mut wakers_guard = slot.wakers.lock();
       for waker in wakers_guard.drain(..) {
         waker.wake();
       }
@@ -262,7 +263,7 @@ impl<T: Send + Clone> SpmcShared<T> {
     let current_head_idx = unsafe { *self.head.get() };
     let min_tail_idx;
     {
-      let tails_guard = self.tails.lock().unwrap();
+      let tails_guard = self.tails.lock();
       if tails_guard.list.is_empty() {
         telemetry::log_event(
           Some(current_head_idx),
@@ -325,8 +326,14 @@ impl<T: Send + Clone> SpmcShared<T> {
       EVT_P_WAKE_SLOT,
       Some(format!("slot_idx:{}", slot_idx)),
     );
+
+    let wakers_to_wake: Vec<Waker> = {
+      let mut guard = slot.wakers.lock();
+      guard.drain(..).collect()
+    };
+
     telemetry::increment_counter(LOC_P_TRY_SEND, CTR_SLOT_WAKES);
-    for waker in slot.wakers.lock().unwrap().drain(..) {
+    for waker in wakers_to_wake {
       waker.wake();
     }
 
@@ -375,12 +382,7 @@ pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (Sender<T>, Recei
   assert!(capacity > 0, "SPMC channel capacity must be > 0");
   let shared = Arc::new(SpmcShared::new(capacity));
   let initial_tail = Arc::new(AtomicUsize::new(0));
-  shared
-    .tails
-    .lock()
-    .unwrap()
-    .list
-    .push(Arc::clone(&initial_tail));
+  shared.tails.lock().list.push(Arc::clone(&initial_tail));
   (
     Sender {
       shared: Arc::clone(&shared),
@@ -463,12 +465,13 @@ fn poll_recv_internal<T: Send + Clone>(
       let slot_idx = current_tail_val % shared.capacity;
       let slot = &shared.buffer[slot_idx];
 
-      let new_waker = cx.waker();
-      let mut wakers_guard = slot.wakers.lock().unwrap();
-      if !wakers_guard.iter().any(|w| w.will_wake(new_waker)) {
-        wakers_guard.push(new_waker.clone());
+      {
+        let new_waker = cx.waker();
+        let mut wakers_guard = slot.wakers.lock();
+        if !wakers_guard.iter().any(|w| w.will_wake(new_waker)) {
+          wakers_guard.push(new_waker.clone());
+        }
       }
-      drop(wakers_guard);
 
       match try_recv_internal(shared, tail) {
         Ok(value) => Poll::Ready(Ok(value)),
@@ -515,7 +518,7 @@ impl<T: Send + Clone> Receiver<T> {
             Some(format!("slot_idx:{}", slot_idx)),
           );
           let waker_for_slot = sync_waker(thread::current());
-          slot.wakers.lock().unwrap().push(waker_for_slot);
+          slot.wakers.lock().push(waker_for_slot);
 
           match try_recv_internal(&self.shared, &self.tail) {
             Ok(value) => {
@@ -535,7 +538,6 @@ impl<T: Send + Clone> Receiver<T> {
                   slot
                     .wakers
                     .lock()
-                    .unwrap()
                     .retain(|w| !w.will_wake(&sync_waker(thread::current())));
                   return Err(RecvError::Disconnected);
                 }
@@ -586,26 +588,18 @@ impl<T: Send + Clone> Receiver<T> {
           let slot_idx = current_tail_val % self.shared.capacity;
           let slot = &self.shared.buffer[slot_idx];
           let waker_for_slot = sync_waker(thread::current());
-          slot.wakers.lock().unwrap().push(waker_for_slot.clone());
+          slot.wakers.lock().push(waker_for_slot.clone());
 
           // Re-check after registration
           match try_recv_internal(&self.shared, &self.tail) {
             Ok(value) => {
               // Clean up waker we just pushed
-              slot
-                .wakers
-                .lock()
-                .unwrap()
-                .retain(|w| !w.will_wake(&waker_for_slot));
+              slot.wakers.lock().retain(|w| !w.will_wake(&waker_for_slot));
               return Ok(value);
             }
             Err(TryRecvError::Disconnected) => {
               // Clean up waker we just pushed
-              slot
-                .wakers
-                .lock()
-                .unwrap()
-                .retain(|w| !w.will_wake(&waker_for_slot));
+              slot.wakers.lock().retain(|w| !w.will_wake(&waker_for_slot));
               return Err(RecvErrorTimeout::Disconnected);
             }
             Err(TryRecvError::Empty) => {
@@ -613,11 +607,7 @@ impl<T: Send + Clone> Receiver<T> {
                 let head = unsafe { *self.shared.head.get() };
                 if self.tail.load(Ordering::Relaxed) >= head {
                   // Clean up waker we just pushed
-                  slot
-                    .wakers
-                    .lock()
-                    .unwrap()
-                    .retain(|w| !w.will_wake(&waker_for_slot));
+                  slot.wakers.lock().retain(|w| !w.will_wake(&waker_for_slot));
                   return Err(RecvErrorTimeout::Disconnected);
                 }
               }
@@ -740,7 +730,6 @@ impl<T: Send + Clone> Clone for Receiver<T> {
       .shared
       .tails
       .lock()
-      .unwrap()
       .list
       .push(Arc::clone(&new_consumer_tail));
     Self {
@@ -758,7 +747,6 @@ impl<T: Send + Clone> Clone for AsyncReceiver<T> {
       .shared
       .tails
       .lock()
-      .unwrap()
       .list
       .push(Arc::clone(&new_consumer_tail));
     Self {
@@ -770,7 +758,7 @@ impl<T: Send + Clone> Clone for AsyncReceiver<T> {
 }
 
 fn drop_receiver_internal<T: Send + Clone>(shared: &SpmcShared<T>, tail_arc: &Arc<AtomicUsize>) {
-  let mut tails_guard = shared.tails.lock().unwrap();
+  let mut tails_guard = shared.tails.lock();
   tails_guard
     .list
     .retain(|t_arc| !Arc::ptr_eq(t_arc, tail_arc));
@@ -828,12 +816,12 @@ impl<T: Send + Clone> Sender<T> {
       telemetry::increment_counter(LOC_P_SEND, CTR_P_PARK_ATTEMPTS);
 
       telemetry::log_event(Some(current_head_idx), LOC_P_SEND, EVT_P_ARM_PARK, None);
-      *self.shared.producer_thread.lock().unwrap() = Some(thread::current());
+      *self.shared.producer_thread.lock() = Some(thread::current());
       self.shared.producer_parked.store(true, Ordering::Release);
 
       let min_tail_recheck;
       {
-        let tails_guard = self.shared.tails.lock().unwrap();
+        let tails_guard = self.shared.tails.lock();
         if tails_guard.list.is_empty() {
           telemetry::log_event(
             Some(current_head_idx),
@@ -842,7 +830,7 @@ impl<T: Send + Clone> Sender<T> {
             Some("during park recheck".into()),
           );
           self.shared.producer_parked.store(false, Ordering::Relaxed);
-          self.shared.producer_thread.lock().unwrap().take();
+          self.shared.producer_thread.lock().take();
           drop(current_item.take());
           return Err(SendError::Closed);
         }
@@ -874,7 +862,7 @@ impl<T: Send + Clone> Sender<T> {
             EVT_P_CAS_UNARM_SUCCESS,
             None,
           );
-          self.shared.producer_thread.lock().unwrap().take();
+          self.shared.producer_thread.lock().take();
         } else {
           telemetry::log_event(
             Some(current_head_idx),
@@ -904,7 +892,7 @@ impl<T: Send + Clone> Sender<T> {
   }
 
   pub fn is_closed(&self) -> bool {
-    self.shared.tails.lock().unwrap().list.is_empty()
+    self.shared.tails.lock().list.is_empty()
   }
 
   pub fn capacity(&self) -> usize {
@@ -932,7 +920,7 @@ impl<T: Send + Clone> Sender<T> {
   #[inline]
   pub fn len(&self) -> usize {
     let head = unsafe { *self.shared.head.get() };
-    let tails_guard = self.shared.tails.lock().unwrap();
+    let tails_guard = self.shared.tails.lock();
     if tails_guard.list.is_empty() {
       return 0;
     }
@@ -973,7 +961,7 @@ impl<T: Send + Clone> AsyncSender<T> {
   }
 
   pub fn is_closed(&self) -> bool {
-    self.shared.tails.lock().unwrap().list.is_empty()
+    self.shared.tails.lock().list.is_empty()
   }
 
   pub fn capacity(&self) -> usize {
@@ -1001,7 +989,7 @@ impl<T: Send + Clone> AsyncSender<T> {
   #[inline]
   pub fn len(&self) -> usize {
     let head = unsafe { *self.shared.head.get() };
-    let tails_guard = self.shared.tails.lock().unwrap();
+    let tails_guard = self.shared.tails.lock();
     if tails_guard.list.is_empty() {
       return 0;
     }
@@ -1087,7 +1075,7 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
 
       let min_tail_recheck;
       {
-        let tails_guard = shared.tails.lock().unwrap();
+        let tails_guard = shared.tails.lock();
         if tails_guard.list.is_empty() {
           this.value = None;
           telemetry::log_event(

@@ -1,5 +1,3 @@
-// src/spmc/topic/sync_impl.rs
-
 #![cfg(feature = "topic")]
 
 use super::core::{SpmcTopicDispatcher, SubscriberList};

@@ -1,4 +1,3 @@
-// src/mpmc/sync_impl.rs
 //! Implementation of the synchronous, blocking send and receive logic for the MPMC channel.
 
 use super::core::{SyncWaiter, WaiterData};
@@ -65,14 +64,10 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
         || !guard.waiting_sync_receivers.is_empty() // A sync receiver is waiting.
         || (sender.shared.capacity > 0 // It's a buffered channel...
           && guard.queue.len() < sender.shared.capacity)
-      // ...and there is space.
       {
         // State changed. Don't park. Retrieve our item if it was for rendezvous.
         if is_rendezvous {
-          // This is a bit awkward. The `waiter` is consumed by `push_back` below.
-          // We can't easily get the item back out.
-          // Let's re-create the item from the waiter.
-          let mut temp_waiter = waiter; // Move waiter
+          let mut temp_waiter = waiter;
           current_item_opt = temp_waiter.take_item_from_sender_slot();
         }
         continue; // Loop again to retry the send.

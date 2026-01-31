@@ -1,4 +1,3 @@
-// src/mpmc/async_impl.rs
 //! Implementation of the asynchronous Future-based send and receive logic.
 
 use futures_core::Stream;
