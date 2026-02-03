@@ -77,21 +77,22 @@ where
         continue;
       }
 
-      let batch = guard
+      let needed = self.batch_size - self.buffer.len();
+      let mut scanned = 0;
+
+      let chunk = guard
         .iter()
         .skip(self.cursor.items_seen_in_shard)
-        .take(self.batch_size - self.buffer.len())
-        .filter_map(|(key, entry)| {
-          if entry.is_expired(self.cache.shared.time_to_idle) {
-            None
-          } else {
-            Some((key.clone(), entry.value()))
-          }
-        })
-        .collect::<VecDeque<_>>();
+        .take(needed);
 
-      self.cursor.items_seen_in_shard += batch.len();
-      self.buffer.extend(batch);
+      for (key, entry) in chunk {
+        scanned += 1;
+        if !entry.is_expired(self.cache.shared.time_to_idle) {
+          self.buffer.push_back((key.clone(), entry.value()));
+        }
+      }
+
+      self.cursor.items_seen_in_shard += scanned;
     } // Lock on shard is released here
 
     if self.cursor.shard_index >= num_shards {
@@ -222,21 +223,19 @@ where
             continue;
           }
 
-          let batch = guard
-            .iter()
-            .skip(cursor.items_seen_in_shard)
-            .take(batch_size - local_buf.len())
-            .filter_map(|(key, entry)| {
-              if entry.is_expired(time_to_idle) {
-                None
-              } else {
-                Some((key.clone(), entry.value()))
-              }
-            })
-            .collect::<VecDeque<_>>();
+          let needed = batch_size - local_buf.len();
+          let mut scanned = 0;
 
-          cursor.items_seen_in_shard += batch.len();
-          local_buf.extend(batch);
+          let chunk = guard.iter().skip(cursor.items_seen_in_shard).take(needed);
+
+          for (key, entry) in chunk {
+            scanned += 1;
+            if !entry.is_expired(time_to_idle) {
+              local_buf.push_back((key.clone(), entry.value()));
+            }
+          }
+
+          cursor.items_seen_in_shard += scanned;
         }
 
         let finished = cursor.shard_index >= num_shards;
