@@ -2,11 +2,13 @@ use crate::config::processed::RollingPolicyInternal;
 use crate::error::{Error, Result};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // Regex to parse filenames like: "prefix.YYYY-MM-DD_HH-MM-SS.1.log"
 // Captures: 1=timestamp, 2=sequence
@@ -20,15 +22,17 @@ struct RolledFile {
   timestamp: DateTime<Utc>,
   sequence: u32,
   path: std::path::PathBuf,
+  is_compressed: bool,
 }
 
 impl Ord for RolledFile {
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-    // Sort by timestamp descending (oldest first), then by sequence ascending.
-    self
+    // Sort by timestamp DESCENDING (newest first), then by sequence DESCENDING.
+    // This ensures retention keeps the most recent files.
+    other
       .timestamp
-      .cmp(&other.timestamp)
-      .then_with(|| self.sequence.cmp(&other.sequence))
+      .cmp(&self.timestamp)
+      .then_with(|| other.sequence.cmp(&self.sequence))
   }
 }
 
@@ -144,6 +148,7 @@ impl CustomRoller {
       timestamp: period_for_rolled_file,
       sequence: next_sequence,
       path: rolled_path,
+      is_compressed: false,
     });
     all_files.sort();
     self.cleanup(all_files)?;
@@ -166,7 +171,17 @@ impl CustomRoller {
         if !file_name.starts_with(&self.policy.file_name_prefix) {
           continue;
         }
-        if let Some(caps) = ROLLED_FILE_REGEX.captures(file_name) {
+
+        // Check if it's a compressed file
+        let is_compressed = file_name.ends_with(".gz");
+        let name_to_parse = if is_compressed {
+          // Strip .gz suffix before parsing with regex
+          file_name.strip_suffix(".gz").unwrap_or(file_name)
+        } else {
+          file_name
+        };
+
+        if let Some(caps) = ROLLED_FILE_REGEX.captures(name_to_parse) {
           let ts_str = &caps[1];
           let seq_str = &caps[2];
           if let (Some(timestamp), Ok(sequence)) =
@@ -176,6 +191,7 @@ impl CustomRoller {
               timestamp: Utc.from_utc_datetime(&timestamp),
               sequence,
               path,
+              is_compressed,
             });
           }
         }
@@ -185,15 +201,66 @@ impl CustomRoller {
     Ok(files)
   }
 
-  /// Deletes the oldest files based on retention policy.
-  fn cleanup(&self, sorted_files: Vec<RolledFile>) -> Result<()> {
+  /// Deletes old files and compresses recent ones based on policy.
+  fn cleanup(&self, mut sorted_files: Vec<RolledFile>) -> Result<()> {
+    // sorted_files is already sorted newest-first due to Ord impl
+
+    // --- STEP 1: Apply Retention Policy FIRST ---
+    // This ensures we don't waste time compressing files that will be deleted
     if let Some(max_retained) = self.policy.max_retained_sequences {
+      // Delete files beyond the retention limit
       for old_file in sorted_files.iter().skip(max_retained as usize) {
-        let _ = fs::remove_file(&old_file.path);
+        if let Err(e) = fs::remove_file(&old_file.path) {
+          eprintln!(
+            "[fibre_logging:WARN] Failed to delete old log file {:?}: {}",
+            old_file.path, e
+          );
+        }
+      }
+
+      // Keep only the retained files for compression
+      sorted_files.truncate(max_retained as usize);
+    }
+
+    // --- STEP 2: Apply Compression Policy ---
+    // Now compress the files we're actually keeping
+    if let Some(compression_config) = &self.policy.compression {
+      let uncompressed_to_keep = compression_config.max_uncompressed_sequences as usize;
+
+      // Files to compress are those beyond the "keep uncompressed" threshold
+      for file in sorted_files.iter().skip(uncompressed_to_keep) {
+        if !file.is_compressed && file.path.extension().map_or(false, |ext| ext == "log") {
+          // Compress this file
+          if let Err(e) = self.compress_file(&file.path, &compression_config.compressed_file_suffix)
+          {
+            eprintln!(
+              "[fibre_logging:WARN] Failed to compress {:?}: {}",
+              file.path, e
+            );
+          }
+        }
       }
     }
-    // NOTE: Compression logic is omitted for this bugfix to focus on core rolling.
-    // It can be added back here, operating on `sorted_files`.
+
+    Ok(())
+  }
+
+  /// Compress a log file using gzip.
+  fn compress_file(&self, source_path: &Path, compressed_suffix: &str) -> Result<()> {
+    let compressed_path = PathBuf::from(format!("{}{}", source_path.display(), compressed_suffix));
+
+    // Read source file
+    let input = fs::read(source_path)?;
+
+    // Create compressed file
+    let output_file = File::create(&compressed_path)?;
+    let mut encoder = GzEncoder::new(output_file, Compression::default());
+    encoder.write_all(&input)?;
+    encoder.finish()?;
+
+    // Delete original uncompressed file
+    fs::remove_file(source_path)?;
+
     Ok(())
   }
 
@@ -618,6 +685,100 @@ mod tests {
       fs::read_to_string(&active_log_path).unwrap(),
       String::from_utf8_lossy(msg3),
       "New active file should only contain messages from the new minute"
+    );
+  }
+
+  #[test]
+  fn test_retention_with_restart_scenario() {
+    use crate::config::processed::CompressionPolicyInternal;
+
+    // This test verifies your exact scenario: old files from October/December 2025
+    // should be properly managed when the app restarts in February 2026
+    let setup = setup(|p| {
+      p.time_granularity = "daily".to_string();
+      p.max_retained_sequences = Some(3);
+      p.compression = Some(CompressionPolicyInternal {
+        compressed_file_suffix: ".gz".to_string(),
+        max_uncompressed_sequences: 1,
+      });
+    });
+
+    // Simulate MULTIPLE old files from previous runs (like your October/December logs)
+    // We need MORE than max_retained_sequences to trigger deletion
+    let old_log1 = setup.policy.directory.join("test.2025-10-13.1.log");
+    let old_log2 = setup.policy.directory.join("test.2025-11-20.1.log");
+    let old_log3 = setup.policy.directory.join("test.2025-12-11.1.log");
+    let old_log4 = setup.policy.directory.join("test.2025-12-25.1.log");
+    fs::write(&old_log1, b"old data from october").unwrap();
+    fs::write(&old_log2, b"old data from november").unwrap();
+    fs::write(&old_log3, b"old data from december 11").unwrap();
+    fs::write(&old_log4, b"old data from december 25").unwrap();
+
+    // Now start the app "today" (Feb 6, 2026)
+    let today = Utc.with_ymd_and_hms(2026, 2, 6, 10, 0, 0).unwrap();
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), today).unwrap();
+
+    // Write some data today
+    roller.write_at_time(b"today's data", today).unwrap();
+    roller.flush().unwrap();
+
+    // Now simulate tomorrow - this should trigger a roll
+    // After this roll, we'll have 5 rolled files total (4 old + 1 new)
+    // With max_retained_sequences = 3, the 2 oldest should be deleted
+    let tomorrow = Utc.with_ymd_and_hms(2026, 2, 7, 10, 0, 0).unwrap();
+    roller.write_at_time(b"tomorrow's data", tomorrow).unwrap();
+    roller.flush().unwrap();
+
+    let files = list_files(&setup.policy);
+
+    // Debug output
+    println!("Files after roll: {:?}", files);
+
+    // We should have:
+    // - test.log (active file, NOT counted in retention)
+    // - 3 rolled files (max_retained_sequences = 3)
+    // Total = 4 files
+    assert_eq!(files.len(), 4, "Should have 3 rolled files + 1 active file");
+
+    // The active file should exist
+    assert!(
+      files.iter().any(|f| f == "test.log"),
+      "Active file should exist"
+    );
+
+    // The 2 oldest files should be DELETED
+    assert!(
+      !files.iter().any(|f| f.contains("2025-10-13")),
+      "October file should be deleted as it's beyond retention"
+    );
+    assert!(
+      !files.iter().any(|f| f.contains("2025-11-20")),
+      "November file should be deleted as it's beyond retention"
+    );
+
+    // The 3 most recent rolled files should exist
+    assert!(
+      files.iter().any(|f| f.contains("2025-12-25")),
+      "December 25 file should still exist"
+    );
+    assert!(
+      files.iter().any(|f| f.contains("2026-02-06")),
+      "Yesterday's file should exist and not be deleted"
+    );
+
+    // Verify compression: only the most recent rolled file should be uncompressed
+    let uncompressed_rolled_files: Vec<_> = files
+      .iter()
+      .filter(|f| f.ends_with(".log") && *f != "test.log")
+      .collect();
+    assert_eq!(
+      uncompressed_rolled_files.len(),
+      1,
+      "Only 1 rolled file should be uncompressed (max_uncompressed_sequences = 1)"
+    );
+    assert!(
+      uncompressed_rolled_files[0].contains("2026-02-06"),
+      "The most recent rolled file should be uncompressed"
     );
   }
 }
