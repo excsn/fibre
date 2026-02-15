@@ -1,21 +1,10 @@
-// benches/spsc_benches.rs
-
 use bench_matrix::{
-  criterion_runner::{
-    sync_suite::{SyncBenchmarkSuite, SyncTeardownFn},
-    ExtractorFn,
-  },
-  AbstractCombination, MatrixCellValue,
+  criterion_runner::sync_suite::SyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use std::{
-  future::Future,
-  pin::Pin,
-  time::{Duration, Instant},
-};
-use tokio::runtime::Runtime;
+use std::time::{Duration, Instant};
 
-use fibre::spsc; // Use your actual library import
+use fibre::spsc;
 
 const ITEM_VALUE: u64 = 42;
 
@@ -55,7 +44,6 @@ impl SyncReceiverSpsc for SpscSyncConsImpl {
   }
 }
 
-// Extractor for SPSC - NOW INCLUDES FILTERING
 fn extract_spsc_config(combo: &AbstractCombination) -> Result<SpscBenchConfig, String> {
   let capacity = (combo.get_u64(0)? as usize).max(1);
   let num_items = (combo.get_u64(1)? as usize).max(1);
@@ -69,12 +57,14 @@ fn extract_spsc_config(combo: &AbstractCombination) -> Result<SpscBenchConfig, S
     ));
   }
 
-  Ok(SpscBenchConfig { capacity, num_items })
+  Ok(SpscBenchConfig {
+    capacity,
+    num_items,
+  })
 }
 
 // Setup for Sync SPSC
 fn setup_fn_spsc_sync(cfg: &SpscBenchConfig) -> Result<(BenchContext, SpscSyncState), String> {
-  // Capacity check is now primarily in the extractor.
   let (p, r) = spsc::bounded_sync(cfg.capacity);
   Ok((
     BenchContext::default(),
@@ -88,7 +78,7 @@ fn setup_fn_spsc_sync(cfg: &SpscBenchConfig) -> Result<(BenchContext, SpscSyncSt
 // Benchmark Logic for Sync SPSC
 fn benchmark_logic_spsc_sync(
   mut ctx: BenchContext,
-  mut state: SpscSyncState,
+  state: SpscSyncState,
   cfg: &SpscBenchConfig,
 ) -> (BenchContext, SpscSyncState, Duration) {
   let start_time = Instant::now();

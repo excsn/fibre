@@ -1,5 +1,3 @@
-// benches/spmc_sync.rs
-
 use bench_matrix::{
   criterion_runner::sync_suite::SyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
@@ -45,7 +43,7 @@ fn benchmark_logic_spmc_sync(
   state: SpmcBenchState,
   cfg: &SpmcBenchConfig,
 ) -> (BenchContext, SpmcBenchState, Duration) {
-  let (mut tx, rx) = spmc::bounded(cfg.capacity);
+  let (tx, rx) = spmc::bounded(cfg.capacity);
   let receivers: Vec<_> = (0..cfg.num_consumers).map(|_| rx.clone()).collect();
   drop(rx);
 
@@ -55,7 +53,7 @@ fn benchmark_logic_spmc_sync(
   let start_time = Instant::now();
 
   thread::scope(|s| {
-    for mut receiver in receivers {
+    for receiver in receivers {
       // FIX: Clone the Arc reference for each thread.
       let barrier_clone = Arc::clone(&barrier);
       // The `move` is still needed for `receiver`. The closure now moves

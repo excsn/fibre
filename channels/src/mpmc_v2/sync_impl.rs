@@ -3,7 +3,7 @@
 use super::core::{SyncWaiter, WaiterData};
 use super::{Receiver, Sender};
 use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
-use crate::mpmc::backoff;
+use crate::mpmc_v2::backoff;
 use crate::RecvErrorTimeout;
 
 use std::sync::atomic::{AtomicBool, Ordering};

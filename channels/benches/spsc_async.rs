@@ -1,10 +1,7 @@
-// benches/spsc_benches.rs
-
 use bench_matrix::{
-  criterion_runner::{
-    async_suite::{AsyncBenchmarkSuite, AsyncTeardownFn},
-    ExtractorFn,
-  },
+  criterion_runner::
+    async_suite::AsyncBenchmarkSuite
+  ,
   AbstractCombination, MatrixCellValue,
 };
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
@@ -15,7 +12,7 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
-use fibre::spsc; // Use your actual library import
+use fibre::spsc;
 
 const ITEM_VALUE: u64 = 42;
 

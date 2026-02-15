@@ -1,5 +1,3 @@
-// benches/spmc_async.rs
-
 use bench_matrix::{
   criterion_runner::async_suite::AsyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
@@ -51,14 +49,14 @@ fn benchmark_logic_spmc_async(
 ) -> Pin<Box<dyn Future<Output = (BenchContext, SpmcBenchState, Duration)> + Send>> {
   let cfg_clone = cfg.clone();
   Box::pin(async move {
-    let (mut tx, rx) = spmc::bounded_async(cfg_clone.capacity);
+    let (tx, rx) = spmc::bounded_async(cfg_clone.capacity);
     let receivers: Vec<_> = (0..cfg_clone.num_consumers).map(|_| rx.clone()).collect();
     drop(rx);
 
     let barrier = Arc::new(Barrier::new(cfg_clone.num_consumers + 1));
     let mut consumer_handles = Vec::new();
 
-    for mut receiver in receivers {
+    for receiver in receivers {
       let barrier = barrier.clone();
       consumer_handles.push(tokio::spawn(async move {
         barrier.wait().await;

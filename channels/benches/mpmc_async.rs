@@ -1,5 +1,3 @@
-// benches/mpmc_async.rs
-
 use bench_matrix::{criterion_runner::async_suite::AsyncBenchmarkSuite, AbstractCombination, MatrixCellValue};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::{
