@@ -1,5 +1,3 @@
-// src/mpmc_exp/mod.rs
-
 //! A high-performance, flexible, lock-based MPMC (Multi-Sender, Multi-Receiver) channel.
 //!
 //! This MPMC channel implementation is designed for both high performance and flexibility.
@@ -35,10 +33,7 @@ mod core;
 mod sync_impl;
 
 use self::core::MpmcShared;
-use crate::internal::waiter::{AsyncWaiterNode, LinkedNode};
 use ::core::mem;
-use std::marker::PhantomPinned;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -84,8 +79,6 @@ pub struct AsyncSender<T: Send> {
 pub struct AsyncReceiver<T: Send> {
   shared: Arc<MpmcShared<T>>,
   closed: AtomicBool,
-  waiter_node: AsyncWaiterNode<T>,
-  _pin: PhantomPinned,
 }
 
 // --- Channel Constructors ---
@@ -129,8 +122,6 @@ pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver
     AsyncReceiver {
       shared,
       closed: AtomicBool::new(false),
-      waiter_node: AsyncWaiterNode::new(),
-      _pin: PhantomPinned,
     },
   )
 }
@@ -148,6 +139,7 @@ pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
 impl<T: Send> Clone for Sender<T> {
   fn clone(&self) -> Self {
     self.shared.internal.lock().sender_count += 1;
+    self.shared.sender_count.fetch_add(1, Ordering::Relaxed);
     Sender {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
@@ -168,6 +160,7 @@ impl<T: Send> Clone for Receiver<T> {
 impl<T: Send> Clone for AsyncSender<T> {
   fn clone(&self) -> Self {
     self.shared.internal.lock().sender_count += 1;
+    self.shared.sender_count.fetch_add(1, Ordering::Relaxed);
     AsyncSender {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
@@ -180,8 +173,6 @@ impl<T: Send> Clone for AsyncReceiver<T> {
     AsyncReceiver {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
-      waiter_node: AsyncWaiterNode::new(),
-      _pin: PhantomPinned,
     }
   }
 }
@@ -228,15 +219,31 @@ impl<T: Send> Sender<T> {
   }
 
   fn close_internal(&self) {
-    let mut guard = self.shared.internal.lock();
-    guard.sender_count -= 1;
-    if guard.sender_count == 0 {
-      while let Some(node) = unsafe { guard.waiting_sync_receivers.pop_front() } {
-        unsafe { node.as_ref().wake() };
+    let sync_waiters;
+    let async_waiters;
+    {
+      let mut guard = self.shared.internal.lock();
+      guard.sender_count -= 1;
+      self.shared.sender_count.store(guard.sender_count, Ordering::Relaxed);
+      // If we are the last sender, the channel is now disconnected.
+      // We must wake up all waiting receivers to notify them.
+      if guard.sender_count == 0 { // Changed to use drain().collect()
+        sync_waiters = guard.waiting_sync_receivers.drain().collect::<Vec<_>>();
+        async_waiters = guard.waiting_async_receivers.drain().collect::<Vec<_>>();
+      } else {
+        return;
       }
-      while let Some(node) = unsafe { guard.waiting_async_receivers.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      }
+    }
+    // Wake waiters outside the lock to reduce contention.
+    for waiter in sync_waiters {
+      // Safety: The `done` pointer points to a stack-allocated flag in the waiting thread.
+      // We know this is safe because the waiter is removed from the queue (which we just did via drain/pop)
+      // before the stack frame is invalidated.
+      unsafe { (*waiter.done).store(true, Ordering::Release) };
+      waiter.thread.unpark();
+    }
+    for waiter in async_waiters {
+      waiter.waker.wake();
     }
   }
 
@@ -355,29 +362,38 @@ impl<T: Send> Receiver<T> {
   }
 
   fn close_internal(&self) {
-    let mut guard = self.shared.internal.lock();
-    guard.receiver_count -= 1;
-    if guard.receiver_count == 0 {
-      while let Some(node) = unsafe { guard.waiting_sync_senders.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      }
-      while let Some(node) = unsafe { guard.waiting_async_senders.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      }
-    } else {
-      if let Some(node) = unsafe { guard.waiting_sync_senders.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      } else if let Some(node) = unsafe { guard.waiting_async_senders.pop_front() } {
-        unsafe { node.as_ref().wake() };
+    let sync_waiters;
+    let async_waiters;
+    {
+      let mut guard = self.shared.internal.lock();
+      guard.receiver_count -= 1;
+      // If we are the last receiver, the channel is now closed to senders.
+      // We must wake up all waiting senders to notify them.
+      if guard.receiver_count == 0 { // Changed to use drain().collect()
+        sync_waiters = guard.waiting_sync_senders.drain().collect::<Vec<_>>();
+        async_waiters = guard.waiting_async_senders.drain().collect::<Vec<_>>();
+      } else {
+        // Not the last receiver. To prevent deadlocks in rendezvous channels,
+        // we wake one waiting sender of each type. They can try again and
+        // potentially find another active receiver.
+        sync_waiters = guard.waiting_sync_senders.pop_front().into_iter().collect();
+        async_waiters = guard
+          .waiting_async_senders
+          .pop_front()
+          .into_iter()
+          .collect();
       }
     }
-    if guard.sender_count == 0 {
-      while let Some(node) = unsafe { guard.waiting_sync_receivers.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      }
-      while let Some(node) = unsafe { guard.waiting_async_receivers.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      }
+    // Wake waiters outside the lock.
+    for waiter in sync_waiters {
+      // Safety: The `done` pointer points to a stack-allocated flag in the waiting thread.
+      // We know this is safe because the waiter is removed from the queue (which we just did via drain/pop)
+      // before the stack frame is invalidated.
+      unsafe { (*waiter.done).store(true, Ordering::Release) };
+      waiter.thread.unpark();
+    }
+    for waiter in async_waiters {
+      waiter.waker.wake();
     }
   }
 
@@ -408,8 +424,6 @@ impl<T: Send> Receiver<T> {
     AsyncReceiver {
       shared,
       closed: AtomicBool::new(false),
-      waiter_node: AsyncWaiterNode::new(),
-      _pin: PhantomPinned,
     }
   }
 
@@ -488,15 +502,28 @@ impl<T: Send> AsyncSender<T> {
   }
 
   fn close_internal(&self) {
-    let mut guard = self.shared.internal.lock();
-    guard.sender_count -= 1;
-    if guard.sender_count == 0 {
-      while let Some(node) = unsafe { guard.waiting_sync_receivers.pop_front() } {
-        unsafe { node.as_ref().wake() };
+    let sync_waiters;
+    let async_waiters;
+    {
+      let mut guard = self.shared.internal.lock();
+      guard.sender_count -= 1;
+      self.shared.sender_count.store(guard.sender_count, Ordering::Relaxed);
+      if guard.sender_count == 0 { // Changed to use drain().collect()
+        sync_waiters = guard.waiting_sync_receivers.drain().collect::<Vec<_>>();
+        async_waiters = guard.waiting_async_receivers.drain().collect::<Vec<_>>();
+      } else {
+        return;
       }
-      while let Some(node) = unsafe { guard.waiting_async_receivers.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      }
+    }
+    for waiter in sync_waiters {
+      // Safety: The `done` pointer points to a stack-allocated flag in the waiting thread.
+      // We know this is safe because the waiter is removed from the queue (which we just did via drain/pop)
+      // before the stack frame is invalidated.
+      unsafe { (*waiter.done).store(true, Ordering::Release) };
+      waiter.thread.unpark();
+    }
+    for waiter in async_waiters {
+      waiter.waker.wake();
     }
   }
 
@@ -594,29 +621,32 @@ impl<T: Send> AsyncReceiver<T> {
   }
 
   fn close_internal(&self) {
-    let mut guard = self.shared.internal.lock();
-    guard.receiver_count -= 1;
-    if guard.receiver_count == 0 {
-      while let Some(node) = unsafe { guard.waiting_sync_senders.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      }
-      while let Some(node) = unsafe { guard.waiting_async_senders.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      }
-    } else {
-      if let Some(node) = unsafe { guard.waiting_sync_senders.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      } else if let Some(node) = unsafe { guard.waiting_async_senders.pop_front() } {
-        unsafe { node.as_ref().wake() };
+    let sync_waiters;
+    let async_waiters;
+    {
+      let mut guard = self.shared.internal.lock();
+      guard.receiver_count -= 1;
+      if guard.receiver_count == 0 { // Changed to use drain().collect()
+        sync_waiters = guard.waiting_sync_senders.drain().collect::<Vec<_>>();
+        async_waiters = guard.waiting_async_senders.drain().collect::<Vec<_>>();
+      } else {
+        sync_waiters = guard.waiting_sync_senders.pop_front().into_iter().collect();
+        async_waiters = guard
+          .waiting_async_senders
+          .pop_front()
+          .into_iter()
+          .collect();
       }
     }
-    if guard.sender_count == 0 {
-      while let Some(node) = unsafe { guard.waiting_sync_receivers.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      }
-      while let Some(node) = unsafe { guard.waiting_async_receivers.pop_front() } {
-        unsafe { node.as_ref().wake() };
-      }
+    for waiter in sync_waiters {
+      // Safety: The `done` pointer points to a stack-allocated flag in the waiting thread.
+      // We know this is safe because the waiter is removed from the queue (which we just did via drain/pop)
+      // before the stack frame is invalidated.
+      unsafe { (*waiter.done).store(true, Ordering::Release) };
+      waiter.thread.unpark();
+    }
+    for waiter in async_waiters {
+      waiter.waker.wake();
     }
   }
 
@@ -679,13 +709,6 @@ impl<T: Send> AsyncReceiver<T> {
 
 impl<T: Send> Drop for AsyncReceiver<T> {
   fn drop(&mut self) {
-    if self.waiter_node.is_enqueued() {
-      let mut guard = self.shared.internal.lock();
-      unsafe {
-        let node_ptr = std::ptr::NonNull::from(&mut self.waiter_node);
-        guard.waiting_async_receivers.remove(node_ptr);
-      }
-    }
     let _ = self.close();
   }
 }

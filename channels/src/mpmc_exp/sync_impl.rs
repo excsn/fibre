@@ -1,14 +1,14 @@
 //! Implementation of the synchronous, blocking send and receive logic for the MPMC channel.
 
+use super::core::{SyncReceiverWaiter, SyncSenderWaiter};
 use super::{Receiver, Sender};
 use crate::error::{RecvError, SendError, TryRecvError, TrySendError};
-use crate::internal::waiter::{AsyncWaiterNode, SyncWaiterNode};
+use crate::internal::cache_padded::CachePadded;
 use crate::mpmc_exp::backoff;
 use crate::RecvErrorTimeout;
 
-use std::pin::Pin;
-use std::ptr::NonNull;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -18,188 +18,108 @@ use std::time::{Duration, Instant};
 /// park the current thread using an adaptive backoff strategy until space becomes
 /// available or the channel is closed.
 pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), SendError> {
-  // Use an Option to manage ownership of the item across loop iterations.
-  let mut current_item_opt = Some(item);
+  let mut item = Some(item);
+  let is_rendezvous = sender.shared.capacity == 0;
 
   loop {
-    // We must have an item to send at the start of the loop.
-    let item_to_send = current_item_opt
-      .take()
-      .expect("Item should always exist at the start of the loop");
+    // --- Phase 1: Fast path: try to send without blocking ---
+    let current_item = item.take().unwrap();
+    match sender.shared.try_send_core(current_item) {
+      Ok(()) => return Ok(()), // Success!
+      Err(TrySendError::Closed(_)) => return Err(SendError::Closed),
+      Err(TrySendError::Sent(_)) => unreachable!(),
+      Err(TrySendError::Full(returned)) => {
+        item = Some(returned); // Keep ownership of the item
+      }
+    }
 
-    // --- Prepare to park (optimistic allocation on stack) ---
-    let mut node = SyncWaiterNode::new(thread::current());
-    node.item = Some(item_to_send);
-
-    // Pin the node on the stack.
-    // Safety: We do not move `node` after this point until it is dropped/goes out of scope.
-    let mut pinned_node = unsafe { Pin::new_unchecked(&mut node) };
-    let node_ptr = unsafe { NonNull::from(pinned_node.as_mut().get_unchecked_mut()) };
-
-    // --- Single Lock Scope ---
+    // --- Phase 2: Slow path: lock, re-check, and potentially park ---
+    let done_flag = CachePadded::new(AtomicBool::new(false));
     {
       let mut guard = sender.shared.internal.lock();
+
+      // Re-check state under lock to prevent lost wakeups
+      if !guard.waiting_async_receivers.is_empty() // A receiver is waiting for our item.
+        || !guard.waiting_sync_receivers.is_empty() // A sync receiver is waiting.
+        || (sender.shared.capacity > 0 // It's a buffered channel...
+          && guard.queue.len() < sender.shared.capacity)
+      {
+        // State changed, retry without parking
+        drop(guard);
+        continue;
+      }
 
       if guard.receiver_count == 0 {
         return Err(SendError::Closed);
       }
 
-      // 1. Priority: Wake a waiting receiver (Direct Handoff)
-      if let Some(mut waiter_ptr) = unsafe { guard.waiting_async_receivers.pop_front() } {
-        let waiter = unsafe { waiter_ptr.as_mut() };
-        // Take item from OUR node and give to RECEIVER node
-        let item = unsafe { pinned_node.as_mut().get_unchecked_mut() }.item.take().unwrap();
-        waiter.item = Some(item);
-        drop(guard);
-        waiter.wake();
-        return Ok(());
-      }
-      if let Some(mut waiter_ptr) = unsafe { guard.waiting_sync_receivers.pop_front() } {
-        let waiter = unsafe { waiter_ptr.as_mut() };
-        // Take item from OUR node and give to RECEIVER node
-        let item = unsafe { pinned_node.as_mut().get_unchecked_mut() }.item.take().unwrap();
-        waiter.item = Some(item);
-        drop(guard);
-        waiter.wake();
-        return Ok(());
-      }
-
-      // 2. Priority: Push to buffer
-      if sender.shared.capacity > 0 && guard.queue.len() < sender.shared.capacity {
-        let item = unsafe { pinned_node.as_mut().get_unchecked_mut() }.item.take().unwrap();
-        guard.queue.push_back(item);
-        drop(guard);
-        return Ok(());
-      }
-
-      // 3. Fallback: Park
-      unsafe {
-        guard.waiting_sync_senders.push_back(node_ptr);
-      }
+      // Commit to parking: create waiter and flag now.
+      let waiter = SyncSenderWaiter {
+        thread: thread::current(),
+        data: if is_rendezvous { item.take() } else { None },
+        done: &done_flag,
+      };
+      guard.waiting_sync_senders.push_back(waiter);
     }
 
-    // --- Phase 4: Wait ---
-    // The adaptive wait will spin, then yield, then park until `done_flag` is true.
-    backoff::adaptive_wait(|| pinned_node.notified.load(Ordering::Acquire));
+    // Wait outside the lock.
+    backoff::adaptive_wait(&done_flag);
 
-    // --- Phase 5: Handle wake-up ---
-    // Ensure we are removed from the queue.
-    {
-      let mut guard = sender.shared.internal.lock();
-      unsafe {
-        guard.waiting_sync_senders.remove(node_ptr);
-      }
+    if is_rendezvous {
+      // For rendezvous, the item was moved into the waiter. The send is complete.
+      return if sender.is_closed() && !done_flag.load(Ordering::Acquire) {
+        Err(SendError::Closed)
+      } else {
+        Ok(())
+      };
     }
-
-    if pinned_node.item.is_none() {
-      // Item was taken, send successful.
-      return Ok(());
-    } else {
-      // Item was not taken (spurious wake or closure). Retrieve it.
-      current_item_opt = unsafe { pinned_node.as_mut().get_unchecked_mut() }.item.take();
-      if sender.is_closed() {
-        return Err(SendError::Closed);
-      }
-    }
-
-    // For buffered channels, being woken just means there might be space.
-    // The item is still in `current_item_opt`, so we loop to try sending again.
+    // For buffered, `item` is still `Some`, so we loop to retry.
   }
 }
 
 /// The synchronous, blocking receive operation.
 ///
-/// This function will attempt to receive an item. If the channel is empty, it will
-/// park the current thread using an adaptive backoff strategy until an item
-/// is available or the channel is disconnected.
 pub(crate) fn recv_sync<T: Send>(receiver: &Receiver<T>) -> Result<T, RecvError> {
   loop {
-    // --- Prepare to park ---
-    let mut node = SyncWaiterNode::<T>::new(thread::current());
-    let mut pinned_node = unsafe { Pin::new_unchecked(&mut node) };
-    let node_ptr = unsafe { NonNull::from(pinned_node.as_mut().get_unchecked_mut()) };
+    // --- Phase 1: Attempt a non-blocking receive ---
+    match receiver.shared.try_recv_core() {
+      Ok(item) => return Ok(item), // Success!
+      Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
+      Err(TryRecvError::Empty) => {
+        // Channel is empty, prepare to park.
+      }
+    }
 
-    // --- Single Lock Scope ---
+    // --- Phase 2: Slow path: lock and decide whether to park ---
+    let done_flag = CachePadded::new(AtomicBool::new(false));
     {
       let mut guard = receiver.shared.internal.lock();
 
-      // 1. Priority: Check buffer
-      if let Some(item) = guard.queue.pop_front() {
-        // Wake a buffered sender if we freed space
-        let mut sender_to_wake: Option<NonNull<()>> = None;
-        let mut is_async = false;
-        if receiver.shared.capacity > 0 {
-          if let Some(mut sender_ptr) = unsafe { guard.waiting_async_senders.pop_front() } {
-            let sender = unsafe { sender_ptr.as_mut() };
-            let sender_item = sender.item.take().expect("Sender must have an item");
-            guard.queue.push_back(sender_item);
-            sender_to_wake = Some(sender_ptr.cast::<()>());
-            is_async = true;
-          } else if let Some(mut sender_ptr) = unsafe { guard.waiting_sync_senders.pop_front() } {
-            let sender = unsafe { sender_ptr.as_mut() };
-            let sender_item = sender.item.take().expect("Sender must have an item");
-            guard.queue.push_back(sender_item);
-            sender_to_wake = Some(sender_ptr.cast::<()>());
-            is_async = false;
-          }
-        }
-        drop(guard);
-        if let Some(sender_ptr) = sender_to_wake {
-          unsafe {
-            if is_async {
-              let ptr = sender_ptr.cast::<AsyncWaiterNode<T>>();
-              ptr.as_ref().wake();
-            } else {
-              let ptr = sender_ptr.cast::<SyncWaiterNode<T>>();
-              ptr.as_ref().wake();
-            }
-          }
-        }
-        return Ok(item);
+      // Re-check state under lock. An item may have arrived.
+      if !guard.queue.is_empty()
+        || (receiver.shared.capacity == 0
+          && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
+      {
+        continue; // Loop to retry receive.
       }
 
-      // 2. Priority: Rendezvous Handoff
-      if let Some(mut sender_ptr) = unsafe { guard.waiting_async_senders.pop_front() } {
-        let sender = unsafe { sender_ptr.as_mut() };
-        let item = sender.item.take().expect("Sender must have an item");
-        drop(guard);
-        sender.wake();
-        return Ok(item);
-      }
-      if let Some(mut sender_ptr) = unsafe { guard.waiting_sync_senders.pop_front() } {
-        let sender = unsafe { sender_ptr.as_mut() };
-        let item = sender.item.take().expect("Sender must have an item");
-        drop(guard);
-        sender.wake();
-        return Ok(item);
-      }
-
-      // 3. Check Disconnect
       if guard.sender_count == 0 {
         return Err(RecvError::Disconnected);
       }
 
-      // 4. Park
-      unsafe {
-        guard.waiting_sync_receivers.push_back(node_ptr);
-      }
+      // Commit to parking.
+      let waiter = SyncReceiverWaiter {
+        thread: thread::current(),
+        done: &done_flag,
+      };
+      guard.waiting_sync_receivers.push_back(waiter);
     }
 
-    // --- Phase 4: Wait ---
-    backoff::adaptive_wait(|| pinned_node.notified.load(Ordering::Acquire));
+    // --- Phase 3: Wait outside the lock ---
+    backoff::adaptive_wait(&done_flag);
 
-    // --- Phase 5: Handle wake-up ---
-    {
-      let mut guard = receiver.shared.internal.lock();
-      unsafe {
-        guard.waiting_sync_receivers.remove(node_ptr);
-      }
-    }
-
-    // Check if we received an item via direct handoff
-    if let Some(item) = unsafe { pinned_node.as_mut().get_unchecked_mut() }.item.take() {
-      return Ok(item);
-    }
+    // --- Phase 4: Handle wake-up ---
+    // Being woken means an item is likely available. Loop to the top to `try_recv_core` again.
   }
 }
 
@@ -225,9 +145,7 @@ pub(crate) fn recv_timeout_sync<T: Send>(
     let remaining_timeout = timeout - elapsed;
 
     // --- Phase 2: Prepare to park ---
-    let mut node = SyncWaiterNode::<T>::new(thread::current());
-    let mut pinned_node = unsafe { Pin::new_unchecked(&mut node) };
-    let node_ptr = unsafe { NonNull::from(pinned_node.as_mut().get_unchecked_mut()) };
+    let done_flag = CachePadded::new(AtomicBool::new(false));
 
     // --- Phase 3: Lock, re-check, and commit to parking ---
     {
@@ -235,7 +153,8 @@ pub(crate) fn recv_timeout_sync<T: Send>(
 
       // Re-check state under lock.
       if !guard.queue.is_empty()
-        || (receiver.shared.capacity == 0 && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
+        || (receiver.shared.capacity == 0
+          && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
       {
         drop(guard);
         // An item might be available, loop to try_recv_core again without parking
@@ -250,31 +169,27 @@ pub(crate) fn recv_timeout_sync<T: Send>(
         return Err(RecvErrorTimeout::Disconnected);
       }
 
-      unsafe {
-        guard.waiting_sync_receivers.push_back(node_ptr);
-      }
+      let waiter = SyncReceiverWaiter {
+        thread: thread::current(),
+        done: &done_flag,
+      };
+      guard.waiting_sync_receivers.push_back(waiter);
     }
 
     // --- Phase 4: Wait with timeout ---
     thread::park_timeout(remaining_timeout);
 
     // --- Phase 5: Handle wake-up ---
-    {
-      let mut guard = receiver.shared.internal.lock();
-      unsafe {
-        guard.waiting_sync_receivers.remove(node_ptr);
+    // If we were woken, the flag will be set.
+    if done_flag.load(Ordering::Acquire) {
+      match receiver.shared.try_recv_core() {
+        Ok(item) => return Ok(item),
+        Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+        Err(TryRecvError::Empty) => continue, // Spurious wakeup, loop to check timeout and retry
       }
     }
 
-    // Check if we received an item via direct handoff
-    if let Some(item) = unsafe { pinned_node.as_mut().get_unchecked_mut() }.item.take() {
-      return Ok(item);
-    }
-
-    match receiver.shared.try_recv_core() {
-      Ok(item) => return Ok(item),
-      Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
-      Err(TryRecvError::Empty) => { /* Loop to check timeout and maybe park again */ }
-    }
+    // If the flag is not set, it means we timed out. The loop will check the deadline
+    // and exit or park again.
   }
 }

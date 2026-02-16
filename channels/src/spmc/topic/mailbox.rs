@@ -32,7 +32,7 @@ impl Waiter {
 /// The internal state of a single mailbox, protected by a Mutex.
 #[derive(Debug)]
 struct MailboxInternal<T> {
-  buffer: VecDeque<T>,
+  buffer: VecDeque<T>, //TODO update to use blocked vecdeque
   capacity: usize,
   /// The single consumer waiting for a message.
   consumer_waiter: Option<Waiter>,

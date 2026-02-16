@@ -1,19 +1,15 @@
-// src/mpmc/async_impl.rs
-
 //! Implementation of the asynchronous Future-based send and receive logic.
 
 use futures_core::Stream;
 
+use super::core::AsyncSenderWaiter;
 use super::{AsyncReceiver, AsyncSender};
 use crate::error::{SendError, TryRecvError, TrySendError};
-use crate::internal::waiter::{AsyncWaiterNode, LinkedNode};
 use crate::RecvError;
 
 use core::marker::PhantomPinned;
 use std::future::Future;
 use std::pin::Pin;
-use std::ptr::NonNull;
-use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
 
 // --- SendFuture ---
@@ -25,7 +21,6 @@ pub struct SendFuture<'a, T: Send> {
   sender: &'a AsyncSender<T>,
   // The item is wrapped in an Option so it can be taken during the poll.
   item: Option<T>,
-  waiter_node: AsyncWaiterNode<T>,
   _phantom: PhantomPinned,
 }
 
@@ -34,7 +29,6 @@ impl<'a, T: Send> SendFuture<'a, T> {
     Self {
       sender,
       item: Some(item),
-      waiter_node: AsyncWaiterNode::new(),
       _phantom: PhantomPinned,
     }
   }
@@ -46,71 +40,80 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
     'poll_loop: loop {
-      // Recover item from node if necessary (Rendezvous)
+      // If the item has already been sent, the future is complete.
       if this.item.is_none() {
-        match this.waiter_node.item.take() {
-          Some(recovered) => this.item = Some(recovered),
-          None => return Poll::Ready(Ok(())), // item was consumed, done
+        // This can happen if poll is called again after it has already completed.
+        return Poll::Ready(Ok(()));
+      }
+
+      // --- Phase 1: Try to send without parking ---
+      let item_to_send = this.item.take().unwrap();
+      match this.sender.shared.try_send_core(item_to_send) {
+        Ok(()) => {
+          return Poll::Ready(Ok(())); // Success!
         }
+        Err(TrySendError::Full(returned_item)) => {
+          // Channel is full, must park. Put the item back.
+          this.item = Some(returned_item);
+        }
+        Err(TrySendError::Closed(_)) => {
+          return Poll::Ready(Err(SendError::Closed));
+        }
+        Err(TrySendError::Sent(_)) => unreachable!(),
       }
 
-      let mut guard = this.sender.shared.internal.lock();
+      // --- Phase 2: Prepare to park ---
+      let is_rendezvous = this.sender.shared.capacity == 0;
 
-      if guard.receiver_count == 0 {
-        return Poll::Ready(Err(SendError::Closed));
-      }
+      // --- Phase 3: Lock, re-check, and commit to parking ---
+      {
+        let mut guard = this.sender.shared.internal.lock();
 
-      // 1. Wake waiting receiver (Direct Handoff)
-      if let Some(mut waiter_ptr) = unsafe { guard.waiting_async_receivers.pop_front() } {
-        let waiter = unsafe { waiter_ptr.as_mut() };
-        waiter.item = this.item.take();
-        drop(guard);
-        waiter.wake();
-        return Poll::Ready(Ok(()));
-      }
-      if let Some(mut waiter_ptr) = unsafe { guard.waiting_sync_receivers.pop_front() } {
-        let waiter = unsafe { waiter_ptr.as_mut() };
-        waiter.item = this.item.take();
-        drop(guard);
-        waiter.wake();
-        return Poll::Ready(Ok(()));
-      }
+        // Re-check under lock. State might have changed.
+        if !guard.waiting_async_receivers.is_empty()
+          || !guard.waiting_sync_receivers.is_empty()
+          || (this.sender.shared.capacity > 0 && guard.queue.len() < this.sender.shared.capacity)
+        {
+          drop(guard);
+          continue 'poll_loop; // Retry immediately.
+        }
 
-      // 2. Push to buffer
-      if this.sender.shared.capacity > 0 && guard.queue.len() < this.sender.shared.capacity {
-        guard.queue.push_back(this.item.take().unwrap());
-        drop(guard);
-        return Poll::Ready(Ok(()));
-      }
+        if guard.receiver_count == 0 {
+          this.item = None; // Drop the item.
+          return Poll::Ready(Err(SendError::Closed));
+        }
 
-      // 3. Park
-      this.waiter_node.item = this.item.take();
-      unsafe {
-        if this.waiter_node.is_enqueued() {
-          if !this.waiter_node.waker.as_ref().unwrap().will_wake(cx.waker()) {
-            this.waiter_node.waker = Some(cx.waker().clone());
+        let new_waker = cx.waker();
+
+        let mut found_existing = false;
+        for existing_waiter in guard.waiting_async_senders.iter_mut() {
+          if existing_waiter.waker.will_wake(new_waker) {
+            // Update the waker (in case it changed)
+            existing_waiter.waker = new_waker.clone();
+
+            // Update the data for rendezvous channels!
+            if is_rendezvous {
+              existing_waiter.data = this.item.take();
+            }
+            found_existing = true;
+            break;
           }
-        } else {
-          this.waiter_node.waker = Some(cx.waker().clone());
-          let node_ptr = NonNull::from(&mut this.waiter_node);
-          guard.waiting_async_senders.push_back(node_ptr);
         }
-      }
-      return Poll::Pending;
-    }
-  }
-}
 
-impl<'a, T: Send> Drop for SendFuture<'a, T> {
-  fn drop(&mut self) {
-    if self.waiter_node.is_enqueued() {
-      let mut guard = self.sender.shared.internal.lock();
-      unsafe {
-        let node_ptr = NonNull::from(&mut self.waiter_node);
-        guard.waiting_async_senders.remove(node_ptr);
+        if !found_existing {
+          // Safe to park. Create the waiter and add it to the async queue.
+          let waiter = AsyncSenderWaiter {
+            waker: new_waker.clone(),
+            data: if is_rendezvous {
+              this.item.take()
+            } else {
+              None
+            },
+          };
+          guard.waiting_async_senders.push_back(waiter);
+        }
+        return Poll::Pending;
       }
-      // If rendezvous and item is still in node, it gets dropped with the node.
-      // If item is gone from node, it was sent.
     }
   }
 }
@@ -120,185 +123,31 @@ impl<'a, T: Send> Drop for SendFuture<'a, T> {
 #[derive(Debug)]
 pub struct RecvFuture<'a, T: Send> {
   receiver: &'a AsyncReceiver<T>,
-  waiter_node: AsyncWaiterNode<T>,
-  _phantom: PhantomPinned,
 }
 
 impl<'a, T: Send> RecvFuture<'a, T> {
   pub(super) fn new(receiver: &'a AsyncReceiver<T>) -> Self {
-    Self {
-      receiver,
-      waiter_node: AsyncWaiterNode::new(),
-      _phantom: PhantomPinned,
-    }
+    Self { receiver }
   }
 }
 
 impl<'a, T: Send> Future for RecvFuture<'a, T> {
   type Output = Result<T, RecvError>;
 
-  fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let this = unsafe { self.as_mut().get_unchecked_mut() };
-
-    loop {
-      // Check if we have a node and if it has an item (direct handoff)
-      if let Some(item) = this.waiter_node.item.take() {
-        return Poll::Ready(Ok(item));
-      }
-
-      let mut guard = this.receiver.shared.internal.lock();
-
-      // 1. Check buffer
-      if let Some(item) = guard.queue.pop_front() {
-        // Wake a buffered sender if we freed space
-        let mut async_sender_to_wake = None;
-        let mut sync_sender_to_wake = None;
-        if this.receiver.shared.capacity > 0 {
-          if let Some(mut sender_ptr) = unsafe { guard.waiting_async_senders.pop_front() } {
-            let sender = unsafe { sender_ptr.as_mut() };
-            let sender_item = sender.item.take().expect("Sender must have an item");
-            guard.queue.push_back(sender_item);
-            async_sender_to_wake = Some(sender_ptr);
-          } else if let Some(mut sender_ptr) = unsafe { guard.waiting_sync_senders.pop_front() } {
-            let sender = unsafe { sender_ptr.as_mut() };
-            let sender_item = sender.item.take().expect("Sender must have an item");
-            guard.queue.push_back(sender_item);
-            sync_sender_to_wake = Some(sender_ptr);
-          }
-        }
-        drop(guard);
-        if let Some(sender_ptr) = async_sender_to_wake {
-          unsafe { sender_ptr.as_ref().wake() };
-        }
-        if let Some(sender_ptr) = sync_sender_to_wake {
-          unsafe { sender_ptr.as_ref().wake() };
-        }
-        return Poll::Ready(Ok(item));
-      }
-
-      // 2. Check Rendezvous Handoff
-      if let Some(mut sender_ptr) = unsafe { guard.waiting_async_senders.pop_front() } {
-        let sender = unsafe { sender_ptr.as_mut() };
-        let item = sender.item.take().expect("Sender must have an item");
-        drop(guard);
-        sender.wake();
-        return Poll::Ready(Ok(item));
-      }
-      if let Some(mut sender_ptr) = unsafe { guard.waiting_sync_senders.pop_front() } {
-        let sender = unsafe { sender_ptr.as_mut() };
-        let item = sender.item.take().expect("Sender must have an item");
-        drop(guard);
-        sender.wake();
-        return Poll::Ready(Ok(item));
-      }
-
-      if guard.sender_count == 0 {
-        return Poll::Ready(Err(RecvError::Disconnected));
-      }
-
-      // 3. Park
-      unsafe {
-        if this.waiter_node.is_enqueued() {
-          if !this.waiter_node.waker.as_ref().unwrap().will_wake(cx.waker()) {
-            this.waiter_node.waker = Some(cx.waker().clone());
-          }
-        } else {
-          this.waiter_node.waker = Some(cx.waker().clone());
-          let node_ptr = NonNull::from(&mut this.waiter_node);
-          guard.waiting_async_receivers.push_back(node_ptr);
-        }
-      }
-      return Poll::Pending;
-    }
-  }
-}
-
-impl<'a, T: Send> Drop for RecvFuture<'a, T> {
-  fn drop(&mut self) {
-    if self.waiter_node.is_enqueued() {
-      let mut guard = self.receiver.shared.internal.lock();
-      unsafe {
-        let node_ptr = NonNull::from(&mut self.waiter_node);
-        guard.waiting_async_receivers.remove(node_ptr);
-      }
-    }
+  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    self.receiver.shared.poll_recv_internal(cx)
   }
 }
 
 impl<T: Send> Stream for AsyncReceiver<T> {
   type Item = T;
 
-  fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-    let this = unsafe { self.as_mut().get_unchecked_mut() };
-
-    loop {
-      // Check if we have a node and if it has an item (direct handoff)
-      if let Some(item) = this.waiter_node.item.take() {
-        return Poll::Ready(Some(item));
-      }
-
-      let mut guard = this.shared.internal.lock();
-
-      // 1. Check buffer
-      if let Some(item) = guard.queue.pop_front() {
-        let mut async_sender_to_wake = None;
-        let mut sync_sender_to_wake = None;
-        if this.shared.capacity > 0 {
-          if let Some(mut sender_ptr) = unsafe { guard.waiting_async_senders.pop_front() } {
-            let sender = unsafe { sender_ptr.as_mut() };
-            let sender_item = sender.item.take().expect("Sender must have an item");
-            guard.queue.push_back(sender_item);
-            async_sender_to_wake = Some(sender_ptr);
-          } else if let Some(mut sender_ptr) = unsafe { guard.waiting_sync_senders.pop_front() } {
-            let sender = unsafe { sender_ptr.as_mut() };
-            let sender_item = sender.item.take().expect("Sender must have an item");
-            guard.queue.push_back(sender_item);
-            sync_sender_to_wake = Some(sender_ptr);
-          }
-        }
-        drop(guard);
-        if let Some(sender_ptr) = async_sender_to_wake {
-          unsafe { sender_ptr.as_ref().wake() };
-        }
-        if let Some(sender_ptr) = sync_sender_to_wake {
-          unsafe { sender_ptr.as_ref().wake() };
-        }
-        return Poll::Ready(Some(item));
-      }
-
-      // 2. Check Rendezvous Handoff
-      if let Some(mut sender_ptr) = unsafe { guard.waiting_async_senders.pop_front() } {
-        let sender = unsafe { sender_ptr.as_mut() };
-        let item = sender.item.take().expect("Sender must have an item");
-        drop(guard);
-        sender.wake();
-        return Poll::Ready(Some(item));
-      }
-      if let Some(mut sender_ptr) = unsafe { guard.waiting_sync_senders.pop_front() } {
-        let sender = unsafe { sender_ptr.as_mut() };
-        let item = sender.item.take().expect("Sender must have an item");
-        drop(guard);
-        sender.wake();
-        return Poll::Ready(Some(item));
-      }
-
-      if guard.sender_count == 0 {
-        return Poll::Ready(None);
-      }
-
-      // 3. Park
-      unsafe {
-        if this.waiter_node.is_enqueued() {
-          if !this.waiter_node.waker.as_ref().unwrap().will_wake(cx.waker()) {
-            this.waiter_node.waker = Some(cx.waker().clone());
-          }
-        } else {
-          this.waiter_node.waker = Some(cx.waker().clone());
-          let node_ptr = NonNull::from(&mut this.waiter_node);
-          guard.waiting_async_receivers.push_back(node_ptr);
-        }
-      }
-      return Poll::Pending;
+  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    // Delegate to the internal poll function and map the Result to an Option.
+    match self.shared.poll_recv_internal(cx) {
+      Poll::Ready(Ok(value)) => Poll::Ready(Some(value)),
+      Poll::Ready(Err(_)) => Poll::Ready(None), // Disconnected
+      Poll::Pending => Poll::Pending,
     }
   }
 }

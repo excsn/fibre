@@ -2,3 +2,4 @@
 
 pub(crate) mod cache_padded;
 pub(crate) mod waiter;
+pub(crate) mod blocked_deque;

@@ -14,8 +14,8 @@ pub mod mpsc;
 pub mod spmc;
 pub mod mpmc_v2;
 pub use mpmc_v2 as mpmc;
-// Experimental module for testing intrusive waiter queue vs vecdeque impl
-// pub mod mpmc_exp;
+// Experimental module for evolving mpmc impl
+pub mod mpmc_exp;
 // pub use mpmc_exp as mpmc;
 pub mod telemetry;
 
