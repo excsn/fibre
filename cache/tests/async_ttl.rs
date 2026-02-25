@@ -42,7 +42,7 @@ async fn test_async_item_expires_after_ttl() {
 async fn test_async_ttl_is_not_reset_on_access() {
   let cache = CacheBuilder::<&str, &str>::new()
     .time_to_live(TINY_TTL)
-    // --- FIX: Add high-precision timer mode ---
+    // --- Add high-precision timer mode ---
     .timer_mode(TimerWheelMode::HighPrecisionShortLived)
     .janitor_tick_interval(JANITOR_TICK)
     .build_async()

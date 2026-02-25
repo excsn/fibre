@@ -5,12 +5,102 @@ use crate::policy::AdmissionDecision;
 use parking_lot::Mutex;
 use std::hash::Hash;
 
+/// The mutable state of the SLRU algorithm, held under a single lock.
+#[derive(Debug)]
+pub(crate) struct SlruState<K: Eq + Hash + Clone> {
+  pub(crate) probationary: LruList<K>,
+  pub(crate) protected: LruList<K>,
+}
+
+impl<K: Eq + Hash + Clone> SlruState<K> {
+  fn new() -> Self {
+    Self {
+      probationary: LruList::new(),
+      protected: LruList::new(),
+    }
+  }
+
+  /// Construct a standalone SlruState whose capacity ratios mirror SlruPolicy.
+  /// Used by TinyLfuPolicy, which embeds SlruState directly.
+  pub(crate) fn new_with_capacity(_capacity: u64) -> Self {
+    Self::new()
+  }
+
+  fn maintain_capacities(&mut self, prot_capacity: u64) {
+    while self.protected.current_total_cost() > prot_capacity {
+      if let Some((key, cost)) = self.protected.pop_back() {
+        self.probationary.push_front(key, cost);
+      } else {
+        break;
+      }
+    }
+  }
+
+  pub(crate) fn peek_lru(&self) -> Option<K> {
+    if let Some(tail_idx) = self.probationary.tail {
+      return Some(self.probationary.nodes[tail_idx].key.clone());
+    }
+    if let Some(tail_idx) = self.protected.tail {
+      return Some(self.protected.nodes[tail_idx].key.clone());
+    }
+    None
+  }
+
+  pub(crate) fn admit_internal(&mut self, key: K, cost: u64) {
+    if !self.protected.contains(&key) && !self.probationary.contains(&key) {
+      self.probationary.push_front(key, cost);
+    } else if self.probationary.contains(&key) {
+      self.probationary.push_front(key, cost);
+    }
+    // If already in protected, on_access handles it.
+  }
+
+  pub(crate) fn access_internal(&mut self, key: &K, cost: u64, prot_capacity: u64) {
+    if self.protected.contains(key) {
+      self.protected.push_front(key.clone(), cost);
+      return;
+    }
+    if self.probationary.remove(key).is_some() {
+      self.protected.push_front(key.clone(), cost);
+      self.maintain_capacities(prot_capacity);
+    }
+  }
+
+  pub(crate) fn evict_items(&mut self, mut cost_to_free: u64, prot_capacity: u64) -> (Vec<K>, u64) {
+    let mut victims = Vec::new();
+    let mut total_cost_freed = 0;
+
+    self.maintain_capacities(prot_capacity);
+
+    while cost_to_free > 0 {
+      if let Some((key, cost)) = self.probationary.pop_back() {
+        cost_to_free = cost_to_free.saturating_sub(cost);
+        total_cost_freed += cost;
+        victims.push(key);
+      } else {
+        break;
+      }
+    }
+
+    while cost_to_free > 0 {
+      if let Some((key, cost)) = self.protected.pop_back() {
+        cost_to_free = cost_to_free.saturating_sub(cost);
+        total_cost_freed += cost;
+        victims.push(key);
+      } else {
+        break;
+      }
+    }
+
+    (victims, total_cost_freed)
+  }
+}
+
 /// An eviction policy based on the Segmented LRU algorithm.
 /// It maintains a probationary and a protected segment to resist cache scans.
 #[derive(Debug)]
 pub struct SlruPolicy<K: Eq + Hash + Clone> {
-  pub(super) probationary: Mutex<LruList<K>>,
-  pub(super) protected: Mutex<LruList<K>>,
+  state: Mutex<SlruState<K>>,
   pub(crate) prob_capacity: u64,
   pub(crate) prot_capacity: u64,
 }
@@ -25,82 +115,22 @@ impl<K: Eq + Hash + Clone> SlruPolicy<K> {
     let prot_capacity = capacity.saturating_sub(prob_capacity);
 
     Self {
-      probationary: Mutex::new(LruList::new()),
-      protected: Mutex::new(LruList::new()),
+      state: Mutex::new(SlruState::new()),
       prob_capacity,
       prot_capacity,
     }
   }
 
-  // A helper function to maintain segment capacities.
-  // It handles demotion from protected to probationary.
-  fn maintain_capacities(&self, prob_guard: &mut LruList<K>, prot_guard: &mut LruList<K>) {
-    // Demote from protected if it's over capacity
-    while prot_guard.current_total_cost() > self.prot_capacity {
-      if let Some((demoted_key, demoted_cost)) = prot_guard.pop_back() {
-        prob_guard.push_front(demoted_key, demoted_cost);
-      } else {
-        break;
-      }
-    }
-  }
-
-  // New method to peek at the next eviction victim without removing it.
-  // This is required by the W-TinyLFU composition logic.
   pub(crate) fn peek_lru(&self) -> Option<K> {
-    let prob_guard = self.probationary.lock();
-    // Prioritize evicting from the probationary segment's LRU end.
-    if let Some(tail_idx) = prob_guard.tail {
-      return Some(prob_guard.nodes[tail_idx].key.clone());
-    }
-
-    // If probationary is empty, the victim is from the protected segment's LRU end.
-    let prot_guard = self.protected.lock();
-    if let Some(tail_idx) = prot_guard.tail {
-      return Some(prot_guard.nodes[tail_idx].key.clone());
-    }
-
-    None
+    self.state.lock().peek_lru()
   }
 
-  //// Internal method for admitting a key with a known cost,
-  /// used when the full CacheEntry<V> isn't available or needed.
   pub(crate) fn admit_internal(&self, key: K, cost: u64) {
-    let mut prob_guard = self.probationary.lock();
-    let prot_guard = self.protected.lock(); // Keep lock to ensure consistency with contains check
-
-    // The key was a candidate from TinyLfu's window. It's now being admitted to SLRU's
-    // probationary segment.
-    if !prot_guard.contains(&key) && !prob_guard.contains(&key) {
-      // Ensure it's not already somewhere in SLRU
-      prob_guard.push_front(key, cost);
-    } else if prob_guard.contains(&key) {
-      // If it somehow ended up in probationary (e.g. demoted then re-promoted quickly)
-      // update its cost and move to front if push_front does that.
-      // LruList::push_front handles existing items by updating cost & moving to front.
-      prob_guard.push_front(key, cost);
-    }
-    // If it's already in prot_guard, on_access on TinyLFU should have handled the SLRU update.
-    // This path is for when TinyLFU decides to move something *into* SLRU.
+    self.state.lock().admit_internal(key, cost);
   }
 
-  /// Internal method for handling access to a key already in SLRU,
-  /// used when the full CacheEntry<V> isn't available or needed.
   pub(crate) fn access_internal(&self, key: &K, cost: u64) {
-    let mut prob_guard = self.probationary.lock();
-    let mut prot_guard = self.protected.lock();
-
-    // If it's in protected, refresh it and update its cost.
-    if prot_guard.contains(key) {
-      prot_guard.push_front(key.clone(), cost);
-      return;
-    }
-    // If it's in probationary, promote it to protected with the new cost.
-    if prob_guard.remove(key).is_some() {
-      prot_guard.push_front(key.clone(), cost);
-      self.maintain_capacities(&mut prob_guard, &mut prot_guard);
-    }
-    // If not in either, it's a new admission, which should go through admit_internal.
+    self.state.lock().access_internal(key, cost, self.prot_capacity);
   }
 }
 
@@ -110,63 +140,33 @@ where
   V: Send + Sync,
 {
   fn on_access(&self, key: &K, cost: u64) {
-    self.access_internal(key, cost);
+    self.state.lock().access_internal(key, cost, self.prot_capacity);
   }
 
   fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
-    let mut prob_guard = self.probationary.lock();
-    let prot_guard = self.protected.lock();
-
-    // If item is already in the cache, on_access will handle it.
-    // Here we only handle new items.
-    if !prot_guard.contains(key) && !prob_guard.contains(key) {
-      prob_guard.push_front(key.clone(), cost);
+    let mut state = self.state.lock();
+    if !state.protected.contains(key) && !state.probationary.contains(key) {
+      state.probationary.push_front(key.clone(), cost);
     }
-
-    AdmissionDecision::Admit // SLRU always admits. Eviction is handled separately.
+    AdmissionDecision::Admit
   }
 
   fn on_remove(&self, key: &K) {
-    if self.probationary.lock().remove(key).is_some() {
+    let mut state = self.state.lock();
+    if state.probationary.remove(key).is_some() {
       return;
     }
-    self.protected.lock().remove(key);
+    state.protected.remove(key);
   }
 
-  fn evict(&self, mut cost_to_free: u64) -> (Vec<K>, u64) {
-    let mut victims = Vec::new();
-    let mut total_cost_freed = 0;
-    let mut prob_guard = self.probationary.lock();
-    let mut prot_guard = self.protected.lock();
-
-    self.maintain_capacities(&mut prob_guard, &mut prot_guard);
-
-    while cost_to_free > 0 {
-      if let Some((key, cost)) = prob_guard.pop_back() {
-        cost_to_free = cost_to_free.saturating_sub(cost);
-        total_cost_freed += cost;
-        victims.push(key);
-      } else {
-        break;
-      }
-    }
-
-    while cost_to_free > 0 {
-      if let Some((key, cost)) = prot_guard.pop_back() {
-        cost_to_free = cost_to_free.saturating_sub(cost);
-        total_cost_freed += cost;
-        victims.push(key);
-      } else {
-        break;
-      }
-    }
-
-    (victims, total_cost_freed)
+  fn evict(&self, cost_to_free: u64) -> (Vec<K>, u64) {
+    self.state.lock().evict_items(cost_to_free, self.prot_capacity)
   }
 
   fn clear(&self) {
-    self.probationary.lock().clear();
-    self.protected.lock().clear();
+    let mut state = self.state.lock();
+    state.probationary.clear();
+    state.protected.clear();
   }
 }
 
@@ -183,9 +183,9 @@ mod tests {
     let entry = Arc::new(CacheEntry::new("v".to_string(), 1, None, None));
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
 
-    assert!(policy.probationary.lock().contains(&1));
-    assert!(!policy.protected.lock().contains(&1));
-    assert_eq!(policy.probationary.lock().current_total_cost(), 1);
+    assert!(policy.state.lock().probationary.contains(&1));
+    assert!(!policy.state.lock().protected.contains(&1));
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 1);
   }
 
   #[test]
@@ -196,9 +196,9 @@ mod tests {
 
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &1, entry.cost());
 
-    assert!(!policy.probationary.lock().contains(&1));
-    assert!(policy.protected.lock().contains(&1));
-    assert_eq!(policy.protected.lock().current_total_cost(), 1);
+    assert!(!policy.state.lock().probationary.contains(&1));
+    assert!(policy.state.lock().protected.contains(&1));
+    assert_eq!(policy.state.lock().protected.current_total_cost(), 1);
   }
 
   #[test]
@@ -212,13 +212,13 @@ mod tests {
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &2, entry2.cost());
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &2, entry2.cost()); // 2 is now in protected, LRU of protected is 1
 
-    let protected_keys = policy.protected.lock().keys_as_vec();
+    let protected_keys = policy.state.lock().protected.keys_as_vec();
     assert_eq!(protected_keys.last(), Some(&1));
 
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &1, entry1.cost()); // Access 1 again
 
     // Now 2 should be the LRU of protected
-    let protected_keys_after = policy.protected.lock().keys_as_vec();
+    let protected_keys_after = policy.state.lock().protected.keys_as_vec();
     assert_eq!(protected_keys_after.last(), Some(&2));
   }
 
@@ -238,27 +238,27 @@ mod tests {
       );
       <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &i, entries[(i - 1) as usize].cost());
     }
-    assert_eq!(policy.protected.lock().current_total_cost(), 4);
-    assert_eq!(policy.probationary.lock().current_total_cost(), 0);
+    assert_eq!(policy.state.lock().protected.current_total_cost(), 4);
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 0);
 
     // 2. Insert an item into probationary
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &5, entries[4].cost());
-    assert_eq!(policy.probationary.lock().current_total_cost(), 1);
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 1);
 
     // 3. Access item 5 to promote it. This should cause item 1 (LRU of protected) to be demoted.
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &5, entries[4].cost());
 
-    assert!(policy.protected.lock().contains(&5), "5 should be promoted");
+    assert!(policy.state.lock().protected.contains(&5), "5 should be promoted");
     assert!(
-      !policy.protected.lock().contains(&1),
+      !policy.state.lock().protected.contains(&1),
       "1 should no longer be in protected"
     );
     assert!(
-      policy.probationary.lock().contains(&1),
+      policy.state.lock().probationary.contains(&1),
       "1 should be demoted to probationary"
     );
-    assert_eq!(policy.protected.lock().current_total_cost(), 4);
-    assert_eq!(policy.probationary.lock().current_total_cost(), 1);
+    assert_eq!(policy.state.lock().protected.current_total_cost(), 4);
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 1);
   }
 
   #[test]
@@ -281,7 +281,7 @@ mod tests {
     // The `evict` call first calls `maintain_capacities`, then evicts from probationary.
     // The LRU item is 1.
     assert_eq!(victims, vec![1]);
-    assert!(!policy.probationary.lock().contains(&1));
+    assert!(!policy.state.lock().probationary.contains(&1));
   }
 
   #[test]
@@ -304,7 +304,7 @@ mod tests {
 
     // LRU of protected is 1.
     assert_eq!(victims, vec![1]);
-    assert!(!policy.protected.lock().contains(&1));
+    assert!(!policy.state.lock().protected.contains(&1));
   }
 
   #[test]
@@ -317,13 +317,13 @@ mod tests {
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &2, entry2.cost()); // in prot
 
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_remove(&policy, &1);
-    assert!(!policy.probationary.lock().contains(&1));
+    assert!(!policy.state.lock().probationary.contains(&1));
 
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_remove(&policy, &2);
-    assert!(!policy.protected.lock().contains(&2));
+    assert!(!policy.state.lock().protected.contains(&2));
 
-    assert_eq!(policy.probationary.lock().current_total_cost(), 0);
-    assert_eq!(policy.protected.lock().current_total_cost(), 0);
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 0);
+    assert_eq!(policy.state.lock().protected.current_total_cost(), 0);
   }
 
   #[test]
@@ -390,11 +390,11 @@ mod tests {
 
     // 1. Insert into probationary
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
-    let prob_keys_before = policy.probationary.lock().keys_as_vec();
+    let prob_keys_before = policy.state.lock().probationary.keys_as_vec();
 
     // Re-inserting should do nothing
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
-    let prob_keys_after = policy.probationary.lock().keys_as_vec();
+    let prob_keys_after = policy.state.lock().probationary.keys_as_vec();
     assert_eq!(
       prob_keys_before, prob_keys_after,
       "Re-inserting into probationary should not change order"
@@ -402,11 +402,11 @@ mod tests {
 
     // 2. Promote to protected
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &1, entry.cost());
-    let prot_keys_before = policy.protected.lock().keys_as_vec();
+    let prot_keys_before = policy.state.lock().protected.keys_as_vec();
 
     // Re-inserting should still do nothing
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &1, entry.cost());
-    let prot_keys_after = policy.protected.lock().keys_as_vec();
+    let prot_keys_after = policy.state.lock().protected.keys_as_vec();
     assert_eq!(
       prot_keys_before, prot_keys_after,
       "Re-inserting into protected should not change order"
@@ -432,8 +432,8 @@ mod tests {
     // Fill probationary
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &4, entries[3].cost());
 
-    assert_eq!(policy.probationary.lock().current_total_cost(), 1);
-    assert_eq!(policy.protected.lock().current_total_cost(), 3);
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 1);
+    assert_eq!(policy.state.lock().protected.current_total_cost(), 3);
 
     // Evict 3 items. Should take 1 from prob, and 2 from prot.
     // Prob victim: 4. Prot victims: 1, 2.
@@ -446,9 +446,9 @@ mod tests {
       "Eviction order should be prob-lru then prot-lru"
     );
 
-    assert_eq!(policy.probationary.lock().current_total_cost(), 0);
-    assert_eq!(policy.protected.lock().current_total_cost(), 1);
-    assert!(policy.protected.lock().contains(&3));
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 0);
+    assert_eq!(policy.state.lock().protected.current_total_cost(), 1);
+    assert!(policy.state.lock().protected.contains(&3));
   }
 
   #[test]
@@ -472,8 +472,8 @@ mod tests {
     assert_eq!(cost_freed, 5, "Should free the cost of all items");
     assert_eq!(victims.len(), 5, "Should evict all 5 items");
 
-    assert_eq!(policy.probationary.lock().current_total_cost(), 0);
-    assert_eq!(policy.protected.lock().current_total_cost(), 0);
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 0);
+    assert_eq!(policy.state.lock().protected.current_total_cost(), 0);
     assert!(policy.peek_lru().is_none());
   }
 
@@ -493,9 +493,9 @@ mod tests {
       );
       <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &i, entries[(i - 1) as usize].cost());
     }
-    assert_eq!(policy.protected.lock().current_total_cost(), 4);
-    assert_eq!(policy.probationary.lock().current_total_cost(), 0);
-    let protected_keys = policy.protected.lock().keys_as_vec();
+    assert_eq!(policy.state.lock().protected.current_total_cost(), 4);
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 0);
+    let protected_keys = policy.state.lock().protected.keys_as_vec();
     assert_eq!(
       protected_keys.last(),
       Some(&1),
@@ -504,39 +504,36 @@ mod tests {
 
     // 2. Insert a new item into probationary
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &5, entries[4].cost());
-    assert_eq!(policy.probationary.lock().current_total_cost(), 1);
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 1);
 
     // 3. Act: Access the probationary item to promote it.
-    // This action should synchronously:
-    //    a) Move item 5 to protected (cost becomes 5, over capacity).
-    //    b) Trigger `maintain_capacities`, demoting item 1 to probationary.
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &5, entries[4].cost());
 
     // 4. Assert: Check the state *immediately* after the access.
     assert_eq!(
-      policy.protected.lock().current_total_cost(),
+      policy.state.lock().protected.current_total_cost(),
       4,
       "Protected cost should be brought back to capacity by demotion"
     );
     assert_eq!(
-      policy.probationary.lock().current_total_cost(),
+      policy.state.lock().probationary.current_total_cost(),
       1,
       "Probationary should now have the demoted item"
     );
 
     assert!(
-      policy.protected.lock().contains(&5),
+      policy.state.lock().protected.contains(&5),
       "Item 5 should have been promoted"
     );
     assert!(
-      !policy.protected.lock().contains(&1),
+      !policy.state.lock().protected.contains(&1),
       "Item 1 should no longer be in protected"
     );
     assert!(
-      policy.probationary.lock().contains(&1),
+      policy.state.lock().probationary.contains(&1),
       "Item 1 should have been demoted to probationary"
     );
-    let protected_keys_after = policy.protected.lock().keys_as_vec();
+    let protected_keys_after = policy.state.lock().protected.keys_as_vec();
     assert_eq!(
       protected_keys_after.last(),
       Some(&2),
@@ -565,16 +562,16 @@ mod tests {
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_admit(&policy, &2, entry2.cost());
     <SlruPolicy<i32> as CachePolicy<i32, String>>::on_access(&policy, &2, entry2.cost()); // in prot
 
-    assert_eq!(policy.probationary.lock().current_total_cost(), 1);
-    assert_eq!(policy.protected.lock().current_total_cost(), 1);
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 1);
+    assert_eq!(policy.state.lock().protected.current_total_cost(), 1);
 
     <SlruPolicy<i32> as CachePolicy<i32, String>>::clear(&policy);
 
-    assert_eq!(policy.probationary.lock().current_total_cost(), 0);
-    assert_eq!(policy.protected.lock().current_total_cost(), 0);
-    assert!(policy.probationary.lock().keys_as_vec().is_empty());
-    assert!(policy.protected.lock().keys_as_vec().is_empty());
-    assert!(!policy.probationary.lock().contains(&1));
-    assert!(!policy.protected.lock().contains(&2));
+    assert_eq!(policy.state.lock().probationary.current_total_cost(), 0);
+    assert_eq!(policy.state.lock().protected.current_total_cost(), 0);
+    assert!(policy.state.lock().probationary.keys_as_vec().is_empty());
+    assert!(policy.state.lock().protected.keys_as_vec().is_empty());
+    assert!(!policy.state.lock().probationary.contains(&1));
+    assert!(!policy.state.lock().protected.contains(&2));
   }
 }

@@ -223,25 +223,22 @@ mod tinylfu {
   fn test_admission_logic_rejects_infrequent_item() {
     let cache = build_test_cache(10);
 
-    // 1. Populate the cache with 10 items and make items 1-9 "hot".
     for i in 1..=10 {
       cache.insert(i, i.to_string(), 1);
     }
     for i in 1..=9 {
-      cache.fetch(&i); // Freq(1..9) is > 1, Freq(10) is 1
+      cache.fetch(&i);
     }
     assert_eq!(cache.metrics().current_cost, 10);
 
-    // 2. Insert a new item (100). This overfills the cache.
+    // Wait for the background Janitor to process the read batcher
+    // so the CMS knows items 1-9 are actually "hot"
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
     cache.insert(100, "trigger".to_string(), 1);
 
-    // 3. Wait for the janitor.
-    // Janitor sees cost 11, needs to free 1. It calls policy.evict(1).
-    // The policy will evict from the main SLRU's probationary segment.
-    // The only item in probationary is 10, so it will be the victim.
     wait_for_cost_convergence(&cache, 10);
 
-    // 4. Assert the outcome.
     let final_cost = cache.metrics().current_cost;
     assert!(
       final_cost <= 10,
@@ -266,25 +263,22 @@ mod tinylfu {
   fn test_admission_logic_admits_frequent_item() {
     let cache = build_test_cache(10);
 
-    // 1. Fill the cache with 10 "cold" items.
     for i in 1..=10 {
       cache.insert(i, i.to_string(), 1);
     }
     assert_eq!(cache.metrics().current_cost, 10);
 
-    // 2. Make item 5 very "hot" by accessing it repeatedly.
     for _ in 0..10 {
       cache.fetch(&5);
     }
 
-    // 3. Insert item 11. This will push the cache over capacity.
+    // Wait for the batcher to drain so item 5 becomes "hot" in the sketch
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
     cache.insert(11, "new".to_string(), 1);
 
-    // 4. Wait for the janitor to run. It should process the write for item 11,
-    // then evict a cold item (like 1) to bring the cost back to 10.
     wait_for_cost_convergence(&cache, 10);
 
-    // 5. Assert the outcome.
     assert_eq!(
       cache.metrics().current_cost,
       10,
@@ -294,11 +288,6 @@ mod tinylfu {
       cache.fetch(&5).is_some(),
       "Hot item 5 should have been protected"
     );
-
-    // The items were inserted 1..10. All went to probationary.
-    // Accessing 5 promotes it. The LRU of probationary is 1.
-    // Cleanup_capacity will ask the policy to evict, and it will evict from the main SLRU,
-    // which will choose item 1.
     assert!(
       cache.fetch(&1).is_none(),
       "Weak, cold victim (1) should be evicted by policy"

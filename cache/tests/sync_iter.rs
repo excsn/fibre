@@ -178,7 +178,7 @@ fn iter_misses_insert_after_shard_scan() {
   cache.insert(0, "a".to_string(), 1);
   cache.insert(4, "b".to_string(), 1);
 
-  // *** FIX: Insert at least one item into a subsequent shard. ***
+  // *** Insert at least one item into a subsequent shard. ***
   // This is crucial. It ensures that when the iterator fills its first batch,
   // it will completely drain Shard 0 and advance its cursor to Shard 1,
   // thereby "finalizing" its scan of Shard 0.
