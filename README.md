@@ -20,6 +20,10 @@
 *   **[`fibre_cache`](./cache/README.md)**: A comprehensive, flexible, and high-performance concurrent caching library with modern eviction policies.
 *   **[`fibre_ioc`](./ioc/README.md)**: A flexible, thread-safe, and dynamic Inversion of Control (IoC) container with support for optional dependencies and a single-threaded, non-`Send`/`Sync` variant.
 
+## Notable Users
+
+[Hi Stakes Markets Game](https://www.histakesgame.com) -  The worlds most advanced financial simulator, available on iPhone and Android.
+
 ## Documentation
 
 Detailed documentation and usage guides can be found within each crate's directory:

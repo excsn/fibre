@@ -31,6 +31,10 @@ Diagnose complex application behavior during development with the `debug_report`
 ### Introspection & Extensibility
 Turn your logging system into an in-app message bus with the `custom` appender. Your application can subscribe to a stream of structured `LogEvent`s to drive metrics, internal monitoring, or other custom logic. Additionally, the library can report its own internal errors (e.g., file permission issues) to your application for robust error handling.
 
+## Notable Users
+
+[Hi Stakes Markets Game](https://www.histakesgame.com) -  The worlds most advanced financial simulator, available on iPhone and Android.
+
 ## Installation
 
 Add the following to your `Cargo.toml`:

@@ -28,6 +28,10 @@ Resolve dependencies effortlessly with the `resolve!` macro, which provides a co
 ### Robust Circular Dependency Detection
 `Fibre IoC` automatically detects and prevents circular dependencies during resolution. If Service `A` depends on `B`, and `B` depends on `A`, the container will panic with a clear error message instead of causing a stack overflow.
 
+## Notable Users
+
+[Hi Stakes Markets Game](https://www.histakesgame.com) -  The worlds most advanced financial simulator, available on iPhone and Android.
+
 ## Installation
 
 Add `Fibre IoC` to your project by running:

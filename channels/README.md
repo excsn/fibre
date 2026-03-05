@@ -10,6 +10,10 @@
 
 `fibre` is in BETA. The API is generally stable, but minor breaking changes may occur before version 1.0 as feedback is incorporated and improvements are made.
 
+## Notable Users
+
+[Hi Stakes Markets Game](https://www.histakesgame.com) -  The worlds most advanced financial simulator, available on iPhone and Android.
+
 ## Key Features
 
 ### Comprehensive Channel Suite

@@ -16,6 +16,10 @@ This means:
 
 We highly encourage you to try it out, provide feedback and report any issues. Contributions are always welcome as we work towards a stable release
 
+## Notable Users
+
+[Hi Stakes Markets Game](https://www.histakesgame.com) -  The worlds most advanced financial simulator, available on iPhone and Android.
+
 ## Motivation
 
 The current state of caching in Rust, while offering some excellent high-performance options, often feels specialized and inflexible. Caches can be brilliant but opinionated, while others lack the rich, general-purpose feature set needed for complex applications.

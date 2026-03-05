@@ -47,14 +47,13 @@ fn benchmark_logic_spmc_sync(
   let receivers: Vec<_> = (0..cfg.num_consumers).map(|_| rx.clone()).collect();
   drop(rx);
 
-  // FIX: Wrap the Barrier in an Arc for shared ownership.
+  // Wrap the Barrier in an Arc for shared ownership.
   let barrier = Arc::new(Barrier::new(cfg.num_consumers + 1));
 
   let start_time = Instant::now();
 
   thread::scope(|s| {
     for receiver in receivers {
-      // FIX: Clone the Arc reference for each thread.
       let barrier_clone = Arc::clone(&barrier);
       // The `move` is still needed for `receiver`. The closure now moves
       // the `barrier_clone` Arc, not the original barrier.
