@@ -28,6 +28,9 @@ Keep log file sizes manageable with a powerful rolling file appender. Configure 
 ### Powerful Debug Instrumentation
 Diagnose complex application behavior during development with the `debug_report` appender. This debug-only tool collects targeted events and counters in memory, which can be printed to the console on demand or at a regular interval, providing a snapshot of your application's state.
 
+### Async Runtime Debugging (tokio-console)
+Enable the optional `tokio-console` feature to attach the [tokio-console](https://github.com/tokio-rs/console) diagnostic layer alongside your normal logging pipeline. When active, `fibre_logging` starts the console gRPC server on initialization, and you can connect the `tokio-console` CLI to get a live, interactive view of every task, its wakeup history, and resource contention in your async runtime — without changing a single line of application code.
+
 ### Introspection & Extensibility
 Turn your logging system into an in-app message bus with the `custom` appender. Your application can subscribe to a stream of structured `LogEvent`s to drive metrics, internal monitoring, or other custom logic. Additionally, the library can report its own internal errors (e.g., file permission issues) to your application for robust error handling.
 
@@ -41,10 +44,19 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fibre_logging = "0.5.0"
+fibre_logging = "0.5"
 log = "0.4"
 tracing = "0.1"
 ```
+
+To enable async runtime debugging with [tokio-console](https://github.com/tokio-rs/console), enable the optional feature:
+
+```toml
+[dependencies]
+fibre_logging = { version = "0.5.5", features = ["tokio-console"] }
+```
+
+> **Note:** tokio-console requires the `tokio_unstable` cfg flag. See the [Usage Guide](README.USAGE.md#async-runtime-debugging-tokio-console) for setup details.
 
 ## Getting Started
 

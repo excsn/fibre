@@ -20,6 +20,7 @@ This guide provides a detailed overview of `fibre_logging`'s core concepts, conf
     *   [In-App Event Consumption (`custom` appender)](#in-app-event-consumption-custom-appender)
     *   [Internal Error Reporting](#internal-error-reporting)
     *   [Debug Reports (`debug_report` appender)](#debug-reports-debug_report-appender)
+    *   [Async Runtime Debugging (tokio-console)](#async-runtime-debugging-tokio-console)
 *   [Error Handling](#error-handling)
 
 ## Core Concepts
@@ -416,6 +417,84 @@ Get an in-memory snapshot of events for debugging. This feature is only availabl
     // Manually print the report collected so far.
     fibre_logging::debug_report::print_debug_report();
     ```
+
+### Async Runtime Debugging (tokio-console)
+
+[tokio-console](https://github.com/tokio-rs/console) is an interactive debugger for async Rust programs. It streams live data about every task in your Tokio runtime — scheduling latency, wakeup counts, poll durations, and resource contention — via a gRPC server that the `tokio-console` CLI reads from.
+
+The `tokio-console` feature integrates this transparently: when enabled, `init_from_file` attaches the console subscriber layer alongside your normal `fibre_logging` pipeline and starts the gRPC server automatically. No YAML changes are needed.
+
+#### Step 1 — Enable the feature
+
+```toml
+# Cargo.toml
+[dependencies]
+fibre_logging = { version = "0.5", features = ["tokio-console"] }
+tokio = { version = "1", features = ["full"] }
+```
+
+#### Step 2 — Set `tokio_unstable`
+
+`console-subscriber` requires Tokio's unstable task instrumentation, which is gated behind a cfg flag. Add it to your project's Cargo config so it applies consistently:
+
+```toml
+# .cargo/config.toml  (create this file at the root of your workspace)
+[build]
+rustflags = ["--cfg", "tokio_unstable"]
+```
+
+Alternatively, set it per-session in your shell:
+
+```bash
+export RUSTFLAGS="--cfg tokio_unstable"
+```
+
+#### Step 3 — Initialize as normal
+
+Your application code does not change. `init_from_file` detects the feature and starts the console server on `localhost:6669`:
+
+```rust
+fn main() {
+    let _guards = fibre_logging::init::init_from_file(Path::new("fibre_logging.yaml"))
+        .expect("Failed to initialize fibre_logging");
+    // The tokio-console gRPC server is now running on localhost:6669.
+    // All your normal logging config works exactly as before.
+}
+```
+
+#### Step 4 — Install and run `tokio-console`
+
+```bash
+cargo install tokio-console
+tokio-console           # connects to localhost:6669 by default
+```
+
+The console shows a live table of all async tasks: their state (`idle` / `running` / `scheduled`), total poll count, busy and idle time, and wakeup sources. Press `t` to sort by total time, `r` to filter to running tasks, and `Enter` on any task to drill into its wakeup timeline.
+
+#### Configuration via environment variables
+
+The console server can be tuned without recompiling:
+
+| Variable | Default | Description |
+|---|---|---|
+| `TOKIO_CONSOLE_BIND` | `127.0.0.1:6669` | Address the gRPC server listens on |
+| `TOKIO_CONSOLE_RETENTION` | `60s` | How long completed task data is retained |
+| `TOKIO_CONSOLE_RECORD_PATH` | *(unset)* | Write a recording to a file for replay |
+
+#### Disabling for release builds
+
+The feature is typically only enabled in development. Use a Cargo profile or conditional dependency to ensure it is stripped in production:
+
+```toml
+# Cargo.toml
+[features]
+debug-console = ["fibre_logging/tokio-console"]
+
+[dependencies]
+fibre_logging = "0.5.5"       # no tokio-console by default
+```
+
+Then build with `cargo run --features debug-console` during development.
 
 ## Error Handling
 
