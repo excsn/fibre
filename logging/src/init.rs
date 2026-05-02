@@ -12,8 +12,7 @@ use crate::{
     actor::{ActorAction, AppenderActor, PerAppenderFilter},
     DispatchLayer, EventProcessor, LogHandler,
   },
-  AppenderTaskHandle, InitResult, InternalErrorReport, LogValue,
-  LogEvent,
+  AppenderTaskHandle, InitResult, InternalErrorReport, LogEvent, LogValue,
 };
 
 #[cfg(debug_assertions)]
@@ -323,7 +322,15 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
   let processor = Arc::new(EventProcessor::new(actors, error_tx_channel));
 
   let dispatch_layer = DispatchLayer::new(Arc::clone(&processor));
+
+  #[cfg(feature = "tokio-console")]
+  let subscriber = tracing_subscriber::registry()
+    .with(dispatch_layer)
+    .with(console_subscriber::spawn()); // Attaches the console layer and starts its server
+
+  #[cfg(not(feature = "tokio-console"))]
   let subscriber = tracing_subscriber::registry().with(dispatch_layer);
+
   tracing::subscriber::set_global_default(subscriber)
     .map_err(|e| Error::GlobalSubscriberSet(e.to_string()))?;
   println!("[fibre_logging] Global tracing subscriber set.");

@@ -1,6 +1,6 @@
 [package]
 name = "fibre_logging"
-version = "0.5.4"
+version = "0.5.5"
 
 description = "A flexible, multimode sync/async logging library that unifies the log and tracing ecosystems, driven by external configuration and featuring powerful debug instrumentation."
 readme = "README.md"
@@ -13,8 +13,11 @@ authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[features]
+tokio-console = ["console-subscriber"]
 
 [dependencies]
+console-subscriber = { version = "0.2", optional = true }
 # For core tracing and log integration
 tracing = { version = "^0.1", features = ["max_level_trace"] }
 tracing-appender = "^0.2"
