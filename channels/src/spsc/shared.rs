@@ -8,7 +8,11 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::sync::atomic::{self, AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{self, AtomicBool, AtomicU8, AtomicUsize, Ordering};
+
+pub(crate) const PARK_IDLE: u8 = 0;
+pub(crate) const PARK_PARKED: u8 = 1;
+pub(crate) const PARK_CONSUMING: u8 = 2;
 use std::sync::Arc;
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
@@ -23,12 +27,12 @@ pub struct SpscShared<T> {
   pub(crate) tail: CachePadded<AtomicUsize>, // Read index (consumer)
 
   // --- Sender waiting state ---
-  pub(crate) producer_parked_sync_flag: CachePadded<AtomicBool>,
+  pub(crate) producer_parked_sync_flag: CachePadded<AtomicU8>,
   pub(crate) producer_thread_sync: CachePadded<UnsafeCell<Option<Thread>>>,
   pub(crate) producer_waker_async: CachePadded<AtomicWaker>,
 
   // --- Receiver waiting state ---
-  pub(crate) consumer_parked_sync_flag: CachePadded<AtomicBool>,
+  pub(crate) consumer_parked_sync_flag: CachePadded<AtomicU8>,
   pub(crate) consumer_thread_sync: CachePadded<UnsafeCell<Option<Thread>>>,
   pub(crate) consumer_waker_async: CachePadded<AtomicWaker>,
 
@@ -50,12 +54,12 @@ impl<T> fmt::Debug for SpscShared<T> {
       .field("tail", &self.tail.load(Ordering::Relaxed))
       .field(
         "producer_parked_sync_flag",
-        &self.producer_parked_sync_flag.load(Ordering::Relaxed),
+        &self.producer_parked_sync_flag.load(Ordering::Relaxed), // u8: 0=IDLE,1=PARKED,2=CONSUMING
       )
       .field("producer_waker_async", &self.producer_waker_async) // AtomicWaker is Debug
       .field(
         "consumer_parked_sync_flag",
-        &self.consumer_parked_sync_flag.load(Ordering::Relaxed),
+        &self.consumer_parked_sync_flag.load(Ordering::Relaxed), // u8: 0=IDLE,1=PARKED,2=CONSUMING
       )
       .field("consumer_waker_async", &self.consumer_waker_async) // AtomicWaker is Debug
       .field(
@@ -84,10 +88,10 @@ impl<T> SpscShared<T> {
       capacity,
       head: CachePadded::new(AtomicUsize::new(0)),
       tail: CachePadded::new(AtomicUsize::new(0)),
-      producer_parked_sync_flag: CachePadded::new(AtomicBool::new(false)),
+      producer_parked_sync_flag: CachePadded::new(AtomicU8::new(PARK_IDLE)),
       producer_thread_sync: CachePadded::new(UnsafeCell::new(None)),
       producer_waker_async: CachePadded::new(AtomicWaker::new()),
-      consumer_parked_sync_flag: CachePadded::new(AtomicBool::new(false)),
+      consumer_parked_sync_flag: CachePadded::new(AtomicU8::new(PARK_IDLE)),
       consumer_thread_sync: CachePadded::new(UnsafeCell::new(None)),
       consumer_waker_async: CachePadded::new(AtomicWaker::new()),
       producer_dropped: AtomicBool::new(false),
@@ -112,39 +116,39 @@ impl<T> SpscShared<T> {
 
   #[inline]
   pub(crate) fn wake_consumer(&self) {
-    // Try to wake sync consumer first if it's parked
-    if self.consumer_parked_sync_flag.load(Ordering::Relaxed) {
-      // Use Acquire fence to ensure that if we see `true`, the subsequent CAS operates
-      // on a state that is at least as current as this read.
+    if self.consumer_parked_sync_flag.load(Ordering::Relaxed) == PARK_PARKED {
       atomic::fence(Ordering::Acquire);
-      // Attempt to transition from true (parked) to false (unparked/woken)
       if self
         .consumer_parked_sync_flag
-        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+        .compare_exchange(PARK_PARKED, PARK_CONSUMING, Ordering::AcqRel, Ordering::Relaxed)
         .is_ok()
       {
-        // Successfully set flag to false, meaning we are responsible for unparking.
-        if let Some(thread_handle) = unsafe { (*self.consumer_thread_sync.get()).take() } {
-          sync_util::unpark_thread(&thread_handle);
+        // Exclusive access to the cell until we store IDLE.
+        let thread_handle = unsafe { (*self.consumer_thread_sync.get()).take() };
+        // store(IDLE, Release) pairs with the Acquire loads in post_wakeup_wait, ensuring
+        // the consumer sees IDLE only after take() is complete.
+        self.consumer_parked_sync_flag.store(PARK_IDLE, Ordering::Release);
+        if let Some(t) = thread_handle {
+          sync_util::unpark_thread(&t);
         }
       }
-      // If CAS fails, another thread (or this one in a race) already unparked it.
     }
-    // Always wake the async waker. It's idempotent and handles its own state.
     self.consumer_waker_async.wake();
   }
 
   #[inline]
   pub(crate) fn wake_producer(&self) {
-    if self.producer_parked_sync_flag.load(Ordering::Relaxed) {
+    if self.producer_parked_sync_flag.load(Ordering::Relaxed) == PARK_PARKED {
       atomic::fence(Ordering::Acquire);
       if self
         .producer_parked_sync_flag
-        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+        .compare_exchange(PARK_PARKED, PARK_CONSUMING, Ordering::AcqRel, Ordering::Relaxed)
         .is_ok()
       {
-        if let Some(thread_handle) = unsafe { (*self.producer_thread_sync.get()).take() } {
-          sync_util::unpark_thread(&thread_handle);
+        let thread_handle = unsafe { (*self.producer_thread_sync.get()).take() };
+        self.producer_parked_sync_flag.store(PARK_IDLE, Ordering::Release);
+        if let Some(t) = thread_handle {
+          sync_util::unpark_thread(&t);
         }
       }
     }

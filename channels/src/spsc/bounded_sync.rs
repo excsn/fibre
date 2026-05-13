@@ -1,7 +1,7 @@
 use crate::error::{
   CloseError, RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError,
 };
-use crate::spsc::shared::SpscShared;
+use crate::spsc::shared::{SpscShared, PARK_CONSUMING, PARK_IDLE, PARK_PARKED};
 use crate::sync_util;
 
 use std::marker::PhantomData;
@@ -124,7 +124,7 @@ impl<T: Send> BoundedSyncSender<T> {
           self
             .shared
             .producer_parked_sync_flag
-            .store(true, Ordering::Release);
+            .store(PARK_PARKED, Ordering::Release);
 
           let head_after_flag_set = self.shared.head.load(Ordering::Relaxed);
           let tail_after_flag_set = self.shared.tail.load(Ordering::Acquire);
@@ -134,14 +134,24 @@ impl<T: Send> BoundedSyncSender<T> {
             .is_full(head_after_flag_set, tail_after_flag_set)
             || self.shared.consumer_dropped.load(Ordering::Acquire)
           {
+            // Skip-park: reclaim cell if consumer hasn't started consuming yet.
             if self
               .shared
               .producer_parked_sync_flag
-              .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+              .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
               .is_ok()
             {
-              unsafe {
-                *self.shared.producer_thread_sync.get() = None;
+              unsafe { *self.shared.producer_thread_sync.get() = None; }
+            } else {
+              // Consumer won (PARKED→CONSUMING): wait until take() finishes (IDLE).
+              // The consumer will call unpark(), depositing a token we absorb next park().
+              while self
+                .shared
+                .producer_parked_sync_flag
+                .load(Ordering::Acquire)
+                == PARK_CONSUMING
+              {
+                thread::yield_now();
               }
             }
             continue;
@@ -149,20 +159,30 @@ impl<T: Send> BoundedSyncSender<T> {
 
           sync_util::park_thread();
 
-          if self
-            .shared
-            .producer_parked_sync_flag
-            .load(Ordering::Relaxed)
-          {
-            if self
+          // Post-wakeup: resolve state to IDLE before writing to the cell in the next iteration.
+          // Uses Acquire so the consumer's store(IDLE, Release) is visible before we proceed.
+          loop {
+            match self
               .shared
               .producer_parked_sync_flag
-              .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-              .is_ok()
+              .load(Ordering::Acquire)
             {
-              unsafe {
-                *self.shared.producer_thread_sync.get() = None;
+              PARK_IDLE => break,
+              PARK_PARKED => {
+                // Spurious wakeup: consumer hasn't started. Reclaim the cell.
+                if self
+                  .shared
+                  .producer_parked_sync_flag
+                  .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
+                  .is_ok()
+                {
+                  unsafe { *self.shared.producer_thread_sync.get() = None; }
+                  break;
+                }
+                // CAS lost: consumer just transitioned PARKED→CONSUMING; fall to CONSUMING arm.
               }
+              PARK_CONSUMING => thread::yield_now(),
+              _ => unreachable!(),
             }
           }
         }
@@ -325,7 +345,7 @@ impl<T: Send> BoundedSyncReceiver<T> {
           self
             .shared
             .consumer_parked_sync_flag
-            .store(true, Ordering::Release);
+            .store(PARK_PARKED, Ordering::Release);
 
           let head_after_flag_set = self.shared.head.load(Ordering::Acquire);
           let tail_after_flag_set = self.shared.tail.load(Ordering::Relaxed);
@@ -338,30 +358,43 @@ impl<T: Send> BoundedSyncReceiver<T> {
             if self
               .shared
               .consumer_parked_sync_flag
-              .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+              .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
               .is_ok()
             {
-              unsafe {
-                *self.shared.consumer_thread_sync.get() = None;
+              unsafe { *self.shared.consumer_thread_sync.get() = None; }
+            } else {
+              while self
+                .shared
+                .consumer_parked_sync_flag
+                .load(Ordering::Acquire)
+                == PARK_CONSUMING
+              {
+                thread::yield_now();
               }
             }
             continue;
           }
           sync_util::park_thread();
-          if self
-            .shared
-            .consumer_parked_sync_flag
-            .load(Ordering::Relaxed)
-          {
-            if self
+          loop {
+            match self
               .shared
               .consumer_parked_sync_flag
-              .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-              .is_ok()
+              .load(Ordering::Acquire)
             {
-              unsafe {
-                *self.shared.consumer_thread_sync.get() = None;
+              PARK_IDLE => break,
+              PARK_PARKED => {
+                if self
+                  .shared
+                  .consumer_parked_sync_flag
+                  .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
+                  .is_ok()
+                {
+                  unsafe { *self.shared.consumer_thread_sync.get() = None; }
+                  break;
+                }
               }
+              PARK_CONSUMING => thread::yield_now(),
+              _ => unreachable!(),
             }
           }
         }
@@ -394,7 +427,7 @@ impl<T: Send> BoundedSyncReceiver<T> {
           self
             .shared
             .consumer_parked_sync_flag
-            .store(true, Ordering::Release);
+            .store(PARK_PARKED, Ordering::Release);
 
           let head_after_flag = self.shared.head.load(Ordering::Acquire);
           let tail_after_flag = self.shared.tail.load(Ordering::Relaxed);
@@ -405,11 +438,18 @@ impl<T: Send> BoundedSyncReceiver<T> {
             if self
               .shared
               .consumer_parked_sync_flag
-              .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+              .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
               .is_ok()
             {
-              unsafe {
-                *self.shared.consumer_thread_sync.get() = None;
+              unsafe { *self.shared.consumer_thread_sync.get() = None; }
+            } else {
+              while self
+                .shared
+                .consumer_parked_sync_flag
+                .load(Ordering::Acquire)
+                == PARK_CONSUMING
+              {
+                thread::yield_now();
               }
             }
             continue;
@@ -417,20 +457,28 @@ impl<T: Send> BoundedSyncReceiver<T> {
 
           sync_util::park_thread_timeout(remaining_timeout);
 
-          if self
-            .shared
-            .consumer_parked_sync_flag
-            .load(Ordering::Relaxed)
-          {
-            if self
+          // Resolve state machine before checking elapsed or retrying.
+          // If CONSUMING, we spin briefly — recv_timeout's deadline is a lower bound.
+          loop {
+            match self
               .shared
               .consumer_parked_sync_flag
-              .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-              .is_ok()
+              .load(Ordering::Acquire)
             {
-              unsafe {
-                *self.shared.consumer_thread_sync.get() = None;
+              PARK_IDLE => break,
+              PARK_PARKED => {
+                if self
+                  .shared
+                  .consumer_parked_sync_flag
+                  .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
+                  .is_ok()
+                {
+                  unsafe { *self.shared.consumer_thread_sync.get() = None; }
+                  break;
+                }
               }
+              PARK_CONSUMING => thread::yield_now(),
+              _ => unreachable!(),
             }
           }
         }
@@ -549,7 +597,7 @@ mod tests {
 
   #[test]
   fn send_recv_single_item() {
-    let (mut p, mut c) = bounded_sync(1);
+    let (p, c) = bounded_sync(1);
     assert!(p.is_empty());
     p.send(42i32).unwrap();
     assert!(p.is_full());
@@ -568,7 +616,7 @@ mod tests {
 
   #[test]
   fn try_send_full_try_recv_empty() {
-    let (mut p, mut c) = bounded_sync::<i32>(1);
+    let (p, c) = bounded_sync::<i32>(1);
     p.try_send(10).unwrap();
     assert!(p.is_full());
     assert_eq!(p.len(), 1);
@@ -592,7 +640,7 @@ mod tests {
 
   #[test]
   fn send_blocks_until_recv() {
-    let (p, mut c) = bounded_sync::<i32>(1);
+    let (p, c) = bounded_sync::<i32>(1);
     p.send(1).unwrap(); // Fill channel
     assert_eq!(p.len(), 1);
 
@@ -632,7 +680,7 @@ mod tests {
 
   #[test]
   fn producer_drop_signals_consumer() {
-    let (mut p, mut c) = bounded_sync::<i32>(1);
+    let (p, c) = bounded_sync::<i32>(1);
     p.send(7).unwrap();
     assert_eq!(p.len(), 1);
     drop(p);
@@ -647,7 +695,7 @@ mod tests {
 
   #[test]
   fn producer_drop_empty_signals_consumer() {
-    let (p, mut c) = bounded_sync::<i32>(1);
+    let (p, c) = bounded_sync::<i32>(1);
     assert_eq!(p.len(), 0);
     drop(p);
     assert_eq!(c.len(), 0);
@@ -659,7 +707,7 @@ mod tests {
 
   #[test]
   fn consumer_drop_signals_producer() {
-    let (mut p, c) = bounded_sync::<i32>(1);
+    let (p, c) = bounded_sync::<i32>(1);
     assert_eq!(p.len(), 0);
     drop(c);
     match p.send(1) {
@@ -673,7 +721,7 @@ mod tests {
   fn stress_send_recv() {
     const ITEMS: usize = 100_000;
     const CAPACITY: usize = 128;
-    let (mut p, mut c) = bounded_sync(CAPACITY);
+    let (p, c) = bounded_sync(CAPACITY);
 
     let producer_handle = thread::spawn(move || {
       for i in 0..ITEMS {
@@ -694,7 +742,7 @@ mod tests {
 
   #[test]
   fn try_send_closed_by_consumer_drop() {
-    let (mut p, c) = bounded_sync::<i32>(5);
+    let (p, c) = bounded_sync::<i32>(5);
     p.try_send(1).unwrap();
     assert_eq!(p.len(), 1);
     drop(c);
@@ -706,7 +754,7 @@ mod tests {
 
   #[test]
   fn try_recv_disconnected_by_producer_drop() {
-    let (mut p, mut c) = bounded_sync::<i32>(5);
+    let (p, c) = bounded_sync::<i32>(5);
     p.try_send(10).unwrap();
     assert_eq!(p.len(), 1);
     drop(p);
@@ -720,7 +768,7 @@ mod tests {
   }
   #[test]
   fn try_recv_disconnected_by_producer_drop_empty() {
-    let (p, mut c) = bounded_sync::<i32>(5);
+    let (p, c) = bounded_sync::<i32>(5);
     drop(p);
     match c.try_recv() {
       Err(TryRecvError::Disconnected) => {}
@@ -743,7 +791,7 @@ mod tests {
     let drop_counter_arc = Arc::new(AtomicUsize::new(0));
     drop_counter_arc.store(0, AtomicOrdering::Relaxed);
     {
-      let (mut p, mut c) = bounded_sync::<Droppable>(2);
+      let (p, c) = bounded_sync::<Droppable>(2);
       p.send(Droppable(1, drop_counter_arc.clone())).unwrap();
       p.send(Droppable(2, drop_counter_arc.clone())).unwrap();
       assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 0);
@@ -767,7 +815,7 @@ mod tests {
 
     drop_counter_arc.store(0, AtomicOrdering::Relaxed);
     {
-      let (mut p, c) = bounded_sync::<Droppable>(2);
+      let (p, c) = bounded_sync::<Droppable>(2);
       p.send(Droppable(3, drop_counter_arc.clone())).unwrap();
       p.send(Droppable(4, drop_counter_arc.clone())).unwrap();
       drop(p);
@@ -777,7 +825,7 @@ mod tests {
 
     drop_counter_arc.store(0, AtomicOrdering::Relaxed);
     {
-      let (mut p, c) = bounded_sync::<Droppable>(1);
+      let (p, c) = bounded_sync::<Droppable>(1);
       p.send(Droppable(5, drop_counter_arc.clone())).unwrap();
       drop(p);
       drop(c);
@@ -794,7 +842,7 @@ mod tests {
 
   #[test]
   fn recv_timeout_item_arrives() {
-    let (mut p, mut c) = bounded_sync::<i32>(1);
+    let (p, mut c) = bounded_sync::<i32>(1);
     let val_to_send = 123;
 
     let consumer_handle = thread::spawn(move || c.recv_timeout(Duration::from_secs(1)).unwrap());
@@ -815,7 +863,7 @@ mod tests {
 
   #[test]
   fn recv_timeout_producer_drops_with_item() {
-    let (mut p, mut c) = bounded_sync::<i32>(1);
+    let (p, mut c) = bounded_sync::<i32>(1);
     p.send(99).unwrap();
     drop(p);
     assert_eq!(c.recv_timeout(Duration::from_millis(50)).unwrap(), 99);
@@ -827,7 +875,7 @@ mod tests {
 
   #[test]
   fn new_spsc_apis_capacity_close_is_closed() {
-    let (mut p, c) = bounded_sync::<i32>(5);
+    let (p, c) = bounded_sync::<i32>(5);
     assert_eq!(p.capacity(), 5);
     assert_eq!(c.capacity(), 5);
     assert!(!p.is_closed());
