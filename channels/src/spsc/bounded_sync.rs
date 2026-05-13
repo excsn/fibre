@@ -612,7 +612,7 @@ mod tests {
 
   #[test]
   fn recv_blocks_until_send() {
-    let (mut p, mut c) = bounded_sync::<i32>(1);
+    let (p, c) = bounded_sync::<i32>(1);
 
     let consumer_thread = thread::spawn(move || {
       let val = c.recv().unwrap(); // This should block
@@ -624,8 +624,10 @@ mod tests {
     thread::sleep(Duration::from_millis(100)); // Give consumer time to block
 
     p.send(100).unwrap(); // Unblock consumer
-    assert_eq!(p.len(), 1); // Item is in
     let _c_returned = consumer_thread.join().unwrap();
+
+    // NOW we know the consumer received it, so the channel is empty
+    assert_eq!(p.len(), 0);
   }
 
   #[test]
