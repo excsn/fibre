@@ -78,8 +78,6 @@ async fn async_v2_1p_1c_basic() {
 #[test]
 fn async_v2_mp_1c_basic() {
   let rt = tokio::runtime::Builder::new_current_thread()
-    // .enable_time() // only if you need tokio::time
-    // DO NOT call enable_io()
     .build()
     .unwrap();
 
@@ -125,10 +123,10 @@ async fn async_v2_unbounded_channel() {
   consumer.await.unwrap();
 }
 
-// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-// async fn async_v2_rendezvous_channel() {
-//   run_async_mpmc_test(2, 2, ITEMS_MEDIUM, 0).await;
-// }
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn async_v2_rendezvous_channel() {
+  run_async_mpmc_test(2, 2, ITEMS_MEDIUM, 0).await;
+}
 
 #[tokio::test]
 async fn async_v2_drop_producer_signals_disconnect() {
