@@ -32,9 +32,9 @@ mod backoff;
 mod core;
 mod sync_impl;
 
-use self::core::MpmcShared;
+use self::core::{MpmcShared, STATE_CANCELLED, STATE_SUCCESS, STATE_WAITING};
 use ::core::mem;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
 // --- Public Structs (Sync) ---
@@ -79,6 +79,11 @@ pub struct AsyncSender<T: Send> {
 pub struct AsyncReceiver<T: Send> {
   shared: Arc<MpmcShared<T>>,
   closed: AtomicBool,
+  /// Inline state flag for the `Stream` impl. A raw pointer to this field is stored
+  /// in `waiting_async_receivers` while the stream is parked. Eagerly unlinked on
+  /// drop / `to_sync` before the struct is freed.
+  pub(super) state: AtomicU8,
+  pub(super) is_registered: bool,
 }
 
 // --- Channel Constructors ---
@@ -122,6 +127,8 @@ pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver
     AsyncReceiver {
       shared,
       closed: AtomicBool::new(false),
+      state: AtomicU8::new(STATE_WAITING),
+      is_registered: false,
     },
   )
 }
@@ -171,6 +178,8 @@ impl<T: Send> Clone for AsyncReceiver<T> {
     AsyncReceiver {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
+      state: AtomicU8::new(STATE_WAITING),
+      is_registered: false,
     }
   }
 }
@@ -231,15 +240,22 @@ impl<T: Send> Sender<T> {
         return;
       }
     }
-    // Wake waiters outside the lock to reduce contention.
+    // Wake waiters outside the lock. Use CAS to skip already-cancelled waiters.
     for waiter in sync_waiters {
-      waiter
-        .done
-        .store(true, std::sync::atomic::Ordering::Release);
-      waiter.thread.unpark();
+      if unsafe { &*waiter.state }
+        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+      {
+        waiter.thread.unpark();
+      }
     }
     for waiter in async_waiters {
-      waiter.waker.wake();
+      if unsafe { &*waiter.state }
+        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+      {
+        waiter.waker.wake();
+      }
     }
   }
 
@@ -328,10 +344,6 @@ impl<T: Send> Receiver<T> {
   /// - `Err(RecvErrorTimeout::Timeout)` if the timeout is reached.
   /// - `Err(RecvErrorTimeout::Disconnected)` if the channel is disconnected.
   pub fn recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout> {
-    if self.closed.load(Ordering::Relaxed) {
-      // If the handle is closed, we can still try_recv to drain remaining items.
-      // The implementation logic will handle the final disconnected state correctly.
-    }
     sync_impl::recv_timeout_sync(self, timeout)
   }
 
@@ -380,15 +392,22 @@ impl<T: Send> Receiver<T> {
           .collect();
       }
     }
-    // Wake waiters outside the lock.
+    // Wake waiters outside the lock. Use CAS to skip already-cancelled waiters.
     for waiter in sync_waiters {
-      waiter
-        .done
-        .store(true, std::sync::atomic::Ordering::Release);
-      waiter.thread.unpark();
+      if unsafe { &*waiter.state }
+        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+      {
+        waiter.thread.unpark();
+      }
     }
     for waiter in async_waiters {
-      waiter.waker.wake();
+      if unsafe { &*waiter.state }
+        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+      {
+        waiter.waker.wake();
+      }
     }
   }
 
@@ -419,6 +438,8 @@ impl<T: Send> Receiver<T> {
     AsyncReceiver {
       shared,
       closed: AtomicBool::new(false),
+      state: AtomicU8::new(STATE_WAITING),
+      is_registered: false,
     }
   }
 
@@ -463,12 +484,6 @@ impl<T: Send> AsyncSender<T> {
   /// This method returns a future that will complete once the value has been
   /// successfully sent, or when the channel is closed.
   pub fn send(&self, item: T) -> SendFuture<'_, T> {
-    if self.closed.load(Ordering::Relaxed) {
-      // Create a future that immediately returns an error.
-      // We can't return the error directly, so we need a future-based way to do it.
-      // The SendFuture itself will check the closed state, but this provides a fast path.
-      // For now, let the SendFuture handle it.
-    }
     async_impl::SendFuture::new(self, item)
   }
 
@@ -510,13 +525,20 @@ impl<T: Send> AsyncSender<T> {
       }
     }
     for waiter in sync_waiters {
-      waiter
-        .done
-        .store(true, std::sync::atomic::Ordering::Release);
-      waiter.thread.unpark();
+      if unsafe { &*waiter.state }
+        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+      {
+        waiter.thread.unpark();
+      }
     }
     for waiter in async_waiters {
-      waiter.waker.wake();
+      if unsafe { &*waiter.state }
+        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+      {
+        waiter.waker.wake();
+      }
     }
   }
 
@@ -632,13 +654,20 @@ impl<T: Send> AsyncReceiver<T> {
       }
     }
     for waiter in sync_waiters {
-      waiter
-        .done
-        .store(true, std::sync::atomic::Ordering::Release);
-      waiter.thread.unpark();
+      if unsafe { &*waiter.state }
+        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+      {
+        waiter.thread.unpark();
+      }
     }
     for waiter in async_waiters {
-      waiter.waker.wake();
+      if unsafe { &*waiter.state }
+        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+      {
+        waiter.waker.wake();
+      }
     }
   }
 
@@ -661,11 +690,23 @@ impl<T: Send> AsyncReceiver<T> {
 
   /// Converts this asynchronous `AsyncReceiver` into a synchronous `Receiver`.
   ///
-  // This is a zero-cost conversion. The `Drop` implementation of the original
+  /// This is a zero-cost conversion. The `Drop` implementation of the original
   /// `AsyncReceiver` is not called.
   pub fn to_sync(self) -> Receiver<T> {
+    if self.is_registered {
+      let state_ptr = &self.state as *const AtomicU8;
+      if self
+        .state
+        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+      {
+        // Eagerly unlink before mem::forget so the pointer doesn't dangle.
+        let mut guard = self.shared.internal.lock();
+        guard.waiting_async_receivers.retain(|w| w.state != state_ptr);
+      }
+    }
     let shared = unsafe { std::ptr::read(&self.shared) };
-    mem::forget(self);
+    mem::forget(self); // AtomicU8 has no destructor; safe to forget.
     Receiver {
       shared,
       closed: AtomicBool::new(false),
@@ -702,5 +743,16 @@ impl<T: Send> AsyncReceiver<T> {
 impl<T: Send> Drop for AsyncReceiver<T> {
   fn drop(&mut self) {
     let _ = self.close();
+    if self.is_registered {
+      let state_ptr = &self.state as *const AtomicU8;
+      if self
+        .state
+        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+      {
+        let mut guard = self.shared.internal.lock();
+        guard.waiting_async_receivers.retain(|w| w.state != state_ptr);
+      }
+    }
   }
 }

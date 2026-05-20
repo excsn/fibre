@@ -1,36 +1,20 @@
-// src/mpmc/core.rs
+// src/mpmc_v2/core.rs
 
 //! The core shared data structures and logic for the MPMC channel.
-//!
-//! This module contains the `MpmcShared` struct which holds the central mutex-protected
-//! state of the channel. To support mixed synchronous and asynchronous operations
-//! (e.g., a sync producer sending to an async consumer), the design separates waiters
-//! into distinct queues based on their type.
-//!
-//! ### Design Principles:
-//!
-//! 1.  **Central Mutex**: A `parking_lot::Mutex` guards all state changes, ensuring safety
-//!     and correctness at the cost of some contention in highly parallel scenarios.
-//! 2.  **Separate Waiter Queues**: Instead of a single queue with a `Waiter` enum, we have
-//!     four distinct queues: `waiting_sync_senders`, `waiting_async_senders`,
-//!     `waiting_sync_receivers`, and `waiting_async_receivers`. This allows the core
-//!     logic to wake the correct type of parker (`thread::unpark` for sync, `waker.wake()`
-//!     for async) without ambiguity.
-//! 3.  **Wake-up Priority**: When an operation frees up a resource (e.g., a `send`
-//!     provides an item, or a `recv` creates space), the logic prioritizes waking an
-//!     existing parked task/thread over performing another action (like pushing to the
-//!     buffer). Async waiters are generally prioritized as they are lower overhead to wake.
 
 use crate::error::{TryRecvError, TrySendError};
 use crate::RecvError;
-use core::future::PollFn;
 use core::task::{Context, Poll};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::task::Waker;
 use std::thread::Thread;
+
+// --- State Machine Constants ---
+pub(crate) const STATE_WAITING: u8 = 0;
+pub(crate) const STATE_SUCCESS: u8 = 1;
+pub(crate) const STATE_CANCELLED: u8 = 2;
 
 // --- Waiter & Data Structs ---
 
@@ -48,9 +32,9 @@ pub(crate) struct SyncWaiter<T> {
   pub(crate) thread: Thread,
   /// A slot for a rendezvous item. `None` for buffered waiters.
   pub(crate) data: Option<WaiterData<T>>,
-  /// An atomic flag used by the adaptive backoff strategy to detect when the
-  /// wait is over, preventing the thread from re-parking unnecessarily.
-  pub(crate) done: Arc<AtomicBool>,
+  /// Raw pointer to the atomic state flag on the waiting thread's stack frame.
+  /// Safety: valid as long as the waiter is live in the queue (the thread is parked).
+  pub(crate) state: *const AtomicU8,
 }
 
 impl<T> SyncWaiter<T> {
@@ -64,6 +48,9 @@ impl<T> SyncWaiter<T> {
   }
 }
 
+unsafe impl<T: Send> Send for SyncWaiter<T> {}
+unsafe impl<T: Send> Sync for SyncWaiter<T> {}
+
 /// Represents a parked asynchronous task waiting for an operation to complete.
 #[derive(Debug)]
 pub(crate) struct AsyncWaiter<T> {
@@ -71,6 +58,9 @@ pub(crate) struct AsyncWaiter<T> {
   pub(crate) waker: Waker,
   /// A slot for a rendezvous item. `None` for buffered waiters.
   pub(crate) data: Option<WaiterData<T>>,
+  /// Raw pointer to the atomic state flag within the pinned future or AsyncReceiver struct.
+  /// Safety: valid as long as the waiter is live in the queue (the future is pinned/alive).
+  pub(crate) state: *const AtomicU8,
 }
 
 impl<T> AsyncWaiter<T> {
@@ -83,6 +73,9 @@ impl<T> AsyncWaiter<T> {
     }
   }
 }
+
+unsafe impl<T: Send> Send for AsyncWaiter<T> {}
+unsafe impl<T: Send> Sync for AsyncWaiter<T> {}
 
 /// The core state of the MPMC channel, protected by a single `Mutex`.
 #[derive(Debug)]
@@ -110,14 +103,11 @@ pub(crate) struct MpmcShared<T> {
   pub(crate) capacity: usize,
 }
 
-// It is safe to send MpmcShared across threads if T is Send.
-// The internal Mutex ensures that access to the shared state is properly synchronized.
 unsafe impl<T: Send> Send for MpmcShared<T> {}
 unsafe impl<T: Send> Sync for MpmcShared<T> {}
 
 impl<T: Send> MpmcShared<T> {
   /// Creates a new shared core for the channel with a given capacity.
-  /// `usize::MAX` is used to signify an "unbounded" channel.
   pub(crate) fn new(capacity: usize) -> Self {
     MpmcShared {
       internal: Mutex::new(MpmcChannelInternal {
@@ -126,17 +116,14 @@ impl<T: Send> MpmcShared<T> {
         waiting_async_senders: VecDeque::new(),
         waiting_sync_receivers: VecDeque::new(),
         waiting_async_receivers: VecDeque::new(),
-        sender_count: 1, // Starts with one producer and one consumer
+        sender_count: 1,
         receiver_count: 1,
       }),
       capacity,
     }
   }
 
-  /// The core logic for attempting to send an item. This will try, in order:
-  /// 1. Hand the item to a waiting receiver (async first, then sync).
-  /// 2. Push the item into the buffer if there is space.
-  /// If neither is possible, it returns a `TrySendError`.
+  /// The core logic for attempting to send an item.
   pub(crate) fn try_send_core(&self, item: T) -> Result<(), TrySendError<T>> {
     let mut guard = self.internal.lock();
 
@@ -145,22 +132,44 @@ impl<T: Send> MpmcShared<T> {
     }
 
     // --- Priority 1: Wake a waiting receiver ---
-    // Prioritize async waiters as they are generally lower overhead to wake.
-    if let Some(waiter) = guard.waiting_async_receivers.pop_front() {
-      guard.queue.push_back(item); // Item is buffered for the receiver to pick up.
-      waiter.waker.wake();
-      return Ok(());
+    loop {
+      match guard.waiting_async_receivers.pop_front() {
+        None => break,
+        Some(waiter) => {
+          let waiter_state = unsafe { &*waiter.state };
+          if waiter_state
+            .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+          {
+            guard.queue.push_back(item);
+            waiter.waker.wake();
+            return Ok(());
+          }
+          // STATE_CANCELLED: discard and try next
+        }
+      }
     }
-    if let Some(waiter) = guard.waiting_sync_receivers.pop_front() {
-      guard.queue.push_back(item);
-      waiter.done.store(true, Ordering::Release);
-      waiter.thread.unpark();
-      return Ok(());
+
+    loop {
+      match guard.waiting_sync_receivers.pop_front() {
+        None => break,
+        Some(waiter) => {
+          let waiter_state = unsafe { &*waiter.state };
+          if waiter_state
+            .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+          {
+            guard.queue.push_back(item);
+            waiter.thread.unpark();
+            return Ok(());
+          }
+          // STATE_CANCELLED: discard and try next
+        }
+      }
     }
 
     // --- Priority 2: Push to buffer if space is available ---
     if self.capacity == 0 {
-      // A rendezvous channel is "full" if no receivers are waiting.
       return Err(TrySendError::Full(item));
     }
     if self.capacity == usize::MAX || guard.queue.len() < self.capacity {
@@ -168,61 +177,127 @@ impl<T: Send> MpmcShared<T> {
       return Ok(());
     }
 
-    // --- Fallback: Buffer is full and no one is waiting ---
     Err(TrySendError::Full(item))
   }
 
-  /// The core logic for attempting to receive an item. This will try, in order:
-  /// 1. Take an item from a waiting rendezvous sender (async first, then sync).
-  /// 2. Take an item from the buffer. If successful, it may wake a waiting buffered sender.
-  /// If neither is possible, it returns a `TryRecvError`.
+  /// The core logic for attempting to receive an item.
   pub(crate) fn try_recv_core(&self) -> Result<T, TryRecvError> {
     let mut guard = self.internal.lock();
 
     // --- Priority 1: Check for a waiting rendezvous sender ---
-    if let Some(mut waiter) = guard.waiting_async_senders.pop_front() {
-      if let Some(item) = waiter.take_item_from_sender_slot() {
-        waiter.waker.wake();
-        return Ok(item);
+    loop {
+      if guard
+        .waiting_async_senders
+        .front()
+        .map(|w| w.data.is_some())
+        .unwrap_or(false)
+      {
+        let mut waiter = guard.waiting_async_senders.pop_front().unwrap();
+        let waiter_state = unsafe { &*waiter.state };
+        match waiter_state
+          .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        {
+          Ok(_) => {
+            let item = waiter.take_item_from_sender_slot().unwrap();
+            waiter.waker.wake();
+            return Ok(item);
+          }
+          Err(_) => {
+            drop(waiter.data.take()); // CANCELLED: drop rendezvous payload, loop
+          }
+        }
+      } else {
+        break;
       }
-      // Not a rendezvous sender, put it back.
-      guard.waiting_async_senders.push_front(waiter);
     }
-    if let Some(mut waiter) = guard.waiting_sync_senders.pop_front() {
-      if let Some(item) = waiter.take_item_from_sender_slot() {
-        waiter.done.store(true, Ordering::Release);
-        waiter.thread.unpark();
-        return Ok(item);
+
+    loop {
+      if guard
+        .waiting_sync_senders
+        .front()
+        .map(|w| w.data.is_some())
+        .unwrap_or(false)
+      {
+        let mut waiter = guard.waiting_sync_senders.pop_front().unwrap();
+        let waiter_state = unsafe { &*waiter.state };
+        match waiter_state
+          .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        {
+          Ok(_) => {
+            let item = waiter.take_item_from_sender_slot().unwrap();
+            waiter.thread.unpark();
+            return Ok(item);
+          }
+          Err(_) => {
+            drop(waiter.data.take());
+          }
+        }
+      } else {
+        break;
       }
-      // Not a rendezvous sender, put it back.
-      guard.waiting_sync_senders.push_front(waiter);
     }
 
     // --- Priority 2: Check the main buffer ---
     if let Some(item) = guard.queue.pop_front() {
-      // An item was in the queue. This might have freed up space for a buffered sender.
-      // Wake one up if any are waiting.
-      if let Some(waiter) = guard.waiting_async_senders.pop_front() {
-        waiter.waker.wake();
-      } else if let Some(waiter) = guard.waiting_sync_senders.pop_front() {
-        waiter.done.store(true, Ordering::Release);
-        waiter.thread.unpark();
+      // Free buffer space exists. Only wake waiting senders if the channel is buffered.
+      // Rendezvous senders (capacity == 0) are only ever woken from Priority 1 when their
+      // specific payload is extracted; waking them here would cause their item to be silently
+      // dropped (payload leak → deadlock).
+      if self.capacity > 0 {
+        let mut woke = false;
+        loop {
+          match guard.waiting_async_senders.pop_front() {
+            None => break,
+            Some(waiter) => {
+              let waiter_state = unsafe { &*waiter.state };
+              if waiter_state
+                .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+              {
+                waiter.waker.wake();
+                woke = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if !woke {
+          loop {
+            match guard.waiting_sync_senders.pop_front() {
+              None => break,
+              Some(waiter) => {
+                let waiter_state = unsafe { &*waiter.state };
+                if waiter_state
+                  .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+                  .is_ok()
+                {
+                  waiter.thread.unpark();
+                  break;
+                }
+              }
+            }
+          }
+        }
       }
+
       return Ok(item);
     }
 
     // --- Priority 3: Check for disconnection ---
-    // This check happens only after confirming the channel is truly empty
-    // (no buffered items, no waiting rendezvous senders).
     if guard.sender_count == 0 {
       return Err(TryRecvError::Disconnected);
     }
 
-    // --- Fallback: Channel is not disconnected but is temporarily empty ---
     Err(TryRecvError::Empty)
   }
 
-  pub(crate) fn poll_recv_internal(&self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
+  /// Inner polling logic used by both `RecvFuture` and `Stream for AsyncReceiver`.
+  pub(crate) fn poll_recv_internal(
+    &self,
+    cx: &mut Context<'_>,
+    state_ptr: *const AtomicU8,
+  ) -> Poll<Result<T, RecvError>> {
     'poll_loop: loop {
       // --- Phase 1: Try to receive without parking ---
       match self.try_recv_core() {
@@ -237,16 +312,12 @@ impl<T: Send> MpmcShared<T> {
       {
         let mut guard = self.internal.lock();
 
-        // Re-check under lock. An item might have appeared.
-        // An item is available if:
-        // 1. The queue is not empty (buffered or rendezvous after hand-off)
-        // 2. It's a rendezvous channel and a sender is waiting to hand an item over.
         if !guard.queue.is_empty()
           || (self.capacity == 0
             && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
         {
           drop(guard);
-          continue 'poll_loop; // Retry immediately.
+          continue 'poll_loop;
         }
 
         if guard.sender_count == 0 {
@@ -255,17 +326,21 @@ impl<T: Send> MpmcShared<T> {
 
         let new_waker = cx.waker();
 
-        // just update waker if exists
         if let Some(existing_waiter) = guard
           .waiting_async_receivers
           .iter_mut()
           .find(|w| w.waker.will_wake(new_waker))
         {
-          existing_waiter.waker = new_waker.clone(); // Update in case it changed
+          existing_waiter.waker = new_waker.clone();
         } else {
+          // Reset state to WAITING under lock before registering.
+          // This clears any stale STATE_SUCCESS from a previous wake-up cycle
+          // so the next sender's CAS(WAITING→SUCCESS) on this slot will succeed.
+          unsafe { (*state_ptr).store(STATE_WAITING, Ordering::SeqCst) };
           let waiter = AsyncWaiter {
             waker: new_waker.clone(),
-            data: None, // Receivers never have data
+            data: None,
+            state: state_ptr,
           };
           guard.waiting_async_receivers.push_back(waiter);
         }
@@ -278,26 +353,14 @@ impl<T: Send> MpmcShared<T> {
 
 impl<T> Drop for MpmcShared<T> {
   fn drop(&mut self) {
-    // When the Arc<MpmcShared> is finally dropped (i.e., all Senders and
-    // Receivers are gone), we must drop any items remaining in the channel
-    // to prevent memory leaks.
     if let Some(mut guard) = self.internal.try_lock() {
-      // Drain the main queue.
-      guard.queue.clear(); // VecDeque's clear/drop handles dropping items.
-
-      // Drain any parked senders, which might contain items for rendezvous channels.
+      guard.queue.clear();
       for mut waiter in guard.waiting_sync_senders.drain(..) {
-        if let Some(_item) = waiter.take_item_from_sender_slot() {
-          // Item from rendezvous waiter is dropped here.
-        }
+        let _ = waiter.take_item_from_sender_slot();
       }
       for mut waiter in guard.waiting_async_senders.drain(..) {
-        if let Some(_item) = waiter.take_item_from_sender_slot() {
-          // Item from rendezvous waiter is dropped here.
-        }
+        let _ = waiter.take_item_from_sender_slot();
       }
     }
-    // If the lock is poisoned, the data inside might not be properly dropped,
-    // but this is an unrecoverable panic state anyway.
   }
 }
