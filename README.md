@@ -19,6 +19,7 @@
 *   **[`fibre`](./channels/README.md)**: A library of specialized, high-performance, and memory-efficient sync/async channels (`spsc`, `mpsc`, `spmc`, `mpmc`).
 *   **[`fibre_cache`](./cache/README.md)**: A comprehensive, flexible, and high-performance concurrent caching library with modern eviction policies.
 *   **[`fibre_ioc`](./ioc/README.md)**: A flexible, thread-safe, and dynamic Inversion of Control (IoC) container with support for optional dependencies and a single-threaded, non-`Send`/`Sync` variant.
+*   **[`fibre_logging`](./logging/README.md)**: A flexible, multimode sync/async logging library that unifies the log and tracing ecosystems, driven by external configuration and featuring powerful debug instrumentation.
 
 ## Notable Users
 

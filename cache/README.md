@@ -6,9 +6,9 @@
 
 `fibre_cache` offers a best-in-class, most flexible, high-performance, concurrent, multimode sync/async cache for Rust. It is built from the heart and soul of a Java-turned-Rust engineer to bring the comprehensive, flexible, and ergonomic "it just works" feeling of top-tier Java caches (like Caffeine) to the Rust ecosystem.
 
-## ⚠️ Current Status: Beta
+## Current Status: STABLE
 
-Please note that `fibre_cache` is currently in an active beta phase. The core functionality is robust and well-tested, but the public API is still evolving.
+Please note that `fibre_cache` is currently stable. The core functionality is robust and well-tested, but the public API may change.
 
 This means:
 *   **APIs May Change:** Until the `1.0` release, breaking changes may be introduced in minor version updates (`0.x.y`).
@@ -18,7 +18,7 @@ We highly encourage you to try it out, provide feedback and report any issues. C
 
 ## Notable Users
 
-[Hi Stakes Markets Game](https://www.histakesgame.com) -  The worlds most advanced financial simulator, available on iPhone and Android.
+[Hi Stakes Markets Game](https://www.histakesgame.com) -  The world's most advanced financial simulator, available on iPhone and Android.
 
 ## Motivation
 
