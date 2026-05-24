@@ -61,6 +61,7 @@ where
   }
 
   pub fn metrics(&self) -> MetricsSnapshot {
+    self.shared.flush_for_introspection();
     return self.shared.metrics.snapshot();
   }
 
@@ -607,6 +608,7 @@ where
   /// # }
   /// ```
   pub fn iter_stream(&self) -> IterStream<K, V, H> {
+    self.shared.flush_for_introspection();
     IterStream::new(self, DEFAULT_ITER_BATCH_SIZE)
   }
 
@@ -615,6 +617,7 @@ where
   /// A larger batch size may have better throughput but will hold shard locks
   /// for slightly longer during batch-refill operations.
   pub fn iter_stream_with_batch_size(&self, batch_size: usize) -> IterStream<K, V, H> {
+    self.shared.flush_for_introspection();
     IterStream::new(self, batch_size.max(1))
   }
   
@@ -638,6 +641,7 @@ where
   /// }
   /// ```
   pub fn iter_snapshot_async(&self) -> AsyncSnapshotIter<'_, K, V, H> {
+    self.shared.flush_for_introspection();
     AsyncSnapshotIter::new(self)
   }
 }
@@ -871,6 +875,36 @@ where
   V: Send + Sync,
   H: BuildHasher + Clone + Send + Sync + 'static,
 {
+  /// Forces a complete, task-safe maintenance pass across all shards.
+  ///
+  /// Unlike opportunistic maintenance (which can be skipped), this guarantees
+  /// that all pending write admissions, read accesses, TTL/TTI expirations, and
+  /// capacity evictions are processed before returning.
+  ///
+  /// Primarily useful for deterministic testing and manual cache management.
+  pub async fn run_maintenance(&self) {
+    use crate::task::janitor::{
+      Janitor, JanitorContext, COOPERATIVE_MAINTENANCE_DRAIN_LIMIT, perform_shard_maintenance,
+    };
+
+    let janitor_context = JanitorContext {
+      store: Arc::clone(&self.shared.store),
+      metrics: Arc::clone(&self.shared.metrics),
+      cache_policy: self.shared.cache_policy.clone(),
+      capacity: self.shared.capacity,
+      time_to_idle: self.shared.time_to_idle,
+      notification_sender: self.shared.notification_sender.as_ref().map(|s| s.clone()),
+    };
+
+    for (i, shard) in self.shared.store.shards.iter().enumerate() {
+      let _guard = shard.maintenance_lock.lock_async().await;
+      perform_shard_maintenance(shard, i, &janitor_context, COOPERATIVE_MAINTENANCE_DRAIN_LIMIT);
+      Janitor::cleanup_ttl_for_shard(shard, i, &janitor_context);
+      Janitor::cleanup_tti_for_shard(shard, i, &janitor_context);
+      Janitor::cleanup_capacity_for_shard(shard, i, &janitor_context);
+    }
+  }
+
   /// Asynchronously retrieves a value for the given key, computing it with the
   /// configured loader function if the key is not present.
   ///

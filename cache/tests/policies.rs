@@ -1,33 +1,8 @@
 use fibre_cache::{Cache, CacheBuilder, policy::*};
 use std::{
   hash::{BuildHasher, Hash},
-  time::{Duration, Instant},
+  time::Duration,
 };
-
-const CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(2);
-
-// Helper function to wait for the cache cost to be at or below a target.
-fn wait_for_cost_convergence<K, V, H>(cache: &Cache<K, V, H>, target_cost: u64)
-where
-  K: Eq + Hash + Clone + Send + Sync,
-  V: Send + Sync,
-  H: BuildHasher + Clone + Send + Sync,
-{
-  let deadline = Instant::now() + CONVERGENCE_TIMEOUT;
-  loop {
-    let current_cost = cache.metrics().current_cost;
-    if current_cost <= target_cost {
-      return; // Success
-    }
-    if Instant::now() > deadline {
-      panic!(
-        "Cache cost did not converge. Current: {}, Target: {}",
-        current_cost, target_cost
-      );
-    }
-    std::thread::sleep(Duration::from_millis(50));
-  }
-}
 
 // --- LRU Policy Tests ---
 mod lru {
@@ -54,8 +29,7 @@ mod lru {
     cache.fetch(&1);
 
     cache.insert(4, "d", 1);
-
-    wait_for_cost_convergence(&cache, 3);
+    cache.run_maintenance();
 
     assert_eq!(cache.metrics().current_cost, 3);
     assert!(cache.fetch(&2).is_none(), "Key 2 should have been evicted");
@@ -89,7 +63,7 @@ mod fifo {
     cache.fetch(&1);
 
     cache.insert(4, "d", 1);
-    std::thread::sleep(Duration::from_millis(50)); // <-- WAIT FOR JANITOR
+    cache.run_maintenance();
 
     assert_eq!(cache.metrics().current_cost, 3);
     assert!(cache.fetch(&1).is_none(), "Key 1 should have been evicted");
@@ -123,8 +97,7 @@ mod sieve {
     cache.fetch(&2);
 
     cache.insert(4, "d", 1);
-
-    wait_for_cost_convergence(&cache, 3);
+    cache.run_maintenance();
 
     assert_eq!(cache.metrics().current_cost, 3);
     assert!(cache.fetch(&1).is_none(), "Key 1 should be evicted");
@@ -194,15 +167,12 @@ mod tinylfu {
     // Inserting a 4th item will push the cache over capacity.
     // The insert itself is non-blocking.
     cache.insert(4, "four".to_string(), 1);
-
-    // Wait for the janitor to run. The janitor will process the write event for key 4,
-    // which updates the policy, and then run cleanup_capacity, which calls policy.evict().
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    cache.run_maintenance();
 
     assert_eq!(
       cache.metrics().current_cost,
       3,
-      "Janitor should bring cost back down to capacity"
+      "run_maintenance should bring cost back down to capacity"
     );
   }
 
@@ -231,13 +201,12 @@ mod tinylfu {
     }
     assert_eq!(cache.metrics().current_cost, 10);
 
-    // Wait for the background Janitor to process the read batcher
-    // so the CMS knows items 1-9 are actually "hot"
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Flush the read batcher so the CMS sketch knows items 1-9 are "hot"
+    // before the trigger insert's on_admit fires.
+    cache.run_maintenance();
 
     cache.insert(100, "trigger".to_string(), 1);
-
-    wait_for_cost_convergence(&cache, 10);
+    cache.run_maintenance();
 
     let final_cost = cache.metrics().current_cost;
     assert!(
@@ -272,12 +241,11 @@ mod tinylfu {
       cache.fetch(&5);
     }
 
-    // Wait for the batcher to drain so item 5 becomes "hot" in the sketch
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Flush the read batcher so item 5's high frequency is recorded in the sketch.
+    cache.run_maintenance();
 
     cache.insert(11, "new".to_string(), 1);
-
-    wait_for_cost_convergence(&cache, 10);
+    cache.run_maintenance();
 
     assert_eq!(
       cache.metrics().current_cost,
@@ -339,11 +307,9 @@ mod slru {
       "Cache should be temporarily over capacity"
     );
 
-    // Wait for the janitor to run and perform eviction.
-    wait_for_cost_convergence(&cache, 4);
+    cache.run_maintenance();
 
-    // The Janitor will have called policy.evict(1).
-    // The SLRU policy evicts from the LRU end of the probationary segment, which is item 1.
+    // SLRU evicts from the LRU end of the probationary segment, which is item 1.
     assert_eq!(
       cache.metrics().current_cost,
       4,

@@ -112,6 +112,8 @@ The fluent builder for creating `Cache` and `AsyncCache` instances.
     *   Sets a custom hasher for the cache.
 *   `pub fn maintenance_chance(mut self, denominator: u32) -> Self`
     *   Sets the probability (`1 / denominator`) of running opportunistic maintenance on each `insert` operation. Use presets from the `maintenance_frequency` module for convenience (e.g., `maintenance_frequency::RESPONSIVE`).
+*   `pub fn maintenance_on_introspection(mut self, enabled: bool) -> Self`
+    *   When `true`, the introspection methods `metrics()`, `iter()`, `iter_with_batch_size()`, `iter_snapshot()`, `to_snapshot()`, and their async equivalents will automatically flush all pending read-access events before returning. This ensures the eviction policy's internal state (e.g., LRU order, frequency counters) is fully up-to-date when you inspect the cache. Disabled by default. Useful for deterministic testing or monitoring scenarios that require accurate eviction metadata.
 *   `pub fn timer_mode(mut self, mode: TimerWheelMode) -> Self`
     *   Configures the internal expiration timer using a convenient preset (`Default`, `HighPrecisionShortLived`, `LowPrecisionLongLived`).
 *   `pub fn timer_tick_duration(mut self, duration: Duration) -> Self`
@@ -147,7 +149,7 @@ A handle to the cache for synchronous operations.
 *   `pub fn to_async(&self) -> AsyncCache<K, V, H>`
     *   Converts to an `AsyncCache` handle. This is a zero-cost `Arc` clone.
 *   `pub fn metrics(&self) -> MetricsSnapshot`
-    *   Returns a point-in-time snapshot of the cache's metrics.
+    *   Returns a point-in-time snapshot of the cache's metrics. If `maintenance_on_introspection` is enabled, pending read-access events are flushed first so the eviction policy state is current.
 *   `pub fn get<Q, F, R>(&self, key: &Q, f: F) -> Option<R>`
     *   *where `F: FnOnce(&V) -> R`*
     *   Looks up an entry and, if found, applies a closure to the value without cloning it. This is the most efficient read operation.
@@ -181,13 +183,15 @@ A handle to the cache for synchronous operations.
     *   Removes all entries from the cache.
 *   `pub fn to_snapshot(&self) -> CacheSnapshot<K, V>`
     *   *(feature: `serde`)*
-    *   Creates a serializable snapshot of the cache's current state. Pauses all other operations during creation.
+    *   Creates a serializable snapshot of the cache's current state. Pauses all other operations during creation. If `maintenance_on_introspection` is enabled, pending read-access events are flushed before the snapshot is taken.
 *   `pub fn iter(&self) -> Iter<'_, K, V, H>`
-    *   Returns a weakly-consistent iterator over the key-value pairs in the cache.
+    *   Returns a weakly-consistent iterator over the key-value pairs in the cache. If `maintenance_on_introspection` is enabled, pending read-access events are flushed first.
 *   `pub fn iter_with_batch_size(&self, batch_size: usize) -> Iter<'_, K, V, H>`
-    *   Returns a weakly-consistent iterator with a custom batch size.
+    *   Returns a weakly-consistent iterator with a custom batch size. If `maintenance_on_introspection` is enabled, pending read-access events are flushed first.
 *   `pub fn iter_snapshot(&self) -> SnapshotIter<'_, K, V, H>`
-    *   Returns a semi-consistent iterator that snapshots keys one shard at a time.
+    *   Returns a semi-consistent iterator that snapshots keys one shard at a time. If `maintenance_on_introspection` is enabled, pending read-access events are flushed first.
+*   `pub fn run_maintenance(&self)`
+    *   Forces a complete, blocking maintenance pass across all shards. Guarantees that all pending write admissions, read accesses, TTL/TTI expirations, and capacity evictions are processed before returning. Unlike opportunistic maintenance (which is probabilistic and skippable), this method is deterministic. Primarily useful for testing and manual cache management.
 *   `pub fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
     *   *(feature: `bulk`)*
     *   Retrieves multiple values from the cache, parallelizing lookups across shards.
@@ -206,6 +210,7 @@ A handle to the cache for asynchronous operations. All methods are async equival
 
 *   `pub fn to_sync(&self) -> Cache<K, V, H>`
 *   `pub fn metrics(&self) -> MetricsSnapshot`
+    *   Returns a point-in-time metrics snapshot. If `maintenance_on_introspection` is enabled, pending read-access events are flushed first.
 *   `pub async fn get<Q, F, R>(&self, key: &Q, f: F) -> Option<R>`
 *   `pub async fn fetch<Q>(&self, key: &Q) -> Option<Arc<V>>`
 *   `pub async fn peek<Q>(&self, key: &Q) -> Option<Arc<V>>`
@@ -221,12 +226,15 @@ A handle to the cache for asynchronous operations. All methods are async equival
 *   `pub async fn clear(&self)`
 *   `pub async fn to_snapshot(&self) -> CacheSnapshot<K, V>`
     *   *(feature: `serde`)*
+    *   If `maintenance_on_introspection` is enabled, pending read-access events are flushed before the snapshot is taken.
 *   `pub fn iter_stream(&self) -> IterStream<K, V, H>`
-    *   Returns a weakly-consistent `Stream` over the key-value pairs in the cache.
+    *   Returns a weakly-consistent `Stream` over the key-value pairs in the cache. If `maintenance_on_introspection` is enabled, pending read-access events are flushed first.
 *   `pub fn iter_stream_with_batch_size(&self, batch_size: usize) -> IterStream<K, V, H>`
-    *   Returns a weakly-consistent `Stream` with a custom batch size.
+    *   Returns a weakly-consistent `Stream` with a custom batch size. If `maintenance_on_introspection` is enabled, pending read-access events are flushed first.
 *   `pub fn iter_snapshot_async(&self) -> AsyncSnapshotIter<'_, K, V, H>`
-    *   Returns a semi-consistent async iterator that snapshots keys one shard at a time.
+    *   Returns a semi-consistent async iterator that snapshots keys one shard at a time. If `maintenance_on_introspection` is enabled, pending read-access events are flushed first.
+*   `pub async fn run_maintenance(&self)`
+    *   Async equivalent of `Cache::run_maintenance`. Uses async-compatible locking so it yields rather than blocks while acquiring shard locks.
 *   `pub async fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
 *   `pub async fn multi_insert<I>(&self, items: I)`
     *   *(feature: `bulk`)*

@@ -1,26 +1,7 @@
 use fibre_cache::{builder::CacheBuilder, policy::lru::LruPolicy};
-use tokio::time::{Duration, Instant, sleep};
+use std::time::Duration;
 
 const JANITOR_TICK: Duration = Duration::from_millis(50);
-const CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(2);
-
-// Helper function to wait for the cache cost to be at or below a target.
-async fn wait_for_cost_convergence(cache: &fibre_cache::AsyncCache<i32, i32>, target_cost: u64) {
-  let deadline = Instant::now() + CONVERGENCE_TIMEOUT;
-  loop {
-    let current_cost = cache.metrics().current_cost;
-    if current_cost <= target_cost {
-      return; // Success
-    }
-    if Instant::now() > deadline {
-      panic!(
-        "Cache cost did not converge. Current: {}, Target: {}",
-        current_cost, target_cost
-      );
-    }
-    sleep(JANITOR_TICK).await;
-  }
-}
 
 #[tokio::test]
 async fn test_async_janitor_evicts_on_capacity() {
@@ -39,10 +20,8 @@ async fn test_async_janitor_evicts_on_capacity() {
   }
   assert_eq!(cache.metrics().current_cost, 11);
 
-  // Wait for the janitor to bring the cost down to capacity.
-  wait_for_cost_convergence(&cache, capacity).await;
+  cache.run_maintenance().await;
 
-  // Assert the final state.
   assert_eq!(cache.metrics().current_cost, capacity);
   assert!(
     cache.fetch(&0).await.is_none(),
@@ -68,9 +47,7 @@ async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
   cache.insert(2, 2, 10).await;
   assert_eq!(cache.metrics().current_cost, 15);
 
-  // Wait for the janitor. Since cost_to_free is 10 and the largest item is 10,
-  // it will likely evict both to get under capacity. The final cost should be 0.
-  wait_for_cost_convergence(&cache, 0).await;
+  cache.run_maintenance().await;
 
   // Assert the final state.
   assert_eq!(cache.metrics().current_cost, 0);
@@ -102,7 +79,7 @@ async fn test_async_janitor_evicts_on_capacity_with_lru() {
   }
   assert_eq!(cache.metrics().current_cost, 11);
 
-  wait_for_cost_convergence(&cache, capacity).await;
+  cache.run_maintenance().await;
 
   assert_eq!(cache.metrics().current_cost, capacity);
   assert!(
@@ -134,8 +111,8 @@ async fn test_async_janitor_evicts_on_capacity_with_default_tinylfu() {
   cache.insert(2, 20, 1).await;
   cache.insert(3, 30, 1).await;
 
-  // Give the janitor a moment to process initial writes.
-  sleep(JANITOR_TICK * 2).await;
+  // Process initial writes so the policy knows about all three items.
+  cache.run_maintenance().await;
   assert_eq!(cache.metrics().current_cost, cache_capacity);
 
   // Make items 2 and 3 "hotter" than item 1.
@@ -143,18 +120,12 @@ async fn test_async_janitor_evicts_on_capacity_with_default_tinylfu() {
   cache.fetch(&3).await;
 
   // Replace item 1 with a higher-cost version, overflowing the cache.
+  // maintenance_chance(1) processes the re-admit of key 1 and the pending reads
+  // for keys 2 and 3 in the same pass, so the policy state is updated correctly.
   cache.insert(1, 11, 2).await; // Total cost is now 2 (item 1) + 1 (item 2) + 1 (item 3) = 4.
   assert_eq!(cache.metrics().current_cost, cache_capacity + 1);
 
-  // Give the janitor one more tick to process the latest write event
-  // before we start checking for convergence on cost.
-  sleep(JANITOR_TICK * 2).await;
-
-  // Wait for the janitor to bring the cost down. It needs to free 1.
-  // The policy should evict the least valuable item. Based on access patterns,
-  // the coldest item is 1. But based on SLRU mechanics, the victim from protected might be 2.
-  // Let's not assume which one and just check the final state.
-  wait_for_cost_convergence(&cache, cache_capacity).await;
+  cache.run_maintenance().await;
 
   let final_cost = cache.metrics().current_cost;
   assert!(
@@ -214,10 +185,8 @@ async fn test_async_no_eviction_if_at_capacity() {
   }
   let initial_evictions = cache.metrics().evicted_by_capacity;
 
-  // Wait for a few janitor ticks.
-  sleep(JANITOR_TICK * 4).await;
+  cache.run_maintenance().await;
 
-  // No convergence loop needed, as we expect no change.
   assert_eq!(cache.metrics().current_cost, cache_capacity);
   assert_eq!(cache.metrics().evicted_by_capacity, initial_evictions);
   for i in 0..cache_capacity {
@@ -241,12 +210,12 @@ async fn test_async_janitor_cleans_up_large_overflow() {
   cache.insert(2, 2, 10).await;
   assert_eq!(cache.metrics().current_cost, 11);
 
-  let evictions_before_janitor = cache.metrics().evicted_by_capacity;
+  let evictions_before = cache.metrics().evicted_by_capacity;
 
-  wait_for_cost_convergence(&cache, capacity).await;
+  cache.run_maintenance().await;
 
-  let evictions_after_janitor = cache.metrics().evicted_by_capacity;
-  assert_eq!(evictions_after_janitor - evictions_before_janitor, 2);
+  let evictions_after = cache.metrics().evicted_by_capacity;
+  assert_eq!(evictions_after - evictions_before, 2);
   assert!(cache.metrics().current_cost <= capacity);
   assert!(cache.fetch(&1).await.is_none());
   assert!(cache.fetch(&2).await.is_none());

@@ -67,6 +67,7 @@ pub struct CacheBuilder<K: Send, V: Send, H = ahash::RandomState> {
   loader: Option<Loader<K, V>>,
   spawner: Option<Arc<dyn TaskSpawner>>,
   maintenance_probability_denominator: u32,
+  maintenance_on_introspection: bool,
   _key_marker: PhantomData<K>,
   _value_marker: PhantomData<V>,
 }
@@ -272,6 +273,17 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
     self.maintenance_probability_denominator = denominator.next_power_of_two();
     self
   }
+
+  /// When enabled, the cache automatically runs a full maintenance pass before
+  /// returning metrics, iterators, snapshots, or other introspection results.
+  ///
+  /// This ensures that pending write admissions and read access events are
+  /// reflected in policy state before the caller observes cache internals.
+  /// Particularly useful for deterministic testing.
+  pub fn maintenance_on_introspection(mut self, enabled: bool) -> Self {
+    self.maintenance_on_introspection = enabled;
+    self
+  }
 }
 
 // --- Default Constructor ---
@@ -293,6 +305,7 @@ impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
       loader: None,
       spawner: None,
       maintenance_probability_denominator: maintenance_frequency::RESPONSIVE,
+      maintenance_on_introspection: false,
       _key_marker: PhantomData,
       _value_marker: PhantomData,
     }
@@ -491,6 +504,7 @@ where
       pending_loads,
       spawner,
       maintenance_probability_denominator,
+      maintenance_on_introspection: self.maintenance_on_introspection,
     }))
   }
 

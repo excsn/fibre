@@ -34,6 +34,7 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) spawner: Option<Arc<dyn TaskSpawner>>,
   pub(crate) pending_loads: Box<[HybridMutex<HashMap<K, Arc<LoadFuture<V>>>>]>,
   pub(crate) maintenance_probability_denominator: u32,
+  pub(crate) maintenance_on_introspection: bool,
 }
 
 impl<K: Send, V: Send + Sync, H> fmt::Debug for CacheShared<K, V, H> {
@@ -54,6 +55,33 @@ impl<K: Send, V: Send + Sync, H> Drop for CacheShared<K, V, H> {
     }
     if let Some(notifier) = self.notifier.take() {
       notifier.stop();
+    }
+  }
+}
+
+impl<K, V, H> CacheShared<K, V, H>
+where
+  K: Eq + Hash + Clone + Send,
+  V: Send + Sync,
+  H: BuildHasher + Clone,
+{
+  /// Flushes pending read-access events for all shards.
+  /// Called by introspection methods when `maintenance_on_introspection` is enabled.
+  pub(crate) fn flush_for_introspection(&self) {
+    if !self.maintenance_on_introspection {
+      return;
+    }
+    let janitor_context = crate::task::janitor::JanitorContext {
+      store: Arc::clone(&self.store),
+      metrics: Arc::clone(&self.metrics),
+      cache_policy: self.cache_policy.clone(),
+      capacity: self.capacity,
+      time_to_idle: self.time_to_idle,
+      notification_sender: self.notification_sender.as_ref().map(|s| s.clone()),
+    };
+    for (i, shard) in self.store.shards.iter().enumerate() {
+      let _guard = shard.maintenance_lock.lock();
+      crate::task::janitor::perform_shard_maintenance(shard, i, &janitor_context, usize::MAX);
     }
   }
 }

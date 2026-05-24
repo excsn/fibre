@@ -1,28 +1,7 @@
-use fibre_cache::{builder::CacheBuilder, policy::lru::LruPolicy, Cache};
-use std::{thread, time::{Duration, Instant}};
+use fibre_cache::{builder::CacheBuilder, policy::lru::LruPolicy};
+use std::time::Duration;
 
 const JANITOR_TICK: Duration = Duration::from_millis(50);
-const JANITOR_WAIT_MULTIPLIER: u32 = 4; // How many tick intervals to wait
-
-const CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(2);
-
-// Helper function to wait for the cache cost to be at or below a target.
-fn wait_for_cost_convergence(cache: &Cache<i32, i32>, target_cost: u64) {
-  let deadline = Instant::now() + CONVERGENCE_TIMEOUT;
-  loop {
-    let current_cost = cache.metrics().current_cost;
-    if current_cost <= target_cost {
-      return; // Success
-    }
-    if Instant::now() > deadline {
-      panic!(
-        "Cache cost did not converge. Current: {}, Target: {}",
-        current_cost, target_cost
-      );
-    }
-    thread::sleep(JANITOR_TICK);
-  }
-}
 
 #[test]
 fn test_sync_janitor_evicts_on_capacity() {
@@ -42,14 +21,14 @@ fn test_sync_janitor_evicts_on_capacity() {
   }
   assert_eq!(cache.metrics().current_cost, 11);
 
-  // 2. Wait for the janitor to run and perform eviction.
-  thread::sleep(JANITOR_TICK * 3);
+  // 2. Force a maintenance pass to perform eviction.
+  cache.run_maintenance();
 
   // 3. Assert the cache is back to its target capacity.
   assert_eq!(cache.metrics().current_cost, 10);
   assert!(
     cache.fetch(&0).is_none(),
-    "Key 0 should have been evicted by the janitor"
+    "Key 0 should have been evicted"
   );
   assert!(cache.fetch(&10).is_some());
   assert_eq!(cache.metrics().evicted_by_capacity, 1);
@@ -83,16 +62,14 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up() {
   assert!(cache.fetch(&1).is_some());
   assert!(cache.fetch(&2).is_some());
 
-  // 4. Wait for the janitor to run.
-  // With LRU policy, it will evict item 1 (cost 5), then item 2 (cost 10)
-  // to get the cost (0) back under the capacity (5).
-  thread::sleep(JANITOR_TICK * 3);
+  // 4. Force maintenance to evict. LRU will evict item 1 (cost 5) then item 2 (cost 10).
+  cache.run_maintenance();
 
   // 5. Assert the final state.
   let final_cost = cache.metrics().current_cost;
   assert!(
     final_cost <= 5,
-    "Janitor should bring cost at or below capacity. Final cost: {}",
+    "run_maintenance should bring cost at or below capacity. Final cost: {}",
     final_cost
   );
 
@@ -126,18 +103,18 @@ fn test_sync_janitor_evicts_on_capacity_with_lru() {
     "Cost should be 11 after inserting 11 items"
   );
 
-  // 2. Wait for the janitor to run and perform eviction.
-  thread::sleep(JANITOR_TICK * JANITOR_WAIT_MULTIPLIER);
+  // 2. Force a maintenance pass to perform eviction.
+  cache.run_maintenance();
 
   // 3. Assert the cache is back to its target capacity.
   assert_eq!(
     cache.metrics().current_cost,
     10,
-    "Cost should be 10 (capacity) after janitor"
+    "Cost should be 10 (capacity) after maintenance"
   );
   assert!(
     cache.fetch(&0).is_none(), // With LRU, item 0 (first in) should be evicted
-    "Key 0 should have been evicted by the janitor"
+    "Key 0 should have been evicted"
   );
   for i in 1..=10 {
     // Items 1 through 10 should remain
@@ -182,23 +159,22 @@ fn test_sync_janitor_evicts_on_capacity_with_default_tinylfu() {
   // current_cost will become 3 (initial) - 1 (old cost of item 1) + 2 (new cost of item 1) = 4.
   cache.insert(1, 11, 2);
 
-  let evictions_before_janitor = cache.metrics().evicted_by_capacity;
+  let evictions_before = cache.metrics().evicted_by_capacity;
+  cache.run_maintenance();
 
-  wait_for_cost_convergence(&cache, cache_capacity);
-
-  // 4. Assert current_cost is back to capacity. This is the assertion that was failing.
-  // The janitor should have run, evicted one item of cost 1, bringing the total cost from 4 down to 3.
+  // 4. Assert current_cost is back to capacity.
+  // run_maintenance evicted one item of cost 1, bringing the total cost from 4 down to 3.
   assert_eq!(
     cache.metrics().current_cost,
     cache_capacity,
-    "Janitor should bring cost back to capacity"
+    "run_maintenance should bring cost back to capacity"
   );
 
-  let evictions_after_janitor = cache.metrics().evicted_by_capacity;
+  let evictions_after = cache.metrics().evicted_by_capacity;
   assert_eq!(
-    evictions_after_janitor - evictions_before_janitor,
+    evictions_after - evictions_before,
     1,
-    "Janitor should evict exactly one item"
+    "Exactly one item should have been evicted"
   );
 
   // 5. Assert item consistency (which specific item is evicted depends on fine-grained policy details,
@@ -238,8 +214,8 @@ fn test_sync_no_eviction_if_at_capacity() {
   );
   let initial_evictions = cache.metrics().evicted_by_capacity;
 
-  // 2. Wait for the janitor to run.
-  thread::sleep(JANITOR_TICK * JANITOR_WAIT_MULTIPLIER);
+  // 2. Force a maintenance pass (should find nothing to evict).
+  cache.run_maintenance();
 
   // 3. Assert that the cost is still at capacity and no new evictions occurred.
   assert_eq!(
@@ -291,25 +267,22 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up_large_overflow() {
   );
   assert!(cache.fetch(&1).is_some());
   assert!(cache.fetch(&2).is_some());
-  let evictions_before_janitor = cache.metrics().evicted_by_capacity;
+  let evictions_before = cache.metrics().evicted_by_capacity;
 
-  // 4. Wait for the janitor to run.
-  // The policy is already up-to-date. The janitor will wake up, see the
-  // overflow, and call `policy.evict()`, which will now work correctly.
-  thread::sleep(JANITOR_TICK * JANITOR_WAIT_MULTIPLIER);
+  // 4. Force a maintenance pass to perform eviction.
+  cache.run_maintenance();
 
   // 5. Assert the final state.
   let final_cost = cache.metrics().current_cost;
   assert!(
     final_cost <= cache_capacity,
-    "Janitor should bring cost at or below capacity. Final cost: {}",
+    "run_maintenance should bring cost at or below capacity. Final cost: {}",
     final_cost
   );
 
-  // Assert that at least one eviction occurred.
-  let evictions_after_janitor = cache.metrics().evicted_by_capacity;
+  let evictions_after = cache.metrics().evicted_by_capacity;
   assert!(
-    evictions_after_janitor > evictions_before_janitor,
-    "At least one item should have been evicted by janitor"
+    evictions_after > evictions_before,
+    "At least one item should have been evicted"
   );
 }

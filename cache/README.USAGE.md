@@ -15,6 +15,7 @@ This guide provides a detailed overview of `fibre_cache`'s features, core concep
     *   [Loader-Based Operations](#loader-based-operations)
     *   [Atomic Operations](#atomic-operations)
     *   [Bulk Operations](#bulk-operations)
+    *   [Maintenance API](#maintenance-api)
 6.  [Advanced Features](#advanced-features)
     *   [Eviction Policies](#eviction-policies)
     *   [Eviction Listener](#eviction-listener)
@@ -191,6 +192,7 @@ All caches must be configured and created via the `CacheBuilder`. It provides a 
 *   `.async_loader(impl Fn)`: Sets an asynchronous loader function for `AsyncCache::fetch_with`.
 *   `.eviction_listener(impl EvictionListener)`: Registers a callback for item evictions. See [Eviction Listener](#eviction-listener).
 *   `.shards(usize)`: Sets the number of concurrent shards (will be rounded to the next power of two). Defaults to `num_cpus * 8`.
+*   `.maintenance_on_introspection(bool)`: When `true`, introspection methods (`metrics()`, `iter()`, `iter_snapshot()`, `to_snapshot()`, and their async equivalents) will flush all pending read-access events before returning. This ensures the eviction policy's state is fully current. Disabled by default; most useful in tests or monitoring pipelines that need deterministic eviction metadata.
 
 **Build Methods:**
 *   `.build() -> Result<Cache, BuildError>`: Creates a synchronous `Cache`.
@@ -218,7 +220,7 @@ These are the primary handles for interacting with the cache. Their APIs are lar
 *   `clear(&self)`
     *   Removes all items from the cache. This is a "stop-the-world" operation that locks all shards.
 *   `metrics(&self) -> MetricsSnapshot`
-    *   Returns a point-in-time snapshot of the cache's performance metrics.
+    *   Returns a point-in-time snapshot of the cache's performance metrics. If `maintenance_on_introspection` is enabled, pending read-access events are flushed first so the eviction policy state is current.
 
 ### Loader-Based Operations
 
@@ -247,6 +249,54 @@ These methods are more efficient than calling their singular counterparts in a l
 *   `multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
 *   `multi_insert<I>(&self, items: I)`
 *   `multi_invalidate<I, Q>(&self, keys: I)`
+
+### Maintenance API
+
+By default, `fibre_cache` uses a background janitor thread for periodic cleanup and probabilistic opportunistic maintenance on writes. For scenarios that require deterministic, on-demand flushing — primarily tests — two explicit maintenance methods are provided.
+
+*   `run_maintenance(&self)` / `async run_maintenance(&self)`
+    *   Forces a complete maintenance pass over all shards. This includes draining all pending write-admission and read-access events, running TTL/TTI expiration, and enforcing capacity. The call blocks (or, for `AsyncCache`, yields) until the pass completes. Unlike opportunistic maintenance, this is never skipped.
+
+*   `maintenance_on_introspection(bool)` *(builder option)*
+    *   When enabled, the cache automatically runs a partial flush — draining pending read-access events — before every call to `metrics()`, `iter()`, `iter_snapshot()`, `to_snapshot()`, and their async equivalents. This ensures that the eviction policy's internal state (access frequencies, recency order) reflects all reads that have been performed, giving accurate and up-to-date introspection results.
+
+**When to use `run_maintenance` vs `maintenance_on_introspection`:**
+
+| | `run_maintenance` | `maintenance_on_introspection` |
+|---|---|---|
+| Triggers | Explicit call | Automatic on each introspection |
+| Scope | All maintenance (writes, reads, TTL, capacity) | Read-access flush only |
+| Primary use case | Deterministic test assertions | Monitoring / metrics pipelines |
+
+```rust
+// Example: deterministic test with run_maintenance
+let cache = CacheBuilder::<u32, &str>::new()
+    .capacity(10)
+    .build()
+    .unwrap();
+
+cache.insert(1, "a", 1);
+cache.insert(2, "b", 1);
+cache.insert(3, "c", 1); // triggers on_hit for policy admission
+
+// Force all pending events to be processed before asserting.
+cache.run_maintenance();
+assert_eq!(cache.metrics().current_cost, 3);
+
+// Example: auto-flush on metrics with builder flag
+let cache = CacheBuilder::<u32, &str>::new()
+    .capacity(10)
+    .maintenance_on_introspection(true)
+    .build()
+    .unwrap();
+
+cache.insert(1, "a", 1);
+cache.fetch(&1); // pending read event
+
+// metrics() flushes the read event before returning the snapshot.
+let m = cache.metrics();
+assert_eq!(m.hits, 1);
+```
 
 ## Advanced Features
 

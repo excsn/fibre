@@ -107,16 +107,13 @@ impl Janitor {
         perform_shard_maintenance(shard, shard_index, context, JANITOR_MAINTENANCE_DRAIN_LIMIT);
         Self::cleanup_ttl_for_shard(shard, shard_index, context);
         Self::cleanup_tti_for_shard(shard, shard_index, context);
+        Self::cleanup_capacity_for_shard(shard, shard_index, context);
       }
     }
-
-    // The capacity check remains global and runs on every tick to enforce
-    // the hard memory limit reliably.
-    Self::cleanup_capacity(context);
   }
 
   /// Removes expired items based on TTL for a single shard.
-  fn cleanup_ttl_for_shard<K, V, H>(
+  pub(crate) fn cleanup_ttl_for_shard<K, V, H>(
     shard: &Shard<K, V, H>,
     shard_index: usize,
     context: &JanitorContext<K, V, H>,
@@ -161,7 +158,7 @@ impl Janitor {
   }
 
   /// Removes expired items based on TTI for a single shard by sampling.
-  fn cleanup_tti_for_shard<K, V, H>(
+  pub(crate) fn cleanup_tti_for_shard<K, V, H>(
     shard: &Shard<K, V, H>,
     shard_index: usize,
     context: &JanitorContext<K, V, H>,
@@ -212,9 +209,14 @@ impl Janitor {
     }
   }
 
-  /// Removes items if the cache is over its cost capacity. (Unchanged - remains global)
-  fn cleanup_capacity<K, V, H>(context: &JanitorContext<K, V, H>)
-  where
+  /// Removes items for a single shard if the cache is over its cost capacity.
+  /// Must be called while the shard's `maintenance_lock` is held so that the policy
+  /// is guaranteed to be in sync with the map at the time eviction candidates are chosen.
+  pub(crate) fn cleanup_capacity_for_shard<K, V, H>(
+    shard: &Shard<K, V, H>,
+    shard_index: usize,
+    context: &JanitorContext<K, V, H>,
+  ) where
     K: Eq + Hash + Clone + Send + Sync,
     V: Send + Sync,
     H: BuildHasher + Clone + Send + Sync,
@@ -223,52 +225,29 @@ impl Janitor {
     if current_cost <= context.capacity {
       return;
     }
-
-    let mut cost_to_free = current_cost - context.capacity;
-    let num_shards = context.store.shards.len();
-    let mut total_cost_released = 0;
-    let mut total_victims_count = 0;
-
-    // Iterate through each shard to distribute the eviction load.
-    for i in 0..num_shards {
-      // If we've already freed enough space, stop.
-      if cost_to_free == 0 {
-        break;
-      }
-
-      // Calculate a proportional amount for this shard to free.
-      let amount_for_this_shard = (cost_to_free as f64 / (num_shards - i) as f64).ceil() as u64;
-
-      let (victims, cost_released) = context.cache_policy[i].evict(amount_for_this_shard);
-      if victims.is_empty() {
-        continue;
-      }
-
-      total_cost_released += cost_released;
-      total_victims_count += victims.len();
-      cost_to_free = cost_to_free.saturating_sub(cost_released);
-
-      let shard = &context.store.shards[i];
+    let cost_to_free = current_cost - context.capacity;
+    let (victims, cost_released) = context.cache_policy[shard_index].evict(cost_to_free);
+    if victims.is_empty() {
+      return;
+    }
+    {
       let mut guard = shard.map.write();
       for key in &victims {
-        if let Some(removed_entry) = guard.remove(key) {
+        if let Some(removed) = guard.remove(key) {
           if let Some(sender) = &context.notification_sender {
-            let _ = sender.try_send((key.clone(), removed_entry.value(), EvictionReason::Capacity));
+            let _ = sender.try_send((key.clone(), removed.value(), EvictionReason::Capacity));
           }
         }
       }
     }
-
-    if total_cost_released > 0 {
-      context
-        .metrics
-        .evicted_by_capacity
-        .fetch_add(total_victims_count as u64, Ordering::Relaxed);
-      context
-        .metrics
-        .current_cost
-        .fetch_sub(total_cost_released, Ordering::Relaxed);
-    }
+    context
+      .metrics
+      .evicted_by_capacity
+      .fetch_add(victims.len() as u64, Ordering::Relaxed);
+    context
+      .metrics
+      .current_cost
+      .fetch_sub(cost_released, Ordering::Relaxed);
   }
 
   /// Signals the janitor thread to stop.
@@ -291,7 +270,8 @@ pub(crate) fn perform_shard_maintenance<K, V, H>(
 {
   let policy = &context.cache_policy[shard_index];
 
-  // 1. Drain the lock-free read batcher and apply all access events.
+  // 1. Drain the read batcher first so access frequency is up to date before
+  //    admission decisions are made for new writes.
   let read_batch = shard.read_access_batcher.drain();
   if !read_batch.is_empty() {
     for (key, cost) in read_batch {
@@ -299,12 +279,12 @@ pub(crate) fn perform_shard_maintenance<K, V, H>(
     }
   }
 
-  // Drain a bounded number of events to prevent this loop from running too long.
+  // 2. Drain write events so new keys are admitted to the policy with the
+  //    latest access-frequency state already applied.
   for _ in 0..drain_limit {
     match shard.event_buffer_rx.try_recv() {
       Ok(event) => match event {
         AccessEvent::Write(key, cost) => {
-          let policy = &context.cache_policy[shard_index];
           let decision = policy.on_admit(&key, cost);
 
           if let AdmissionDecision::AdmitAndEvict(victims) = decision {
@@ -353,7 +333,6 @@ pub(crate) fn perform_shard_maintenance<K, V, H>(
         }
       },
       Err(_) => {
-        // The buffer is empty for this shard, we are done.
         break;
       }
     }

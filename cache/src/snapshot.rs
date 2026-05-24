@@ -116,6 +116,7 @@ where
   /// pausing all other cache operations until the snapshot is complete.
   /// Expired items are not included in the snapshot.
   pub fn to_snapshot(&self) -> CacheSnapshot<K, V> {
+    self.shared.flush_for_introspection();
     let shard_guards = self
       .shared
       .store
@@ -164,6 +165,7 @@ where
   H: BuildHasher + Clone,
 {
   pub async fn to_snapshot(&self) -> CacheSnapshot<K, V> {
+    self.shared.flush_for_introspection();
     // 1. Asynchronously acquire all write locks.
     let shard_guards =
       future::join_all(self.shared.store.iter_shards().map(|s| s.map.write_async())).await;
