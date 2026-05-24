@@ -82,36 +82,24 @@ where
     Q: Eq + Hash + Equivalent<K> + ?Sized,
     F: FnOnce(&V) -> R,
   {
-    let shard_index = self.shared.get_shard_index(key);
+    let hash = crate::store::hash_key(&self.shared.store.hasher, key);
+    let shard_index = self.shared.get_shard_index_from_hash(hash);
     let shard = &self.shared.store.shards[shard_index];
-    let hit_info: Option<(K, Arc<CacheEntry<V>>)>;
-    let result: Option<R>;
+    let mut result = None;
 
-    // Scope the read guard
     {
       let guard = shard.map.read();
       if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
-        if entry_in_guard.is_expired(self.shared.time_to_idle) {
-          hit_info = None;
-          result = None;
-        } else {
-          // Execute the closure while the lock is held
+        if !entry_in_guard.is_expired(self.shared.time_to_idle) {
           result = Some(f(entry_in_guard.value().as_ref()));
-          // Clone the entry to call on_hit outside the lock
-          hit_info = Some((found_key.clone(), entry_in_guard.clone()));
+          self.on_hit(found_key, hash, entry_in_guard, shard_index);
         }
-      } else {
-        hit_info = None;
-        result = None;
       }
-    } // Read lock is dropped here.
+    }
 
-    if let Some((found_key, entry_arc)) = hit_info {
-      self.on_hit(found_key, &entry_arc, shard_index);
-
+    if result.is_some() {
       self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
-    } else if result.is_none() {
-      // Only count a miss if we didn't get a result inside the lock.
+    } else {
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -130,36 +118,28 @@ where
     K: Borrow<Q>,
     Q: Eq + Hash + Equivalent<K> + ?Sized,
   {
-    let shard_index = self.shared.get_shard_index(key);
+    let hash = crate::store::hash_key(&self.shared.store.hasher, key);
+    let shard_index = self.shared.get_shard_index_from_hash(hash);
     let shard = &self.shared.store.shards[shard_index];
-    let hit_info: Option<(K, Arc<CacheEntry<V>>)>;
+    let mut value = None;
 
-    // Scope the read guard to release the lock as soon as possible.
     {
       let guard = shard.map.read();
       if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
-        if entry_in_guard.is_expired(self.shared.time_to_idle) {
-          hit_info = None;
-        } else {
-          // Execute the closure while the lock is held
-          // Clone the entry to call on_hit outside the lock
-          hit_info = Some((found_key.clone(), entry_in_guard.clone()));
+        if !entry_in_guard.is_expired(self.shared.time_to_idle) {
+          self.on_hit(found_key, hash, entry_in_guard, shard_index);
+          value = Some(entry_in_guard.value());
         }
-      } else {
-        hit_info = None;
       }
-    } // Read lock is dropped here.
+    }
 
-    if let Some((found_key, entry_arc)) = hit_info {
-      self.on_hit(found_key, &entry_arc, shard_index);
-
+    if value.is_some() {
       self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
-
-      Some(entry_arc.value())
     } else {
       self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
-      None
     }
+
+    value
   }
 
   /// "Peeks" at a value in the cache without updating its recency or access time.
@@ -632,17 +612,14 @@ where
 
   /// Private helper method to run common logic on a cache hit.
   /// This includes updating metadata for TTI and notifying the eviction policy.
-  fn on_hit(&self, key: K, entry: &Arc<CacheEntry<V>>, shard_idx: usize) {
+  #[inline]
+  fn on_hit(&self, key: &K, hash: u64, entry: &Arc<CacheEntry<V>>, shard_idx: usize) {
     if self.shared.time_to_idle.is_some() {
       entry.update_last_accessed();
     }
 
-    // Defer the policy update by recording the access in the shard's batcher.
-    // This is a very fast, low-contention operation.
     let shard = &self.shared.store.shards[shard_idx];
-    shard
-      .read_access_batcher
-      .record_access(key, entry.cost(), &self.shared.store.hasher);
+    shard.read_access_batcher.record_access(key, hash, entry.cost());
   }
 
   /// Helper to run maintenance on a shard if the maintenance lock is not contended.
@@ -697,46 +674,56 @@ where
     K: Clone + 'static,
     V: 'static,
   {
-    // 1. Optimistic read lock.
-    let shard_index = self.shared.get_shard_index(key);
-    if let Some((found_key, entry)) = self.shared.store.shards[shard_index]
-      .map
-      .read()
-      .get_key_value(key)
-    {
-      let expires_at_nanos = entry.expires_at.load(Ordering::Relaxed);
-      if expires_at_nanos == 0 {
-        // No TTL, it's a fresh hit
-        self.on_hit(found_key.clone(), entry, shard_index);
+    let hash = crate::store::hash_key(&self.shared.store.hasher, key);
+    let shard_index = self.shared.get_shard_index_from_hash(hash);
+    let shard = &self.shared.store.shards[shard_index];
 
-        self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
-        return entry.value();
-      }
-
-      let now_nanos = crate::time::now_duration().as_nanos() as u64;
-
-      // CASE A: Fresh Hit
-      if now_nanos < expires_at_nanos {
-        self.on_hit(found_key.clone(), entry, shard_index);
-
-        self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
-        return entry.value();
-      }
-
-      // CASE B: Stale Hit
-      if let Some(grace_period) = self.shared.stale_while_revalidate {
-        if now_nanos < expires_at_nanos + grace_period.as_nanos() as u64 {
-          // It's stale but within the grace period.
-          // Trigger a background refresh, but don't wait for it.
-          self.trigger_background_load(key);
-          // And immediately return the stale value.
-          return entry.value();
+    let hit_value = {
+      let guard = shard.map.read();
+      if let Some((found_key, entry)) = guard.get_key_value(key) {
+        let expires_at_nanos = entry.expires_at.load(Ordering::Relaxed);
+        if expires_at_nanos == 0 {
+          // No TTL, fresh hit.
+          if !entry.is_expired(self.shared.time_to_idle) {
+            self.on_hit(found_key, hash, entry, shard_index);
+            self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+            Some(entry.value())
+          } else {
+            None
+          }
+        } else {
+          let now_nanos = crate::time::now_duration().as_nanos() as u64;
+          if now_nanos < expires_at_nanos {
+            // CASE A: Fresh Hit
+            if !entry.is_expired(self.shared.time_to_idle) {
+              self.on_hit(found_key, hash, entry, shard_index);
+              self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+              Some(entry.value())
+            } else {
+              None
+            }
+          } else if let Some(grace_period) = self.shared.stale_while_revalidate {
+            // CASE B: Stale Hit
+            if now_nanos < expires_at_nanos + grace_period.as_nanos() as u64 {
+              self.trigger_background_load(key);
+              Some(entry.value())
+            } else {
+              None
+            }
+          } else {
+            None
+          }
         }
+      } else {
+        None
       }
+    };
+
+    if let Some(val) = hit_value {
+      return val;
     }
 
     // CASE C: Miss (or expired beyond grace period)
-    // The full thundering herd load logic from the previous step goes here.
     self.load_value_blocking(key)
   }
 
@@ -877,29 +864,26 @@ where
           // Get the borrowed `&Q` from the iterator item.
           let q: &Q = key_item.borrow();
 
-          let shard_index = self.shared.get_shard_index(q);
+          let hash = crate::store::hash_key(&self.shared.store.hasher, q);
+          let shard_index = self.shared.get_shard_index_from_hash(hash);
           let shard = &self.shared.store.shards[shard_index];
 
-          // We must scope the read guard to a block.
-          let hit_info: Option<(K, Arc<CacheEntry<V>>)> = {
+          let hit_value: Option<(K, Arc<V>)> = {
             let guard = shard.map.read();
-            // Perform the lookup using the borrowed `&Q`.
             if let Some((found_key, entry)) = guard.get_key_value(q) {
               if !entry.is_expired(self.shared.time_to_idle) {
-                // HIT: This is the ONLY place we clone the key.
-                Some((found_key.clone(), entry.clone()))
+                self.on_hit(found_key, hash, entry, shard_index);
+                Some((found_key.clone(), entry.value()))
               } else {
-                None // Expired
+                None
               }
             } else {
-              None // Miss
+              None
             }
-          }; // Read lock is released here.
+          };
 
-          // If we got a hit, update the accumulator and notify the policy.
-          if let Some((key_clone, entry_clone)) = hit_info {
-            self.on_hit(key_clone.clone(), &entry_clone, shard_index);
-            acc.insert(key_clone, entry_clone.value());
+          if let Some((key_clone, value)) = hit_value {
+            acc.insert(key_clone, value);
           }
 
           acc

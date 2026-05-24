@@ -1,8 +1,7 @@
 // cache/src/task/access_batcher.rs
-use crate::store::hash_key;
 use crate::sync::HybridMutex;
 use std::collections::HashMap;
-use std::hash::{BuildHasher, Hash};
+use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const BATCH_STRIPES: usize = 16; // Power of two for efficient bitmasking.
@@ -31,23 +30,25 @@ impl<K: Hash + Eq> AccessBatcher<K> {
     }
   }
 
-  /// Records an access event. Called by many producer threads from the `get` hot path.
+  /// Records an access event. Called by producer threads from the `get` hot path.
+  /// Accepts a pre-computed hash and only clones the key if it is not already batched.
   #[inline]
-  pub(crate) fn record_access<H: BuildHasher>(&self, key: K, cost: u64, hasher: &H)
+  pub(crate) fn record_access(&self, key: &K, hash: u64, cost: u64)
   where
     K: Clone,
   {
-    // 1. Instantly find the active buffer set. This is a single atomic load.
+    // 1. Find the active buffer set via a single atomic load.
     let idx = self.active_idx.load(Ordering::Relaxed);
     let stripes = &self.instances[idx];
 
-    // 2. Hash the key to pick a stripe, minimizing contention.
-    let hash = hash_key(hasher, &key);
+    // 2. Use the pre-computed hash to select the correct stripe.
     let stripe_idx = hash as usize & (BATCH_STRIPES - 1);
 
-    // 3. Lock only that single stripe and insert the data.
+    // 3. Lock only that single stripe and insert the key only if not already present.
     let mut guard = stripes[stripe_idx].lock();
-    guard.insert(key, cost);
+    if !guard.contains_key(key) {
+      guard.insert(key.clone(), cost);
+    }
   }
 
   /// Swaps buffers and returns the entire coalesced, inactive batch.
@@ -64,11 +65,13 @@ impl<K: Hash + Eq> AccessBatcher<K> {
 
     // 2. We now have exclusive logical access to the inactive stripes. Drain them.
     for stripe_mutex in inactive_stripes.iter() {
-      let mut guard = stripe_mutex.lock();
-      // `take()` is efficient, leaving an empty map behind for the next round.
-      if !guard.is_empty() {
-        final_batch.extend(std::mem::take(&mut *guard));
-      }
+      // Scope the lock to release it before extending final_batch, letting producers
+      // unblock as soon as the stripe is drained. drain() preserves bucket capacity.
+      let drained = {
+        let mut guard = stripe_mutex.lock();
+        guard.drain().collect::<Vec<_>>()
+      };
+      final_batch.extend(drained);
     }
     final_batch
   }

@@ -60,6 +60,7 @@ impl<K: Send, V: Send + Sync, H> Drop for CacheShared<K, V, H> {
 
 impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
 
+  #[inline]
   pub fn get_shard_index<Q>(&self, key: &Q) -> usize
   where
     K: Hash,
@@ -69,6 +70,7 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
     return self.store.get_shard_index(key);
   }
 
+  #[inline]
   pub fn get_shard_index_from_hash(&self, hash: u64) -> usize
   where
     K: Hash,
