@@ -133,6 +133,18 @@ impl CapacityGate {
     }
   }
 
+  /// Closes the gate and unparks all waiting producers.
+  ///
+  /// Called when the consumer drops. Wakes every waiter in a single O(N) pass
+  /// so they can observe the closed state and return an error, rather than
+  /// relying on a fragile per-permit daisy-chain.
+  pub fn close(&self) {
+    let mut internal = self.internal.lock();
+    while let Some(waiter) = internal.waiters.pop_front() {
+      waiter.wake();
+    }
+  }
+
   /// Releases a permit back to the gate.
   pub fn release(&self) {
     let mut internal = self.internal.lock();

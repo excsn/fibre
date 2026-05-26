@@ -418,11 +418,10 @@ impl<T: Send> Receiver<T> {
       .channel
       .receiver_dropped
       .store(true, Ordering::Release);
-    // Drain the channel using the internal recv function to bypass the `self.closed` check.
-    // This ensures any buffered items (and their permits) are dropped, unblocking senders.
     while self.shared.channel.try_recv_internal().is_ok() {}
-    // Also wake the gate in case a sender is waiting on a rendezvous
-    self.shared.gate.release();
+    // Wake every blocked sender (sync and async) in one pass so none are
+    // stranded — async senders won't daisy-chain a permit release on their own.
+    self.shared.gate.close();
   }
 
   /// Returns `true` if all senders have been dropped and the channel is empty.

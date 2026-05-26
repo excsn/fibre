@@ -333,3 +333,51 @@ fn zero_capacity_channel_sync_rendezvous() {
     "Send should be complete after recv"
   );
 }
+
+// channels/src/mpsc/bounded_tests.rs
+
+#[tokio::test]
+async fn test_bounded_async_receiver_drop_unblocks_all_senders() {
+  use std::time::Duration;
+  use tokio::time::timeout;
+
+  // Create a bounded async channel with capacity 1
+  let (tx, rx) = bounded_async::<i32>(1);
+
+  // 1. Fill the channel to capacity.
+  tx.send(100).await.unwrap();
+
+  // 2. Clone and spawn 3 more senders.
+  // Since the channel is already full, all 3 tasks will block on the capacity gate.
+  let tx2 = tx.clone();
+  let h2 = tokio::spawn(async move { tx2.send(200).await });
+
+  let tx3 = tx.clone();
+  let h3 = tokio::spawn(async move { tx3.send(300).await });
+
+  let tx4 = tx.clone();
+  let h4 = tokio::spawn(async move { tx4.send(400).await });
+
+  // Give the spawned tasks time to run and block on the gate.
+  tokio::time::sleep(Duration::from_millis(50)).await;
+
+  // 3. Drop the receiver.
+  // This must wake up and unblock ALL waiting senders so they can exit.
+  drop(rx);
+
+  // 4. Await all spawned senders with a timeout.
+  // If the bug is present, some of the senders will remain pending forever and time out.
+  let r2 = timeout(Duration::from_millis(500), h2).await;
+  let r3 = timeout(Duration::from_millis(500), h3).await;
+  let r4 = timeout(Duration::from_millis(500), h4).await;
+
+  // Unwrap the timeouts (fails the test if a timeout occurred)
+  let res2 = r2.expect("Sender 2 timed out (deadlocked)!").unwrap();
+  let res3 = r3.expect("Sender 3 timed out (deadlocked)!").unwrap();
+  let res4 = r4.expect("Sender 4 timed out (deadlocked)!").unwrap();
+
+  // Ensure all senders received a Closed error rather than successfully sending
+  assert!(matches!(res2, Err(SendError::Closed)));
+  assert!(matches!(res3, Err(SendError::Closed)));
+  assert!(matches!(res4, Err(SendError::Closed)));
+}

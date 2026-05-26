@@ -200,10 +200,8 @@ impl<T: Send> AsyncReceiver<T> {
       .channel
       .receiver_dropped
       .store(true, Ordering::Release);
-    // Drain using the internal method to unblock senders.
     while self.shared.channel.try_recv_internal().is_ok() {}
-    // Also wake the gate in case a sender is waiting on a rendezvous
-    self.shared.gate.release();
+    self.shared.gate.close();
   }
 
   /// Returns `true` if all senders have been dropped and the channel is empty.
