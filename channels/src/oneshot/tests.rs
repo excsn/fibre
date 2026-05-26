@@ -88,7 +88,13 @@ async fn only_first_send_succeeds_cloned_senders() {
   });
 
   // Receiver gets the value from sender 1
-  assert_eq!(timeout(TEST_TIMEOUT, rx.recv()).await.expect("Timeout").unwrap(), 1);
+  assert_eq!(
+    timeout(TEST_TIMEOUT, rx.recv())
+      .await
+      .expect("Timeout")
+      .unwrap(),
+    1
+  );
 
   // Sender 2 tries to send, should fail
   match tx2.send(2) {
@@ -257,4 +263,64 @@ async fn is_closed_and_is_sent_semantics() {
   assert!(!tx3.is_closed());
   drop(rx2);
   assert!(tx3.is_closed()); // Now sender sees receiver is gone
+}
+
+#[test]
+fn test_oneshot_drop_race_leak() {
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::sync::Arc;
+  use std::thread;
+
+  // Track how many times our custom value is dropped.
+  struct DropTracker {
+    counter: Arc<AtomicUsize>,
+  }
+
+  impl Drop for DropTracker {
+    fn drop(&mut self) {
+      self.counter.fetch_add(1, Ordering::SeqCst);
+    }
+  }
+
+  let drop_counter = Arc::new(AtomicUsize::new(0));
+  let tracked_value = DropTracker {
+    counter: Arc::clone(&drop_counter),
+  };
+
+  let (tx, rx) = oneshot::<DropTracker>();
+
+  // 1. Clone the shared core pointer.
+  let shared = Arc::clone(&tx.shared);
+
+  // 2. Lock the value_slot Mutex using the cloned `shared` pointer, NOT `tx`.
+  // This keeps `tx` unborrowed and eligible to be moved.
+  let lock_guard = shared.value_slot.lock().unwrap();
+
+  // 3. Spawn a thread to send the tracked item.
+  // This moves `tx` into the closure safely.
+  let sender_thread = thread::spawn(move || {
+    let _ = tx.send(tracked_value);
+  });
+
+  // Spin-wait until the sender thread has transitioned to `STATE_WRITING`.
+  while shared.state.load(Ordering::Acquire) != super::core::STATE_WRITING {
+    thread::yield_now();
+  }
+
+  // 4. Drop the receiver.
+  drop(rx);
+
+  // 5. Release the lock to allow the sender thread to complete its write.
+  drop(lock_guard);
+
+  // 6. Wait for the sender thread to finish.
+  sender_thread.join().unwrap();
+
+  // 7. At this point, both the Sender and Receiver handles have been dropped,
+  // and the shared state has been deallocated.
+  assert_eq!(
+    drop_counter.load(Ordering::SeqCst),
+    1,
+    "The value inside the oneshot channel was leaked!"
+  );
 }

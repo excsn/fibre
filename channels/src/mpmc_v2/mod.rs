@@ -243,7 +243,12 @@ impl<T: Send> Sender<T> {
     // Wake waiters outside the lock. Use CAS to skip already-cancelled waiters.
     for waiter in sync_waiters {
       if unsafe { &*waiter.state }
-        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_SUCCESS,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
       {
         waiter.thread.unpark();
@@ -251,7 +256,12 @@ impl<T: Send> Sender<T> {
     }
     for waiter in async_waiters {
       if unsafe { &*waiter.state }
-        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_SUCCESS,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
       {
         waiter.waker.wake();
@@ -395,7 +405,12 @@ impl<T: Send> Receiver<T> {
     // Wake waiters outside the lock. Use CAS to skip already-cancelled waiters.
     for waiter in sync_waiters {
       if unsafe { &*waiter.state }
-        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_SUCCESS,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
       {
         waiter.thread.unpark();
@@ -403,7 +418,12 @@ impl<T: Send> Receiver<T> {
     }
     for waiter in async_waiters {
       if unsafe { &*waiter.state }
-        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_SUCCESS,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
       {
         waiter.waker.wake();
@@ -526,7 +546,12 @@ impl<T: Send> AsyncSender<T> {
     }
     for waiter in sync_waiters {
       if unsafe { &*waiter.state }
-        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_SUCCESS,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
       {
         waiter.thread.unpark();
@@ -534,7 +559,12 @@ impl<T: Send> AsyncSender<T> {
     }
     for waiter in async_waiters {
       if unsafe { &*waiter.state }
-        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_SUCCESS,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
       {
         waiter.waker.wake();
@@ -655,7 +685,12 @@ impl<T: Send> AsyncReceiver<T> {
     }
     for waiter in sync_waiters {
       if unsafe { &*waiter.state }
-        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_SUCCESS,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
       {
         waiter.thread.unpark();
@@ -663,7 +698,12 @@ impl<T: Send> AsyncReceiver<T> {
     }
     for waiter in async_waiters {
       if unsafe { &*waiter.state }
-        .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_SUCCESS,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
       {
         waiter.waker.wake();
@@ -697,12 +737,19 @@ impl<T: Send> AsyncReceiver<T> {
       let state_ptr = &self.state as *const AtomicU8;
       if self
         .state
-        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
       {
         // Eagerly unlink before mem::forget so the pointer doesn't dangle.
         let mut guard = self.shared.internal.lock();
-        guard.waiting_async_receivers.retain(|w| w.state != state_ptr);
+        guard
+          .waiting_async_receivers
+          .retain(|w| w.state != state_ptr);
       }
     }
     let shared = unsafe { std::ptr::read(&self.shared) };
@@ -747,12 +794,141 @@ impl<T: Send> Drop for AsyncReceiver<T> {
       let state_ptr = &self.state as *const AtomicU8;
       if self
         .state
-        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
       {
         let mut guard = self.shared.internal.lock();
-        guard.waiting_async_receivers.retain(|w| w.state != state_ptr);
+        guard
+          .waiting_async_receivers
+          .retain(|w| w.state != state_ptr);
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::future::Future;
+  use std::pin::Pin;
+  use std::sync::Arc;
+  use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+  use std::thread;
+  use std::time::Duration;
+
+  #[test]
+  fn test_mpmc_v2_recv_timeout_spurious_wakeup_leak() {
+    // Create a bounded channel of capacity 5
+    let (tx, rx) = bounded::<i32>(5);
+    let rx_shared = Arc::clone(&rx.shared);
+
+    // Spawn a receiver thread calling recv_timeout_sync
+    let receiver_handle = thread::spawn(move || {
+      // Use a long timeout so it stays blocked
+      rx.recv_timeout(Duration::from_secs(5))
+    });
+
+    // Give the receiver thread time to park
+    thread::sleep(Duration::from_millis(50));
+
+    // Assert that exactly 1 waiter is in the queue initially
+    {
+      let guard = rx_shared.internal.lock();
+      assert_eq!(guard.waiting_sync_receivers.len(), 1);
+    }
+
+    // Trigger a spurious wakeup by unparking the receiver thread
+    receiver_handle.thread().unpark();
+
+    // Give the thread time to wake up, loop back, and park again
+    thread::sleep(Duration::from_millis(50));
+
+    // Inspect the waiter queue length under the lock
+    let leaked_count = {
+      let guard = rx_shared.internal.lock();
+      guard.waiting_sync_receivers.len()
+    };
+
+    // If the bug is present, the queue will contain 2 waiters (the stale leaked one and the new one).
+    // If fixed, the stale waiter is eagerly unlinked on retry/timeout, keeping the count at 1.
+    assert_eq!(
+      leaked_count, 1,
+      "Waiter was leaked! Queue contains {} waiters from a single thread.",
+      leaked_count
+    );
+
+    // Unblock the receiver thread and clean up
+    let _ = tx.send(42);
+    let _ = receiver_handle.join().unwrap();
+  }
+
+  #[test]
+  fn test_mpmc_v2_async_waker_collision_deadlock() {
+    use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    // Minimal boilerplate to construct a stable dummy waker without external dependencies
+    fn dummy_waker() -> Waker {
+      unsafe fn clone(_: *const ()) -> RawWaker {
+        RawWaker::new(std::ptr::null(), &VTABLE)
+      }
+      unsafe fn wake(_: *const ()) {}
+      unsafe fn wake_by_ref(_: *const ()) {}
+      unsafe fn drop_raw(_: *const ()) {}
+      static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_raw);
+      unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+    }
+
+    // Create an asynchronous rendezvous channel
+    let (tx, rx) = bounded_async::<i32>(0);
+    let rx_clone = rx.clone();
+
+    // Pin the futures to the heap using Box::pin to satisfy the !Unpin constraint safely
+    let mut fut1 = Box::pin(rx.recv());
+    let mut fut2 = Box::pin(rx_clone.recv());
+
+    let waker = dummy_waker();
+    let mut cx = Context::from_waker(&waker);
+
+    // 1. Poll the first receiver. It should register a waiter.
+    let _ = fut1.as_mut().poll(&mut cx);
+
+    // 2. Poll the second receiver with the same waker.
+    // It will collision-match the first waiter and NOT create a new one.
+    let _ = fut2.as_mut().poll(&mut cx);
+
+    // Ensure that there is exactly 1 waiter in the queue.
+    {
+      let guard = rx.shared.internal.lock();
+      assert_eq!(guard.waiting_async_receivers.len(), 1);
+    }
+
+    // 3. Drop/cancel the first future.
+    // Since the waiter was registered under fut1's state pointer, fut1's drop
+    // will find and unlink the waiter.
+    drop(fut1);
+
+    // 4. Verify that the second receiver's registration was NOT lost.
+    // If the bug is present, the queue length becomes 0 because fut2 was relying
+    // on fut1's waiter slot. This causes a lost wakeup / deadlock for fut2.
+    let active_waiters = {
+      let guard = rx.shared.internal.lock();
+      guard.waiting_async_receivers.len()
+    };
+
+    assert_eq!(
+      active_waiters, 1,
+      "fut2's waiter registration was silently unlinked when fut1 was dropped!"
+    );
+
+    // Clean up remaining future to prevent leaks
+    drop(fut2);
   }
 }

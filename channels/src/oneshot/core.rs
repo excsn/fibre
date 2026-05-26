@@ -84,9 +84,25 @@ impl<T> OneShotShared<T> {
       {
         self.receiver_waker.wake(); // Wake receiver to observe Disconnected state
       }
-      // If state was WRITING, SENT, or TAKEN, the value path took precedence.
-      // If it was ALREADY CLOSED (e.g. by receiver drop), this does nothing to state.
-      // But we still wake the receiver in case it was pending on this last sender dropping.
+      // Receiver is gone and the value is in STATE_SENT — it will never be taken.
+      // Drop it here to prevent a leak. This is the "drop race" case where the receiver
+      // dropped while the sender was in STATE_WRITING, so the receiver's close_internal
+      // couldn't claim it at that time.
+      else if self.state.load(Ordering::Acquire) == STATE_SENT
+        && self.receiver_dropped.load(Ordering::Acquire)
+      {
+        if self
+          .state
+          .compare_exchange(STATE_SENT, STATE_TAKEN, Ordering::AcqRel, Ordering::Relaxed)
+          .is_ok()
+        {
+          let mut guard = self.value_slot.lock().unwrap_or_else(|e| e.into_inner());
+          if let Some(mut mu_value) = guard.take() {
+            unsafe { mu_value.assume_init_drop(); }
+          }
+        }
+      }
+      // If state was WRITING, TAKEN, or CLOSED, wake the receiver if needed.
       else if self.state.load(Ordering::Relaxed) != STATE_TAKEN && self.state.load(Ordering::Relaxed) != STATE_SENT {
         // Avoid waking if value is there or taken
         self.receiver_waker.wake();
@@ -291,6 +307,19 @@ impl<T> OneShotShared<T> {
             }
           }
         }
+      }
+    }
+  }
+}
+
+impl<T> Drop for OneShotShared<T> {
+  fn drop(&mut self) {
+    if self.state.load(Ordering::Relaxed) == STATE_SENT {
+      // Safety: &mut self guarantees exclusive access (Arc strong count == 0).
+      // STATE_SENT means the value was written into value_slot but never taken.
+      let guard = self.value_slot.get_mut().unwrap_or_else(|e| e.into_inner());
+      if let Some(mut mu_value) = guard.take() {
+        unsafe { mu_value.assume_init_drop(); }
       }
     }
   }
