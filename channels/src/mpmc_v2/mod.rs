@@ -874,7 +874,6 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-    // Minimal boilerplate to construct a stable dummy waker without external dependencies
     fn dummy_waker() -> Waker {
       unsafe fn clone(_: *const ()) -> RawWaker {
         RawWaker::new(std::ptr::null(), &VTABLE)
@@ -886,11 +885,9 @@ mod tests {
       unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
     }
 
-    // Create an asynchronous rendezvous channel
     let (tx, rx) = bounded_async::<i32>(0);
     let rx_clone = rx.clone();
 
-    // Pin the futures to the heap using Box::pin to satisfy the !Unpin constraint safely
     let mut fut1 = Box::pin(rx.recv());
     let mut fut2 = Box::pin(rx_clone.recv());
 
@@ -901,34 +898,44 @@ mod tests {
     let _ = fut1.as_mut().poll(&mut cx);
 
     // 2. Poll the second receiver with the same waker.
-    // It will collision-match the first waiter and NOT create a new one.
+    // With the state-pointer fix active, it will NOT collide; it registers its own waiter.
     let _ = fut2.as_mut().poll(&mut cx);
 
-    // Ensure that there is exactly 1 waiter in the queue.
+    // Assert that there are exactly 2 distinct waiters in the queue (no collision)
     {
       let guard = rx.shared.internal.lock();
-      assert_eq!(guard.waiting_async_receivers.len(), 1);
+      assert_eq!(
+        guard.waiting_async_receivers.len(),
+        2,
+        "Async waker collision occurred! Only 1 waiter was registered for 2 futures."
+      );
     }
 
     // 3. Drop/cancel the first future.
-    // Since the waiter was registered under fut1's state pointer, fut1's drop
-    // will find and unlink the waiter.
+    // Only fut1's waiter should be unlinked.
     drop(fut1);
 
-    // 4. Verify that the second receiver's registration was NOT lost.
-    // If the bug is present, the queue length becomes 0 because fut2 was relying
-    // on fut1's waiter slot. This causes a lost wakeup / deadlock for fut2.
-    let active_waiters = {
+    // 4. Verify that the second receiver's registration remains safely in the queue.
+    {
       let guard = rx.shared.internal.lock();
-      guard.waiting_async_receivers.len()
-    };
+      assert_eq!(
+        guard.waiting_async_receivers.len(),
+        1,
+        "fut2's waiter registration was silently lost when fut1 was dropped!"
+      );
+    }
 
-    assert_eq!(
-      active_waiters, 1,
-      "fut2's waiter registration was silently unlinked when fut1 was dropped!"
-    );
-
-    // Clean up remaining future to prevent leaks
+    // 5. Clean up the remaining future
     drop(fut2);
+
+    // 6. Verify that the queue is now completely empty
+    {
+      let guard = rx.shared.internal.lock();
+      assert_eq!(
+        guard.waiting_async_receivers.len(),
+        0,
+        "Queue is not empty after dropping both futures!"
+      );
+    }
   }
 }

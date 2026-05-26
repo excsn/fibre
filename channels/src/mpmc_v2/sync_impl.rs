@@ -146,59 +146,39 @@ pub(crate) fn recv_timeout_sync<T: Send>(
     Err(TryRecvError::Empty) => { /* Continue to blocking path */ }
   }
 
-  loop {
-    let elapsed = start_time.elapsed();
-    if elapsed >= timeout {
-      return Err(RecvErrorTimeout::Timeout);
-    }
-    let remaining_timeout = timeout - elapsed;
+  // Declare state and waiter exactly once on the stack — no per-iteration allocation.
+  let done_flag = AtomicU8::new(STATE_WAITING);
+  let done_ptr = &done_flag as *const AtomicU8;
+  let waiter = SyncWaiter {
+    thread: thread::current(),
+    data: None,
+    state: done_ptr,
+  };
 
-    // --- Phase 2: Prepare to park ---
-    let done_flag = AtomicU8::new(STATE_WAITING);
-    let done_ptr = &done_flag as *const AtomicU8;
-    let waiter = SyncWaiter {
-      thread: thread::current(),
-      data: None,
-      state: done_ptr,
-    };
+  // Lock once to enqueue the waiter, with a final pre-park re-check.
+  {
+    let mut guard = receiver.shared.internal.lock();
 
-    // --- Phase 3: Lock, re-check, and commit to parking ---
+    if !guard.queue.is_empty()
+      || (receiver.shared.capacity == 0
+        && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
     {
-      let mut guard = receiver.shared.internal.lock();
-
-      if !guard.queue.is_empty()
-        || (receiver.shared.capacity == 0
-          && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
-      {
-        drop(guard);
-        match receiver.shared.try_recv_core() {
-          Ok(item) => return Ok(item),
-          Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
-          Err(TryRecvError::Empty) => continue,
-        }
+      drop(guard);
+      match receiver.shared.try_recv_core() {
+        Ok(item) => return Ok(item),
+        Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+        Err(TryRecvError::Empty) => {}
       }
-
+    } else {
       if guard.sender_count == 0 {
         return Err(RecvErrorTimeout::Disconnected);
       }
 
       guard.waiting_sync_receivers.push_back(waiter);
     }
+  }
 
-    // --- Phase 4: Wait with timeout ---
-    thread::park_timeout(remaining_timeout);
-
-    // --- Phase 5: Handle wake-up or timeout ---
-
-    // Fast path: if a sender already committed the handoff, complete it.
-    if done_flag.load(Ordering::Acquire) == STATE_SUCCESS {
-      match receiver.shared.try_recv_core() {
-        Ok(item) => return Ok(item),
-        Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
-        Err(TryRecvError::Empty) => continue,
-      }
-    }
-
+  loop {
     let elapsed = start_time.elapsed();
     if elapsed >= timeout {
       // Attempt atomic cancellation.
@@ -225,11 +205,18 @@ pub(crate) fn recv_timeout_sync<T: Send>(
       }
     }
 
-    // Woken before timeout — try to receive and loop to park again if still empty.
-    match receiver.shared.try_recv_core() {
-      Ok(item) => return Ok(item),
-      Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
-      Err(TryRecvError::Empty) => { /* Loop to re-check timeout and park again */ }
+    let remaining_timeout = timeout - elapsed;
+    thread::park_timeout(remaining_timeout);
+
+    // Check if a sender committed the handoff.
+    if done_flag.load(Ordering::Acquire) == STATE_SUCCESS {
+      match receiver.shared.try_recv_core() {
+        Ok(item) => return Ok(item),
+        Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+        Err(TryRecvError::Empty) => {} // Spurious wakeup — loop to re-check timeout
+      }
     }
+    // Spurious wakeup with no handoff committed — loop to re-check timeout without
+    // re-acquiring the lock or re-enqueuing.
   }
 }

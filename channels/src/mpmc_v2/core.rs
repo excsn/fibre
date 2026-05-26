@@ -329,7 +329,7 @@ impl<T: Send> MpmcShared<T> {
         if let Some(existing_waiter) = guard
           .waiting_async_receivers
           .iter_mut()
-          .find(|w| w.waker.will_wake(new_waker))
+          .find(|w| w.state == state_ptr)
         {
           existing_waiter.waker = new_waker.clone();
         } else {

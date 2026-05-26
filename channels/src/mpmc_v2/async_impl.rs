@@ -112,7 +112,7 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
         if let Some(existing_waiter) = guard
           .waiting_async_senders
           .iter_mut()
-          .find(|w| w.waker.will_wake(new_waker))
+          .find(|w| w.state == state_ptr)
         {
           existing_waiter.waker = new_waker.clone();
           if is_rendezvous {
