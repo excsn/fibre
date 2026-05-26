@@ -1,5 +1,3 @@
-// src/spmc/ring_buffer.rs
-
 use futures_core::Stream;
 use parking_lot::Mutex;
 
@@ -296,6 +294,14 @@ impl<T: Send + Clone> SpmcShared<T> {
 
     let slot_idx = current_head_idx % self.capacity;
     let slot = &self.buffer[slot_idx];
+
+    // If the slot contains an active, initialized item from a previous cycle,
+    // we must drop it first to prevent a memory leak.
+    if slot.sequence.load(Ordering::Relaxed) % 2 == 1 {
+      unsafe {
+        (*slot.value.get()).assume_init_drop();
+      }
+    }
 
     telemetry::log_event(
       Some(current_head_idx),

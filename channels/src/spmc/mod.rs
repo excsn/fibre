@@ -383,43 +383,101 @@ mod tests {
   #[test]
   fn spmc_close_and_is_closed() {
     // --- Test producer closing ---
-  let (mut tx, rx) = bounded(2);
-  tx.send(10).unwrap();
-  assert!(!tx.is_closed());
-  assert!(!rx.is_closed());
+    let (mut tx, rx) = bounded(2);
+    tx.send(10).unwrap();
+    assert!(!tx.is_closed());
+    assert!(!rx.is_closed());
 
-  tx.close().unwrap();
-  assert_eq!(tx.close(), Err(CloseError)); // Idempotent
-  assert_eq!(tx.send(20), Err(SendError::Closed));
+    tx.close().unwrap();
+    assert_eq!(tx.close(), Err(CloseError)); // Idempotent
+    assert_eq!(tx.send(20), Err(SendError::Closed));
 
-  // After the producer is closed, the receiver can still drain the buffer.
-  assert_eq!(rx.recv().unwrap(), 10);
+    // After the producer is closed, the receiver can still drain the buffer.
+    assert_eq!(rx.recv().unwrap(), 10);
 
-  // The next recv will fail, confirming the channel is now disconnected.
-  assert_eq!(rx.recv(), Err(RecvError::Disconnected));
-  
-  // After the failed recv, is_closed is definitively true.
-  assert!(rx.is_closed()); // Now empty and producer is gone
+    // The next recv will fail, confirming the channel is now disconnected.
+    assert_eq!(rx.recv(), Err(RecvError::Disconnected));
 
-  // --- Test receiver closing ---
-  // (This part of the test would have run if the first part didn't panic)
-  let (mut tx, rx1) = bounded(2);
-  let rx2 = rx1.clone();
-  tx.send(1).unwrap();
+    // After the failed recv, is_closed is definitively true.
+    assert!(rx.is_closed()); // Now empty and producer is gone
 
-  // Close one receiver
-  rx1.close().unwrap();
-  assert_eq!(rx1.close(), Err(CloseError)); // Idempotent
-  assert_eq!(rx1.recv(), Err(RecvError::Disconnected)); // Closed handle
-  assert!(!tx.is_closed()); // Other receiver still active
+    // --- Test receiver closing ---
+    // (This part of the test would have run if the first part didn't panic)
+    let (mut tx, rx1) = bounded(2);
+    let rx2 = rx1.clone();
+    tx.send(1).unwrap();
 
-  // Close the second receiver
-  assert_eq!(rx2.recv().unwrap(), 1); // Can still recv
-  rx2.close().unwrap();
-  assert_eq!(rx2.recv(), Err(RecvError::Disconnected));
+    // Close one receiver
+    rx1.close().unwrap();
+    assert_eq!(rx1.close(), Err(CloseError)); // Idempotent
+    assert_eq!(rx1.recv(), Err(RecvError::Disconnected)); // Closed handle
+    assert!(!tx.is_closed()); // Other receiver still active
 
-  // Now the sender should see it's closed
-  assert!(tx.is_closed());
-  assert_eq!(tx.send(2), Err(SendError::Closed));
+    // Close the second receiver
+    assert_eq!(rx2.recv().unwrap(), 1); // Can still recv
+    rx2.close().unwrap();
+    assert_eq!(rx2.recv(), Err(RecvError::Disconnected));
+
+    // Now the sender should see it's closed
+    assert!(tx.is_closed());
+    assert_eq!(tx.send(2), Err(SendError::Closed));
+  }
+
+  #[test]
+  fn test_spmc_ring_buffer_wrap_around_leak() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Clone)]
+    struct Droppable;
+
+    impl Drop for Droppable {
+      fn drop(&mut self) {
+        DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+      }
+    }
+
+    // Create a channel with capacity 2
+    let (tx, rx) = bounded::<Droppable>(2);
+
+    // 1. Send 2 items to fill the buffer
+    tx.try_send(Droppable).unwrap();
+    tx.try_send(Droppable).unwrap();
+
+    // 2. Consume both items (this clones the items; clones are dropped, originals remain in slots)
+    let d1 = rx.recv().unwrap();
+    let d2 = rx.recv().unwrap();
+
+    // Drop the received clones (increments count by 2)
+    drop(d1);
+    drop(d2);
+    assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 2);
+
+    // 3. Send 2 MORE items. This forces the producer to wrap around
+    // and overwrite the first two slots.
+    tx.try_send(Droppable).unwrap();
+    tx.try_send(Droppable).unwrap();
+
+    // 4. Consume the two new items
+    let d3 = rx.recv().unwrap();
+    let d4 = rx.recv().unwrap();
+    drop(d3);
+    drop(d4);
+
+    // 5. Drop the channel handles to trigger Slot destructors for remaining active slots
+    drop(tx);
+    drop(rx);
+
+    // Total items instantiated in memory = 4 originals + 4 clones = 8 items total.
+    // If the bug is present, the first 2 original items are overwritten and leaked,
+    // causing the drop count to be 6 instead of 8.
+    let final_drops = DROP_COUNT.load(Ordering::SeqCst);
+    assert_eq!(
+      final_drops, 8,
+      "Memory leak detected! Only {} out of 8 items were dropped during wrap-around.",
+      final_drops
+    );
   }
 }
