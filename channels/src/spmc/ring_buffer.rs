@@ -145,8 +145,8 @@ struct ReceiverCursors {
 pub(crate) struct SpmcShared<T: Send + Clone> {
   buffer: Box<[Slot<T>]>,
   capacity: usize,
-  head: CachePadded<UnsafeCell<usize>>, // Producer's current write index (logical, unbounded)
-  tails: Mutex<ReceiverCursors>,        // List of all active consumer tail pointers
+  head: CachePadded<AtomicUsize>, // Producer's current write index (logical, unbounded)
+  tails: Mutex<ReceiverCursors>,  // List of all active consumer tail pointers
   producer_parked: AtomicBool,
   producer_thread: Mutex<Option<Thread>>,
   producer_waker: AtomicWaker,
@@ -157,7 +157,7 @@ impl<T: Send + Clone> fmt::Debug for SpmcShared<T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("SpmcShared")
       .field("capacity", &self.capacity)
-      .field("head", &unsafe { *self.head.get() })
+      .field("head", &self.head.load(Ordering::Relaxed))
       .field("tails_count", &self.tails.lock().list.len())
       .field(
         "producer_parked",
@@ -184,7 +184,7 @@ impl<T: Send + Clone> SpmcShared<T> {
     SpmcShared {
       buffer: buffer.into_boxed_slice(),
       capacity,
-      head: CachePadded::new(UnsafeCell::new(0)),
+      head: CachePadded::new(AtomicUsize::new(0)),
       tails: Mutex::new(ReceiverCursors { list: Vec::new() }),
       producer_parked: AtomicBool::new(false),
       producer_thread: Mutex::new(None),
@@ -258,7 +258,7 @@ impl<T: Send + Clone> SpmcShared<T> {
   }
 
   fn try_send_internal(&self, value: T) -> Result<(), TrySendError<T>> {
-    let current_head_idx = unsafe { *self.head.get() };
+    let current_head_idx = self.head.load(Ordering::Relaxed);
     let min_tail_idx;
     {
       let tails_guard = self.tails.lock();
@@ -295,8 +295,7 @@ impl<T: Send + Clone> SpmcShared<T> {
     let slot_idx = current_head_idx % self.capacity;
     let slot = &self.buffer[slot_idx];
 
-    // If the slot contains an active, initialized item from a previous cycle,
-    // we must drop it first to prevent a memory leak.
+    // If the slot contains an active, initialized item from a previous cycle,  we must drop it first to prevent a memory leak.
     if slot.sequence.load(Ordering::Relaxed) % 2 == 1 {
       unsafe {
         (*slot.value.get()).assume_init_drop();
@@ -343,9 +342,7 @@ impl<T: Send + Clone> SpmcShared<T> {
       waker.wake();
     }
 
-    unsafe {
-      *self.head.get() = current_head_idx + 1;
-    }
+    self.head.store(current_head_idx + 1, Ordering::Release);
     telemetry::log_event(
       Some(current_head_idx),
       LOC_P_TRY_SEND,
@@ -428,7 +425,7 @@ fn try_recv_internal<T: Send + Clone>(
     Ok(value)
   } else {
     if shared.producer_dropped.load(Ordering::Acquire) {
-      let head = unsafe { *shared.head.get() };
+      let head = shared.head.load(Ordering::Acquire);
       if current_tail_val >= head {
         telemetry::log_event(
           Some(current_tail_val),
@@ -484,7 +481,7 @@ fn poll_recv_internal<T: Send + Clone>(
         Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
         Err(TryRecvError::Empty) => {
           if shared.producer_dropped.load(Ordering::Acquire) {
-            let head = unsafe { *shared.head.get() };
+            let head = shared.head.load(Ordering::Acquire);
             if tail.load(Ordering::Relaxed) >= head {
               return Poll::Ready(Err(RecvError::Disconnected));
             }
@@ -539,7 +536,7 @@ impl<T: Send + Clone> Receiver<T> {
             Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
             Err(TryRecvError::Empty) => {
               if self.shared.producer_dropped.load(Ordering::Acquire) {
-                let head = unsafe { *self.shared.head.get() };
+                let head = self.shared.head.load(Ordering::Acquire);
                 if self.tail.load(Ordering::Relaxed) >= head {
                   slot
                     .wakers
@@ -610,7 +607,7 @@ impl<T: Send + Clone> Receiver<T> {
             }
             Err(TryRecvError::Empty) => {
               if self.shared.producer_dropped.load(Ordering::Acquire) {
-                let head = unsafe { *self.shared.head.get() };
+                let head = self.shared.head.load(Ordering::Acquire);
                 if self.tail.load(Ordering::Relaxed) >= head {
                   // Clean up waker we just pushed
                   slot.wakers.lock().retain(|w| !w.will_wake(&waker_for_slot));
@@ -653,14 +650,14 @@ impl<T: Send + Clone> Receiver<T> {
 
   #[inline]
   pub fn len(&self) -> usize {
-    let head = unsafe { *self.shared.head.get() };
+    let head = self.shared.head.load(Ordering::Acquire);
     let tail = self.tail.load(Ordering::Acquire);
     head.saturating_sub(tail)
   }
 
   #[inline]
   pub fn is_empty(&self) -> bool {
-    let head = unsafe { *self.shared.head.get() };
+    let head = self.shared.head.load(Ordering::Acquire);
     let tail = self.tail.load(Ordering::Acquire);
     tail >= head
   }
@@ -710,14 +707,14 @@ impl<T: Send + Clone> AsyncReceiver<T> {
 
   #[inline]
   pub fn len(&self) -> usize {
-    let head = unsafe { *self.shared.head.get() };
+    let head = self.shared.head.load(Ordering::Acquire);
     let tail = self.tail.load(Ordering::Acquire);
     head.saturating_sub(tail)
   }
 
   #[inline]
   pub fn is_empty(&self) -> bool {
-    let head = unsafe { *self.shared.head.get() };
+    let head = self.shared.head.load(Ordering::Acquire);
     let tail = self.tail.load(Ordering::Acquire);
     tail >= head
   }
@@ -817,7 +814,7 @@ impl<T: Send + Clone> Sender<T> {
         Err(TrySendError::Sent(_)) => unreachable!(),
       }
 
-      let current_head_idx = unsafe { *self.shared.head.get() };
+      let current_head_idx = self.shared.head.load(Ordering::Relaxed);
       telemetry::log_event(Some(current_head_idx), LOC_P_SEND, EVT_P_BUFFER_FULL, None);
       telemetry::increment_counter(LOC_P_SEND, CTR_P_PARK_ATTEMPTS);
 
@@ -854,7 +851,7 @@ impl<T: Send + Clone> Sender<T> {
         Some(format!("min_tail_recheck:{}", min_tail_recheck)),
       );
 
-      if unsafe { *self.shared.head.get() } - min_tail_recheck < self.shared.capacity {
+      if self.shared.head.load(Ordering::Relaxed) - min_tail_recheck < self.shared.capacity {
         telemetry::log_event(Some(current_head_idx), LOC_P_SEND, EVT_P_RECHECK_PASS, None);
         if self
           .shared
@@ -889,7 +886,7 @@ impl<T: Send + Clone> Sender<T> {
       telemetry::log_event(Some(current_head_idx), LOC_P_SEND, EVT_P_EXEC_PARK, None);
       sync_util::park_thread();
       telemetry::log_event(
-        Some(unsafe { *self.shared.head.get() }),
+        Some(self.shared.head.load(Ordering::Relaxed)),
         LOC_P_SEND,
         EVT_P_UNPARKED,
         None,
@@ -925,7 +922,7 @@ impl<T: Send + Clone> Sender<T> {
 
   #[inline]
   pub fn len(&self) -> usize {
-    let head = unsafe { *self.shared.head.get() };
+    let head = self.shared.head.load(Ordering::Relaxed);
     let tails_guard = self.shared.tails.lock();
     if tails_guard.list.is_empty() {
       return 0;
@@ -994,7 +991,7 @@ impl<T: Send + Clone> AsyncSender<T> {
 
   #[inline]
   pub fn len(&self) -> usize {
-    let head = unsafe { *self.shared.head.get() };
+    let head = self.shared.head.load(Ordering::Relaxed);
     let tails_guard = self.shared.tails.lock();
     if tails_guard.list.is_empty() {
       return 0;
@@ -1069,7 +1066,7 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
         Err(TrySendError::Sent(_)) => unreachable!(),
       }
 
-      let current_head_idx = unsafe { *shared.head.get() };
+      let current_head_idx = shared.head.load(Ordering::Relaxed);
       telemetry::log_event(
         Some(current_head_idx),
         "AsyncP::poll",
@@ -1106,7 +1103,7 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
         Some(format!("min_tail_recheck:{}", min_tail_recheck)),
       );
 
-      if unsafe { *shared.head.get() } - min_tail_recheck < shared.capacity {
+      if shared.head.load(Ordering::Relaxed) - min_tail_recheck < shared.capacity {
         telemetry::log_event(
           Some(current_head_idx),
           "AsyncP::poll",
