@@ -3,10 +3,10 @@
 //! A minimal, custom implementation of a copy-on-write, single-writer,
 //! multi-reader synchronization primitive.
 //!
-//! Read operations are lock-free and only involve an atomic load.
-//! Write operations acquire a mutex to serialize writers, perform a
-//! copy of the data, modify the copy, and then atomically swap the
-//! "live" data pointer.
+//! Read operations are lock-free: they increment an atomic reader counter for
+//! the live slot, read, then decrement. Write operations acquire a mutex to
+//! serialize writers, wait until the stale slot has zero active readers, copy
+//! the live data into the stale slot, apply the change, then atomically publish.
 
 use std::cell::UnsafeCell;
 use std::ops::Deref;
@@ -16,25 +16,24 @@ use std::sync::Arc;
 use core::fmt;
 use parking_lot::Mutex;
 
-/// The shared state, containing two copies of the data and an atomic
-/// index to the "live" copy that readers should use.
+/// The shared state, containing two copies of the data, an atomic index to the
+/// "live" copy, and per-slot reader counts used to guard the stale slot.
 struct LeftRightShared<T> {
   live_idx: AtomicUsize,
   data: [UnsafeCell<T>; 2],
+  /// Counts active readers on each slot. The writer spins on
+  /// `active_readers[write_idx]` before overwriting that slot.
+  active_readers: [AtomicUsize; 2],
 }
 
-// Add this manual Debug implementation
 impl<T> fmt::Debug for LeftRightShared<T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("LeftRightShared")
       .field("live_idx", &self.live_idx.load(Ordering::Relaxed))
-      // We do not print the contents of `data` as it's behind UnsafeCell
       .finish_non_exhaustive()
   }
 }
 
-// This is safe because all access to the `UnsafeCell`s is synchronized
-// either by the writer mutex or the atomic `live_idx`.
 unsafe impl<T: Send> Send for LeftRightShared<T> {}
 unsafe impl<T: Send + Sync> Sync for LeftRightShared<T> {}
 
@@ -52,17 +51,31 @@ pub(crate) struct WriteHandle<T> {
 }
 
 /// A guard that provides access to a consistent snapshot of the data.
-/// The data is accessible as long as this guard is alive.
-#[derive(Debug)]
-pub(crate) struct ReadGuard<'a, T> {
-  data: &'a T,
+/// Holds a reader count on the slot until dropped.
+pub(crate) struct ReadGuard<T> {
+  shared: Arc<LeftRightShared<T>>,
+  idx: usize,
+  data: *const T,
 }
+
+impl<T> fmt::Debug for ReadGuard<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("ReadGuard")
+      .field("idx", &self.idx)
+      .finish_non_exhaustive()
+  }
+}
+
+// Safety: ReadGuard<T> provides shared read access (&T), same as &T.
+unsafe impl<T: Send + Sync> Send for ReadGuard<T> {}
+unsafe impl<T: Sync> Sync for ReadGuard<T> {}
 
 /// Creates a new `left-right` pair.
 pub(crate) fn new<T: Clone + Default>() -> (ReadHandle<T>, WriteHandle<T>) {
   let shared = Arc::new(LeftRightShared {
     live_idx: AtomicUsize::new(0),
     data: [UnsafeCell::new(T::default()), UnsafeCell::new(T::default())],
+    active_readers: [AtomicUsize::new(0), AtomicUsize::new(0)],
   });
 
   let rh = ReadHandle {
@@ -76,16 +89,29 @@ pub(crate) fn new<T: Clone + Default>() -> (ReadHandle<T>, WriteHandle<T>) {
 }
 
 impl<T> ReadHandle<T> {
-  /// Enters the read-side, returning a guard to a consistent view of the data.
-  /// This is lock-free.
-  pub(crate) fn enter(&self) -> ReadGuard<'_, T> {
-    let idx = self.shared.live_idx.load(Ordering::Acquire);
-    // SAFETY: `idx` is always 0 or 1. The data at `idx` is stable and
-    // will not be written to while we hold this reference, because the
-    // writer operates on the *other* index. The `Acquire` load ensures
-    // we see the fully-written state from the writer's `Release` store.
-    let data_ref = unsafe { &*self.shared.data[idx].get() };
-    ReadGuard { data: data_ref }
+  /// Enters the read-side, returning a guard that pins a reader count on the
+  /// live slot. Lock-free except for the atomic increment/decrement.
+  pub(crate) fn enter(&self) -> ReadGuard<T> {
+    loop {
+      let idx = self.shared.live_idx.load(Ordering::Acquire);
+
+      // Arm the reader count on this slot.
+      self.shared.active_readers[idx].fetch_add(1, Ordering::SeqCst);
+
+      // Double-check: if live_idx is still the same we are committed to this slot.
+      if self.shared.live_idx.load(Ordering::Relaxed) == idx {
+        let data = unsafe { &*self.shared.data[idx].get() } as *const T;
+        return ReadGuard {
+          shared: self.shared.clone(),
+          idx,
+          data,
+        };
+      }
+
+      // Writer swapped the index between our load and the increment — back off
+      // and retry on the new live slot.
+      self.shared.active_readers[idx].fetch_sub(1, Ordering::SeqCst);
+    }
   }
 }
 
@@ -97,19 +123,24 @@ impl<T> Clone for ReadHandle<T> {
   }
 }
 
-impl<'a, T> Deref for ReadGuard<'a, T> {
+impl<T> Deref for ReadGuard<T> {
   type Target = T;
   fn deref(&self) -> &Self::Target {
-    self.data
+    unsafe { &*self.data }
+  }
+}
+
+impl<T> Drop for ReadGuard<T> {
+  fn drop(&mut self) {
+    self.shared.active_readers[self.idx].fetch_sub(1, Ordering::SeqCst);
   }
 }
 
 impl<T: Clone> WriteHandle<T> {
   /// Modifies the data using a copy-on-write strategy.
   ///
-  /// This function acquires a lock, clones the current "live" data to the
-  /// "stale" side, runs the closure `f` to modify the clone, and then
-  /// atomically makes the modified version the new "live" data.
+  /// Acquires the writer lock, waits until the stale slot has no active readers,
+  /// clones the live data into the stale slot, applies `f`, then publishes.
   pub(crate) fn modify<F>(&self, f: F)
   where
     F: FnOnce(&mut T),
@@ -118,20 +149,21 @@ impl<T: Clone> WriteHandle<T> {
     let live_idx = self.shared.live_idx.load(Ordering::Relaxed);
     let write_idx = 1 - live_idx;
 
-    // SAFETY: We hold the unique writer lock, so no other thread can be
-    // in this section. We are accessing the "stale" data buffer for writing.
+    // Wait until every reader that pinned the stale slot has dropped its guard.
+    while self.shared.active_readers[write_idx].load(Ordering::Acquire) > 0 {
+      std::hint::spin_loop();
+    }
+
+    // Safety: writer lock held; active_readers[write_idx] == 0 guarantees no
+    // concurrent readers on this slot.
     let live_data = unsafe { &*self.shared.data[live_idx].get() };
     let write_data = unsafe { &mut *self.shared.data[write_idx].get() };
 
-    // Perform the "copy" part of copy-on-write.
     write_data.clone_from(live_data);
-
-    // Run the user's modification logic on our private copy.
     f(write_data);
 
-    // Atomically publish the new version. The `Release` memory ordering
-    // ensures that the modifications to `write_data` are visible to
-    // any thread that performs an `Acquire` load on `live_idx`.
+    // Release: makes write_data modifications visible to readers that acquire
+    // on live_idx.
     self.shared.live_idx.store(write_idx, Ordering::Release);
   }
 }
