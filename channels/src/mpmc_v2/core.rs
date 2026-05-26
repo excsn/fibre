@@ -138,7 +138,12 @@ impl<T: Send> MpmcShared<T> {
         Some(waiter) => {
           let waiter_state = unsafe { &*waiter.state };
           if waiter_state
-            .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(
+              STATE_WAITING,
+              STATE_SUCCESS,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
             .is_ok()
           {
             guard.queue.push_back(item);
@@ -156,7 +161,12 @@ impl<T: Send> MpmcShared<T> {
         Some(waiter) => {
           let waiter_state = unsafe { &*waiter.state };
           if waiter_state
-            .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(
+              STATE_WAITING,
+              STATE_SUCCESS,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
             .is_ok()
           {
             guard.queue.push_back(item);
@@ -194,9 +204,12 @@ impl<T: Send> MpmcShared<T> {
       {
         let mut waiter = guard.waiting_async_senders.pop_front().unwrap();
         let waiter_state = unsafe { &*waiter.state };
-        match waiter_state
-          .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
-        {
+        match waiter_state.compare_exchange(
+          STATE_WAITING,
+          STATE_SUCCESS,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        ) {
           Ok(_) => {
             let item = waiter.take_item_from_sender_slot().unwrap();
             waiter.waker.wake();
@@ -220,9 +233,12 @@ impl<T: Send> MpmcShared<T> {
       {
         let mut waiter = guard.waiting_sync_senders.pop_front().unwrap();
         let waiter_state = unsafe { &*waiter.state };
-        match waiter_state
-          .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
-        {
+        match waiter_state.compare_exchange(
+          STATE_WAITING,
+          STATE_SUCCESS,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        ) {
           Ok(_) => {
             let item = waiter.take_item_from_sender_slot().unwrap();
             waiter.thread.unpark();
@@ -251,7 +267,12 @@ impl<T: Send> MpmcShared<T> {
             Some(waiter) => {
               let waiter_state = unsafe { &*waiter.state };
               if waiter_state
-                .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(
+                  STATE_WAITING,
+                  STATE_SUCCESS,
+                  Ordering::SeqCst,
+                  Ordering::SeqCst,
+                )
                 .is_ok()
               {
                 waiter.waker.wake();
@@ -269,7 +290,12 @@ impl<T: Send> MpmcShared<T> {
               Some(waiter) => {
                 let waiter_state = unsafe { &*waiter.state };
                 if waiter_state
-                  .compare_exchange(STATE_WAITING, STATE_SUCCESS, Ordering::SeqCst, Ordering::SeqCst)
+                  .compare_exchange(
+                    STATE_WAITING,
+                    STATE_SUCCESS,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                  )
                   .is_ok()
                 {
                   waiter.thread.unpark();
@@ -353,14 +379,15 @@ impl<T: Send> MpmcShared<T> {
 
 impl<T> Drop for MpmcShared<T> {
   fn drop(&mut self) {
-    if let Some(mut guard) = self.internal.try_lock() {
-      guard.queue.clear();
-      for mut waiter in guard.waiting_sync_senders.drain(..) {
-        let _ = waiter.take_item_from_sender_slot();
-      }
-      for mut waiter in guard.waiting_async_senders.drain(..) {
-        let _ = waiter.take_item_from_sender_slot();
-      }
+    // Safely bypass lock overhead using exclusive mutable access
+    let guard = self.internal.get_mut();
+
+    guard.queue.clear();
+    for mut waiter in guard.waiting_sync_senders.drain(..) {
+      let _ = waiter.take_item_from_sender_slot();
+    }
+    for mut waiter in guard.waiting_async_senders.drain(..) {
+      let _ = waiter.take_item_from_sender_slot();
     }
   }
 }
