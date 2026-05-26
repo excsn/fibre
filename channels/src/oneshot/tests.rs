@@ -1,8 +1,10 @@
-use super::*; // Import items from oneshot::mod (Sender, Receiver, channel, errors)
-use crate::error::{RecvError, TryRecvError, TrySendError}; // Specific errors
+use super::*;
+use crate::error::{RecvError, TryRecvError, TrySendError};
+
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::timeout; // For testing futures with timeouts
+use tokio::time::timeout;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -322,5 +324,34 @@ fn test_oneshot_drop_race_leak() {
     drop_counter.load(Ordering::SeqCst),
     1,
     "The value inside the oneshot channel was leaked!"
+  );
+}
+
+#[test]
+fn test_oneshot_sender_count_underflow() {
+  let (tx, rx) = oneshot::<i32>();
+  let shared = Arc::clone(&tx.shared);
+
+  // 1. Drop the receiver to trigger the `receiver_dropped` state
+  drop(rx);
+
+  // 2. Clone the sender.
+  let tx_clone = tx.clone();
+
+  // Verify that the count correctly incremented to 2
+  assert_eq!(shared.sender_count.load(Ordering::Relaxed), 2);
+
+  // 3. Drop original sender (correctly decrements count from 2 to 1)
+  drop(tx);
+  assert_eq!(shared.sender_count.load(Ordering::Relaxed), 1);
+
+  // 4. Drop the cloned sender (correctly decrements count from 1 to 0, no underflow!)
+  drop(tx_clone);
+
+  let final_count = shared.sender_count.load(Ordering::Relaxed);
+  assert_eq!(
+    final_count, 0,
+    "sender_count underflowed to {}!",
+    final_count
   );
 }

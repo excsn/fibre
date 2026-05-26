@@ -37,7 +37,10 @@ impl<T> fmt::Debug for OneShotShared<T> {
     };
     f.debug_struct("OneShotShared")
       .field("state", &state_str)
-      .field("receiver_dropped", &self.receiver_dropped.load(Ordering::Relaxed))
+      .field(
+        "receiver_dropped",
+        &self.receiver_dropped.load(Ordering::Relaxed),
+      )
       .field("sender_count", &self.sender_count.load(Ordering::Relaxed))
       .finish_non_exhaustive()
   }
@@ -58,12 +61,8 @@ impl<T> OneShotShared<T> {
   }
 
   pub(super) fn increment_senders(&self) {
-    // Only increment if not already closed due to receiver drop.
-    // This prevents new senders if the receiver is already gone.
-    if !self.receiver_dropped.load(Ordering::Relaxed) {
-      self.sender_count.fetch_add(1, Ordering::Relaxed);
-    }
-    // If receiver is dropped, new senders are effectively inert.
+    // Unconditionally increment to remain balanced with decrements on drop
+    self.sender_count.fetch_add(1, Ordering::Relaxed);
   }
 
   pub(super) fn decrement_senders(&self) {
@@ -98,12 +97,16 @@ impl<T> OneShotShared<T> {
         {
           let mut guard = self.value_slot.lock().unwrap_or_else(|e| e.into_inner());
           if let Some(mut mu_value) = guard.take() {
-            unsafe { mu_value.assume_init_drop(); }
+            unsafe {
+              mu_value.assume_init_drop();
+            }
           }
         }
       }
       // If state was WRITING, TAKEN, or CLOSED, wake the receiver if needed.
-      else if self.state.load(Ordering::Relaxed) != STATE_TAKEN && self.state.load(Ordering::Relaxed) != STATE_SENT {
+      else if self.state.load(Ordering::Relaxed) != STATE_TAKEN
+        && self.state.load(Ordering::Relaxed) != STATE_SENT
+      {
         // Avoid waking if value is there or taken
         self.receiver_waker.wake();
       }
@@ -116,7 +119,12 @@ impl<T> OneShotShared<T> {
     // transition to CLOSED.
     if self
       .state
-      .compare_exchange(STATE_EMPTY, STATE_CLOSED, Ordering::AcqRel, Ordering::Relaxed)
+      .compare_exchange(
+        STATE_EMPTY,
+        STATE_CLOSED,
+        Ordering::AcqRel,
+        Ordering::Relaxed,
+      )
       .is_ok()
     {
       // Senders trying to send will now see receiver_dropped or state == CLOSED.
@@ -142,7 +150,7 @@ impl<T> OneShotShared<T> {
     match self.state.compare_exchange(
       STATE_EMPTY,
       STATE_WRITING,
-      Ordering::AcqRel,  // Acquire to sync with other CAS, Release for value_slot write
+      Ordering::AcqRel, // Acquire to sync with other CAS, Release for value_slot write
       Ordering::Acquire, // On failure, acquire to see latest state
     ) {
       Ok(_) => {
@@ -161,7 +169,10 @@ impl<T> OneShotShared<T> {
 
         // We are the chosen sender.
         // Lock is held very briefly.
-        let mut guard = self.value_slot.lock().expect("Oneshot value_slot mutex poisoned");
+        let mut guard = self
+          .value_slot
+          .lock()
+          .expect("Oneshot value_slot mutex poisoned");
         *guard = Some(MaybeUninit::new(value));
 
         // Now transition from WRITING to SENT.
@@ -210,7 +221,10 @@ impl<T> OneShotShared<T> {
         .is_ok()
       {
         // Successfully claimed the value.
-        let mut guard = self.value_slot.lock().expect("Oneshot value_slot mutex poisoned");
+        let mut guard = self
+          .value_slot
+          .lock()
+          .expect("Oneshot value_slot mutex poisoned");
         match guard.take() {
           Some(mu_value) => unsafe { Ok(mu_value.assume_init()) },
           None => {
@@ -227,7 +241,9 @@ impl<T> OneShotShared<T> {
         let new_state_after_cas_fail = self.state.load(Ordering::Acquire);
         if new_state_after_cas_fail == STATE_TAKEN {
           Err(TryRecvError::Empty) // Already taken by this logical receiver, now appears empty
-        } else if new_state_after_cas_fail == STATE_CLOSED || self.sender_count.load(Ordering::Relaxed) == 0 {
+        } else if new_state_after_cas_fail == STATE_CLOSED
+          || self.sender_count.load(Ordering::Relaxed) == 0
+        {
           Err(TryRecvError::Disconnected)
         } else {
           Err(TryRecvError::Empty) // Still SENT (but our CAS failed), or EMPTY/WRITING
@@ -244,7 +260,12 @@ impl<T> OneShotShared<T> {
         // Attempt to transition to CLOSED if not already done by last sender drop
         self
           .state
-          .compare_exchange(STATE_EMPTY, STATE_CLOSED, Ordering::Relaxed, Ordering::Relaxed)
+          .compare_exchange(
+            STATE_EMPTY,
+            STATE_CLOSED,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+          )
           .ok();
         Err(TryRecvError::Disconnected)
       } else {
@@ -279,7 +300,12 @@ impl<T> OneShotShared<T> {
           if current_state == STATE_EMPTY && self.sender_count.load(Ordering::Acquire) == 0 {
             self
               .state
-              .compare_exchange(STATE_EMPTY, STATE_CLOSED, Ordering::Relaxed, Ordering::Relaxed)
+              .compare_exchange(
+                STATE_EMPTY,
+                STATE_CLOSED,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+              )
               .ok();
             return Poll::Ready(Err(RecvError::Disconnected));
           }
@@ -319,7 +345,9 @@ impl<T> Drop for OneShotShared<T> {
       // STATE_SENT means the value was written into value_slot but never taken.
       let guard = self.value_slot.get_mut().unwrap_or_else(|e| e.into_inner());
       if let Some(mut mu_value) = guard.take() {
-        unsafe { mu_value.assume_init_drop(); }
+        unsafe {
+          mu_value.assume_init_drop();
+        }
       }
     }
   }
