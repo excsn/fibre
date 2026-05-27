@@ -9,7 +9,10 @@ use std::time::Duration;
 #[test]
 fn sync_v2_spsc_contention_hang_repro() {
   let (tx, rx) = mpmc::bounded(4);
+  #[cfg(not(miri))]
   let total_items = 100_000;
+  #[cfg(miri)]
+  let total_items = 100;
 
   // A flag to signal the main thread that the test is done, to avoid a race
   // where the main thread exits before the assertion in the consumer fails.
@@ -94,6 +97,7 @@ fn repro_sync_timeout_capacity_bypass() {
   assert_eq!(tx.len(), 1, "Queue length must equal capacity");
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn repro_async_rendezvous_payload_leak() {
   let (tx, _rx) = fibre::mpmc::bounded_async::<std::sync::Arc<()>>(0); // Rendezvous

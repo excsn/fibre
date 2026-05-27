@@ -431,6 +431,7 @@ mod tests {
     SpscShared::new_internal(capacity).into()
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn create_async_channel() {
     let (p, c) = bounded_async::<i32>(5);
@@ -446,9 +447,10 @@ mod tests {
     drop(c);
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_send_recv_single_item() {
-    let (p, mut c) = bounded_async(1);
+    let (p, c) = bounded_async(1);
     p.send(42i32).await.unwrap();
     assert_eq!(p.len(), 1);
     assert!(!p.is_empty());
@@ -463,9 +465,10 @@ mod tests {
     assert!(c.is_empty());
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_try_send_full_try_recv_empty() {
-    let (p, mut c) = bounded_async::<i32>(1);
+    let (p, c) = bounded_async::<i32>(1);
     assert_eq!(p.len(), 0);
     p.try_send(10).unwrap();
     assert_eq!(p.len(), 1);
@@ -489,9 +492,10 @@ mod tests {
     assert!(c.is_empty());
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_send_blocks_then_completes() {
-    let (p, mut c) = bounded_async::<i32>(1);
+    let (p, c) = bounded_async::<i32>(1);
 
     assert_eq!(p.len(), 0);
     p.send(1).await.unwrap(); // Fill the channel
@@ -523,9 +527,10 @@ mod tests {
     assert_eq!(c.len(), 0);
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_recv_blocks_then_completes() {
-    let (p, mut c) = bounded_async::<i32>(1);
+    let (p, c) = bounded_async::<i32>(1);
     assert!(c.is_empty());
 
     let recv_task = tokio::spawn(async move {
@@ -550,9 +555,10 @@ mod tests {
     }
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_producer_drop_signals_consumer() {
-    let (p, mut c) = bounded_async::<i32>(1);
+    let (p, c) = bounded_async::<i32>(1);
     p.send(10).await.unwrap(); // Send an item first
     assert_eq!(c.len(), 1);
     drop(p);
@@ -565,9 +571,10 @@ mod tests {
     }
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_producer_drop_empty_signals_consumer() {
-    let (p, mut c) = bounded_async::<i32>(1);
+    let (p, c) = bounded_async::<i32>(1);
     drop(p);
     assert_eq!(c.len(), 0);
     match c.recv().await {
@@ -576,6 +583,7 @@ mod tests {
     }
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_consumer_drop_signals_producer() {
     let (p, c) = bounded_async::<i32>(1);
@@ -587,10 +595,11 @@ mod tests {
     }
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_select_recv_preference() {
-    let (p1, mut c1) = bounded_async::<i32>(1);
-    let (_p2, mut c2) = bounded_async::<i32>(1); // This consumer will never receive
+    let (p1, c1) = bounded_async::<i32>(1);
+    let (_p2, c2) = bounded_async::<i32>(1); // This consumer will never receive
 
     p1.send(10).await.unwrap();
     assert_eq!(c1.len(), 1);
@@ -609,10 +618,11 @@ mod tests {
     }
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_select_send_blocks_other_completes() {
     let (p_full, _c_full) = bounded_async::<i32>(1);
-    let (p_can_send, mut c_can_send) = bounded_async::<i32>(1);
+    let (p_can_send, c_can_send) = bounded_async::<i32>(1);
 
     p_full.send(1).await.unwrap(); // Fill this channel
     assert!(p_full.is_full());
@@ -637,12 +647,13 @@ mod tests {
   }
 
   // --- Mixed Sync/Async Tests ---
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn sync_producer_async_consumer() {
     const CAPACITY: usize = 2;
     let core_shared = create_test_shared_core::<String>(CAPACITY);
 
-    let mut sync_p = BoundedSyncSender::from_shared(core_shared.clone());
+    let sync_p = BoundedSyncSender::from_shared(core_shared.clone());
     let async_c = AsyncBoundedSpscReceiver::from_shared(core_shared);
 
     let val1 = "hello from sync".to_string();
@@ -676,22 +687,29 @@ mod tests {
 
   #[test] // This test uses std::thread for consumer, tokio runtime for producer
   fn async_producer_sync_consumer() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     const CAPACITY: usize = 2;
     let rt = tokio::runtime::Builder::new_multi_thread()
       .worker_threads(1)
-      .enable_all()
+      .enable_time()
       .build()
       .unwrap();
     let core_shared = create_test_shared_core::<String>(CAPACITY);
 
     let async_p = AsyncBoundedSpscSender::from_shared(core_shared.clone());
-    let mut sync_c = BoundedSyncReceiver::from_shared(core_shared);
+    let sync_c = BoundedSyncReceiver::from_shared(core_shared);
 
     let val1_original = "hello from async".to_string();
     let val2_original = "world from async".to_string();
 
     let val1_for_async_task = val1_original.clone();
     let val2_for_async_task = val2_original.clone();
+
+    // Atomic phase flag: producer stores 1 after asserting len==1,
+    // consumer spins until it observes 1 before touching the queue.
+    let phase = Arc::new(AtomicUsize::new(0));
+    let phase_clone = Arc::clone(&phase);
 
     assert!(async_p.is_empty());
     assert!(sync_c.is_empty());
@@ -701,7 +719,12 @@ mod tests {
       assert!(async_p.is_empty());
       async_p.send(val1_for_async_task).await.unwrap();
       println!("[MIXED_A2S_TASK] AsyncP sent val1.");
+
+      // Assert while holding the item in the queue.
       assert_eq!(async_p.len(), 1);
+
+      // Signal the sync consumer that the write and assertion are complete.
+      phase_clone.store(1, Ordering::Release);
 
       tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -710,8 +733,12 @@ mod tests {
       println!("[MIXED_A2S_TASK] AsyncP sent val2.");
     });
 
-    println!("[MIXED_A2S] SyncC receiving val1...");
-    std::thread::sleep(Duration::from_millis(10));
+    println!("[MIXED_A2S] SyncC waiting for phase 1...");
+    // Spin-yield until the producer finishes its len assertion.
+    while phase.load(Ordering::Acquire) == 0 {
+      std::thread::yield_now();
+    }
+
     assert_eq!(sync_c.len(), 1, "Length before first recv should be 1");
 
     assert_eq!(sync_c.recv().unwrap(), val1_original);
@@ -732,6 +759,7 @@ mod tests {
     assert!(sync_c.is_empty(), "Channel should be empty after all recvs");
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_try_recv_disconnected() {
     let (p, c) = bounded_async::<i32>(1);
@@ -744,9 +772,10 @@ mod tests {
     assert_eq!(c.try_recv(), Err(TryRecvError::Disconnected));
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_recv_future_disconnected_after_item() {
-    let (p, mut c) = bounded_async::<i32>(1);
+    let (p, c) = bounded_async::<i32>(1);
     p.send(1).await.unwrap();
     assert_eq!(c.recv().await.unwrap(), 1);
     assert!(c.is_empty());
@@ -756,6 +785,7 @@ mod tests {
     assert_eq!(c.recv().await, Err(RecvError::Disconnected));
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn new_spsc_apis_close_is_closed() {
     let (p, c) = bounded_async::<i32>(5);

@@ -125,6 +125,7 @@ impl<T: Send> BoundedSyncSender<T> {
             .shared
             .producer_parked_sync_flag
             .store(PARK_PARKED, Ordering::Release);
+          atomic::fence(Ordering::SeqCst);
 
           let head_after_flag_set = self.shared.head.load(Ordering::Relaxed);
           let tail_after_flag_set = self.shared.tail.load(Ordering::Acquire);
@@ -346,6 +347,7 @@ impl<T: Send> BoundedSyncReceiver<T> {
             .shared
             .consumer_parked_sync_flag
             .store(PARK_PARKED, Ordering::Release);
+          atomic::fence(Ordering::SeqCst);
 
           let head_after_flag_set = self.shared.head.load(Ordering::Acquire);
           let tail_after_flag_set = self.shared.tail.load(Ordering::Relaxed);
@@ -428,6 +430,7 @@ impl<T: Send> BoundedSyncReceiver<T> {
             .shared
             .consumer_parked_sync_flag
             .store(PARK_PARKED, Ordering::Release);
+          atomic::fence(Ordering::SeqCst);
 
           let head_after_flag = self.shared.head.load(Ordering::Acquire);
           let tail_after_flag = self.shared.tail.load(Ordering::Relaxed);
@@ -719,7 +722,10 @@ mod tests {
 
   #[test]
   fn stress_send_recv() {
+    #[cfg(not(miri))]
     const ITEMS: usize = 100_000;
+    #[cfg(miri)]
+    const ITEMS: usize = 10000;
     const CAPACITY: usize = 128;
     let (p, c) = bounded_sync(CAPACITY);
 
@@ -781,10 +787,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
     #[derive(Debug)]
-    struct Droppable(usize, Arc<AtomicUsize>);
+    struct Droppable(Arc<AtomicUsize>);
     impl Drop for Droppable {
       fn drop(&mut self) {
-        self.1.fetch_add(1, AtomicOrdering::Relaxed);
+        self.0.fetch_add(1, AtomicOrdering::Relaxed);
       }
     }
 
@@ -792,8 +798,8 @@ mod tests {
     drop_counter_arc.store(0, AtomicOrdering::Relaxed);
     {
       let (p, c) = bounded_sync::<Droppable>(2);
-      p.send(Droppable(1, drop_counter_arc.clone())).unwrap();
-      p.send(Droppable(2, drop_counter_arc.clone())).unwrap();
+      p.send(Droppable(drop_counter_arc.clone())).unwrap();
+      p.send(Droppable(drop_counter_arc.clone())).unwrap();
       assert_eq!(drop_counter_arc.load(AtomicOrdering::Relaxed), 0);
       assert_eq!(p.len(), 2);
       drop(p);
@@ -816,8 +822,8 @@ mod tests {
     drop_counter_arc.store(0, AtomicOrdering::Relaxed);
     {
       let (p, c) = bounded_sync::<Droppable>(2);
-      p.send(Droppable(3, drop_counter_arc.clone())).unwrap();
-      p.send(Droppable(4, drop_counter_arc.clone())).unwrap();
+      p.send(Droppable(drop_counter_arc.clone())).unwrap();
+      p.send(Droppable(drop_counter_arc.clone())).unwrap();
       drop(p);
       drop(c);
     }
@@ -826,7 +832,7 @@ mod tests {
     drop_counter_arc.store(0, AtomicOrdering::Relaxed);
     {
       let (p, c) = bounded_sync::<Droppable>(1);
-      p.send(Droppable(5, drop_counter_arc.clone())).unwrap();
+      p.send(Droppable(drop_counter_arc.clone())).unwrap();
       drop(p);
       drop(c);
     }

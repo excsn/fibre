@@ -8,6 +8,7 @@ use tokio::time::timeout;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(1);
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn send_recv_ok() {
   let (tx, mut rx) = oneshot::<String>();
@@ -24,6 +25,7 @@ async fn send_recv_ok() {
   assert_eq!(received, "hello oneshot");
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn try_recv_before_send() {
   let (tx, mut rx) = oneshot::<i32>();
@@ -32,6 +34,7 @@ async fn try_recv_before_send() {
   assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn try_recv_after_send() {
   let (tx, mut rx) = oneshot::<i32>();
@@ -48,6 +51,7 @@ async fn try_recv_after_send() {
   ));
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn recv_after_all_senders_dropped_no_send() {
   let (tx1, mut rx) = oneshot::<i32>();
@@ -64,6 +68,7 @@ async fn recv_after_all_senders_dropped_no_send() {
   }
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn send_fails_if_receiver_dropped() {
   let (tx, rx) = oneshot::<String>();
@@ -78,6 +83,7 @@ async fn send_fails_if_receiver_dropped() {
   }
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn only_first_send_succeeds_cloned_senders() {
   let (tx1, mut rx) = oneshot::<i32>();
@@ -111,6 +117,7 @@ async fn only_first_send_succeeds_cloned_senders() {
   }
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn receiver_dropped_after_send_value_is_dropped() {
   static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -138,6 +145,7 @@ async fn receiver_dropped_after_send_value_is_dropped() {
   assert_eq!(DROP_COUNT.load(AtomicOrdering::Relaxed), 1);
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn receiver_dropped_while_sender_sending_concurrently() {
   // This test is harder to make deterministic without more complex sync.
@@ -164,6 +172,7 @@ async fn receiver_dropped_while_sender_sending_concurrently() {
   // No assertion on outcome, just that it doesn't deadlock or panic unexpectedly.
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn select_on_recv() {
   let (tx1, mut rx1) = oneshot::<i32>();
@@ -190,6 +199,7 @@ async fn select_on_recv() {
   }
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn sender_clones_drop_receiver_gets_disconnected() {
   let (tx_orig, mut rx) = oneshot::<()>();
@@ -208,6 +218,7 @@ async fn sender_clones_drop_receiver_gets_disconnected() {
   assert_eq!(rx.recv().await, Err(RecvError::Disconnected));
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn send_consumes_sender() {
   let (tx, mut rx) = oneshot::<i32>();
@@ -225,6 +236,7 @@ async fn send_consumes_sender() {
   assert_eq!(rx.recv().await.unwrap(), 1);
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn is_closed_and_is_sent_semantics() {
   let (tx1, mut rx) = oneshot::<i32>();

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::Barrier;
 use tokio::time::timeout;
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn async_topic_single_subscriber_receives() {
   let (tx, rx) = spmc_topic::channel_async::<&str, String>(16);
@@ -29,6 +30,7 @@ async fn async_topic_single_subscriber_receives() {
   );
 }
 
+#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn async_topic_multiple_subscribers_same_topic() {
   let (tx, rx1) = spmc_topic::channel_async(16);
@@ -71,6 +73,7 @@ async fn async_topic_multiple_subscribers_same_topic() {
   h3.await.unwrap();
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn async_topic_unsubscribe_works() {
   let (tx, rx) = spmc_topic::channel_async(16);
@@ -89,6 +92,7 @@ async fn async_topic_unsubscribe_works() {
   );
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn async_topic_slow_consumer_drops_messages() {
   // Mailbox capacity of 1
@@ -109,6 +113,7 @@ async fn async_topic_slow_consumer_drops_messages() {
   );
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn async_topic_sender_drop_disconnects_receivers() {
   let (tx, rx) = spmc_topic::channel_async(16);
@@ -121,6 +126,7 @@ async fn async_topic_sender_drop_disconnects_receivers() {
   assert_eq!(rx.recv().await, Err(RecvError::Disconnected));
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn async_topic_all_receivers_drop_closes_sender() {
   let (tx, rx1) = spmc_topic::channel_async::<&str, i32>(16);
@@ -140,6 +146,7 @@ async fn async_topic_all_receivers_drop_closes_sender() {
   assert!(tx.is_closed());
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn mixed_sync_sender_async_receiver() {
   let (tx_sync, rx_sync) = spmc_topic::channel::<&str, i32>(16);
@@ -155,6 +162,7 @@ async fn mixed_sync_sender_async_receiver() {
   send_handle.await.unwrap();
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn mixed_async_sender_sync_receiver() {
   let (tx_async, rx_async) = spmc_topic::channel_async::<&str, i32>(16);

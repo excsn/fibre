@@ -211,11 +211,16 @@ impl<T: Send + Clone> SpmcShared<T> {
     );
     telemetry::increment_counter(LOC_WAKEP, CTR_WAKEP_CALLS);
 
+    // SeqCst fence pairs with the producer's store(PARK_PARKED, Release) +
+    // fence(SeqCst) sequence: guarantees that if the producer set PARK_PARKED
+    // before our tail update became visible, we will observe PARK_PARKED here.
+    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+
     if self.producer_parked_sync_flag.load(Ordering::Acquire) == PARK_PARKED {
       telemetry::log_event(None, LOC_WAKEP, EVT_WAKEP_SYNC_ARMED, None);
       if self
         .producer_parked_sync_flag
-        .compare_exchange(PARK_PARKED, PARK_CONSUMING, Ordering::AcqRel, Ordering::Relaxed)
+        .compare_exchange(PARK_PARKED, PARK_CONSUMING, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
       {
         telemetry::log_event(None, LOC_WAKEP, EVT_WAKEP_CAS_OK, None);
@@ -823,6 +828,7 @@ impl<T: Send + Clone> Sender<T> {
         *self.shared.producer_thread_sync.get() = Some(thread::current());
       }
       self.shared.producer_parked_sync_flag.store(PARK_PARKED, Ordering::Release);
+      std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
 
       let min_tail_recheck;
       let buffer_still_full;
@@ -844,7 +850,7 @@ impl<T: Send + Clone> Sender<T> {
               PARK_PARKED,
               PARK_IDLE,
               Ordering::AcqRel,
-              Ordering::Relaxed,
+              Ordering::Acquire,
             ) {
               Ok(_) => {
                 // We won the race: clear the thread handle we wrote.
@@ -881,7 +887,7 @@ impl<T: Send + Clone> Sender<T> {
             PARK_PARKED,
             PARK_IDLE,
             Ordering::AcqRel,
-            Ordering::Relaxed,
+            Ordering::Acquire,
           ) {
             Ok(_) => {
               telemetry::log_event(
@@ -938,7 +944,7 @@ impl<T: Send + Clone> Sender<T> {
             if self
               .shared
               .producer_parked_sync_flag
-              .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
+              .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Acquire)
               .is_ok()
             {
               unsafe { *self.shared.producer_thread_sync.get() = None; }

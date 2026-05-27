@@ -284,7 +284,9 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
 
     // Poll the gate first to acquire a permit. This is a "projection".
     // We get a `Pin<&mut SendFuture>` and poll its `acquire` field.
-    match Pin::new(&mut this.acquire).poll(cx) {
+    // Safety: `SendFuture` is `!Unpin`; `this` was obtained via get_unchecked_mut
+    // on a `Pin<&mut SendFuture>`, so pinning the `acquire` sub-field is sound.
+    match unsafe { Pin::new_unchecked(&mut this.acquire) }.poll(cx) {
       Poll::Ready(()) => {
         // We have a permit. Now we can send.
         let value = this

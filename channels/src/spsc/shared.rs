@@ -116,8 +116,8 @@ impl<T> SpscShared<T> {
 
   #[inline]
   pub(crate) fn wake_consumer(&self) {
+    atomic::fence(Ordering::SeqCst);
     if self.consumer_parked_sync_flag.load(Ordering::Relaxed) == PARK_PARKED {
-      atomic::fence(Ordering::Acquire);
       if self
         .consumer_parked_sync_flag
         .compare_exchange(PARK_PARKED, PARK_CONSUMING, Ordering::AcqRel, Ordering::Relaxed)
@@ -138,8 +138,8 @@ impl<T> SpscShared<T> {
 
   #[inline]
   pub(crate) fn wake_producer(&self) {
+    atomic::fence(Ordering::SeqCst);
     if self.producer_parked_sync_flag.load(Ordering::Relaxed) == PARK_PARKED {
-      atomic::fence(Ordering::Acquire);
       if self
         .producer_parked_sync_flag
         .compare_exchange(PARK_PARKED, PARK_CONSUMING, Ordering::AcqRel, Ordering::Relaxed)

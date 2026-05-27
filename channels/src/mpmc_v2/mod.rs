@@ -821,6 +821,7 @@ mod tests {
   use std::thread;
   use std::time::Duration;
 
+  #[cfg(not(miri))]
   #[test]
   fn test_mpmc_v2_recv_timeout_spurious_wakeup_leak() {
     // Create a bounded channel of capacity 5

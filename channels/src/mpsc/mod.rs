@@ -160,6 +160,7 @@ mod tests {
     // rx is consumed by the thread, cannot access its len() here
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_to_async() {
     let (tx, rx) = unbounded_v1_async::<i32>();
@@ -179,6 +180,7 @@ mod tests {
     // rx is consumed by the task
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn sync_to_async_conversion() {
     let (tx_async, rx_async) = unbounded_v1_async::<i32>();
@@ -205,7 +207,10 @@ mod tests {
     let rx_sync = rx_sync_orig.to_sync();
     assert!(rx_sync.is_empty());
 
-    let rt = Runtime::new().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+      .enable_time()
+      .build()
+      .unwrap();
     rt.spawn(async move {
       tokio::time::sleep(Duration::from_millis(50)).await;
       tx_async.send(101).await.unwrap();
@@ -246,6 +251,7 @@ mod tests {
     assert_eq!(rx.recv(), Err(RecvError::Disconnected));
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn len_and_is_empty_async() {
     let (tx, rx) = unbounded_v1_async::<i32>();

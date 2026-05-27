@@ -5,6 +5,7 @@ use fibre::spmc;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn spmc_async_spsc_smoke() {
   let (mut tx, rx) = spmc::bounded_async(2);
@@ -12,6 +13,7 @@ async fn spmc_async_spsc_smoke() {
   assert_eq!(rx.recv().await.unwrap(), 10);
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn spmc_async_try_recv() {
   let (mut tx, rx) = spmc::bounded_async::<i32>(2);
@@ -21,6 +23,7 @@ async fn spmc_async_try_recv() {
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));
 }
 
+#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn spmc_async_multi_consumer() {
   let (mut tx, rx1) = spmc::bounded_async(ITEMS_LOW);
@@ -67,6 +70,7 @@ async fn spmc_async_multi_consumer() {
   h3.await.unwrap();
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 async fn spmc_async_slow_consumer_blocks_producer() {
   let (mut tx, rx_fast) = spmc::bounded_async(1);

@@ -13,33 +13,45 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
+use std::marker::PhantomPinned;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::thread::{self, Thread};
 
 use parking_lot::Mutex;
 
+pub(crate) const STATE_WAITING: u8 = 0;
+pub(crate) const STATE_SUCCESS: u8 = 1;
+pub(crate) const STATE_CANCELLED: u8 = 2;
+
 /// An enum representing either a sync or async waiter.
 #[derive(Debug)]
 enum Waiter {
   Sync(Thread),
-  Async(Waker),
+  Async {
+    waker: Waker,
+    state: *const AtomicU8,
+  },
 }
 
+// Safety: the raw pointer points into a pinned AcquireFuture; its Drop impl
+// removes the entry before the future is destroyed, so the pointer is valid
+// for the lifetime of the Waiter in the queue.
+unsafe impl Send for Waiter {}
+
 impl Waiter {
-  /// Wakes the underlying thread or task.
   fn wake(self) {
     match self {
       Waiter::Sync(thread) => thread.unpark(),
-      Waiter::Async(waker) => waker.wake(),
+      Waiter::Async { waker, .. } => waker.wake(),
     }
   }
 
-  /// Checks if this waiter would be woken by the given waker.
   fn will_wake(&self, waker: &Waker) -> bool {
     match self {
-      Waiter::Async(self_waker) => self_waker.will_wake(waker),
+      Waiter::Async { waker: self_waker, .. } => self_waker.will_wake(waker),
       Waiter::Sync(_) => false,
     }
   }
@@ -116,7 +128,12 @@ impl CapacityGate {
   /// Acquires a permit asynchronously, returning a future that resolves
   /// when a permit is available.
   pub fn acquire_async(&self) -> AcquireFuture<'_> {
-    AcquireFuture { gate: self }
+    AcquireFuture {
+      gate: self,
+      state: AtomicU8::new(STATE_WAITING),
+      is_registered: false,
+      _phantom: PhantomPinned,
+    }
   }
 
   /// Attempts to acquire a permit without blocking.
@@ -148,18 +165,34 @@ impl CapacityGate {
   /// Releases a permit back to the gate.
   pub fn release(&self) {
     let mut internal = self.internal.lock();
-    // Always increment permits. A permit is a permit.
     internal.permits += 1;
 
-    if let Some(waiter) = internal.waiters.pop_front() {
-      // A waiter exists. Wake them up. They will consume the permit we just
-      // added. We don't drop the lock here; waking is cheap.
-      waiter.wake();
-    } else {
-      // No one was waiting. We must now cap the permit count to prevent it
-      // from exceeding capacity. This is only necessary when the queue is empty.
-      internal.permits = internal.permits.min(self.capacity);
+    while let Some(waiter) = internal.waiters.pop_front() {
+      match waiter {
+        Waiter::Sync(thread) => {
+          thread.unpark();
+          return;
+        }
+        Waiter::Async { waker, state } => {
+          let state_ref = unsafe { &*state };
+          if state_ref
+            .compare_exchange(
+              STATE_WAITING,
+              STATE_SUCCESS,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            waker.wake();
+            return;
+          }
+          // STATE_CANCELLED: discard this waiter and try the next one.
+        }
+      }
     }
+
+    internal.permits = internal.permits.min(self.capacity);
   }
 }
 
@@ -167,35 +200,86 @@ impl CapacityGate {
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct AcquireFuture<'a> {
   gate: &'a CapacityGate,
+  state: AtomicU8,
+  is_registered: bool,
+  _phantom: PhantomPinned,
 }
 
-impl Future for AcquireFuture<'_> {
+impl<'a> Future for AcquireFuture<'a> {
   type Output = ();
 
-  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let mut internal = self.gate.internal.lock();
+  fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    let this = unsafe { self.as_mut().get_unchecked_mut() };
 
-    // Fast path check using the anti-stealing logic.
+    // Fast path: release() already claimed a permit on our behalf.
+    if this.state.load(Ordering::Acquire) == STATE_SUCCESS {
+      this.is_registered = false;
+      return Poll::Ready(());
+    }
+
+    let mut internal = this.gate.internal.lock();
+
+    // Re-check under lock in case release() raced with our fast-path check.
+    if this.state.load(Ordering::Acquire) == STATE_SUCCESS {
+      this.is_registered = false;
+      return Poll::Ready(());
+    }
+
     if internal.waiters.is_empty() && internal.permits > 0 {
       internal.permits -= 1;
+      this.is_registered = false;
       return Poll::Ready(());
     }
 
-    // Slow path: must wait.
-    // Check for a permit again. This is for waiters that have been woken up.
     if internal.permits > 0 {
       internal.permits -= 1;
+      this.is_registered = false;
       return Poll::Ready(());
     }
 
-    // No permits available. Add our waker to the queue if not already present.
-    if !internal.waiters.iter().any(|w| w.will_wake(cx.waker())) {
-      internal
-        .waiters
-        .push_back(Waiter::Async(cx.waker().clone()));
+    let new_waker = cx.waker();
+    let state_ptr = &this.state as *const AtomicU8;
+
+    // Update waker in-place if already registered (waker may have changed).
+    let mut found = false;
+    for waiter in internal.waiters.iter_mut() {
+      if let Waiter::Async { state, waker: ref mut existing_waker } = waiter {
+        if *state == state_ptr {
+          *existing_waker = new_waker.clone();
+          found = true;
+          break;
+        }
+      }
+    }
+
+    if !found {
+      this.is_registered = true;
+      this.state.store(STATE_WAITING, Ordering::SeqCst);
+      internal.waiters.push_back(Waiter::Async {
+        waker: new_waker.clone(),
+        state: state_ptr,
+      });
     }
 
     Poll::Pending
+  }
+}
+
+impl<'a> Drop for AcquireFuture<'a> {
+  fn drop(&mut self) {
+    if self.is_registered
+      && self
+        .state
+        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+      let mut internal = self.gate.internal.lock();
+      let state_ptr = &self.state as *const AtomicU8;
+      internal.waiters.retain(|w| match w {
+        Waiter::Async { state, .. } => *state != state_ptr,
+        _ => true,
+      });
+    }
   }
 }
 
@@ -212,7 +296,6 @@ impl Clone for CapacityGate {
 mod tests {
   use super::*;
   use std::time::Duration;
-  use tokio::time::timeout;
 
   #[test]
   fn gate_new_and_capacity() {
@@ -249,8 +332,11 @@ mod tests {
     handle.join().expect("Thread panicked");
   }
 
+  #[cfg(not(miri))]
   #[tokio::test]
   async fn acquire_async_waits_and_completes() {
+    use tokio::time::timeout;
+
     let gate = Arc::new(CapacityGate::new(1));
     gate.acquire_sync(); // Use up the only permit
 
@@ -267,6 +353,7 @@ mod tests {
       .expect("Future did not complete after release");
   }
 
+  #[cfg(not(miri))]
   #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
   async fn mixed_waiters_contention() {
     let gate = Arc::new(CapacityGate::new(2));
@@ -311,6 +398,56 @@ mod tests {
     assert_eq!(
       completion_count.load(std::sync::atomic::Ordering::Relaxed),
       6
+    );
+  }
+
+  #[test]
+  fn test_acquire_async_drop_leak() {
+    let gate = CapacityGate::new(1);
+
+    // 1. Consume the only available permit so subsequent async acquires must wait
+    assert!(gate.try_acquire());
+
+    // 2. Create a self-contained dummy waker for the context
+    fn dummy_waker() -> Waker {
+      use std::task::{RawWaker, RawWakerVTable};
+      unsafe fn clone(_: *const ()) -> RawWaker {
+        RawWaker::new(std::ptr::null(), &VTABLE)
+      }
+      unsafe fn wake(_: *const ()) {}
+      unsafe fn wake_by_ref(_: *const ()) {}
+      unsafe fn drop_raw(_: *const ()) {}
+      static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_raw);
+      unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+    }
+
+    let waker = dummy_waker();
+    let mut cx = Context::from_waker(&waker);
+
+    // 3. Create the AcquireFuture and poll it once.
+    // Since no permits are available, it will return Poll::Pending and register our waker.
+    let mut fut = Box::pin(gate.acquire_async());
+    assert!(fut.as_mut().poll(&mut cx).is_pending());
+
+    // Verify that the waker was indeed registered in the internal queue
+    {
+      let internal = gate.internal.lock();
+      assert_eq!(internal.waiters.len(), 1);
+    }
+
+    // 4. Drop (cancel) the future before it ever resolves to success
+    drop(fut);
+
+    // 5. Inspect the queue.
+    // Under the unpatched code, this assertion will fail because the stale waker is still there.
+    let leaked_count = {
+      let internal = gate.internal.lock();
+      internal.waiters.len()
+    };
+
+    assert_eq!(
+      leaked_count, 0,
+      "Waker leak detected: dropping AcquireFuture left a stale waker in the waiters queue!"
     );
   }
 }
