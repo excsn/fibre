@@ -1,5 +1,3 @@
-// src/spmc/mod.rs
-
 //! A single-producer, multi-consumer (SPMC) "broadcast" channel.
 //!
 //! This channel is optimized for the "fan-out" or "publish-subscribe" pattern,
@@ -74,8 +72,8 @@
 //! handle2.join().unwrap();
 //! ```
 
-// No need to import Arc here if it's only used by ring_buffer types.
 mod ring_buffer;
+#[cfg(feature = "topic")]
 pub mod topic;
 
 use std::mem;
