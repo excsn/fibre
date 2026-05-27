@@ -1,4 +1,4 @@
-// channels/src/spmc/topic/left_right.rs
+// channels/src/internal/left_right.rs
 
 //! A minimal, custom implementation of a copy-on-write, single-writer,
 //! multi-reader synchronization primitive.

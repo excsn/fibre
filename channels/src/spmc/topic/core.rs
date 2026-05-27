@@ -2,7 +2,7 @@
 
 #![cfg(feature = "topic")]
 
-use super::left_right; // Use our custom left_right module
+use crate::internal::left_right;
 use super::mailbox;
 use papaya::HashMap;
 use std::fmt;

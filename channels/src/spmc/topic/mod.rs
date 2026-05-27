@@ -18,7 +18,6 @@
 
 mod async_impl;
 mod core;
-mod left_right;
 mod mailbox;
 mod sync_impl;
 

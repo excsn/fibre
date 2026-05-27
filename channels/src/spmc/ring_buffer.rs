@@ -4,6 +4,7 @@ use parking_lot::Mutex;
 use crate::async_util::AtomicWaker;
 use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
 use crate::internal::cache_padded::CachePadded;
+use crate::internal::left_right;
 use crate::telemetry;
 use crate::{sync_util, RecvErrorTimeout};
 
@@ -13,11 +14,16 @@ use std::fmt;
 use std::future::Future;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
+
+// --- Producer Parking State Machine ---
+pub(crate) const PARK_IDLE: u8 = 0;      // No one is parked or unparking.
+pub(crate) const PARK_PARKED: u8 = 1;    // Producer has written its thread handle and is about to park.
+pub(crate) const PARK_CONSUMING: u8 = 2; // A consumer has claimed the thread handle and will unpark.
 
 // --- Telemetry Constants (unchanged) ---
 const LOC_P_SEND: &str = "Sender::send";
@@ -137,18 +143,15 @@ impl<T> Drop for Slot<T> {
   }
 }
 
-#[derive(Debug)]
-struct ReceiverCursors {
-  list: Vec<Arc<AtomicUsize>>,
-}
-
 pub(crate) struct SpmcShared<T: Send + Clone> {
-  buffer: Box<[Slot<T>]>,
+  buffer: Box<[CachePadded<Slot<T>>]>,
   capacity: usize,
   head: CachePadded<AtomicUsize>, // Producer's current write index (logical, unbounded)
-  tails: Mutex<ReceiverCursors>,  // List of all active consumer tail pointers
-  producer_parked: AtomicBool,
-  producer_thread: Mutex<Option<Thread>>,
+  tails_reader: left_right::ReadHandle<Vec<Arc<AtomicUsize>>>,
+  tails_writer: left_right::WriteHandle<Vec<Arc<AtomicUsize>>>,
+  tails_mutex: Mutex<()>, // Serialises slow-path consumer registrations (clone/drop)
+  producer_parked_sync_flag: CachePadded<AtomicU8>,
+  producer_thread_sync: CachePadded<UnsafeCell<Option<Thread>>>,
   producer_waker: AtomicWaker,
   producer_dropped: AtomicBool,
 }
@@ -158,10 +161,10 @@ impl<T: Send + Clone> fmt::Debug for SpmcShared<T> {
     f.debug_struct("SpmcShared")
       .field("capacity", &self.capacity)
       .field("head", &self.head.load(Ordering::Relaxed))
-      .field("tails_count", &self.tails.lock().list.len())
+      .field("tails_count", &self.tails_reader.enter().len())
       .field(
-        "producer_parked",
-        &self.producer_parked.load(Ordering::Relaxed),
+        "producer_parked_sync_flag",
+        &self.producer_parked_sync_flag.load(Ordering::Relaxed),
       )
       .field(
         "producer_dropped",
@@ -175,19 +178,22 @@ impl<T: Send + Clone> SpmcShared<T> {
   fn new(capacity: usize) -> Self {
     let mut buffer = Vec::with_capacity(capacity);
     for i in 0..capacity {
-      buffer.push(Slot {
+      buffer.push(CachePadded::new(Slot {
         sequence: AtomicUsize::new(2 * i),
         value: UnsafeCell::new(MaybeUninit::uninit()),
         wakers: Mutex::new(Vec::new()),
-      });
+      }));
     }
+    let (tails_reader, tails_writer) = left_right::new::<Vec<Arc<AtomicUsize>>>();
     SpmcShared {
       buffer: buffer.into_boxed_slice(),
       capacity,
       head: CachePadded::new(AtomicUsize::new(0)),
-      tails: Mutex::new(ReceiverCursors { list: Vec::new() }),
-      producer_parked: AtomicBool::new(false),
-      producer_thread: Mutex::new(None),
+      tails_reader,
+      tails_writer,
+      tails_mutex: Mutex::new(()),
+      producer_parked_sync_flag: CachePadded::new(AtomicU8::new(PARK_IDLE)),
+      producer_thread_sync: CachePadded::new(UnsafeCell::new(None)),
       producer_waker: AtomicWaker::new(),
       producer_dropped: AtomicBool::new(false),
     }
@@ -200,27 +206,31 @@ impl<T: Send + Clone> SpmcShared<T> {
       EVT_WAKEP_ENTER,
       Some(format!(
         "prod_parked_flag:{}",
-        self.producer_parked.load(Ordering::Relaxed)
+        self.producer_parked_sync_flag.load(Ordering::Relaxed)
       )),
     );
     telemetry::increment_counter(LOC_WAKEP, CTR_WAKEP_CALLS);
 
-    if self.producer_parked.load(Ordering::Acquire) {
+    if self.producer_parked_sync_flag.load(Ordering::Acquire) == PARK_PARKED {
       telemetry::log_event(None, LOC_WAKEP, EVT_WAKEP_SYNC_ARMED, None);
       if self
-        .producer_parked
-        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+        .producer_parked_sync_flag
+        .compare_exchange(PARK_PARKED, PARK_CONSUMING, Ordering::AcqRel, Ordering::Relaxed)
         .is_ok()
       {
         telemetry::log_event(None, LOC_WAKEP, EVT_WAKEP_CAS_OK, None);
-        if let Some(thread_to_unpark) = self.producer_thread.lock().take() {
+        // Safety: CONSUMING state gives us exclusive access to producer_thread_sync;
+        // the producer is parked and will not touch the slot until we store PARK_IDLE.
+        let thread_to_unpark = unsafe { (*self.producer_thread_sync.get()).take() };
+        self.producer_parked_sync_flag.store(PARK_IDLE, Ordering::Release);
+        if let Some(thread) = thread_to_unpark {
           telemetry::log_event(
             None,
             LOC_WAKEP,
             EVT_WAKEP_UNPARK_OK,
-            Some(format!("tid:{:?}", thread_to_unpark.id())),
+            Some(format!("tid:{:?}", thread.id())),
           );
-          thread_to_unpark.unpark();
+          thread.unpark();
         } else {
           telemetry::log_event(None, LOC_WAKEP, EVT_WAKEP_UNPARK_NOTHR, None);
         }
@@ -230,9 +240,8 @@ impl<T: Send + Clone> SpmcShared<T> {
           EVT_WAKEP_WAKE_ASYNC,
           Some("after sync unpark".into()),
         );
-        self.producer_waker.wake();
       } else {
-        telemetry::log_event(None, LOC_WAKEP, "CASFail (already false)", None);
+        telemetry::log_event(None, LOC_WAKEP, "CASFail (not PARKED)", None);
       }
     } else {
       telemetry::log_event(
@@ -241,8 +250,8 @@ impl<T: Send + Clone> SpmcShared<T> {
         EVT_WAKEP_WAKE_ASYNC,
         Some("sync not parked".into()),
       );
-      self.producer_waker.wake();
     }
+    self.producer_waker.wake();
   }
 
   fn wake_all_consumers_from_slots(&self) {
@@ -261,8 +270,8 @@ impl<T: Send + Clone> SpmcShared<T> {
     let current_head_idx = self.head.load(Ordering::Relaxed);
     let min_tail_idx;
     {
-      let tails_guard = self.tails.lock();
-      if tails_guard.list.is_empty() {
+      let tails_guard = self.tails_reader.enter();
+      if tails_guard.is_empty() {
         telemetry::log_event(
           Some(current_head_idx),
           LOC_P_TRY_SEND,
@@ -272,7 +281,6 @@ impl<T: Send + Clone> SpmcShared<T> {
         return Err(TrySendError::Closed(value));
       }
       min_tail_idx = tails_guard
-        .list
         .iter()
         .map(|t_arc| t_arc.load(Ordering::Acquire))
         .min()
@@ -385,7 +393,7 @@ pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (Sender<T>, Recei
   assert!(capacity > 0, "SPMC channel capacity must be > 0");
   let shared = Arc::new(SpmcShared::new(capacity));
   let initial_tail = Arc::new(AtomicUsize::new(0));
-  shared.tails.lock().list.push(Arc::clone(&initial_tail));
+  shared.tails_writer.modify(|list| list.push(Arc::clone(&initial_tail)));
   (
     Sender {
       shared: Arc::clone(&shared),
@@ -729,12 +737,8 @@ impl<T: Send + Clone> Clone for Receiver<T> {
   fn clone(&self) -> Self {
     let new_tail_val = self.tail.load(Ordering::Acquire);
     let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
-    self
-      .shared
-      .tails
-      .lock()
-      .list
-      .push(Arc::clone(&new_consumer_tail));
+    let _lock = self.shared.tails_mutex.lock();
+    self.shared.tails_writer.modify(|list| list.push(Arc::clone(&new_consumer_tail)));
     Self {
       shared: Arc::clone(&self.shared),
       tail: new_consumer_tail,
@@ -746,12 +750,8 @@ impl<T: Send + Clone> Clone for AsyncReceiver<T> {
   fn clone(&self) -> Self {
     let new_tail_val = self.tail.load(Ordering::Acquire);
     let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
-    self
-      .shared
-      .tails
-      .lock()
-      .list
-      .push(Arc::clone(&new_consumer_tail));
+    let _lock = self.shared.tails_mutex.lock();
+    self.shared.tails_writer.modify(|list| list.push(Arc::clone(&new_consumer_tail)));
     Self {
       shared: Arc::clone(&self.shared),
       tail: new_consumer_tail,
@@ -761,11 +761,9 @@ impl<T: Send + Clone> Clone for AsyncReceiver<T> {
 }
 
 fn drop_receiver_internal<T: Send + Clone>(shared: &SpmcShared<T>, tail_arc: &Arc<AtomicUsize>) {
-  let mut tails_guard = shared.tails.lock();
-  tails_guard
-    .list
-    .retain(|t_arc| !Arc::ptr_eq(t_arc, tail_arc));
-  drop(tails_guard);
+  let _lock = shared.tails_mutex.lock();
+  shared.tails_writer.modify(|list| list.retain(|t_arc| !Arc::ptr_eq(t_arc, tail_arc)));
+  drop(_lock);
   shared.wake_producer();
 }
 
@@ -819,30 +817,54 @@ impl<T: Send + Clone> Sender<T> {
       telemetry::increment_counter(LOC_P_SEND, CTR_P_PARK_ATTEMPTS);
 
       telemetry::log_event(Some(current_head_idx), LOC_P_SEND, EVT_P_ARM_PARK, None);
-      *self.shared.producer_thread.lock() = Some(thread::current());
-      self.shared.producer_parked.store(true, Ordering::Release);
+      // Safety: we are the sole producer; no consumer can access producer_thread_sync
+      // until we store PARK_PARKED below (Release fence).
+      unsafe {
+        *self.shared.producer_thread_sync.get() = Some(thread::current());
+      }
+      self.shared.producer_parked_sync_flag.store(PARK_PARKED, Ordering::Release);
 
       let min_tail_recheck;
+      let buffer_still_full;
       {
-        let tails_guard = self.shared.tails.lock();
-        if tails_guard.list.is_empty() {
+        let tails_guard = self.shared.tails_reader.enter();
+        if tails_guard.is_empty() {
           telemetry::log_event(
             Some(current_head_idx),
             LOC_P_SEND,
             EVT_P_NO_CONSUMERS,
             Some("during park recheck".into()),
           );
-          self.shared.producer_parked.store(false, Ordering::Relaxed);
-          self.shared.producer_thread.lock().take();
+          // Release the read guard before spinning on the parking state machine.
+          drop(tails_guard);
+          // De-arm: CAS PARK_PARKED→PARK_IDLE ourselves, or wait for a consumer
+          // that raced us to PARK_CONSUMING to finish and store PARK_IDLE.
+          loop {
+            match self.shared.producer_parked_sync_flag.compare_exchange(
+              PARK_PARKED,
+              PARK_IDLE,
+              Ordering::AcqRel,
+              Ordering::Relaxed,
+            ) {
+              Ok(_) => {
+                // We won the race: clear the thread handle we wrote.
+                unsafe { *self.shared.producer_thread_sync.get() = None; }
+                break;
+              }
+              Err(PARK_CONSUMING) => std::hint::spin_loop(),
+              Err(_) => break, // Consumer completed handoff; slot already cleared.
+            }
+          }
           drop(current_item.take());
           return Err(SendError::Closed);
         }
         min_tail_recheck = tails_guard
-          .list
           .iter()
           .map(|t_arc| t_arc.load(Ordering::Acquire))
           .min()
           .expect("Receiver list still not empty");
+        buffer_still_full =
+          self.shared.head.load(Ordering::Relaxed) - min_tail_recheck >= self.shared.capacity;
       }
       telemetry::log_event(
         Some(current_head_idx),
@@ -851,32 +873,46 @@ impl<T: Send + Clone> Sender<T> {
         Some(format!("min_tail_recheck:{}", min_tail_recheck)),
       );
 
-      if self.shared.head.load(Ordering::Relaxed) - min_tail_recheck < self.shared.capacity {
+      if !buffer_still_full {
         telemetry::log_event(Some(current_head_idx), LOC_P_SEND, EVT_P_RECHECK_PASS, None);
-        if self
-          .shared
-          .producer_parked
-          .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-          .is_ok()
-        {
-          telemetry::log_event(
-            Some(current_head_idx),
-            LOC_P_SEND,
-            EVT_P_CAS_UNARM_SUCCESS,
-            None,
-          );
-          self.shared.producer_thread.lock().take();
-        } else {
-          telemetry::log_event(
-            Some(current_head_idx),
-            LOC_P_SEND,
-            EVT_P_CAS_UNARM_FAIL,
-            None,
-          );
+        // Space appeared: de-arm the parking state machine.
+        loop {
+          match self.shared.producer_parked_sync_flag.compare_exchange(
+            PARK_PARKED,
+            PARK_IDLE,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+          ) {
+            Ok(_) => {
+              telemetry::log_event(
+                Some(current_head_idx),
+                LOC_P_SEND,
+                EVT_P_CAS_UNARM_SUCCESS,
+                None,
+              );
+              unsafe { *self.shared.producer_thread_sync.get() = None; }
+              break;
+            }
+            Err(PARK_CONSUMING) => {
+              // A consumer raced us and is mid-handoff; spin until it stores PARK_IDLE.
+              telemetry::log_event(
+                Some(current_head_idx),
+                LOC_P_SEND,
+                EVT_P_CAS_UNARM_FAIL,
+                None,
+              );
+              while self.shared.producer_parked_sync_flag.load(Ordering::Acquire) != PARK_IDLE {
+                std::hint::spin_loop();
+              }
+              break;
+            }
+            Err(_) => break, // Already IDLE.
+          }
         }
         continue;
       }
 
+      // Buffer still full: park.
       telemetry::log_event(
         Some(current_head_idx),
         LOC_P_SEND,
@@ -891,11 +927,35 @@ impl<T: Send + Clone> Sender<T> {
         EVT_P_UNPARKED,
         None,
       );
+
+      // Post-wakeup: resolve any spurious wakeup or mid-CONSUMING races before
+      // re-entering the send loop.
+      loop {
+        match self.shared.producer_parked_sync_flag.load(Ordering::Acquire) {
+          PARK_IDLE => break, // Normal: consumer completed the full handoff.
+          PARK_PARKED => {
+            // Spurious wakeup: try to de-arm.
+            if self
+              .shared
+              .producer_parked_sync_flag
+              .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
+              .is_ok()
+            {
+              unsafe { *self.shared.producer_thread_sync.get() = None; }
+              break;
+            }
+            // CAS failed: consumer just moved to CONSUMING; spin.
+            std::hint::spin_loop();
+          }
+          PARK_CONSUMING => std::hint::spin_loop(),
+          _ => break,
+        }
+      }
     }
   }
 
   pub fn is_closed(&self) -> bool {
-    self.shared.tails.lock().list.is_empty()
+    self.shared.tails_reader.enter().is_empty()
   }
 
   pub fn capacity(&self) -> usize {
@@ -923,12 +983,11 @@ impl<T: Send + Clone> Sender<T> {
   #[inline]
   pub fn len(&self) -> usize {
     let head = self.shared.head.load(Ordering::Relaxed);
-    let tails_guard = self.shared.tails.lock();
-    if tails_guard.list.is_empty() {
+    let tails_guard = self.shared.tails_reader.enter();
+    if tails_guard.is_empty() {
       return 0;
     }
     let min_tail = tails_guard
-      .list
       .iter()
       .map(|t_arc| t_arc.load(Ordering::Acquire))
       .min()
@@ -964,7 +1023,7 @@ impl<T: Send + Clone> AsyncSender<T> {
   }
 
   pub fn is_closed(&self) -> bool {
-    self.shared.tails.lock().list.is_empty()
+    self.shared.tails_reader.enter().is_empty()
   }
 
   pub fn capacity(&self) -> usize {
@@ -992,12 +1051,11 @@ impl<T: Send + Clone> AsyncSender<T> {
   #[inline]
   pub fn len(&self) -> usize {
     let head = self.shared.head.load(Ordering::Relaxed);
-    let tails_guard = self.shared.tails.lock();
-    if tails_guard.list.is_empty() {
+    let tails_guard = self.shared.tails_reader.enter();
+    if tails_guard.is_empty() {
       return 0;
     }
     let min_tail = tails_guard
-      .list
       .iter()
       .map(|t_arc| t_arc.load(Ordering::Acquire))
       .min()
@@ -1078,8 +1136,8 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
 
       let min_tail_recheck;
       {
-        let tails_guard = shared.tails.lock();
-        if tails_guard.list.is_empty() {
+        let tails_guard = shared.tails_reader.enter();
+        if tails_guard.is_empty() {
           this.value = None;
           telemetry::log_event(
             Some(current_head_idx),
@@ -1090,7 +1148,6 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
           return Poll::Ready(Err(SendError::Closed));
         }
         min_tail_recheck = tails_guard
-          .list
           .iter()
           .map(|t_arc| t_arc.load(Ordering::Acquire))
           .min()
