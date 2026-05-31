@@ -1,5 +1,3 @@
-// tests/mpmc_hang_repro.rs
-
 use fibre::mpmc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
