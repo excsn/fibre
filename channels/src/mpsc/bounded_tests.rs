@@ -114,9 +114,7 @@ fn mixed_async_send_sync_recv() {
   // Convert the sender to its async version.
   let tx_async = tx_sync.to_async();
 
-  let rt = tokio::runtime::Builder::new_multi_thread()
-    .build()
-    .unwrap();
+  let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
   rt.block_on(async {
     // Now we can `.await` on the async sender.
     tx_async.send(100).await.unwrap();
@@ -343,8 +341,6 @@ fn zero_capacity_channel_sync_rendezvous() {
   );
 }
 
-// channels/src/mpsc/bounded_tests.rs
-
 #[cfg(not(miri))]
 #[tokio::test]
 async fn test_bounded_async_receiver_drop_unblocks_all_senders() {
@@ -390,4 +386,31 @@ async fn test_bounded_async_receiver_drop_unblocks_all_senders() {
   assert!(matches!(res2, Err(SendError::Closed)));
   assert!(matches!(res3, Err(SendError::Closed)));
   assert!(matches!(res4, Err(SendError::Closed)));
+}
+
+#[test]
+fn sync_sender_unblocks_when_receiver_dropped() {
+  let (tx, rx) = bounded(1);
+  // Fill the channel capacity
+  tx.send(1).unwrap();
+
+  let tx_clone = tx.clone();
+  let handle = std::thread::spawn(move || {
+    // This send should block
+    tx_clone.send(2)
+  });
+
+  // Give the sender thread some time to park
+  std::thread::sleep(Duration::from_millis(50));
+  assert!(!handle.is_finished(), "Sender thread should be blocked");
+
+  // Drop the receiver to trigger unblocking
+  drop(rx);
+
+  let res = handle.join().expect("Sender thread panicked");
+  assert!(
+    matches!(res, Err(SendError::Closed)),
+    "Expected Err(SendError::Closed), got {:?}",
+    res
+  );
 }

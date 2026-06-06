@@ -1,4 +1,3 @@
-// src/encoders/util.rs
 // Utility functions for encoders.
 
 use chrono::{DateTime, Utc};

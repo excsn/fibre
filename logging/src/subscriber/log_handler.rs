@@ -1,14 +1,12 @@
-// src/subscriber/log_handler.rs
-
 use crate::{
   model::LogEvent,
-  subscriber::{processor::EventProcessor, visitor::LogEventFieldVisitor},
+  subscriber::processor::EventProcessor,
 };
-use log::{Level, LevelFilter as LogLevelFilter, Metadata as LogMetadata, Record};
+use log::{Level, Metadata as LogMetadata, Record};
 use std::sync::Arc;
 use tracing_core::{
   callsite, field,
-  metadata::{Kind, LevelFilter},
+  metadata::Kind,
   subscriber::Interest,
   Metadata,
 };

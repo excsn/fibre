@@ -1,10 +1,10 @@
-// src/encoders/json.rs
 use super::{util, EventFormatter};
 use crate::config::processed::JsonLinesEncoderInternal;
 use crate::error::{Error, Result};
 use crate::model::{LogValue, LogEvent};
-use serde_json::Value; // Using serde_json::Value for flexibility
-use std::collections::BTreeMap; // For consistent field order in JSON output from LogEvent
+
+use serde_json::Value;
+use std::collections::BTreeMap;
 
 pub struct JsonLinesFormatter {
   config: JsonLinesEncoderInternal,

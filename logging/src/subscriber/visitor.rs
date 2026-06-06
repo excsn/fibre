@@ -1,5 +1,5 @@
-// src/subscriber/visitor.rs
 use crate::model::{LogValue, LogEvent};
+
 use std::collections::HashMap;
 use tracing::field::{Field, Visit};
 

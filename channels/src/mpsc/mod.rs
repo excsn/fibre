@@ -1,5 +1,3 @@
-// src/mpsc/mod.rs
-
 //! A multi-producer, single-consumer (MPSC) channel.
 //!
 //! This channel is optimized for the MPSC pattern, offering higher performance
@@ -139,7 +137,6 @@ mod tests {
   use super::*;
   use std::thread;
   use std::time::Duration;
-  use tokio::runtime::Runtime;
 
   #[test]
   fn sync_to_sync_blocking() {

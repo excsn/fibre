@@ -1,13 +1,13 @@
 use crate::async_util::AtomicWaker;
 use crate::error::{RecvError, TryRecvError};
 use crate::mpsc::block_queue::UnboundedBlockQueue;
-use crate::{sync_util, TrySendError};
+use crate::sync_util;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::task::{Context, Poll};
-use std::thread::{self, Thread};
+use std::thread::Thread;
 
 /// The shared state of the MPSC channel.
 pub(crate) struct MpscShared<T> {

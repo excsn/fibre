@@ -1,5 +1,3 @@
-// src/oneshot/core.rs
-
 use crate::async_util::AtomicWaker;
 use crate::error::{RecvError, TryRecvError, TrySendError}; // Assuming SendError is needed by Sender
 

@@ -1,7 +1,7 @@
-// src/encoders/pattern.rs
 use super::{util, EventFormatter};
 use crate::error::Result;
 use crate::model::LogEvent;
+
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::fmt::Write;

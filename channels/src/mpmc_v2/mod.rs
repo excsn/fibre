@@ -815,9 +815,8 @@ impl<T: Send> Drop for AsyncReceiver<T> {
 mod tests {
   use super::*;
   use std::future::Future;
-  use std::pin::Pin;
   use std::sync::Arc;
-  use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+  use std::task::{Context, RawWaker, RawWakerVTable, Waker};
   use std::thread;
   use std::time::Duration;
 
@@ -870,11 +869,6 @@ mod tests {
 
   #[test]
   fn test_mpmc_v2_async_waker_collision_deadlock() {
-    use super::*;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
     fn dummy_waker() -> Waker {
       unsafe fn clone(_: *const ()) -> RawWaker {
         RawWaker::new(std::ptr::null(), &VTABLE)
@@ -886,7 +880,7 @@ mod tests {
       unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
     }
 
-    let (tx, rx) = bounded_async::<i32>(0);
+    let (_tx, rx) = bounded_async::<i32>(0);
     let rx_clone = rx.clone();
 
     let mut fut1 = Box::pin(rx.recv());

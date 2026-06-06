@@ -1,34 +1,29 @@
-// src/error.rs
-
 use core::fmt;
 
 // Helper macro to avoid boilerplate for into_inner and Display/Error impls
 macro_rules! impl_error_with_inner {
-    ($name:ident, $inner_ty_param:ident, $inner_concrete_ty:ty, $($variant:ident($message:expr)),+ $(,)?) => {
-        impl<$inner_ty_param> $name<$inner_ty_param> {
-            /// Consumes the error, returning the inner value.
-            #[inline]
-            pub fn into_inner(self) -> $inner_ty_param { // Use the generic type parameter here
-                match self {
-                    $( $name::$variant(v) => v, )+
-                }
-            }
+  ($name:ident, $inner_ty_param:ident, $inner_concrete_ty:ty, $($variant:ident($message:expr)),+ $(,)?) => {
+    impl<$inner_ty_param> $name<$inner_ty_param> {
+      /// Consumes the error, returning the inner value.
+      #[inline]
+      pub fn into_inner(self) -> $inner_ty_param { // Use the generic type parameter here
+        match self {
+          $( $name::$variant(v) => v, )+
         }
+      }
+    }
 
-        impl<$inner_ty_param> fmt::Display for $name<$inner_ty_param> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                match self {
-                    $( $name::$variant(_) => f.write_str($message), )+
-                }
-            }
+    impl<$inner_ty_param> fmt::Display for $name<$inner_ty_param> {
+      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+          $( $name::$variant(_) => f.write_str($message), )+
         }
+      }
+    }
 
-        // Implement Error for the concrete type (e.g. TrySendError<T>)
-        // if T: Debug. If T is not part of the error message or source,
-        // we might not need T: Debug for the Error trait itself.
-        // Let's make it conditional on $inner_ty_param: fmt::Debug for now.
-        impl<$inner_ty_param: fmt::Debug> std::error::Error for $name<$inner_ty_param> {}
-    };
+    // Implement Error for the concrete type (e.g. TrySendError<T>)
+    impl<$inner_ty_param: fmt::Debug> std::error::Error for $name<$inner_ty_param> {}
+  };
 }
 
 /// Error returned by `try_send` operations on a channel when the operation
@@ -70,46 +65,41 @@ impl<T> fmt::Debug for TrySendError<T> {
 
 // Redefine macro slightly for clarity
 macro_rules! impl_error_for_enum_with_inner {
-    (
-        $enum_name:ident < $generic_param:ident >, // e.g., TrySendError<T>
-        $($variant:ident ( $message:expr ) ),+ // e.g., Full("message")
-        $(,)?
-    ) => {
-        // Impl methods on MyError<T>
-        impl<$generic_param> $enum_name<$generic_param> {
-            #[inline]
-            pub fn into_inner(self) -> $generic_param {
-                match self {
-                    $( $enum_name::$variant(v) => v, )+
-                }
-            }
+  (
+    $enum_name:ident < $generic_param:ident >, // e.g., TrySendError<T>
+    $($variant:ident ( $message:expr ) ),+ // e.g., Full("message")
+    $(,)?
+  ) => {
+    // Impl methods on MyError<T>
+    impl<$generic_param> $enum_name<$generic_param> {
+      #[inline]
+      pub fn into_inner(self) -> $generic_param {
+        match self {
+          $( $enum_name::$variant(v) => v, )+
         }
+      }
+    }
 
-        // Impl Display for MyError<T>
-        impl<$generic_param> fmt::Display for $enum_name<$generic_param> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                match self {
-                    $( $enum_name::$variant(_) => f.write_str($message), )+
-                }
-            }
+    // Impl Display for MyError<T>
+    impl<$generic_param> fmt::Display for $enum_name<$generic_param> {
+      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+          $( $enum_name::$variant(_) => f.write_str($message), )+
         }
+      }
+    }
 
-        // Impl std::error::Error for MyError<T> where T: Debug
-        impl<$generic_param: fmt::Debug> std::error::Error for $enum_name<$generic_param> {}
-    };
+    // Impl std::error::Error for MyError<T> where T: Debug
+    impl<$generic_param: fmt::Debug> std::error::Error for $enum_name<$generic_param> {}
+  };
 }
 
 impl_error_for_enum_with_inner!(
-  TrySendError<T>, // This captures the enum name and its generic parameter
+  TrySendError<T>,
   Full("channel full"),
   Closed("channel closed"),
   Sent("channel already sent a value")
 );
-
-// ... (rest of the error types remain the same) ...
-// The other error types (SendError, TryRecvError, RecvError, CloseError) do not take a generic <T>
-// that holds the value, so they don't need this specific macro. They can have their
-// Display and Error traits implemented directly.
 
 /// Error returned by `send` operations that can block or are part of async operations.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -139,7 +129,9 @@ impl fmt::Display for TryRecvError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
       TryRecvError::Empty => write!(f, "channel empty"),
-      TryRecvError::Disconnected => write!(f, "channel disconnected (empty and all senders dropped)"),
+      TryRecvError::Disconnected => {
+        write!(f, "channel disconnected (empty and all senders dropped)")
+      }
     }
   }
 }

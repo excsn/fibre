@@ -192,7 +192,7 @@ impl<T> UnboundedBlockQueue<T> {
     unsafe {
       let tail_arc_ptr = self.tail.get(); // *mut Arc<Block<T>>
       let cursor_ptr = self.tail_cursor.get();
-      let mut cursor = *cursor_ptr;
+      let cursor = *cursor_ptr;
 
       // Check if we reached the end of the current block
       if cursor == BLOCK_CAPACITY {
@@ -538,10 +538,10 @@ mod tests {
     for i in 0..NUM_PRODUCERS {
       let q = q.clone();
       handles.push(thread::spawn(move || {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut cache = None;
         for _ in 0..NUM_OPS_PER_PRODUCER {
-          if rng.gen_bool(0.01) {
+          if rng.random_bool(0.01) {
             thread::yield_now();
           }
           q.push(i, &mut cache); // Push producer ID

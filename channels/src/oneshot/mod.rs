@@ -1,5 +1,3 @@
-// src/oneshot/mod.rs
-
 //! A oneshot channel for sending a single value between asynchronous tasks
 //! or synchronous and asynchronous code.
 //!

@@ -1,5 +1,3 @@
-// src/spsc/mod.rs
-
 //! Single-Sender, Single-Receiver (SPSC) channels.
 //!
 //! These channels are optimized for the case where there is only one sender (producer)

@@ -1,4 +1,3 @@
-// src/subscriber/dispatch.rs
 // Defines the primary Layer that dispatches events to AppenderActors.
 
 use crate::{

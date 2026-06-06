@@ -811,4 +811,31 @@ mod tests {
     assert!(p.is_closed());
     assert_eq!(p.send(1).await, Err(SendError::Closed));
   }
+
+  #[cfg(not(miri))]
+  #[tokio::test]
+  async fn async_sender_unblocks_on_consumer_drop() {
+    let (p, c) = bounded_async(1);
+    // Fill the channel capacity
+    p.send(1).await.unwrap();
+
+    let handle = tokio::spawn(async move {
+      // This send should block (await)
+      p.send(2).await
+    });
+
+    // Give the sender task some time to yield and register
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!handle.is_finished(), "Sender task should be blocked");
+
+    // Drop the consumer to trigger unblocking
+    drop(c);
+
+    let res = handle.await.expect("Sender task panicked");
+    assert!(
+      matches!(res, Err(SendError::Closed)),
+      "Expected Err(SendError::Closed), got {:?}",
+      res
+    );
+  }
 }

@@ -1,11 +1,8 @@
-// tests/topic_spmc_async.rs
-
 mod common;
 use common::*;
 
-use fibre::error::{RecvError, SendError, TryRecvError};
+use fibre::error::{RecvError, SendError};
 use fibre::spmc::topic as spmc_topic;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 use tokio::time::timeout;

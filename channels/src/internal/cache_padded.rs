@@ -1,5 +1,3 @@
-// src/internal/cache_padded.rs
-
 //! Utility for cache line padding.
 
 use core::fmt;

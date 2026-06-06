@@ -1,25 +1,20 @@
 use crate::async_util::AtomicWaker;
-use crate::error::{RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError};
+use crate::error::RecvError;
 use crate::internal::cache_padded::CachePadded;
 use crate::sync_util;
 
 use core::task::{Context, Poll};
 use std::cell::UnsafeCell;
 use std::fmt;
-use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{self, AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::thread::Thread;
 
 pub(crate) const PARK_IDLE: u8 = 0;
 pub(crate) const PARK_PARKED: u8 = 1;
 pub(crate) const PARK_CONSUMING: u8 = 2;
-use std::sync::Arc;
-use std::thread::{self, Thread};
-use std::time::{Duration, Instant};
 
 /// Internal shared state for the bounded SPSC channel, supporting both sync and async waiters.
-// This struct is pub(crate) so it can be constructed directly by bounded_async.rs and in tests.
-// Fields are pub(crate) for access within the fibre::spsc module.
 pub struct SpscShared<T> {
   pub(crate) buffer: Box<[CachePadded<UnsafeCell<MaybeUninit<T>>>]>,
   pub(crate) capacity: usize,

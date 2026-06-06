@@ -19,7 +19,7 @@ mod spmc_deadlock_tests {
       iteration_idx, num_consumers, capacity, items
     );
 
-    let (mut tx, rx_orig) = spmc::bounded(capacity);
+    let (tx, rx_orig) = spmc::bounded(capacity);
     let barrier = Arc::new(Barrier::new(num_consumers + 1));
     let mut consumer_handles = Vec::new();
 
@@ -31,7 +31,7 @@ mod spmc_deadlock_tests {
     );
 
     for i in 0..num_consumers {
-      let mut rx_clone = rx_orig.clone();
+      let rx_clone = rx_orig.clone();
       let barrier_clone = Arc::clone(&barrier);
       let completed_flag = Arc::clone(&consumers_completed_work[i]);
       let consumer_name = format!("C{}-Iter{}", i, iteration_idx);
@@ -116,8 +116,8 @@ mod spmc_deadlock_tests {
       }
     }
 
-    let (lock, cvar) = &*timeout_signal;
-    let mut timed_out = *lock.lock().unwrap();
+    let (lock, _cvar) = &*timeout_signal;
+    let timed_out = *lock.lock().unwrap();
     if timed_out {
       // If the timeout thread already signaled
       println!(

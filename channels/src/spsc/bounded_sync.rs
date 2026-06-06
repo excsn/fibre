@@ -142,7 +142,9 @@ impl<T: Send> BoundedSyncSender<T> {
               .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
               .is_ok()
             {
-              unsafe { *self.shared.producer_thread_sync.get() = None; }
+              unsafe {
+                *self.shared.producer_thread_sync.get() = None;
+              }
             } else {
               // Consumer won (PARKED→CONSUMING): wait until take() finishes (IDLE).
               // The consumer will call unpark(), depositing a token we absorb next park().
@@ -177,7 +179,9 @@ impl<T: Send> BoundedSyncSender<T> {
                   .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
                   .is_ok()
                 {
-                  unsafe { *self.shared.producer_thread_sync.get() = None; }
+                  unsafe {
+                    *self.shared.producer_thread_sync.get() = None;
+                  }
                   break;
                 }
                 // CAS lost: consumer just transitioned PARKED→CONSUMING; fall to CONSUMING arm.
@@ -363,7 +367,9 @@ impl<T: Send> BoundedSyncReceiver<T> {
               .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
               .is_ok()
             {
-              unsafe { *self.shared.consumer_thread_sync.get() = None; }
+              unsafe {
+                *self.shared.consumer_thread_sync.get() = None;
+              }
             } else {
               while self
                 .shared
@@ -391,7 +397,9 @@ impl<T: Send> BoundedSyncReceiver<T> {
                   .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
                   .is_ok()
                 {
-                  unsafe { *self.shared.consumer_thread_sync.get() = None; }
+                  unsafe {
+                    *self.shared.consumer_thread_sync.get() = None;
+                  }
                   break;
                 }
               }
@@ -444,7 +452,9 @@ impl<T: Send> BoundedSyncReceiver<T> {
               .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
               .is_ok()
             {
-              unsafe { *self.shared.consumer_thread_sync.get() = None; }
+              unsafe {
+                *self.shared.consumer_thread_sync.get() = None;
+              }
             } else {
               while self
                 .shared
@@ -476,7 +486,9 @@ impl<T: Send> BoundedSyncReceiver<T> {
                   .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
                   .is_ok()
                 {
-                  unsafe { *self.shared.consumer_thread_sync.get() = None; }
+                  unsafe {
+                    *self.shared.consumer_thread_sync.get() = None;
+                  }
                   break;
                 }
               }
@@ -907,5 +919,31 @@ mod tests {
     // Sender should see the channel is now closed
     assert!(p.is_closed());
     assert_eq!(p.send(1), Err(SendError::Closed));
+  }
+
+  #[test]
+  fn sync_sender_unblocks_on_consumer_drop() {
+    let (p, c) = bounded_sync(1);
+    // Fill the channel capacity
+    p.send(1).unwrap();
+
+    let handle = thread::spawn(move || {
+      // This send should block
+      p.send(2)
+    });
+
+    // Give the sender thread some time to park
+    thread::sleep(Duration::from_millis(50));
+    assert!(!handle.is_finished(), "Sender thread should be blocked");
+
+    // Drop the consumer to trigger unblocking
+    drop(c);
+
+    let res = handle.join().expect("Sender thread panicked");
+    assert!(
+      matches!(res, Err(SendError::Closed)),
+      "Expected Err(SendError::Closed), got {:?}",
+      res
+    );
   }
 }

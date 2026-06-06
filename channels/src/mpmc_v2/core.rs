@@ -1,5 +1,3 @@
-// src/mpmc_v2/core.rs
-
 //! The core shared data structures and logic for the MPMC channel.
 
 use crate::error::{TryRecvError, TrySendError};

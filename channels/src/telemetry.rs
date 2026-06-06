@@ -1,5 +1,3 @@
-// src/telemetry.rs
-
 #[cfg(feature = "fibre_logging")]
 pub mod enabled {
   use std::collections::HashMap;

@@ -9,7 +9,6 @@ use futures_util::stream::Stream;
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::future::Future;
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};

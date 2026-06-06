@@ -1,12 +1,10 @@
-// src/mpmc_v2/async_impl.rs
-
 //! Implementation of the asynchronous Future-based send and receive logic.
 
 use futures_core::Stream;
 
 use super::core::{AsyncWaiter, WaiterData, STATE_CANCELLED, STATE_WAITING};
 use super::{AsyncReceiver, AsyncSender};
-use crate::error::{SendError, TryRecvError, TrySendError};
+use crate::error::{SendError, TrySendError};
 use crate::RecvError;
 
 use core::marker::PhantomPinned;

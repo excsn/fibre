@@ -1,5 +1,3 @@
-// src/mpmc_v2/sync_impl.rs
-
 //! Implementation of the synchronous, blocking send and receive logic for the MPMC channel.
 
 use super::core::{SyncWaiter, WaiterData, STATE_CANCELLED, STATE_SUCCESS, STATE_WAITING};
