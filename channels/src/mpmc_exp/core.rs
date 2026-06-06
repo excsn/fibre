@@ -27,7 +27,6 @@ use core::task::{Context, Poll};
 use std::collections::VecDeque;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::task::Waker;
 use std::thread::Thread;
 

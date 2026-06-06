@@ -3,7 +3,7 @@ use std::marker::{PhantomData, PhantomPinned};
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicBool;
 use std::task::Waker;
-use std::thread::{self, Thread};
+use std::thread::Thread;
 
 pub(crate) trait LinkedNode: Sized {
   fn prev(&self) -> Option<NonNull<Self>>;

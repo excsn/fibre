@@ -4,7 +4,7 @@ use futures_core::Stream;
 
 use super::core::AsyncSenderWaiter;
 use super::{AsyncReceiver, AsyncSender};
-use crate::error::{SendError, TryRecvError, TrySendError};
+use crate::error::{SendError, TrySendError};
 use crate::RecvError;
 
 use core::marker::PhantomPinned;
