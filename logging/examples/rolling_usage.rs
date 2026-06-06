@@ -1,5 +1,3 @@
-// examples/rolling_usage.rs
-
 use log::{info, trace};
 use std::path::Path;
 use std::thread;

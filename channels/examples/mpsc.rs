@@ -1,5 +1,4 @@
-// examples/mpsc_examples.rs
-use fibre::error::{RecvError, SendError};
+use fibre::error::RecvError;
 use fibre::mpsc;
 use std::{
   sync::atomic::{AtomicUsize, Ordering},
@@ -13,7 +12,7 @@ mod common_async;
 fn main() {
   println!("--- MPSC: Sync Senders, Sync Receiver ---");
   {
-    let (tx, mut rx) = mpsc::unbounded_v1::<String>();
+    let (tx, rx) = mpsc::unbounded_v1::<String>();
     let num_producers = 3;
     let messages_per_producer = 2;
     let total_messages = num_producers * messages_per_producer;
@@ -56,7 +55,7 @@ fn main() {
 
   println!("\n--- MPSC: Async Senders, Async Receiver ---");
   common_async::run_async(async {
-    let (tx, mut rx) = mpsc::unbounded_v1_async::<String>();
+    let (tx, rx) = mpsc::unbounded_v1_async::<String>();
     let num_producers = 3;
     let messages_per_producer = 2;
     let total_messages = num_producers * messages_per_producer;
@@ -96,7 +95,7 @@ fn main() {
 
   println!("\n--- MPSC: Sync Senders (Threads) to Async Receiver ---");
   common_async::run_async(async {
-    let (tx_async, mut rx_async) = mpsc::unbounded_v1_async::<String>(); // Start with async channel
+    let (tx_async, rx_async) = mpsc::unbounded_v1_async::<String>(); // Start with async channel
     let num_producers = 2;
 
     for i in 0..num_producers {
@@ -121,7 +120,7 @@ fn main() {
   println!("\n--- MPSC: Async Senders to Sync Receiver ---");
   {
     let (tx_async, rx_async) = mpsc::unbounded_v1_async::<String>();
-    let mut rx_sync = rx_async.to_sync(); // Convert receiver
+    let rx_sync = rx_async.to_sync();
     let num_producers = 2;
 
     for i in 0..num_producers {

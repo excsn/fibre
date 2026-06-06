@@ -1,5 +1,3 @@
-// examples/tracing_usage.rs
-
 use std::path::Path;
 use std::thread;
 use std::time::Duration;

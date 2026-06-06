@@ -1,4 +1,3 @@
-// examples/common_async/mod.rs
 use std::future::Future;
 use tokio::runtime::Runtime;
 

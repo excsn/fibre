@@ -2,14 +2,14 @@ use fibre::error::RecvError;
 use fibre::spsc;
 use std::thread;
 
-mod common_async; // Assuming this helper exists
+mod common_async;
 
 fn main() {
   let capacity = 2;
 
   println!("--- SPSC: Sync Sender, Sync Receiver ---");
   {
-    let (mut tx, mut rx) = spsc::bounded_sync::<String>(capacity);
+    let (tx, rx) = spsc::bounded_sync::<String>(capacity);
 
     let sender_handle = thread::spawn(move || {
       for i in 0..5 {
@@ -45,7 +45,7 @@ fn main() {
 
   println!("\n--- SPSC: Async Sender, Async Receiver ---");
   common_async::run_async(async {
-    let (tx, mut rx) = spsc::bounded_async::<String>(capacity);
+    let (tx, rx) = spsc::bounded_async::<String>(capacity);
 
     tokio::spawn(async move {
       // tx is moved here
@@ -79,10 +79,10 @@ fn main() {
   println!("\n--- SPSC: Sync Sender (Thread) to Async Receiver ---");
   common_async::run_async(async {
     // Start with a sync channel
-    let (mut tx_s, rx_s) = spsc::bounded_sync::<String>(capacity);
+    let (tx_s, rx_s) = spsc::bounded_sync::<String>(capacity);
 
     // Convert the receiver to async
-    let mut rx_a = rx_s.to_async();
+    let rx_a = rx_s.to_async();
     // tx_s remains sync and is moved to the thread
 
     let sender_thread = thread::spawn(move || {
@@ -123,7 +123,7 @@ fn main() {
     let (tx_a, rx_a) = spsc::bounded_async::<String>(capacity);
 
     // Convert the receiver to sync
-    let mut rx_s = rx_a.to_sync();
+    let rx_s = rx_a.to_sync();
     // tx_a remains async and is moved to the tokio task
 
     // Run the async producer in a separate OS thread with its own runtime

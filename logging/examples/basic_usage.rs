@@ -1,6 +1,4 @@
-// examples/basic_usage.rs
-
-use log::{debug, error, info, warn}; // Using the `log` facade
+use log::{debug, error, info, warn};
 use std::path::Path;
 
 // A module to simulate our application's logic.

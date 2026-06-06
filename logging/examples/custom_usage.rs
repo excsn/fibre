@@ -1,5 +1,3 @@
-// examples/custom_usage.rs
-
 use fibre_logging::{init, InternalErrorSource};
 use log::info;
 use std::fs;
