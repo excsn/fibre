@@ -64,6 +64,8 @@ struct GateInternal {
   permits: usize,
   /// A unified, fair (FIFO) queue of waiting threads and tasks.
   waiters: VecDeque<Waiter>,
+  /// Set to true when the gate is closed; subsequent acquisitions return immediately.
+  is_closed: bool,
 }
 
 /// A clonable handle to a hybrid sync/async semaphore.
@@ -91,6 +93,7 @@ impl CapacityGate {
       internal: Arc::new(Mutex::new(GateInternal {
         permits: capacity,
         waiters: VecDeque::new(),
+        is_closed: false,
       })),
     }
   }
@@ -110,6 +113,9 @@ impl CapacityGate {
     // Slow path, must lock and wait.
     let mut internal = self.internal.lock();
     loop {
+      if internal.is_closed {
+        return;
+      }
       // Check for a permit. This is safe from stealing because `try_acquire`
       // will fail for new arrivals if we are in the waiters queue.
       if internal.permits > 0 {
@@ -142,6 +148,9 @@ impl CapacityGate {
   /// is waiting. This gives waiters priority and prevents permit stealing.
   pub fn try_acquire(&self) -> bool {
     let mut internal = self.internal.lock();
+    if internal.is_closed {
+      return true;
+    }
     if internal.waiters.is_empty() && internal.permits > 0 {
       internal.permits -= 1;
       true
@@ -157,8 +166,11 @@ impl CapacityGate {
   /// relying on a fragile per-permit daisy-chain.
   pub fn close(&self) {
     let mut internal = self.internal.lock();
-    while let Some(waiter) = internal.waiters.pop_front() {
-      waiter.wake();
+    if !internal.is_closed {
+      internal.is_closed = true;
+      while let Some(waiter) = internal.waiters.pop_front() {
+        waiter.wake();
+      }
     }
   }
 
@@ -218,6 +230,11 @@ impl<'a> Future for AcquireFuture<'a> {
     }
 
     let mut internal = this.gate.internal.lock();
+
+    if internal.is_closed {
+      this.is_registered = false;
+      return Poll::Ready(());
+    }
 
     // Re-check under lock in case release() raced with our fast-path check.
     if this.state.load(Ordering::Acquire) == STATE_SUCCESS {
