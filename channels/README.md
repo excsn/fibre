@@ -83,6 +83,7 @@ Performance is a primary goal. Fibre uses proven, high-performance algorithms fo
 
 *   **Explicit Lifecycle Control:** All channel handles provide an idempotent `close()` method as an explicit alternative to `drop`, giving developers fine-grained control over the channel lifecycle.
 *   **Clear Error Handling & Drop Safety:** Descriptive error types (`TrySendError<T>`, `RecvError`, `CloseError`) allow for value recovery and clear error reporting. Channels correctly signal disconnection when handles are dropped or explicitly closed, and any buffered items are properly deallocated.
+*   **Defined Disconnect Semantics:** Fibre follows a consistent two-sided disconnection contract across all channel types. When all **senders** are dropped or closed, any items already buffered in the channel remain readable; receivers will drain them before observing `Disconnected`. When a **receiver** is dropped or explicitly closed, that handle immediately returns `Disconnected` on any subsequent receive call — it does not attempt to drain remaining buffered items. This distinction is important for graceful shutdown: drop your senders to let receivers drain cleanly, rather than closing receivers while items are still in flight.
 *   **Thread Safety:** Each channel type enforces appropriate `Send` and `Sync` bounds, ensuring correct concurrent usage. For example, SPSC and MPSC consumer handles are `!Sync` as they are designed for single-threaded consumption.
 
 ## Installation

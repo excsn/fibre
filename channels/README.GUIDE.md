@@ -32,6 +32,27 @@ Fibre's main philosophy is to provide the right tool for the job. Instead of usi
 *   **MPMC (Multi-Producer, Multi-Consumer):** The most flexible pattern, allowing many-to-many communication. Implemented with a `parking_lot::Mutex` for robust state management and support for mixed sync/async waiters. Supports bounded (including rendezvous) and "unbounded" (memory-limited) capacities. Requires `T: Send`.
 *   **Oneshot:** A channel for sending a single value, once, from one of potentially many senders to a single receiver. Requires `T: Send`.
 
+### Disconnect Semantics
+
+Fibre enforces a consistent disconnection contract across all channel types, with different behaviour depending on which *side* of the channel is closed.
+
+**Sender-side close (graceful drain):** When all senders for a channel are dropped or explicitly closed, the channel becomes "disconnected." Any items already buffered at that point are still readable. Receivers will drain those items normally and only observe `Disconnected` (or `None` on a `Stream`) once the buffer is empty.
+
+```rust
+let (tx, rx) = fibre::mpmc::bounded(4);
+tx.send(1).unwrap();
+tx.send(2).unwrap();
+drop(tx); // channel is now disconnected, but 1 and 2 are still buffered
+
+assert_eq!(rx.try_recv(), Ok(1));  // still drains
+assert_eq!(rx.try_recv(), Ok(2));  // still drains
+assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected)); // now empty
+```
+
+**Receiver-side close (immediate stop):** When a receiver handle is dropped or explicitly closed, that handle immediately returns `Disconnected` on any subsequent `recv` or `try_recv` call — it does **not** drain remaining buffered items. Other receiver handles on the same channel (for channel types that support cloning) are unaffected.
+
+The practical implication for graceful shutdown: **close or drop your senders** to allow receivers to drain the remaining work cleanly. Closing a receiver while items are still in the buffer abandons those items.
+
 ### Hybrid Sync/Async Model
 
 The `mpmc`, `mpsc`, `spmc`, and `spsc` channels support full interoperability between synchronous and asynchronous code. Every sender and receiver handle has a `to_sync()` or `to_async()` method that performs a zero-cost conversion. This allows you to, for example, have producers running in standard OS threads (`std::thread`) sending data to a consumer running in a Tokio task, all on the same channel.
@@ -348,7 +369,7 @@ Fibre uses a clear set of error enums to signal the result of channel operations
 
 *   **`TryRecvError`:** Returned from `try_recv`.
     *   `Empty`: The channel is currently empty but not disconnected.
-    *   `Disconnected`: The channel is empty and all senders have been dropped.
+    *   `Disconnected`: Either all senders have been dropped and the buffer is fully drained, or this receiver handle has been explicitly closed.
 
 *   **`RecvError`:** Returned from blocking/async `recv`.
     *   `Disconnected`: The channel is empty and all senders have been dropped.
