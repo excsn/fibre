@@ -1,7 +1,10 @@
 //! The core implementation and synchronous API for the bounded MPSC channel.
 
 use crate::coord::CapacityGate;
-use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
+use crate::error::{
+  BatchSendErrorReason, CloseError, RecvError, SendBatchError, SendError, TryRecvError,
+  TrySendBatchError, TrySendError,
+};
 use crate::mpsc::unbounded_v2;
 use crate::{sync_util, RecvErrorTimeout};
 
@@ -34,6 +37,43 @@ impl Drop for Permit {
       self.gate.release();
     }
   }
+}
+
+impl Permit {
+  /// Defuses the RAII drop and returns the parts, so batch receive can issue
+  /// a single `gate.release_many(k)` instead of `k` individually locked
+  /// `release()` calls.
+  pub(crate) fn into_parts(self) -> (Arc<CapacityGate>, bool /* is_rendezvous */) {
+    let this = std::mem::ManuallyDrop::new(self);
+    // SAFETY: `this` is wrapped in ManuallyDrop, so `Permit::drop` never runs
+    // and the field is read out exactly once.
+    let gate = unsafe { std::ptr::read(&this.gate) };
+    (gate, this.is_rendezvous)
+  }
+}
+
+/// Unwraps a batch of received `BoundedMessage`s: appends the values to `out`
+/// and returns all non-rendezvous permits to the gate in a single bulk
+/// release. Returns the number of values appended.
+pub(crate) fn unwrap_batch_messages<T: Send>(
+  gate: &CapacityGate,
+  msgs: Vec<BoundedMessage<T>>,
+  out: &mut Vec<T>,
+) -> usize {
+  let k = msgs.len();
+  let mut to_release = 0usize;
+  out.reserve(k);
+  for msg in msgs {
+    out.push(msg.value);
+    let (_gate, is_rendezvous) = msg._permit.into_parts();
+    if !is_rendezvous {
+      to_release += 1;
+    }
+  }
+  if to_release > 0 {
+    gate.release_many(to_release);
+  }
+  k
 }
 
 /// The internal message type that travels through the underlying unbounded channel.
@@ -134,6 +174,163 @@ impl<T: Send> Sender<T> {
     }
 
     Ok(())
+  }
+
+  /// Attempts to send a batch without blocking, taking ownership of the
+  /// vector. Acquires up to `items.len()` permits from the capacity gate in
+  /// one call, sends that many items, and reports the rest as unsent.
+  ///
+  /// `Ok(n)` means every item was sent. On a partial send, returns
+  /// [`TrySendBatchError`] with the count sent and the unsent remainder
+  /// (`reason: Full` if the channel ran out of capacity, `Closed` if the
+  /// receiver dropped before anything was sent).
+  pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
+    let total = items.len();
+    if total == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed)
+      || self.shared.channel.receiver_dropped.load(Ordering::Acquire)
+    {
+      return Err(TrySendBatchError {
+        sent: 0,
+        unsent: items,
+        reason: BatchSendErrorReason::Closed,
+      });
+    }
+
+    let k = self.shared.gate.try_acquire_many(total);
+    if k == 0 {
+      return Err(TrySendBatchError {
+        sent: 0,
+        unsent: items,
+        reason: BatchSendErrorReason::Full,
+      });
+    }
+    // A closed gate grants permits immediately so callers can observe
+    // closure; re-check before consuming any item.
+    if self.shared.channel.receiver_dropped.load(Ordering::Acquire) {
+      return Err(TrySendBatchError {
+        sent: 0,
+        unsent: items,
+        reason: BatchSendErrorReason::Closed,
+      });
+    }
+
+    let mut iter = items.into_iter();
+    self.push_batch_messages(&mut iter, k);
+    if k == total {
+      Ok(total)
+    } else {
+      Err(TrySendBatchError {
+        sent: k,
+        unsent: iter.collect(),
+        reason: BatchSendErrorReason::Full,
+      })
+    }
+  }
+
+  /// Sends a batch, blocking whenever the channel is full, until every item
+  /// is sent or the receiver drops. Permits are acquired in bulk; each chunk
+  /// is written with a single queue-length update and a single consumer wake.
+  pub fn send_batch(&self, items: Vec<T>) -> Result<usize, SendBatchError<T>> {
+    let total = items.len();
+    if total == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed)
+      || self.shared.channel.receiver_dropped.load(Ordering::Acquire)
+    {
+      return Err(SendBatchError {
+        sent: 0,
+        unsent: items,
+      });
+    }
+
+    let mut iter = items.into_iter();
+    let mut sent = 0;
+    while sent < total {
+      let k = self.shared.gate.acquire_many_sync(total - sent);
+      // A closed gate grants `max` immediately; detect receiver drop here.
+      if self.shared.channel.receiver_dropped.load(Ordering::Acquire) {
+        return Err(SendBatchError {
+          sent,
+          unsent: iter.collect(),
+        });
+      }
+      self.push_batch_messages(&mut iter, k);
+      sent += k;
+    }
+    Ok(total)
+  }
+
+  /// Attempts to send a batch in place without blocking, draining sent items
+  /// from the front of `items`. Returns `Ok(k)` with the count sent (`0` if
+  /// no capacity was available); `Err(SendError::Closed)` only if the channel
+  /// is closed and zero items were sent by this call.
+  pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+    if items.is_empty() {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed)
+      || self.shared.channel.receiver_dropped.load(Ordering::Acquire)
+    {
+      return Err(SendError::Closed);
+    }
+    let k = self.shared.gate.try_acquire_many(items.len());
+    if k == 0 {
+      return Ok(0);
+    }
+    if self.shared.channel.receiver_dropped.load(Ordering::Acquire) {
+      return Err(SendError::Closed);
+    }
+    let mut drain = items.drain(..k);
+    self.push_batch_messages(&mut drain, k);
+    drop(drain);
+    Ok(k)
+  }
+
+  /// Sends a batch in place, blocking whenever the channel is full, draining
+  /// sent items from the front of `items`. On `Err(SendError::Closed)`, the
+  /// unsent items remain in `items`.
+  pub fn send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+    if items.is_empty() {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed)
+      || self.shared.channel.receiver_dropped.load(Ordering::Acquire)
+    {
+      return Err(SendError::Closed);
+    }
+    let mut sent = 0;
+    while !items.is_empty() {
+      let k = self.shared.gate.acquire_many_sync(items.len());
+      if self.shared.channel.receiver_dropped.load(Ordering::Acquire) {
+        return Err(SendError::Closed);
+      }
+      let mut drain = items.drain(..k);
+      self.push_batch_messages(&mut drain, k);
+      drop(drain);
+      sent += k;
+    }
+    Ok(sent)
+  }
+
+  /// Wraps the next `k` items from `iter` in `BoundedMessage`s (each carrying
+  /// its own RAII permit) and pushes them through the underlying unbounded
+  /// channel with one length update and one consumer wake.
+  fn push_batch_messages(&self, iter: &mut impl Iterator<Item = T>, k: usize) {
+    let is_rendezvous = self.capacity() == 0;
+    let shared = &self.shared;
+    let mut msg_iter = iter.by_ref().map(|value| BoundedMessage {
+      value,
+      _permit: Permit {
+        gate: shared.gate.clone(),
+        is_rendezvous,
+      },
+    });
+    let mut cache = None;
+    unbounded_v2::send_batch_internal(&shared.channel, &mut msg_iter, k, &mut cache);
   }
 
   /// Closes this sender handle.
@@ -393,6 +590,121 @@ impl<T: Send> Receiver<T> {
       self.shared.gate.release();
     }
     self.shared.channel.try_recv_internal().map(|msg| msg.value)
+  }
+
+  // Batch counterpart of `try_recv_internal_no_release`: drains up to `max`
+  // messages, unwraps the values into `out`, and returns the permits in one
+  // bulk release.
+  fn try_recv_batch_internal_no_release(
+    &self,
+    out: &mut Vec<T>,
+    max: usize,
+  ) -> Result<usize, TryRecvError> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TryRecvError::Disconnected);
+    }
+    let mut msgs = Vec::new();
+    let k = self.shared.channel.try_recv_batch_internal(&mut msgs, max)?;
+    debug_assert_eq!(k, msgs.len());
+    Ok(unwrap_batch_messages(&self.shared.gate, msgs, out))
+  }
+
+  /// Attempts to receive up to `max` items without blocking. Returns 1..=max
+  /// items in FIFO order, `Err(TryRecvError::Empty)` if none are available,
+  /// or `Err(TryRecvError::Disconnected)` if the channel is empty and all
+  /// senders dropped. Capacity permits are returned to the gate in a single
+  /// bulk release for the whole batch.
+  pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError> {
+    let mut out = Vec::new();
+    self.try_recv_batch_mut(&mut out, max)?;
+    Ok(out)
+  }
+
+  /// Attempts to receive up to `max` items without blocking, appending them
+  /// to the end of `out`. Returns the number of items appended.
+  pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
+    if max == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TryRecvError::Disconnected);
+    }
+    // For rendezvous, release a permit to signal readiness (same as try_recv).
+    if self.capacity() == 0 {
+      self.shared.gate.release();
+    }
+    self.try_recv_batch_internal_no_release(out, max)
+  }
+
+  /// Receives up to `max` items, blocking until at least one is available,
+  /// then draining up to `max` without further waiting. Returns between 1 and
+  /// `max` items in FIFO order.
+  pub fn recv_batch(&self, max: usize) -> Result<Vec<T>, RecvError> {
+    let mut out = Vec::new();
+    self.recv_batch_mut(&mut out, max)?;
+    Ok(out)
+  }
+
+  /// Receives up to `max` items, blocking until at least one is available,
+  /// appending them to the end of `out`. Returns the number appended.
+  pub fn recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError> {
+    if max == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(RecvError::Disconnected);
+    }
+
+    // For rendezvous channels, signal readiness once per call (same as `recv`).
+    if self.capacity() == 0 {
+      self.shared.gate.release();
+    }
+
+    loop {
+      match self.try_recv_batch_internal_no_release(out, max) {
+        Ok(k) => return Ok(k),
+        Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
+        Err(TryRecvError::Empty) => {}
+      }
+
+      // Same park protocol as `recv`.
+      let lf_shared = &self.shared.channel;
+      *lf_shared.consumer_thread.lock().unwrap() = Some(thread::current());
+      lf_shared.consumer_parked.store(true, Ordering::Release);
+
+      match self.try_recv_batch_internal_no_release(out, max) {
+        Ok(k) => {
+          if lf_shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *lf_shared.consumer_thread.lock().unwrap() = None;
+          }
+          return Ok(k);
+        }
+        Err(TryRecvError::Disconnected) => {
+          if lf_shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *lf_shared.consumer_thread.lock().unwrap() = None;
+          }
+          return Err(RecvError::Disconnected);
+        }
+        Err(TryRecvError::Empty) => {
+          sync_util::park_thread();
+          if lf_shared
+            .consumer_parked
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            *lf_shared.consumer_thread.lock().unwrap() = None;
+          }
+        }
+      }
+    }
   }
 
   /// Closes the receiving end of the channel.

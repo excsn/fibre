@@ -52,6 +52,10 @@ The following tables summarize the consistent API surface across all channel sen
 | `is_full()` | ✅ | ✅ (bounded) | ✅ | ❌ | ✅ | N/A |
 | `capacity()` | ✅ | ✅ (bounded) | ✅ | ❌ | ✅ | N/A |
 | `clone()` | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
+| `send_batch()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
+| `try_send_batch()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
+| `send_batch_mut()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
+| `try_send_batch_mut()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
 
 **Receiver API**
 
@@ -68,6 +72,14 @@ The following tables summarize the consistent API surface across all channel sen
 | `is_full()` | ✅ | ✅ (bounded) | ✅ | ❌ | ✅ | N/A |
 | `capacity()` | ✅ | ✅ (bounded) | ✅ | ✅ | ✅ | N/A |
 | `clone()` | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ |
+| `recv_batch()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
+| `try_recv_batch()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
+| `recv_batch_mut()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
+| `try_recv_batch_mut()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
+
+### Batch Operations
+
+Every core channel (SPSC, MPSC, SPMC, MPMC) offers a full batch API suite — `send_batch`, `try_send_batch`, `recv_batch`, `try_recv_batch` plus in-place `_mut` variants — that amortizes synchronization over the whole batch: a single atomic index update or lock acquisition, bulk capacity-permit handling, and coalesced wakeups. Batch operations have partial-progress semantics: by-value sends return the count sent and the unsent remainder on interruption (no owned value is ever silently dropped), and in-place variants drain sent items from the front of the caller's `Vec` (send) or append to it (receive). Blocking/async `recv_batch(max)` waits until at least one item is available, then drains up to `max` without further waiting.
 
 ### Performance-Oriented Design
 

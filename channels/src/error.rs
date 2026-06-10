@@ -161,6 +161,103 @@ impl fmt::Display for CloseError {
   }
 }
 
+/// The reason a batch send operation stopped before sending every item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchSendErrorReason {
+  /// The channel was full (or, for a rendezvous channel, no receiver was ready).
+  Full,
+  /// The channel is closed because all receivers have been dropped.
+  Closed,
+}
+
+/// Error returned by `try_send_batch` operations.
+///
+/// Carries partial-progress state: `sent` items were delivered to the channel
+/// before the operation stopped, and `unsent` holds the untouched remainder
+/// so no owned value is silently dropped.
+#[derive(PartialEq, Eq, Clone)]
+pub struct TrySendBatchError<T> {
+  /// The number of items successfully sent before the operation stopped.
+  pub sent: usize,
+  /// The items that were not sent, in their original order.
+  pub unsent: Vec<T>,
+  /// Why the batch stopped early.
+  pub reason: BatchSendErrorReason,
+}
+
+impl<T> TrySendBatchError<T> {
+  /// Consumes the error, returning the unsent items.
+  #[inline]
+  pub fn into_unsent(self) -> Vec<T> {
+    self.unsent
+  }
+}
+
+impl<T> fmt::Debug for TrySendBatchError<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("TrySendBatchError")
+      .field("sent", &self.sent)
+      .field("unsent", &self.unsent.len())
+      .field("reason", &self.reason)
+      .finish()
+  }
+}
+
+impl<T> fmt::Display for TrySendBatchError<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let total = self.sent + self.unsent.len();
+    match self.reason {
+      BatchSendErrorReason::Full => {
+        write!(f, "channel full after sending {} of {} items", self.sent, total)
+      }
+      BatchSendErrorReason::Closed => {
+        write!(f, "channel closed after sending {} of {} items", self.sent, total)
+      }
+    }
+  }
+}
+
+impl<T> std::error::Error for TrySendBatchError<T> {}
+
+/// Error returned by blocking and async `send_batch` operations.
+///
+/// The only failure cause is channel closure. Carries partial-progress state:
+/// `sent` items were delivered before closure was observed, and `unsent`
+/// holds the remainder.
+#[derive(PartialEq, Eq, Clone)]
+pub struct SendBatchError<T> {
+  /// The number of items successfully sent before the channel closed.
+  pub sent: usize,
+  /// The items that were not sent, in their original order.
+  pub unsent: Vec<T>,
+}
+
+impl<T> SendBatchError<T> {
+  /// Consumes the error, returning the unsent items.
+  #[inline]
+  pub fn into_unsent(self) -> Vec<T> {
+    self.unsent
+  }
+}
+
+impl<T> fmt::Debug for SendBatchError<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("SendBatchError")
+      .field("sent", &self.sent)
+      .field("unsent", &self.unsent.len())
+      .finish()
+  }
+}
+
+impl<T> fmt::Display for SendBatchError<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let total = self.sent + self.unsent.len();
+    write!(f, "channel closed after sending {} of {} items", self.sent, total)
+  }
+}
+
+impl<T> std::error::Error for SendBatchError<T> {}
+
 /// Error returned by `recv_timeout` operations.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RecvErrorTimeout {

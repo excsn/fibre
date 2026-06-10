@@ -150,6 +150,101 @@ impl<T> SpscShared<T> {
     self.producer_waker_async.wake();
   }
 
+  /// Producer-side capacity snapshot. Because there is exactly one producer,
+  /// the space can only grow between this call and a subsequent write.
+  #[inline]
+  pub(crate) fn available_space(&self) -> usize {
+    let head = self.head.load(Ordering::Relaxed);
+    let tail = self.tail.load(Ordering::Acquire);
+    self.capacity - self.current_len(head, tail)
+  }
+
+  /// Producer side: moves up to `limit` items from `iter` into the ring.
+  ///
+  /// Loads the tail once with Acquire, writes the items (split into at most
+  /// two index regions at the wrap point — slots are `CachePadded`, so each
+  /// region is a per-slot loop rather than a contiguous copy), then publishes
+  /// the entire batch with a single `head` store (Release) and a single
+  /// consumer wake. Returns the number of items written.
+  ///
+  /// Must only be called by the single producer.
+  pub(crate) fn write_batch<I: Iterator<Item = T>>(&self, iter: &mut I, limit: usize) -> usize {
+    if limit == 0 {
+      return 0;
+    }
+    let head = self.head.load(Ordering::Relaxed);
+    let tail = self.tail.load(Ordering::Acquire);
+    let space = self.capacity - self.current_len(head, tail);
+    let k = space.min(limit);
+    if k == 0 {
+      return 0;
+    }
+
+    let start_slot = head % self.capacity;
+    let first_region = (self.capacity - start_slot).min(k);
+    let mut written = 0;
+    for i in 0..first_region {
+      match iter.next() {
+        Some(item) => {
+          unsafe { (*self.buffer[start_slot + i].get()).write(item) };
+          written += 1;
+        }
+        None => break,
+      }
+    }
+    if written == first_region {
+      for i in 0..(k - first_region) {
+        match iter.next() {
+          Some(item) => {
+            unsafe { (*self.buffer[i].get()).write(item) };
+            written += 1;
+          }
+          None => break,
+        }
+      }
+    }
+
+    if written > 0 {
+      self.head.store(head.wrapping_add(written), Ordering::Release);
+      self.wake_consumer();
+    }
+    written
+  }
+
+  /// Consumer side: pops up to `max` items, appending them to `out`.
+  ///
+  /// Loads the head once with Acquire, reads the items (split at the wrap
+  /// point), then publishes the entire batch with a single `tail` store
+  /// (Release) and a single producer wake. Returns the number of items read.
+  ///
+  /// Must only be called by the single consumer.
+  pub(crate) fn read_batch(&self, out: &mut Vec<T>, max: usize) -> usize {
+    if max == 0 {
+      return 0;
+    }
+    let tail = self.tail.load(Ordering::Relaxed);
+    let head = self.head.load(Ordering::Acquire);
+    let available = self.current_len(head, tail);
+    let k = available.min(max);
+    if k == 0 {
+      return 0;
+    }
+
+    out.reserve(k);
+    let start_slot = tail % self.capacity;
+    let first_region = (self.capacity - start_slot).min(k);
+    for i in 0..first_region {
+      out.push(unsafe { (*self.buffer[start_slot + i].get()).assume_init_read() });
+    }
+    for i in 0..(k - first_region) {
+      out.push(unsafe { (*self.buffer[i].get()).assume_init_read() });
+    }
+
+    self.tail.store(tail.wrapping_add(k), Ordering::Release);
+    self.wake_producer();
+    k
+  }
+
   pub(crate) fn poll_recv_internal(&self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
     loop {
       let tail = self.tail.load(Ordering::Relaxed);

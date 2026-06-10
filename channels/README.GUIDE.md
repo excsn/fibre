@@ -17,6 +17,7 @@ This guide provides detailed examples and an overview of the core concepts and A
     *   [Module: `fibre::spmc::topic`](#module-fibrespmctopic)
     *   [Module: `fibre::spsc`](#module-fibrespsc)
     *   [Module: `fibre::oneshot`](#module-fibreoneshot)
+*   [Batch Operations](#batch-operations)
 *   [Error Handling](#error-handling)
 *   [Testing and Debugging](#testing-and-debugging)
 
@@ -267,6 +268,7 @@ A flexible channel for many-to-many communication.
     *   `recv(...)`: Sync receives block, async receives return a `Future`.
     *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
     *   `try_recv(&self) -> Result<T, TryRecvError>`
+    *   Batch: `send_batch`, `try_send_batch`, `send_batch_mut`, `try_send_batch_mut`, `recv_batch`, `try_recv_batch`, `recv_batch_mut`, `try_recv_batch_mut` (see [Batch Operations](#batch-operations)).
     *   `to_async(self)` / `to_sync(self)`
 
 ### Module: `fibre::mpsc`
@@ -289,6 +291,7 @@ An optimized lock-free channel for many-to-one communication.
     *   `try_send(...)`
     *   `recv(...)`: Sync receives block, async receives return a `Future`.
     *   `recv_timeout(...)`: Sync receives block with a timeout.
+    *   Batch: `send_batch`, `try_send_batch`, `send_batch_mut`, `try_send_batch_mut`, `recv_batch`, `try_recv_batch`, `recv_batch_mut`, `try_recv_batch_mut` (see [Batch Operations](#batch-operations)). Unbounded batch sends never block; bounded batch sends acquire capacity permits in bulk.
 
 ### Module: `fibre::spmc`
 
@@ -306,6 +309,7 @@ A broadcast-style channel for one-to-many communication (bounded). `T` must be `
     *   `send(&self, ...)`: Blocks if any consumer is slow and its buffer view is full. Async version returns a `Future`.
     *   `recv(&self, ...)`: Blocks if the consumer's view of the buffer is empty. Async version returns a `Future`.
     *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
+    *   Batch: `send_batch`, `try_send_batch`, `send_batch_mut`, `try_send_batch_mut`, `recv_batch`, `try_recv_batch`, `recv_batch_mut`, `try_recv_batch_mut` (see [Batch Operations](#batch-operations)). Batch sends are bounded by the slowest consumer; every consumer receives (clones) every item.
     *   `Sender::close(&mut self)` and `AsyncSender::close(&mut self)` take `&mut self`.
 
 ### Module: `fibre::spmc::topic`
@@ -340,6 +344,7 @@ A high-performance lock-free channel for one-to-one communication (bounded). `T`
     *   `try_send(...)`
     *   `recv(...)`: Sync receives block, async receives return a `Future`.
     *   `BoundedSyncReceiver::recv_timeout(...)`
+    *   Batch: `send_batch`, `try_send_batch`, `send_batch_mut`, `try_send_batch_mut`, `recv_batch`, `try_recv_batch`, `recv_batch_mut`, `try_recv_batch_mut` (see [Batch Operations](#batch-operations)). The whole batch is published with a single ring-index update and one wake.
 
 ### Module: `fibre::oneshot`
 
@@ -352,6 +357,106 @@ A channel for sending a single value once. `T` must be `Send`.
 *   **Key Methods:**
     *   `Sender::send(self, ...)`: Consumes the sender. Only the first `send` across all clones succeeds.
     *   `Receiver::recv(&self)`: Returns a `Future` that completes when the value is sent or the channel is disconnected.
+
+## Batch Operations
+
+All core channels (`spsc`, `mpsc`, `spmc`, `mpmc`) provide a uniform batch API that amortizes synchronization over the whole batch: a single atomic index update or lock acquisition, bulk capacity-permit handling, and coalesced wakeups. (`oneshot` and `spmc::topic` do not provide batch operations.)
+
+### The Eight Operations
+
+| Operation | Input | Success | Failure |
+| :--- | :--- | :--- | :--- |
+| `try_send_batch(items)` | `Vec<T>` (by value) | `Ok(n)` — **all** items sent | `TrySendBatchError { sent, unsent, reason }` |
+| `send_batch(items)` | `Vec<T>` (by value) | `Ok(n)` — all items sent (blocks/awaits) | `SendBatchError { sent, unsent }` (channel closed) |
+| `try_send_batch_mut(&mut items)` | `&mut Vec<T>` | `Ok(k)` — `k` items drained from the **front** | `SendError::Closed` only if closed with zero sent |
+| `send_batch_mut(&mut items)` | `&mut Vec<T>` | `Ok(n)` — all sent (blocks/awaits) | `SendError::Closed`; unsent items remain in the vec |
+| `try_recv_batch(max)` | limit | `Ok(Vec<T>)` — 1..=max items | `TryRecvError::Empty` / `Disconnected` |
+| `recv_batch(max)` | limit | `Ok(Vec<T>)` — 1..=max items (blocks/awaits) | `RecvError::Disconnected` |
+| `try_recv_batch_mut(&mut out, max)` | buffer + limit | `Ok(k)` — `k` items appended to `out` | `TryRecvError::Empty` / `Disconnected` |
+| `recv_batch_mut(&mut out, max)` | buffer + limit | `Ok(k)` — appended (blocks/awaits) | `RecvError::Disconnected` |
+
+### Semantics
+
+*   **Partial progress, no silent drops.** By-value sends return the count sent *and* the unsent remainder on interruption (`.into_unsent()` recovers the items). In-place sends drain only what was actually sent.
+*   **Blocking/async `recv_batch(max)` waits for at least one item**, then drains up to `max` without further waiting — the latency-friendly semantic for burst draining.
+*   **Empty input or `max == 0`** returns immediately with `Ok(0)` / an empty vector, even on a closed channel.
+*   **Rendezvous channels** (capacity 0, `mpsc::bounded(0)` / `mpmc::bounded(0)`): non-blocking batch sends transfer only as many items as receivers are ready for; blocking batch sends degrade gracefully to item-by-item handoff. A batch receive on `mpmc` extracts payloads directly from all currently parked senders in one pass.
+*   **Cancellation.** Dropping a pending by-value async send-batch future drops the unsent remainder (consistent with the single-item send futures). The `_mut` send futures are cancel-safe: unsent items remain in your vector. All batch receive futures are cancel-safe.
+
+### Sync Example (bounded MPSC)
+
+```rust
+use fibre::mpsc;
+use std::thread;
+
+fn main() {
+    let (tx, rx) = mpsc::bounded::<u32>(64);
+
+    let producer = thread::spawn(move || {
+        // Blocks as needed until the entire batch is delivered.
+        let sent = tx.send_batch((0..1000).collect()).expect("receiver alive");
+        assert_eq!(sent, 1000);
+    });
+
+    let mut received = Vec::new();
+    while received.len() < 1000 {
+        // Blocks until at least one item, then drains up to 128 in one call.
+        match rx.recv_batch_mut(&mut received, 128) {
+            Ok(_count) => {}
+            Err(_) => break, // Disconnected
+        }
+    }
+    producer.join().unwrap();
+    assert_eq!(received.len(), 1000);
+}
+```
+
+### Async Example (MPMC)
+
+```rust
+use fibre::mpmc;
+
+#[tokio::main]
+async fn main() {
+    let (tx, rx) = mpmc::bounded_async::<String>(32);
+
+    tokio::spawn(async move {
+        let batch: Vec<String> = (0..100).map(|i| format!("job-{i}")).collect();
+        // Resolves once every item is sent; permits are handled in bulk.
+        tx.send_batch(batch).await.expect("receiver alive");
+    });
+
+    let mut done = 0;
+    while done < 100 {
+        // Resolves with 1..=16 items as soon as anything is available.
+        match rx.recv_batch(16).await {
+            Ok(jobs) => done += jobs.len(),
+            Err(_) => break, // Disconnected
+        }
+    }
+    assert_eq!(done, 100);
+}
+```
+
+### Handling Partial Sends
+
+```rust
+use fibre::mpsc;
+use fibre::error::BatchSendErrorReason;
+
+fn main() {
+    let (tx, _rx) = mpsc::bounded::<u32>(4);
+    match tx.try_send_batch((0..10).collect()) {
+        Ok(n) => println!("all {n} sent"),
+        Err(e) if e.reason == BatchSendErrorReason::Full => {
+            println!("sent {}, channel full", e.sent);
+            let remainder: Vec<u32> = e.into_unsent(); // retry later
+            assert_eq!(remainder.len(), 6);
+        }
+        Err(e) => println!("channel closed, {} unsent", e.unsent.len()),
+    }
+}
+```
 
 ## Error Handling
 
@@ -377,6 +482,14 @@ Fibre uses a clear set of error enums to signal the result of channel operations
 *   **`RecvErrorTimeout`:** Returned from `recv_timeout`.
     *   `Timeout`: The operation timed out before a value was received.
     *   `Disconnected`: The channel became disconnected during the wait.
+
+*   **`TrySendBatchError<T>`:** Returned from `try_send_batch`. Carries partial-progress state.
+    *   `sent: usize`: How many items were sent before the operation stopped.
+    *   `unsent: Vec<T>`: The unsent remainder, in order. Recover it with `.into_unsent()`.
+    *   `reason: BatchSendErrorReason`: `Full` or `Closed`.
+
+*   **`SendBatchError<T>`:** Returned from blocking/async `send_batch`. The only cause is channel closure.
+    *   `sent: usize` and `unsent: Vec<T>`, as above. Recover the remainder with `.into_unsent()`.
 
 ## Testing and Debugging
 

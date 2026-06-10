@@ -4,7 +4,7 @@ mod mixed;
 pub use futures::{
   CapacityGate as FuturesCapacityGate, OwnedPermitGuard as FuturesOwnedPermitGuard,
 };
-pub use mixed::{AcquireFuture, CapacityGate};
+pub use mixed::{AcquireFuture, AcquireManyFuture, CapacityGate};
 
 #[cfg(test)]
 mod tests {

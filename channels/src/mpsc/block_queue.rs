@@ -187,6 +187,136 @@ impl<T> UnboundedBlockQueue<T> {
     }
   }
 
+  /// Pushes exactly `count` items from `iter` into the queue.
+  ///
+  /// Per cached block, a single `write_index.fetch_add(chunk)` claims a
+  /// contiguous range of slots (clamped to the block boundary; overshoot past
+  /// `BLOCK_CAPACITY` is tolerated by the protocol, exactly as in `push`),
+  /// then each slot follows the WRITING -> write -> READY protocol so the
+  /// consumer can spin through transient races. When a batch crosses a block
+  /// boundary, the remainder is written after rotating/allocating the next
+  /// block via the same head-mutex slow path as `push`.
+  ///
+  /// The iterator must yield at least `count` items.
+  pub(crate) fn push_batch<I: Iterator<Item = T>>(
+    &self,
+    iter: &mut I,
+    count: usize,
+    block_cache: &mut Option<Arc<Block<T>>>,
+  ) {
+    let mut remaining = count;
+    while remaining > 0 {
+      // --- Fast Path: claim a contiguous chunk in the cached block ---
+      if let Some(block) = block_cache {
+        let start = block.write_index.fetch_add(remaining, Ordering::Relaxed);
+        if start < BLOCK_CAPACITY {
+          let chunk = remaining.min(BLOCK_CAPACITY - start);
+          for i in 0..chunk {
+            let slot = &block.slots[start + i];
+            // Mark WRITING per-slot just before the write so the consumer
+            // only ever spins on the slot currently being filled.
+            slot.state.store(SLOT_WRITING, Ordering::Release);
+            unsafe {
+              (*slot.value.get())
+                .write(iter.next().expect("push_batch: iterator yielded fewer than `count` items"));
+            }
+            slot.state.store(SLOT_READY, Ordering::Release);
+          }
+          remaining -= chunk;
+          if remaining == 0 {
+            return;
+          }
+        }
+        // Block boundary crossed (or block was already full): rotate.
+        *block_cache = None;
+      }
+
+      // --- Slow Path: Rotate Block or Fetch New Head (same as `push`) ---
+      {
+        let mut head_guard = self.head.lock();
+        let current_head = head_guard.clone();
+
+        if current_head.write_index.load(Ordering::Relaxed) < BLOCK_CAPACITY {
+          *block_cache = Some(current_head);
+          continue;
+        }
+
+        let new_block = Arc::new(Block::new());
+        let new_block_ptr = Arc::into_raw(new_block.clone()) as *mut Block<T>;
+        current_head.next.store(new_block_ptr, Ordering::Release);
+        *head_guard = new_block.clone();
+        *block_cache = Some(new_block);
+      }
+    }
+  }
+
+  /// Pops up to `max` items, appending them to `out`. Returns the count popped.
+  ///
+  /// Reads contiguously from the tail block, rotating blocks only when one is
+  /// fully exhausted. If a slot is observed mid-write (`SLOT_WRITING`) after at
+  /// least one item has been popped, returns what was collected instead of
+  /// spinning.
+  pub(crate) fn pop_batch(&self, out: &mut Vec<T>, max: usize) -> usize {
+    if max == 0 {
+      return 0;
+    }
+    let mut popped = 0;
+    unsafe {
+      let tail_arc_ptr = self.tail.get();
+      let cursor_ptr = self.tail_cursor.get();
+
+      while popped < max {
+        let cursor = *cursor_ptr;
+
+        if cursor == BLOCK_CAPACITY {
+          // Rotate to the next block, if any (same protocol as `pop`).
+          let next_ptr = {
+            let tail_block = &**tail_arc_ptr;
+            tail_block.next.load(Ordering::Acquire)
+          };
+          if next_ptr.is_null() {
+            break;
+          }
+          let next_block_arc = Arc::from_raw(next_ptr);
+          ptr::replace(tail_arc_ptr, next_block_arc);
+          *cursor_ptr = 0;
+          continue;
+        }
+
+        let tail_block = &**tail_arc_ptr;
+        let slot = &tail_block.slots[cursor];
+        let state = slot.state.load(Ordering::Acquire);
+
+        if state == SLOT_READY {
+          out.push(slot.value.get().read().assume_init());
+          *cursor_ptr = cursor + 1;
+          popped += 1;
+        } else if state == SLOT_WRITING {
+          if popped > 0 {
+            // We already have items; return them rather than spinning.
+            break;
+          }
+          let mut spin_count = 0;
+          while slot.state.load(Ordering::Acquire) != SLOT_READY {
+            if spin_count > 100 {
+              thread::yield_now();
+            } else {
+              std::hint::spin_loop();
+            }
+            spin_count += 1;
+          }
+          out.push(slot.value.get().read().assume_init());
+          *cursor_ptr = cursor + 1;
+          popped += 1;
+        } else {
+          // SLOT_EMPTY: no more items.
+          break;
+        }
+      }
+    }
+    popped
+  }
+
   /// Pops an item from the queue.
   pub(crate) fn pop(&self) -> Option<T> {
     unsafe {
@@ -518,6 +648,86 @@ mod tests {
     assert!(!q.is_empty());
     q.pop();
     assert!(q.is_empty());
+  }
+
+  #[test]
+  fn test_push_batch_pop_batch_block_boundaries() {
+    // Cover batches below, at, and above BLOCK_CAPACITY.
+    for &n in &[1usize, BLOCK_CAPACITY - 1, BLOCK_CAPACITY, BLOCK_CAPACITY + 1, BLOCK_CAPACITY * 3 + 5] {
+      let q = UnboundedBlockQueue::new();
+      let mut cache = None;
+      let items: Vec<usize> = (0..n).collect();
+      let mut iter = items.into_iter();
+      q.push_batch(&mut iter, n, &mut cache);
+      assert!(iter.next().is_none());
+
+      let mut out = Vec::new();
+      let mut total = 0;
+      while total < n {
+        let k = q.pop_batch(&mut out, 7);
+        assert!(k > 0, "queue ran dry early at {total}/{n}");
+        total += k;
+      }
+      assert_eq!(out, (0..n).collect::<Vec<_>>());
+      assert_eq!(q.pop_batch(&mut out, 7), 0);
+      assert!(q.is_empty());
+    }
+  }
+
+  #[test]
+  fn test_push_batch_interleaved_with_single_push() {
+    let q = UnboundedBlockQueue::new();
+    let mut cache = None;
+    q.push(0usize, &mut cache);
+    let mut iter = vec![1usize, 2, 3].into_iter();
+    q.push_batch(&mut iter, 3, &mut cache);
+    q.push(4, &mut cache);
+
+    let mut out = Vec::new();
+    assert_eq!(q.pop_batch(&mut out, 10), 5);
+    assert_eq!(out, vec![0, 1, 2, 3, 4]);
+  }
+
+  #[test]
+  fn test_concurrent_push_batch_totals() {
+    const THREADS: usize = 4;
+    const BATCHES: usize = if cfg!(miri) { 5 } else { 200 };
+    const BATCH_SIZE: usize = 13; // Deliberately misaligned with BLOCK_CAPACITY.
+
+    let q = Arc::new(UnboundedBlockQueue::new());
+    let barrier = Arc::new(Barrier::new(THREADS));
+    let mut handles = vec![];
+
+    for t in 0..THREADS {
+      let q = q.clone();
+      let b = barrier.clone();
+      handles.push(thread::spawn(move || {
+        let mut cache = None;
+        b.wait();
+        for batch in 0..BATCHES {
+          let base = (t * BATCHES + batch) * BATCH_SIZE;
+          let items: Vec<usize> = (base..base + BATCH_SIZE).collect();
+          let mut iter = items.into_iter();
+          q.push_batch(&mut iter, BATCH_SIZE, &mut cache);
+        }
+      }));
+    }
+    for h in handles {
+      h.join().unwrap();
+    }
+
+    let mut out = Vec::new();
+    loop {
+      let k = q.pop_batch(&mut out, 64);
+      if k == 0 {
+        break;
+      }
+    }
+    assert_eq!(out.len(), THREADS * BATCHES * BATCH_SIZE);
+    out.sort();
+    for (i, v) in out.iter().enumerate() {
+      assert_eq!(*v, i);
+    }
   }
 
   #[test]

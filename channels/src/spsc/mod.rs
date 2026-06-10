@@ -123,8 +123,15 @@ pub use bounded_async::{
   bounded_async,            // fn to create async SPSC channel
   AsyncBoundedSpscReceiver, // Async consumer type
   AsyncBoundedSpscSender, // Async producer type
+  RecvBatchFuture,          // Future returned by async recv_batch
+  RecvBatchMutFuture,       // Future returned by async recv_batch_mut
+  SendBatchFuture,          // Future returned by async send_batch
+  SendBatchMutFuture,       // Future returned by async send_batch_mut
   SendFuture,               // Future returned by async send
 };
 
 // Re-export common error types used by SPSC channels.
-pub use crate::error::{RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError};
+pub use crate::error::{
+  BatchSendErrorReason, RecvError, RecvErrorTimeout, SendBatchError, SendError, TryRecvError,
+  TrySendBatchError, TrySendError,
+};

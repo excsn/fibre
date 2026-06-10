@@ -17,17 +17,24 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 // --- Public re-exports ---
-pub use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
+pub use crate::error::{
+  BatchSendErrorReason, CloseError, RecvError, SendBatchError, SendError, TryRecvError,
+  TrySendBatchError, TrySendError,
+};
 
 pub use unbounded_v2::{
   AsyncReceiver as UnboundedAsyncReceiver, AsyncSender as UnboundedAsyncSender,
-  Receiver as UnboundedReceiver, RecvFuture as UnboundedRecvFuture,
+  Receiver as UnboundedReceiver, RecvBatchFuture as UnboundedRecvBatchFuture,
+  RecvBatchMutFuture as UnboundedRecvBatchMutFuture, RecvFuture as UnboundedRecvFuture,
+  SendBatchFuture as UnboundedSendBatchFuture, SendBatchMutFuture as UnboundedSendBatchMutFuture,
   SendFuture as UnboundedSendFuture, Sender as UnboundedSender,
 };
 
 pub use bounded_async::{
   AsyncReceiver as BoundedAsyncReceiver, AsyncSender as BoundedAsyncSender,
-  RecvFuture as BoundedRecvFuture, SendFuture as BoundedSendFuture,
+  RecvBatchFuture as BoundedRecvBatchFuture, RecvBatchMutFuture as BoundedRecvBatchMutFuture,
+  RecvFuture as BoundedRecvFuture, SendBatchFuture as BoundedSendBatchFuture,
+  SendBatchMutFuture as BoundedSendBatchMutFuture, SendFuture as BoundedSendFuture,
 };
 
 pub use bounded_sync::{Receiver as BoundedReceiver, Sender as BoundedSender};

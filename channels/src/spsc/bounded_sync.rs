@@ -1,5 +1,6 @@
 use crate::error::{
-  CloseError, RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError,
+  BatchSendErrorReason, CloseError, RecvError, RecvErrorTimeout, SendBatchError, SendError,
+  TryRecvError, TrySendBatchError, TrySendError,
 };
 use crate::spsc::shared::{SpscShared, PARK_CONSUMING, PARK_IDLE, PARK_PARKED};
 use crate::sync_util;
@@ -117,85 +118,223 @@ impl<T: Send> BoundedSyncSender<T> {
         Ok(()) => return Ok(()),
         Err(TrySendError::Full(returned_item)) => {
           item = returned_item;
-
-          unsafe {
-            *self.shared.producer_thread_sync.get() = Some(thread::current());
-          }
-          self
-            .shared
-            .producer_parked_sync_flag
-            .store(PARK_PARKED, Ordering::Release);
-          atomic::fence(Ordering::SeqCst);
-
-          let head_after_flag_set = self.shared.head.load(Ordering::Relaxed);
-          let tail_after_flag_set = self.shared.tail.load(Ordering::Acquire);
-
-          if !self
-            .shared
-            .is_full(head_after_flag_set, tail_after_flag_set)
-            || self.shared.consumer_dropped.load(Ordering::Acquire)
-          {
-            // Skip-park: reclaim cell if consumer hasn't started consuming yet.
-            if self
-              .shared
-              .producer_parked_sync_flag
-              .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
-              .is_ok()
-            {
-              unsafe {
-                *self.shared.producer_thread_sync.get() = None;
-              }
-            } else {
-              // Consumer won (PARKED→CONSUMING): wait until take() finishes (IDLE).
-              // The consumer will call unpark(), depositing a token we absorb next park().
-              while self
-                .shared
-                .producer_parked_sync_flag
-                .load(Ordering::Acquire)
-                == PARK_CONSUMING
-              {
-                thread::yield_now();
-              }
-            }
-            continue;
-          }
-
-          sync_util::park_thread();
-
-          // Post-wakeup: resolve state to IDLE before writing to the cell in the next iteration.
-          // Uses Acquire so the consumer's store(IDLE, Release) is visible before we proceed.
-          loop {
-            match self
-              .shared
-              .producer_parked_sync_flag
-              .load(Ordering::Acquire)
-            {
-              PARK_IDLE => break,
-              PARK_PARKED => {
-                // Spurious wakeup: consumer hasn't started. Reclaim the cell.
-                if self
-                  .shared
-                  .producer_parked_sync_flag
-                  .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
-                  .is_ok()
-                {
-                  unsafe {
-                    *self.shared.producer_thread_sync.get() = None;
-                  }
-                  break;
-                }
-                // CAS lost: consumer just transitioned PARKED→CONSUMING; fall to CONSUMING arm.
-              }
-              PARK_CONSUMING => thread::yield_now(),
-              _ => unreachable!(),
-            }
-          }
+          self.park_until_not_full();
         }
         Err(TrySendError::Closed(_returned_item)) => {
           return Err(SendError::Closed);
         }
         Err(TrySendError::Sent(_)) => unreachable!("SPSC try_send should not return Sent variant"),
       }
+    }
+  }
+
+  /// Parks the producer thread until the channel is no longer full or the
+  /// consumer drops. Returns without parking if either condition is already
+  /// true after arming the park state machine.
+  fn park_until_not_full(&self) {
+    unsafe {
+      *self.shared.producer_thread_sync.get() = Some(thread::current());
+    }
+    self
+      .shared
+      .producer_parked_sync_flag
+      .store(PARK_PARKED, Ordering::Release);
+    atomic::fence(Ordering::SeqCst);
+
+    let head_after_flag_set = self.shared.head.load(Ordering::Relaxed);
+    let tail_after_flag_set = self.shared.tail.load(Ordering::Acquire);
+
+    if !self
+      .shared
+      .is_full(head_after_flag_set, tail_after_flag_set)
+      || self.shared.consumer_dropped.load(Ordering::Acquire)
+    {
+      // Skip-park: reclaim cell if consumer hasn't started consuming yet.
+      if self
+        .shared
+        .producer_parked_sync_flag
+        .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+      {
+        unsafe {
+          *self.shared.producer_thread_sync.get() = None;
+        }
+      } else {
+        // Consumer won (PARKED→CONSUMING): wait until take() finishes (IDLE).
+        // The consumer will call unpark(), depositing a token we absorb next park().
+        while self
+          .shared
+          .producer_parked_sync_flag
+          .load(Ordering::Acquire)
+          == PARK_CONSUMING
+        {
+          thread::yield_now();
+        }
+      }
+      return;
+    }
+
+    sync_util::park_thread();
+
+    // Post-wakeup: resolve state to IDLE before writing to the cell in the next iteration.
+    // Uses Acquire so the consumer's store(IDLE, Release) is visible before we proceed.
+    loop {
+      match self
+        .shared
+        .producer_parked_sync_flag
+        .load(Ordering::Acquire)
+      {
+        PARK_IDLE => break,
+        PARK_PARKED => {
+          // Spurious wakeup: consumer hasn't started. Reclaim the cell.
+          if self
+            .shared
+            .producer_parked_sync_flag
+            .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            unsafe {
+              *self.shared.producer_thread_sync.get() = None;
+            }
+            break;
+          }
+          // CAS lost: consumer just transitioned PARKED→CONSUMING; fall to CONSUMING arm.
+        }
+        PARK_CONSUMING => thread::yield_now(),
+        _ => unreachable!(),
+      }
+    }
+  }
+
+  /// Attempts to send a batch of items without blocking, taking ownership of
+  /// the input vector.
+  ///
+  /// `Ok(n)` means every item was sent (`n == items.len()`). If the channel
+  /// fills up or closes mid-batch, returns [`TrySendBatchError`] carrying the
+  /// number of items sent and the unsent remainder, so no item is silently
+  /// dropped. The entire batch is published with a single index update and a
+  /// single consumer wake.
+  pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
+    let total = items.len();
+    if total == 0 {
+      return Ok(0);
+    }
+    let mut iter = items.into_iter();
+    if self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire)
+    {
+      return Err(TrySendBatchError {
+        sent: 0,
+        unsent: iter.collect(),
+        reason: BatchSendErrorReason::Closed,
+      });
+    }
+    let sent = self.shared.write_batch(&mut iter, total);
+    if sent == total {
+      Ok(total)
+    } else {
+      let reason = if self.shared.consumer_dropped.load(Ordering::Acquire) {
+        BatchSendErrorReason::Closed
+      } else {
+        BatchSendErrorReason::Full
+      };
+      Err(TrySendBatchError {
+        sent,
+        unsent: iter.collect(),
+        reason,
+      })
+    }
+  }
+
+  /// Sends a batch of items, blocking the current thread whenever the channel
+  /// is full, until every item is sent or the consumer drops.
+  ///
+  /// `Ok(n)` means every item was sent. On closure, returns
+  /// [`SendBatchError`] carrying the count sent and the unsent remainder.
+  pub fn send_batch(&self, items: Vec<T>) -> Result<usize, SendBatchError<T>> {
+    let total = items.len();
+    if total == 0 {
+      return Ok(0);
+    }
+    let mut iter = items.into_iter();
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(SendBatchError {
+        sent: 0,
+        unsent: iter.collect(),
+      });
+    }
+    let mut sent = 0;
+    loop {
+      if self.shared.consumer_dropped.load(Ordering::Acquire) {
+        return Err(SendBatchError {
+          sent,
+          unsent: iter.collect(),
+        });
+      }
+      sent += self.shared.write_batch(&mut iter, total - sent);
+      if sent == total {
+        return Ok(total);
+      }
+      self.park_until_not_full();
+    }
+  }
+
+  /// Attempts to send a batch in place without blocking, draining successfully
+  /// sent items from the front of `items`.
+  ///
+  /// Returns `Ok(k)` with the number of items sent; `Ok(0)` means the channel
+  /// was full (or `items` was empty). Returns `Err(SendError::Closed)` only
+  /// if the channel is closed and zero items were sent by this call; unsent
+  /// items always remain in `items`.
+  pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+    if items.is_empty() {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire)
+    {
+      return Err(SendError::Closed);
+    }
+    let k = self.shared.available_space().min(items.len());
+    if k == 0 {
+      return Ok(0);
+    }
+    // The producer is single-threaded, so space can only have grown since the
+    // snapshot: write_batch is guaranteed to consume the entire drain.
+    let mut drain = items.drain(..k);
+    let written = self.shared.write_batch(&mut drain, k);
+    debug_assert_eq!(written, k);
+    Ok(written)
+  }
+
+  /// Sends a batch in place, blocking whenever the channel is full, draining
+  /// sent items from the front of `items` until all are sent or the consumer
+  /// drops.
+  ///
+  /// On `Err(SendError::Closed)`, the unsent items remain in `items` (the
+  /// count already sent is `original_len - items.len()`). This is the
+  /// cancel-safe counterpart of [`send_batch`](Self::send_batch).
+  pub fn send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+    if items.is_empty() {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(SendError::Closed);
+    }
+    let mut sent = 0;
+    loop {
+      if self.shared.consumer_dropped.load(Ordering::Acquire) {
+        return Err(SendError::Closed);
+      }
+      let k = self.shared.available_space().min(items.len());
+      if k > 0 {
+        let mut drain = items.drain(..k);
+        let written = self.shared.write_batch(&mut drain, k);
+        debug_assert_eq!(written, k);
+        sent += k;
+      }
+      if items.is_empty() {
+        return Ok(sent);
+      }
+      self.park_until_not_full();
     }
   }
 
@@ -343,74 +482,147 @@ impl<T: Send> BoundedSyncReceiver<T> {
     loop {
       match self.try_recv() {
         Ok(item) => return Ok(item),
-        Err(TryRecvError::Empty) => {
-          unsafe {
-            *self.shared.consumer_thread_sync.get() = Some(thread::current());
-          }
-          self
-            .shared
-            .consumer_parked_sync_flag
-            .store(PARK_PARKED, Ordering::Release);
-          atomic::fence(Ordering::SeqCst);
-
-          let head_after_flag_set = self.shared.head.load(Ordering::Acquire);
-          let tail_after_flag_set = self.shared.tail.load(Ordering::Relaxed);
-
-          if !self
-            .shared
-            .is_empty(head_after_flag_set, tail_after_flag_set)
-            || self.shared.producer_dropped.load(Ordering::Acquire)
-          {
-            if self
-              .shared
-              .consumer_parked_sync_flag
-              .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
-              .is_ok()
-            {
-              unsafe {
-                *self.shared.consumer_thread_sync.get() = None;
-              }
-            } else {
-              while self
-                .shared
-                .consumer_parked_sync_flag
-                .load(Ordering::Acquire)
-                == PARK_CONSUMING
-              {
-                thread::yield_now();
-              }
-            }
-            continue;
-          }
-          sync_util::park_thread();
-          loop {
-            match self
-              .shared
-              .consumer_parked_sync_flag
-              .load(Ordering::Acquire)
-            {
-              PARK_IDLE => break,
-              PARK_PARKED => {
-                if self
-                  .shared
-                  .consumer_parked_sync_flag
-                  .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
-                  .is_ok()
-                {
-                  unsafe {
-                    *self.shared.consumer_thread_sync.get() = None;
-                  }
-                  break;
-                }
-              }
-              PARK_CONSUMING => thread::yield_now(),
-              _ => unreachable!(),
-            }
-          }
-        }
+        Err(TryRecvError::Empty) => self.park_until_not_empty(),
         Err(TryRecvError::Disconnected) => {
           return Err(RecvError::Disconnected);
         }
+      }
+    }
+  }
+
+  /// Parks the consumer thread until the channel is no longer empty or the
+  /// producer drops. Returns without parking if either condition is already
+  /// true after arming the park state machine.
+  fn park_until_not_empty(&self) {
+    unsafe {
+      *self.shared.consumer_thread_sync.get() = Some(thread::current());
+    }
+    self
+      .shared
+      .consumer_parked_sync_flag
+      .store(PARK_PARKED, Ordering::Release);
+    atomic::fence(Ordering::SeqCst);
+
+    let head_after_flag_set = self.shared.head.load(Ordering::Acquire);
+    let tail_after_flag_set = self.shared.tail.load(Ordering::Relaxed);
+
+    if !self
+      .shared
+      .is_empty(head_after_flag_set, tail_after_flag_set)
+      || self.shared.producer_dropped.load(Ordering::Acquire)
+    {
+      if self
+        .shared
+        .consumer_parked_sync_flag
+        .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+      {
+        unsafe {
+          *self.shared.consumer_thread_sync.get() = None;
+        }
+      } else {
+        while self
+          .shared
+          .consumer_parked_sync_flag
+          .load(Ordering::Acquire)
+          == PARK_CONSUMING
+        {
+          thread::yield_now();
+        }
+      }
+      return;
+    }
+    sync_util::park_thread();
+    loop {
+      match self
+        .shared
+        .consumer_parked_sync_flag
+        .load(Ordering::Acquire)
+      {
+        PARK_IDLE => break,
+        PARK_PARKED => {
+          if self
+            .shared
+            .consumer_parked_sync_flag
+            .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+          {
+            unsafe {
+              *self.shared.consumer_thread_sync.get() = None;
+            }
+            break;
+          }
+        }
+        PARK_CONSUMING => thread::yield_now(),
+        _ => unreachable!(),
+      }
+    }
+  }
+
+  /// Attempts to receive up to `max` items without blocking.
+  ///
+  /// Returns a vector of 1..=max items in FIFO order, `Err(TryRecvError::Empty)`
+  /// if no items are available, or `Err(TryRecvError::Disconnected)` if the
+  /// channel is empty and the producer has been dropped. The entire batch is
+  /// consumed with a single index update and a single producer wake.
+  pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError> {
+    let mut out = Vec::new();
+    self.try_recv_batch_mut(&mut out, max)?;
+    Ok(out)
+  }
+
+  /// Attempts to receive up to `max` items without blocking, appending them
+  /// to the end of `out`. Returns the number of items appended (>= 1 on `Ok`,
+  /// unless `max == 0`).
+  pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
+    if max == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TryRecvError::Disconnected);
+    }
+    let k = self.shared.read_batch(out, max);
+    if k > 0 {
+      return Ok(k);
+    }
+    if self.shared.producer_dropped.load(Ordering::Acquire) {
+      // The producer may have written items right before dropping; re-check
+      // so we drain the channel before reporting disconnection.
+      let k = self.shared.read_batch(out, max);
+      if k > 0 {
+        return Ok(k);
+      }
+      return Err(TryRecvError::Disconnected);
+    }
+    Err(TryRecvError::Empty)
+  }
+
+  /// Receives up to `max` items, blocking the current thread until at least
+  /// one item is available, then draining up to `max` without further waiting.
+  ///
+  /// Returns between 1 and `max` items in FIFO order, or
+  /// `Err(RecvError::Disconnected)` if the channel is empty and the producer
+  /// has been dropped.
+  pub fn recv_batch(&self, max: usize) -> Result<Vec<T>, RecvError> {
+    let mut out = Vec::new();
+    self.recv_batch_mut(&mut out, max)?;
+    Ok(out)
+  }
+
+  /// Receives up to `max` items, blocking until at least one is available,
+  /// appending them to the end of `out`. Returns the number of items appended.
+  pub fn recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError> {
+    if max == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(RecvError::Disconnected);
+    }
+    loop {
+      match self.try_recv_batch_mut(out, max) {
+        Ok(k) => return Ok(k),
+        Err(TryRecvError::Empty) => self.park_until_not_empty(),
+        Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
       }
     }
   }

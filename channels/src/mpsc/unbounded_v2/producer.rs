@@ -1,5 +1,7 @@
 use super::shared::MpscShared;
-use crate::error::{CloseError, SendError, TrySendError};
+use crate::error::{
+  BatchSendErrorReason, CloseError, SendBatchError, SendError, TrySendBatchError, TrySendError,
+};
 use crate::mpsc::block_queue::Block;
 
 use core::marker::PhantomPinned;
@@ -25,6 +27,21 @@ pub(crate) fn send_internal<T: Send>(
   shared.current_len.fetch_add(1, Ordering::Relaxed);
   shared.wake_consumer();
   Ok(())
+}
+
+// Batch counterpart of `send_internal`. The caller is responsible for the
+// closed/receiver_dropped checks *before* consuming any items, so that no
+// item is lost when the channel is closed. The queue length is incremented
+// once, after the entire batch is written, and the consumer is woken once.
+pub(crate) fn send_batch_internal<T: Send>(
+  shared: &Arc<MpscShared<T>>,
+  iter: &mut impl Iterator<Item = T>,
+  count: usize,
+  cache: &mut Option<Arc<Block<T>>>,
+) {
+  shared.queue.push_batch(iter, count, cache);
+  shared.current_len.fetch_add(count, Ordering::Relaxed);
+  shared.wake_consumer();
 }
 
 #[derive(Debug)]
@@ -59,6 +76,65 @@ impl<T: Send> Sender<T> {
     }
     let mut cache_guard = self.cache.lock();
     send_internal(&self.shared, value, &mut *cache_guard).map_err(TrySendError::Closed)
+  }
+
+  /// Sends a batch of items, taking ownership of the vector. The channel is
+  /// unbounded, so this never blocks: `Ok(n)` means every item was sent.
+  /// The only failure is a closed channel, reported before any item is sent
+  /// (`sent: 0`, all items returned in `unsent`).
+  ///
+  /// The whole batch is written with one queue-length update and one
+  /// consumer wake.
+  pub fn send_batch(&self, items: Vec<T>) -> Result<usize, SendBatchError<T>> {
+    self.try_send_batch(items).map_err(|e| SendBatchError {
+      sent: e.sent,
+      unsent: e.unsent,
+    })
+  }
+
+  /// Non-blocking batch send. Identical to [`send_batch`](Self::send_batch)
+  /// for this unbounded channel, but reports closure as [`TrySendBatchError`].
+  pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
+    let total = items.len();
+    if total == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire)
+    {
+      return Err(TrySendBatchError {
+        sent: 0,
+        unsent: items,
+        reason: BatchSendErrorReason::Closed,
+      });
+    }
+    let mut iter = items.into_iter();
+    let mut cache_guard = self.cache.lock();
+    send_batch_internal(&self.shared, &mut iter, total, &mut *cache_guard);
+    Ok(total)
+  }
+
+  /// Sends a batch in place, draining all items from `items`. Never blocks
+  /// (unbounded). On `Err(SendError::Closed)`, all items remain in `items`.
+  pub fn send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+    if items.is_empty() {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire)
+    {
+      return Err(SendError::Closed);
+    }
+    let total = items.len();
+    let mut cache_guard = self.cache.lock();
+    let mut drain = items.drain(..);
+    send_batch_internal(&self.shared, &mut drain, total, &mut *cache_guard);
+    drop(drain);
+    Ok(total)
+  }
+
+  /// Non-blocking in-place batch send. Identical to
+  /// [`send_batch_mut`](Self::send_batch_mut) for this unbounded channel.
+  pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+    self.send_batch_mut(items)
   }
 
   pub fn is_closed(&self) -> bool {
@@ -143,6 +219,67 @@ impl<T: Send> AsyncSender<T> {
     send_internal(&self.shared, value, &mut *cache_guard).map_err(TrySendError::Closed)
   }
 
+  /// Sends a batch of items asynchronously, taking ownership of the vector.
+  /// The channel is unbounded, so the returned future completes on its first
+  /// poll (it exists for API symmetry with the bounded channels).
+  pub fn send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T> {
+    SendBatchFuture {
+      producer: self,
+      items: Some(items),
+      _phantom: PhantomPinned,
+    }
+  }
+
+  /// Sends a batch asynchronously in place, draining all items from `items`.
+  /// Completes on first poll (unbounded). Cancel-safe: if never polled, all
+  /// items remain in `items`.
+  pub fn send_batch_mut<'a>(&'a self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T> {
+    SendBatchMutFuture {
+      producer: self,
+      items,
+      _phantom: PhantomPinned,
+    }
+  }
+
+  /// Non-blocking batch send. `Ok(n)` means every item was sent; the only
+  /// failure is a closed channel (`sent: 0`, all items returned in `unsent`).
+  pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
+    let total = items.len();
+    if total == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire)
+    {
+      return Err(TrySendBatchError {
+        sent: 0,
+        unsent: items,
+        reason: BatchSendErrorReason::Closed,
+      });
+    }
+    let mut iter = items.into_iter();
+    let mut cache_guard = self.cache.lock();
+    send_batch_internal(&self.shared, &mut iter, total, &mut *cache_guard);
+    Ok(total)
+  }
+
+  /// Non-blocking in-place batch send, draining all items from `items`.
+  /// On `Err(SendError::Closed)`, all items remain in `items`.
+  pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+    if items.is_empty() {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire)
+    {
+      return Err(SendError::Closed);
+    }
+    let total = items.len();
+    let mut cache_guard = self.cache.lock();
+    let mut drain = items.drain(..);
+    send_batch_internal(&self.shared, &mut drain, total, &mut *cache_guard);
+    drop(drain);
+    Ok(total)
+  }
+
   pub fn is_closed(&self) -> bool {
     self.shared.receiver_dropped.load(Ordering::Acquire)
   }
@@ -217,6 +354,74 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
     Poll::Ready(
       send_internal(&this.producer.shared, value, &mut *cache_guard).map_err(|_| SendError::Closed),
     )
+  }
+}
+
+/// Future returned by [`AsyncSender::send_batch`]. Completes on first poll
+/// (the channel is unbounded). If dropped before being polled, the items are
+/// dropped.
+#[must_use = "futures do nothing unless you .await or poll them"]
+pub struct SendBatchFuture<'a, T: Send> {
+  producer: &'a AsyncSender<T>,
+  items: Option<Vec<T>>,
+  _phantom: PhantomPinned,
+}
+
+impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
+  type Output = Result<usize, SendBatchError<T>>;
+  fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    let this = unsafe { self.as_mut().get_unchecked_mut() };
+    let items = this
+      .items
+      .take()
+      .expect("SendBatchFuture polled after completion");
+    let total = items.len();
+    if total == 0 {
+      return Poll::Ready(Ok(0));
+    }
+    if this.producer.closed.load(Ordering::Relaxed)
+      || this.producer.shared.receiver_dropped.load(Ordering::Acquire)
+    {
+      return Poll::Ready(Err(SendBatchError {
+        sent: 0,
+        unsent: items,
+      }));
+    }
+    let mut iter = items.into_iter();
+    let mut cache_guard = this.producer.cache.lock();
+    send_batch_internal(&this.producer.shared, &mut iter, total, &mut *cache_guard);
+    Poll::Ready(Ok(total))
+  }
+}
+
+/// Future returned by [`AsyncSender::send_batch_mut`]. Completes on first
+/// poll (the channel is unbounded). Cancel-safe: unsent items remain in the
+/// caller's vector.
+#[must_use = "futures do nothing unless you .await or poll them"]
+pub struct SendBatchMutFuture<'a, T: Send> {
+  producer: &'a AsyncSender<T>,
+  items: &'a mut Vec<T>,
+  _phantom: PhantomPinned,
+}
+
+impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
+  type Output = Result<usize, SendError>;
+  fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    let this = unsafe { self.as_mut().get_unchecked_mut() };
+    if this.items.is_empty() {
+      return Poll::Ready(Ok(0));
+    }
+    if this.producer.closed.load(Ordering::Relaxed)
+      || this.producer.shared.receiver_dropped.load(Ordering::Acquire)
+    {
+      return Poll::Ready(Err(SendError::Closed));
+    }
+    let total = this.items.len();
+    let mut cache_guard = this.producer.cache.lock();
+    let mut drain = this.items.drain(..);
+    send_batch_internal(&this.producer.shared, &mut drain, total, &mut *cache_guard);
+    drop(drain);
+    Poll::Ready(Ok(total))
   }
 }
 

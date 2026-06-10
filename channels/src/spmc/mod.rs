@@ -79,8 +79,14 @@ pub mod topic;
 use std::mem;
 use std::sync::atomic::AtomicBool;
 
-pub use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
-pub use ring_buffer::{AsyncReceiver, AsyncSender, Receiver, RecvFuture, SendFuture, Sender};
+pub use crate::error::{
+  BatchSendErrorReason, CloseError, RecvError, SendBatchError, SendError, TryRecvError,
+  TrySendBatchError, TrySendError,
+};
+pub use ring_buffer::{
+  AsyncReceiver, AsyncSender, Receiver, RecvBatchFuture, RecvBatchMutFuture, RecvFuture,
+  SendBatchFuture, SendBatchMutFuture, SendFuture, Sender,
+};
 
 // --- Constructors ---
 

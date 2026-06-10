@@ -21,11 +21,15 @@
 //! this crate will offer better performance by avoiding unnecessary locking.
 
 use crate::error::{
-  CloseError, RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError,
+  BatchSendErrorReason, CloseError, RecvError, RecvErrorTimeout, SendBatchError, SendError,
+  TryRecvError, TrySendBatchError, TrySendError,
 };
 
 // Re-export the futures for the public API, allowing users to `await` on sends/receives.
-pub use async_impl::{RecvFuture, SendFuture};
+pub use async_impl::{
+  RecvBatchFuture, RecvBatchMutFuture, RecvFuture, SendBatchFuture, SendBatchMutFuture,
+  SendFuture,
+};
 
 mod async_impl;
 mod backoff;
@@ -203,6 +207,88 @@ impl<T: Send> Sender<T> {
     self.shared.try_send_core(item)
   }
 
+  /// Attempts to send a batch without blocking, taking ownership of the
+  /// vector. The whole batch is processed under a single lock acquisition;
+  /// satisfied receivers are woken in one coalesced pass after the lock is
+  /// released.
+  ///
+  /// `Ok(n)` means every item was sent. Otherwise returns
+  /// [`TrySendBatchError`] carrying the count sent and the unsent remainder.
+  pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
+    let total = items.len();
+    if total == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TrySendBatchError {
+        sent: 0,
+        unsent: items,
+        reason: BatchSendErrorReason::Closed,
+      });
+    }
+    let mut iter = items.into_iter();
+    let (sent, reason) = self.shared.try_send_batch_core(&mut iter, total);
+    match reason {
+      None => Ok(total),
+      Some(reason) => Err(TrySendBatchError {
+        sent,
+        unsent: iter.collect(),
+        reason,
+      }),
+    }
+  }
+
+  /// Sends a batch, blocking whenever the channel is full, until every item
+  /// is sent or the channel closes. For rendezvous channels, the remainder is
+  /// handed off item-by-item to arriving receivers.
+  pub fn send_batch(&self, items: Vec<T>) -> Result<usize, SendBatchError<T>> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(SendBatchError {
+        sent: 0,
+        unsent: items,
+      });
+    }
+    sync_impl::send_batch_sync(self, items)
+  }
+
+  /// Attempts to send a batch in place without blocking, draining sent items
+  /// from the front of `items`. Returns `Ok(k)` with the count sent (`0` if
+  /// the channel was full); `Err(SendError::Closed)` only if the channel is
+  /// closed and zero items were sent by this call.
+  pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+    if items.is_empty() {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(SendError::Closed);
+    }
+    let batch = std::mem::take(items);
+    match self.try_send_batch(batch) {
+      Ok(n) => Ok(n),
+      Err(e) => {
+        let (sent, reason) = (e.sent, e.reason);
+        *items = e.unsent;
+        if sent == 0 && matches!(reason, BatchSendErrorReason::Closed) {
+          Err(SendError::Closed)
+        } else {
+          Ok(sent)
+        }
+      }
+    }
+  }
+
+  /// Sends a batch in place, blocking whenever the channel is full. On
+  /// `Err(SendError::Closed)`, the unsent items remain in `items`.
+  pub fn send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+    if items.is_empty() {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(SendError::Closed);
+    }
+    sync_impl::send_batch_mut_sync(self, items)
+  }
+
   /// Closes this handle to the sending end of the channel.
   ///
   /// This is an explicit alternative to `drop`. This operation will decrement the
@@ -345,6 +431,49 @@ impl<T: Send> Receiver<T> {
       return Err(TryRecvError::Disconnected);
     }
     self.shared.try_recv_core()
+  }
+
+  /// Attempts to receive up to `max` items without blocking. The whole batch
+  /// is collected under a single lock acquisition (waiting rendezvous
+  /// senders' payloads are extracted first, then the buffer is drained);
+  /// freed-up senders are woken in one pass after the lock is released.
+  ///
+  /// Returns 1..=max items in FIFO order, `Err(TryRecvError::Empty)`, or
+  /// `Err(TryRecvError::Disconnected)`.
+  pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError> {
+    let mut out = Vec::new();
+    self.try_recv_batch_mut(&mut out, max)?;
+    Ok(out)
+  }
+
+  /// Attempts to receive up to `max` items without blocking, appending them
+  /// to the end of `out`. Returns the number appended.
+  pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
+    if max == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TryRecvError::Disconnected);
+    }
+    self.shared.try_recv_batch_core(out, max)
+  }
+
+  /// Receives up to `max` items, blocking until at least one is available,
+  /// then draining up to `max` without further waiting. Returns between 1 and
+  /// `max` items in FIFO order.
+  pub fn recv_batch(&self, max: usize) -> Result<Vec<T>, RecvError> {
+    let mut out = Vec::new();
+    self.recv_batch_mut(&mut out, max)?;
+    Ok(out)
+  }
+
+  /// Receives up to `max` items, blocking until at least one is available,
+  /// appending them to the end of `out`. Returns the number appended.
+  pub fn recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError> {
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(RecvError::Disconnected);
+    }
+    sync_impl::recv_batch_sync(self, out, max)
   }
 
   /// Receives a value from the channel, blocking for at most `timeout` duration.
@@ -515,6 +644,73 @@ impl<T: Send> AsyncSender<T> {
     self.shared.try_send_core(item)
   }
 
+  /// Sends a batch asynchronously, taking ownership of the vector. Resolves
+  /// with `Ok(n)` once every item is sent, or [`SendBatchError`] if the
+  /// channel closes mid-batch.
+  ///
+  /// If the future is dropped after partial progress, the unsent remainder is
+  /// dropped; use [`send_batch_mut`](Self::send_batch_mut) for cancel safety.
+  pub fn send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T> {
+    async_impl::SendBatchFuture::new(self, items)
+  }
+
+  /// Sends a batch asynchronously in place, draining sent items from the
+  /// front of `items`. Cancel-safe: on drop or closure, unsent items —
+  /// including a parked rendezvous payload — remain in `items`.
+  pub fn send_batch_mut<'a>(&'a self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T> {
+    async_impl::SendBatchMutFuture::new(self, items)
+  }
+
+  /// Attempts to send a batch without blocking. Same semantics as
+  /// [`Sender::try_send_batch`].
+  pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
+    let total = items.len();
+    if total == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TrySendBatchError {
+        sent: 0,
+        unsent: items,
+        reason: BatchSendErrorReason::Closed,
+      });
+    }
+    let mut iter = items.into_iter();
+    let (sent, reason) = self.shared.try_send_batch_core(&mut iter, total);
+    match reason {
+      None => Ok(total),
+      Some(reason) => Err(TrySendBatchError {
+        sent,
+        unsent: iter.collect(),
+        reason,
+      }),
+    }
+  }
+
+  /// Attempts to send a batch in place without blocking. Same semantics as
+  /// [`Sender::try_send_batch_mut`].
+  pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+    if items.is_empty() {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(SendError::Closed);
+    }
+    let batch = std::mem::take(items);
+    match self.try_send_batch(batch) {
+      Ok(n) => Ok(n),
+      Err(e) => {
+        let (sent, reason) = (e.sent, e.reason);
+        *items = e.unsent;
+        if sent == 0 && matches!(reason, BatchSendErrorReason::Closed) {
+          Err(SendError::Closed)
+        } else {
+          Ok(sent)
+        }
+      }
+    }
+  }
+
   /// Closes this handle to the sending end of the channel.
   ///
   /// See [`Sender::close`] for more details.
@@ -647,6 +843,38 @@ impl<T: Send> AsyncReceiver<T> {
       return Err(TryRecvError::Disconnected);
     }
     self.shared.try_recv_core()
+  }
+
+  /// Receives up to `max` items asynchronously. Resolves with between 1 and
+  /// `max` items (FIFO order) once anything is available. Cancel-safe.
+  pub fn recv_batch(&self, max: usize) -> RecvBatchFuture<'_, T> {
+    async_impl::RecvBatchFuture::new(self, max)
+  }
+
+  /// Receives up to `max` items asynchronously, appending them to the end of
+  /// `out`. Resolves with the number appended. Cancel-safe.
+  pub fn recv_batch_mut<'a>(&'a self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T> {
+    async_impl::RecvBatchMutFuture::new(self, out, max)
+  }
+
+  /// Attempts to receive up to `max` items without blocking. Same semantics
+  /// as [`Receiver::try_recv_batch`].
+  pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError> {
+    let mut out = Vec::new();
+    self.try_recv_batch_mut(&mut out, max)?;
+    Ok(out)
+  }
+
+  /// Attempts to receive up to `max` items without blocking, appending them
+  /// to the end of `out`. Returns the number appended.
+  pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
+    if max == 0 {
+      return Ok(0);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(TryRecvError::Disconnected);
+    }
+    self.shared.try_recv_batch_core(out, max)
   }
 
   /// Closes this handle to the receiving end of the channel.

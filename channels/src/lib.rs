@@ -25,4 +25,7 @@ mod sync_util;
 mod async_util;
 
 // Public re-exports for convenience (will grow)
-pub use error::{CloseError, RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError};
+pub use error::{
+  BatchSendErrorReason, CloseError, RecvError, RecvErrorTimeout, SendBatchError, SendError,
+  TryRecvError, TrySendBatchError, TrySendError,
+};

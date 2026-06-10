@@ -90,6 +90,57 @@ impl<T> MpscShared<T> {
     }
   }
 
+  /// The core non-blocking batch receive logic. Appends up to `max` items to
+  /// `out` and decrements `current_len` once for the whole batch.
+  pub(crate) fn try_recv_batch_internal(
+    &self,
+    out: &mut Vec<T>,
+    max: usize,
+  ) -> Result<usize, TryRecvError> {
+    let k = self.queue.pop_batch(out, max);
+    if k > 0 {
+      self.current_len.fetch_sub(k, Ordering::Relaxed);
+      return Ok(k);
+    }
+    if self.sender_count.load(Ordering::Acquire) == 0 {
+      // A sender may have pushed right before dropping; drain once more
+      // before reporting disconnection.
+      let k = self.queue.pop_batch(out, max);
+      if k > 0 {
+        self.current_len.fetch_sub(k, Ordering::Relaxed);
+        return Ok(k);
+      }
+      Err(TryRecvError::Disconnected)
+    } else {
+      Err(TryRecvError::Empty)
+    }
+  }
+
+  /// Async batch receive: mirrors `poll_recv_internal`'s register-then-recheck
+  /// protocol, draining up to `max` items per resolving poll.
+  pub(crate) fn poll_recv_batch_internal(
+    &self,
+    cx: &mut Context<'_>,
+    out: &mut Vec<T>,
+    max: usize,
+  ) -> Poll<Result<usize, RecvError>> {
+    if max == 0 {
+      return Poll::Ready(Ok(0));
+    }
+    match self.try_recv_batch_internal(out, max) {
+      Ok(k) => Poll::Ready(Ok(k)),
+      Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
+      Err(TryRecvError::Empty) => {
+        self.consumer_waker.register(cx.waker());
+        match self.try_recv_batch_internal(out, max) {
+          Ok(k) => Poll::Ready(Ok(k)),
+          Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
+          Err(TryRecvError::Empty) => Poll::Pending,
+        }
+      }
+    }
+  }
+
   pub(crate) fn poll_recv_internal(&self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
     loop {
       match self.try_recv_internal() {
