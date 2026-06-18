@@ -39,7 +39,7 @@ mod backoff;
 mod core;
 mod sync_impl;
 
-use core::mem;
+use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
