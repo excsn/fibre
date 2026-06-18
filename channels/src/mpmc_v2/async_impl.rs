@@ -2,7 +2,10 @@
 
 use futures_core::Stream;
 
-use super::core::{AsyncWaiter, WaiterData, STATE_CANCELLED, STATE_SUCCESS, STATE_WAITING};
+use super::core::{
+  AsyncWaiter, WaiterData, STATE_CANCELLED, STATE_CLOSED_BUFFERED, STATE_CLOSED_RENDEZVOUS,
+  STATE_SUCCESS_HANDOFF, STATE_SUCCESS_SPACE, STATE_WAITING,
+};
 use super::{AsyncReceiver, AsyncSender};
 use crate::error::{BatchSendErrorReason, SendBatchError, SendError, TrySendError};
 use crate::RecvError;
@@ -45,7 +48,12 @@ impl<T: Send> Drop for SendFuture<'_, T> {
     if self.is_registered
       && self
         .state
-        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
     {
       // Eagerly unlink the waiter so the future's memory can be safely freed.
@@ -61,7 +69,68 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
+    let state_ptr = &this.state as *const AtomicU8;
+
     'poll_loop: loop {
+      if this.is_registered {
+        let st = this.state.load(Ordering::SeqCst);
+
+        // Bit 0 / 0x01 is the FINISHED bit
+        if (st & 0x01) != 0 {
+          this.is_registered = false;
+
+          // Check if we closed (Bit 1 / 0x02 is 0)
+          if (st & 0x02) == 0 {
+            let mut guard = this.sender.shared.internal.lock();
+            if let Some(pos) = guard
+              .waiting_async_senders
+              .iter()
+              .position(|w| w.state == state_ptr)
+            {
+              let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
+              this.item = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+            }
+            drop(guard);
+            return Poll::Ready(Err(SendError::Closed));
+          }
+
+          // It was a success!
+          // If rendezvous (Bit 2 / 0x04 is set), the receiver took the item. We are done!
+          if (st & 0x04) != 0 {
+            return Poll::Ready(Ok(()));
+          }
+
+          // If buffered (Bit 2 / 0x04 is 0), space opened up, but we still have the item.
+          // Reclaim it and loop back to retry.
+          let mut guard = this.sender.shared.internal.lock();
+          if let Some(pos) = guard
+            .waiting_async_senders
+            .iter()
+            .position(|w| w.state == state_ptr)
+          {
+            let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
+            this.item = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+          }
+          drop(guard);
+        } else {
+          // Still parked: a spurious poll — update the waker in place.
+          let mut guard = this.sender.shared.internal.lock();
+          if let Some(w) = guard
+            .waiting_async_senders
+            .iter_mut()
+            .find(|w| w.state == state_ptr)
+          {
+            w.waker = cx.waker().clone();
+            return Poll::Pending;
+          }
+          // Popped but our state not yet flipped (a close path holds the
+          // waiter outside the lock): spin briefly and re-check.
+          drop(guard);
+          std::hint::spin_loop();
+          continue 'poll_loop;
+        }
+      }
+
       if this.item.is_none() {
         return Poll::Ready(Ok(()));
       }
@@ -84,18 +153,17 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
       }
 
       // --- Phase 2: Prepare to park ---
-      let is_rendezvous = this.sender.shared.capacity == 0;
-
       // --- Phase 3: Lock, re-check, and commit to parking ---
       {
         let mut guard = this.sender.shared.internal.lock();
 
-        if !guard.waiting_async_receivers.is_empty()
-          || !guard.waiting_sync_receivers.is_empty()
-          || (this.sender.shared.capacity > 0 && guard.queue.len() < this.sender.shared.capacity)
+        if !guard.is_full(this.sender.shared.capacity)
+          && (!guard.waiting_async_receivers.is_empty()
+            || !guard.waiting_sync_receivers.is_empty()
+            || (this.sender.shared.capacity > 0 && guard.len() < this.sender.shared.capacity))
         {
           drop(guard);
-          continue 'poll_loop; // Retry immediately.
+          continue 'poll_loop;
         }
 
         if guard.receiver_count == 0 {
@@ -104,34 +172,17 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
           return Poll::Ready(Err(SendError::Closed));
         }
 
-        let new_waker = cx.waker();
-        let state_ptr = &this.state as *const AtomicU8;
+        this.is_registered = true;
+        this.state.store(STATE_WAITING, Ordering::SeqCst);
 
-        if let Some(existing_waiter) = guard
-          .waiting_async_senders
-          .iter_mut()
-          .find(|w| w.state == state_ptr)
-        {
-          existing_waiter.waker = new_waker.clone();
-          if is_rendezvous {
-            existing_waiter.data = Some(WaiterData::SenderItem(this.item.take()));
-          }
-        } else {
-          this.is_registered = true;
-          // Reset state to WAITING before registering to clear any stale SUCCESS state
-          // from a previous wake-up cycle. Done under lock for safety.
-          this.state.store(STATE_WAITING, Ordering::SeqCst);
-          let waiter = AsyncWaiter {
-            waker: new_waker.clone(),
-            data: if is_rendezvous {
-              Some(WaiterData::SenderItem(this.item.take()))
-            } else {
-              None
-            },
-            state: state_ptr,
-          };
-          guard.waiting_async_senders.push_back(waiter);
-        }
+        let data = Some(WaiterData::SenderItem(this.item.take())); // Unconditional stash
+        let waiter = AsyncWaiter {
+          waker: cx.waker().clone(),
+          data,
+          state: state_ptr,
+        };
+        guard.waiting_async_senders.push_back(waiter);
+
         return Poll::Pending;
       }
     }
@@ -152,8 +203,7 @@ pub struct SendBatchFuture<'a, T: Send> {
   iter: std::vec::IntoIter<T>,
   total: usize,
   sent: usize,
-  /// True while one rendezvous item is parked in our queued waiter's slot.
-  in_flight: bool,
+  pending: Option<T>,
   state: AtomicU8,
   is_registered: bool,
   _phantom: PhantomPinned,
@@ -167,7 +217,7 @@ impl<'a, T: Send> SendBatchFuture<'a, T> {
       iter: items.into_iter(),
       total,
       sent: 0,
-      in_flight: false,
+      pending: None,
       state: AtomicU8::new(STATE_WAITING),
       is_registered: false,
       _phantom: PhantomPinned,
@@ -180,7 +230,12 @@ impl<T: Send> Drop for SendBatchFuture<'_, T> {
     if self.is_registered
       && self
         .state
-        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
     {
       // Eagerly unlink the waiter so the future's memory can be safely freed.
@@ -201,16 +256,55 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
 
     'poll_loop: loop {
       if this.is_registered {
-        if this.state.load(Ordering::SeqCst) == STATE_SUCCESS {
-          // We were woken and popped from the waiter queue.
+        let st = this.state.load(Ordering::SeqCst);
+
+        // Bit 0 / 0x01 is the FINISHED bit
+        if (st & 0x01) != 0 {
           this.is_registered = false;
-          if this.in_flight {
-            // The rendezvous payload left with the waiter (taken by a
-            // receiver, or dropped by a close path). Mirror the single-item
-            // future's optimism and count it as sent; a closed channel is
-            // reported for the remainder on the next iteration.
-            this.in_flight = false;
+
+          // Check if we closed (Bit 1 / 0x02 is 0)
+          if (st & 0x02) == 0 {
+            let mut guard = this.sender.shared.internal.lock();
+            let mut unsent_item = None;
+            if let Some(pos) = guard
+              .waiting_async_senders
+              .iter()
+              .position(|w| w.state == state_ptr)
+            {
+              let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
+              unsent_item = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+            }
+            drop(guard);
+            return Poll::Ready(Err(SendBatchError {
+              sent: this.sent,
+              unsent: unsent_item
+                .into_iter()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .chain(this.iter.by_ref())
+                .collect(),
+            }));
+          }
+
+          // It was a success!
+          // If rendezvous (Bit 2 / 0x04 is set), the receiver took the item.
+          if (st & 0x04) != 0 {
             this.sent += 1;
+            if this.sent == this.total {
+              return Poll::Ready(Ok(this.total));
+            }
+          } else {
+            // Space retry: reclaim the item
+            let mut guard = this.sender.shared.internal.lock();
+            if let Some(pos) = guard
+              .waiting_async_senders
+              .iter()
+              .position(|w| w.state == state_ptr)
+            {
+              let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
+              this.pending = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+            }
+            drop(guard);
           }
         } else {
           // Still parked: a spurious poll — update the waker in place.
@@ -231,34 +325,51 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
         }
       }
 
-      if this.sent == this.total {
-        return Poll::Ready(Ok(this.total));
+      if let Some(item) = this.pending.take() {
+        let mut once = std::iter::once(item);
+        let (k, reason) = this.sender.shared.try_send_batch_core(&mut once, 1);
+        this.sent += k;
+        if k == 0 {
+          this.pending = once.next();
+          if matches!(reason, Some(BatchSendErrorReason::Closed)) {
+            let mut unsent: Vec<T> = this.pending.take().into_iter().collect();
+            unsent.extend(this.iter.by_ref());
+            return Poll::Ready(Err(SendBatchError {
+              sent: this.sent,
+              unsent,
+            }));
+          }
+        }
       }
 
-      // --- Phase 1: non-blocking batch send ---
-      let (k, reason) = this
-        .sender
-        .shared
-        .try_send_batch_core(&mut this.iter, this.total - this.sent);
-      this.sent += k;
-      if this.sent == this.total {
-        return Poll::Ready(Ok(this.total));
-      }
-      if matches!(reason, Some(BatchSendErrorReason::Closed)) {
-        return Poll::Ready(Err(SendBatchError {
-          sent: this.sent,
-          unsent: this.iter.by_ref().collect(),
-        }));
+      if this.pending.is_none() {
+        if this.sent == this.total {
+          return Poll::Ready(Ok(this.total));
+        }
+
+        let (k, reason) = this
+          .sender
+          .shared
+          .try_send_batch_core(&mut this.iter, this.total - this.sent);
+        this.sent += k;
+        if this.sent == this.total {
+          return Poll::Ready(Ok(this.total));
+        }
+        if matches!(reason, Some(BatchSendErrorReason::Closed)) {
+          return Poll::Ready(Err(SendBatchError {
+            sent: this.sent,
+            unsent: this.iter.by_ref().collect(),
+          }));
+        }
       }
 
-      // --- Phase 2/3: lock, re-check, commit to parking ---
-      let is_rendezvous = this.sender.shared.capacity == 0;
       {
         let mut guard = this.sender.shared.internal.lock();
 
-        if !guard.waiting_async_receivers.is_empty()
-          || !guard.waiting_sync_receivers.is_empty()
-          || (this.sender.shared.capacity > 0 && guard.queue.len() < this.sender.shared.capacity)
+        if !guard.is_full(this.sender.shared.capacity)
+          && (!guard.waiting_async_receivers.is_empty()
+            || !guard.waiting_sync_receivers.is_empty()
+            || (this.sender.shared.capacity > 0 && guard.len() < this.sender.shared.capacity))
         {
           drop(guard);
           continue 'poll_loop;
@@ -273,14 +384,10 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
 
         this.is_registered = true;
         this.state.store(STATE_WAITING, Ordering::SeqCst);
-        let data = if is_rendezvous {
-          let item = this.iter.next();
-          debug_assert!(item.is_some(), "sent < total implies items remain");
-          this.in_flight = true;
-          Some(WaiterData::SenderItem(item))
-        } else {
-          None
-        };
+        let data = Some(WaiterData::SenderItem(
+          this.pending.take().or_else(|| this.iter.next()),
+        )); // Unconditional stash
+
         guard.waiting_async_senders.push_back(AsyncWaiter {
           waker: cx.waker().clone(),
           data,
@@ -305,8 +412,7 @@ pub struct SendBatchMutFuture<'a, T: Send> {
   sender: &'a AsyncSender<T>,
   items: &'a mut Vec<T>,
   sent: usize,
-  /// True while one rendezvous item is parked in our queued waiter's slot.
-  in_flight: bool,
+  pending: Option<T>,
   state: AtomicU8,
   is_registered: bool,
   _phantom: PhantomPinned,
@@ -318,7 +424,7 @@ impl<'a, T: Send> SendBatchMutFuture<'a, T> {
       sender,
       items,
       sent: 0,
-      in_flight: false,
+      pending: None,
       state: AtomicU8::new(STATE_WAITING),
       is_registered: false,
       _phantom: PhantomPinned,
@@ -331,12 +437,17 @@ impl<T: Send> Drop for SendBatchMutFuture<'_, T> {
     if self.is_registered
       && self
         .state
-        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
     {
       let mut guard = self.sender.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
-      // Recover an in-flight rendezvous payload back into the caller's vector
+      // Recover an in-flight payload back into the caller's vector
       // before unlinking, preserving cancel safety.
       if let Some(w) = guard
         .waiting_async_senders
@@ -348,6 +459,10 @@ impl<T: Send> Drop for SendBatchMutFuture<'_, T> {
         }
       }
       guard.waiting_async_senders.retain(|w| w.state != state_ptr);
+    }
+    // Also recover any stashed item waiting locally in pending
+    if let Some(item) = self.pending.take() {
+      self.items.insert(0, item);
     }
   }
 }
@@ -361,11 +476,46 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
 
     'poll_loop: loop {
       if this.is_registered {
-        if this.state.load(Ordering::SeqCst) == STATE_SUCCESS {
+        let st = this.state.load(Ordering::SeqCst);
+
+        // Bit 0 / 0x01 is the FINISHED bit
+        if (st & 0x01) != 0 {
           this.is_registered = false;
-          if this.in_flight {
-            this.in_flight = false;
+
+          // Check if we closed (Bit 1 / 0x02 is 0)
+          if (st & 0x02) == 0 {
+            let mut guard = this.sender.shared.internal.lock();
+            let mut unsent_item = None;
+            if let Some(pos) = guard
+              .waiting_async_senders
+              .iter()
+              .position(|w| w.state == state_ptr)
+            {
+              let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
+              unsent_item = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+            }
+            drop(guard);
+            if let Some(item) = unsent_item {
+              this.items.insert(0, item);
+            }
+            return Poll::Ready(Err(SendError::Closed));
+          }
+
+          // It was a success!
+          if (st & 0x04) != 0 {
             this.sent += 1;
+          } else {
+            // Space retry: reclaim the item
+            let mut guard = this.sender.shared.internal.lock();
+            if let Some(pos) = guard
+              .waiting_async_senders
+              .iter()
+              .position(|w| w.state == state_ptr)
+            {
+              let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
+              this.pending = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+            }
+            drop(guard);
           }
         } else {
           let mut guard = this.sender.shared.internal.lock();
@@ -383,32 +533,48 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
         }
       }
 
-      if this.items.is_empty() {
-        return Poll::Ready(Ok(this.sent));
+      if let Some(item) = this.pending.take() {
+        let mut once = std::iter::once(item);
+        let (k, reason) = this.sender.shared.try_send_batch_core(&mut once, 1);
+        this.sent += k;
+        if k == 0 {
+          this.pending = once.next();
+          if matches!(reason, Some(BatchSendErrorReason::Closed)) {
+            if let Some(it) = this.pending.take() {
+              this.items.insert(0, it);
+            }
+            return Poll::Ready(Err(SendError::Closed));
+          }
+        }
       }
 
-      // --- Phase 1: non-blocking batch send straight out of the vector ---
-      let limit = this.items.len();
-      let mut drain = this.items.drain(..);
-      let (k, reason) = this.sender.shared.try_send_batch_core(&mut drain, limit);
-      let rest: Vec<T> = drain.collect();
-      *this.items = rest;
-      this.sent += k;
-      if this.items.is_empty() {
-        return Poll::Ready(Ok(this.sent));
-      }
-      if matches!(reason, Some(BatchSendErrorReason::Closed)) {
-        return Poll::Ready(Err(SendError::Closed));
+      if this.pending.is_none() {
+        if this.items.is_empty() {
+          return Poll::Ready(Ok(this.sent));
+        }
+
+        let limit = this.items.len();
+        let mut drain = this.items.drain(..);
+        let (k, reason) = this.sender.shared.try_send_batch_core(&mut drain, limit);
+        let rest: Vec<T> = drain.collect();
+        *this.items = rest;
+        this.sent += k;
+        if this.items.is_empty() {
+          return Poll::Ready(Ok(this.sent));
+        }
+        if matches!(reason, Some(BatchSendErrorReason::Closed)) {
+          return Poll::Ready(Err(SendError::Closed));
+        }
       }
 
       // --- Phase 2/3: lock, re-check, commit to parking ---
-      let is_rendezvous = this.sender.shared.capacity == 0;
       {
         let mut guard = this.sender.shared.internal.lock();
 
-        if !guard.waiting_async_receivers.is_empty()
-          || !guard.waiting_sync_receivers.is_empty()
-          || (this.sender.shared.capacity > 0 && guard.queue.len() < this.sender.shared.capacity)
+        if !guard.is_full(this.sender.shared.capacity)
+          && (!guard.waiting_async_receivers.is_empty()
+            || !guard.waiting_sync_receivers.is_empty()
+            || (this.sender.shared.capacity > 0 && guard.len() < this.sender.shared.capacity))
         {
           drop(guard);
           continue 'poll_loop;
@@ -420,12 +586,12 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
 
         this.is_registered = true;
         this.state.store(STATE_WAITING, Ordering::SeqCst);
-        let data = if is_rendezvous {
-          this.in_flight = true;
-          Some(WaiterData::SenderItem(Some(this.items.remove(0))))
-        } else {
-          None
-        };
+
+        // BUGFIX: Always consume any existing pending item before draining the vector.
+        let data = Some(WaiterData::SenderItem(
+          this.pending.take().or_else(|| Some(this.items.remove(0))),
+        )); // Unconditional stash
+
         guard.waiting_async_senders.push_back(AsyncWaiter {
           waker: cx.waker().clone(),
           data,
@@ -472,6 +638,22 @@ impl<'a, T: Send> Future for RecvBatchFuture<'a, T> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
     let state_ptr = &this.state as *const AtomicU8;
     let mut out = Vec::new();
+
+    if this.is_registered {
+      let st = this.state.load(Ordering::SeqCst);
+      if (st & 0x01) != 0 {
+        this.is_registered = false;
+        if (st & 0x02) == 0 {
+          let mut guard = this.receiver.shared.internal.lock();
+          guard
+            .waiting_async_receivers
+            .retain(|w| w.state != state_ptr);
+          drop(guard);
+          return Poll::Ready(Err(RecvError::Disconnected));
+        }
+      }
+    }
+
     this.is_registered = true;
     match this
       .receiver
@@ -496,12 +678,19 @@ impl<T: Send> Drop for RecvBatchFuture<'_, T> {
     if self.is_registered
       && self
         .state
-        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
     {
       let mut guard = self.receiver.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
-      guard.waiting_async_receivers.retain(|w| w.state != state_ptr);
+      guard
+        .waiting_async_receivers
+        .retain(|w| w.state != state_ptr);
     }
   }
 }
@@ -542,6 +731,22 @@ impl<'a, T: Send> Future for RecvBatchMutFuture<'a, T> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
     let state_ptr = &this.state as *const AtomicU8;
     let max = this.max;
+
+    if this.is_registered {
+      let st = this.state.load(Ordering::SeqCst);
+      if (st & 0x01) != 0 {
+        this.is_registered = false;
+        if (st & 0x02) == 0 {
+          let mut guard = this.receiver.shared.internal.lock();
+          guard
+            .waiting_async_receivers
+            .retain(|w| w.state != state_ptr);
+          drop(guard);
+          return Poll::Ready(Err(RecvError::Disconnected));
+        }
+      }
+    }
+
     this.is_registered = true;
     match this
       .receiver
@@ -562,12 +767,19 @@ impl<T: Send> Drop for RecvBatchMutFuture<'_, T> {
     if self.is_registered
       && self
         .state
-        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
     {
       let mut guard = self.receiver.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
-      guard.waiting_async_receivers.retain(|w| w.state != state_ptr);
+      guard
+        .waiting_async_receivers
+        .retain(|w| w.state != state_ptr);
     }
   }
 }
@@ -604,6 +816,22 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
     // PhantomPinned makes RecvFuture !Unpin, so get_unchecked_mut is required.
     let this = unsafe { self.as_mut().get_unchecked_mut() };
     let state_ptr = &this.state as *const AtomicU8;
+
+    if this.is_registered {
+      let st = this.state.load(Ordering::SeqCst);
+      if (st & 0x01) != 0 {
+        this.is_registered = false;
+        if (st & 0x02) == 0 {
+          let mut guard = this.receiver.shared.internal.lock();
+          guard
+            .waiting_async_receivers
+            .retain(|w| w.state != state_ptr);
+          drop(guard);
+          return Poll::Ready(Err(RecvError::Disconnected));
+        }
+      }
+    }
+
     this.is_registered = true;
     match this.receiver.shared.poll_recv_internal(cx, state_ptr) {
       Poll::Ready(res) => {
@@ -620,13 +848,20 @@ impl<T: Send> Drop for RecvFuture<'_, T> {
     if self.is_registered
       && self
         .state
-        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
     {
       // Eagerly unlink the waiter so the future's memory can be safely freed.
       let mut guard = self.receiver.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
-      guard.waiting_async_receivers.retain(|w| w.state != state_ptr);
+      guard
+        .waiting_async_receivers
+        .retain(|w| w.state != state_ptr);
     }
   }
 }

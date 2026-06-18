@@ -208,10 +208,18 @@ impl<T> fmt::Display for TrySendBatchError<T> {
     let total = self.sent + self.unsent.len();
     match self.reason {
       BatchSendErrorReason::Full => {
-        write!(f, "channel full after sending {} of {} items", self.sent, total)
+        write!(
+          f,
+          "channel full after sending {} of {} items",
+          self.sent, total
+        )
       }
       BatchSendErrorReason::Closed => {
-        write!(f, "channel closed after sending {} of {} items", self.sent, total)
+        write!(
+          f,
+          "channel closed after sending {} of {} items",
+          self.sent, total
+        )
       }
     }
   }
@@ -252,7 +260,11 @@ impl<T> fmt::Debug for SendBatchError<T> {
 impl<T> fmt::Display for SendBatchError<T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     let total = self.sent + self.unsent.len();
-    write!(f, "channel closed after sending {} of {} items", self.sent, total)
+    write!(
+      f,
+      "channel closed after sending {} of {} items",
+      self.sent, total
+    )
   }
 }
 

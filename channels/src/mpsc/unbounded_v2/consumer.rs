@@ -302,7 +302,11 @@ impl<T: Send> AsyncReceiver<T> {
 
   /// Receives up to `max` items asynchronously, appending them to the end of
   /// `out`. Resolves with the number appended. Cancel-safe.
-  pub fn recv_batch_mut<'a>(&'a self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T> {
+  pub fn recv_batch_mut<'a>(
+    &'a self,
+    out: &'a mut Vec<T>,
+    max: usize,
+  ) -> RecvBatchMutFuture<'a, T> {
     RecvBatchMutFuture {
       consumer: self,
       out,
@@ -408,7 +412,11 @@ impl<'a, T: Send> Future for RecvBatchFuture<'a, T> {
       return Poll::Ready(Err(RecvError::Disconnected));
     }
     let mut out = Vec::new();
-    match self.consumer.shared.poll_recv_batch_internal(cx, &mut out, self.max) {
+    match self
+      .consumer
+      .shared
+      .poll_recv_batch_internal(cx, &mut out, self.max)
+    {
       Poll::Ready(Ok(_)) => Poll::Ready(Ok(out)),
       Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
       Poll::Pending => Poll::Pending,
@@ -434,7 +442,10 @@ impl<'a, T: Send> Future for RecvBatchMutFuture<'a, T> {
       return Poll::Ready(Err(RecvError::Disconnected));
     }
     let max = this.max;
-    this.consumer.shared.poll_recv_batch_internal(cx, this.out, max)
+    this
+      .consumer
+      .shared
+      .poll_recv_batch_internal(cx, this.out, max)
   }
 }
 

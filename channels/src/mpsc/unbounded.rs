@@ -4,7 +4,6 @@ use crate::internal::cache_padded::CachePadded;
 use crate::{sync_util, RecvErrorTimeout, TrySendError};
 
 use core::marker::PhantomPinned;
-use std::time::{Duration, Instant};
 use futures_util::stream::Stream;
 use std::cell::UnsafeCell;
 use std::fmt;
@@ -15,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::thread::{self, Thread};
+use std::time::{Duration, Instant};
 
 /// A node in our lock-free linked list.
 struct Node<T> {

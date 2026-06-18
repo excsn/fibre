@@ -309,7 +309,11 @@ impl<T: Send> AsyncReceiver<T> {
 
   /// Receives up to `max` items asynchronously, appending them to the end of
   /// `out`. Resolves with the number appended. Cancel-safe.
-  pub fn recv_batch_mut<'a>(&'a self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T> {
+  pub fn recv_batch_mut<'a>(
+    &'a self,
+    out: &'a mut Vec<T>,
+    max: usize,
+  ) -> RecvBatchMutFuture<'a, T> {
     RecvBatchMutFuture {
       receiver: self,
       out,
@@ -340,7 +344,10 @@ impl<T: Send> AsyncReceiver<T> {
       self.shared.gate.release();
     }
     let mut msgs = Vec::new();
-    let k = self.shared.channel.try_recv_batch_internal(&mut msgs, max)?;
+    let k = self
+      .shared
+      .channel
+      .try_recv_batch_internal(&mut msgs, max)?;
     debug_assert_eq!(k, msgs.len());
     Ok(unwrap_batch_messages(&self.shared.gate, msgs, out))
   }
@@ -543,7 +550,11 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
           // SAFETY: the completed `AcquireManyFuture` deregistered itself
           // before returning Ready (`is_registered == false`), so dropping it
           // in place and writing a fresh one respects the pin contract.
-          this.acquire = this.sender.shared.gate.acquire_many_async(this.total - this.sent);
+          this.acquire = this
+            .sender
+            .shared
+            .gate
+            .acquire_many_async(this.total - this.sent);
           // Loop: poll the new acquire future immediately.
         }
         Poll::Pending => return Poll::Pending,
@@ -708,7 +719,11 @@ fn poll_recv_batch_bounded<T: Send>(
   }
 
   let mut msgs = Vec::new();
-  match receiver.shared.channel.poll_recv_batch_internal(cx, &mut msgs, max) {
+  match receiver
+    .shared
+    .channel
+    .poll_recv_batch_internal(cx, &mut msgs, max)
+  {
     Poll::Ready(Ok(k)) => {
       debug_assert_eq!(k, msgs.len());
       Poll::Ready(Ok(unwrap_batch_messages(&receiver.shared.gate, msgs, out)))

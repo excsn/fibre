@@ -1042,6 +1042,7 @@ mod tests {
   }
 
   #[test] // This test uses std::thread for consumer, tokio runtime for producer
+  #[cfg(not(miri))]
   fn async_producer_sync_consumer() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 

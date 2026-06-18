@@ -99,8 +99,7 @@ impl<T: Send> Sender<T> {
     if total == 0 {
       return Ok(0);
     }
-    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire)
-    {
+    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire) {
       return Err(TrySendBatchError {
         sent: 0,
         unsent: items,
@@ -119,8 +118,7 @@ impl<T: Send> Sender<T> {
     if items.is_empty() {
       return Ok(0);
     }
-    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire)
-    {
+    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire) {
       return Err(SendError::Closed);
     }
     let total = items.len();
@@ -178,17 +176,17 @@ impl<T: Send> Sender<T> {
 
     // 2. Safely drop the cache content.
     // We lock the cache and take the Option out.
-    // When `_cached_block` goes out of scope at the end of this block, 
+    // When `_cached_block` goes out of scope at the end of this block,
     // the Arc (if any) is dropped, decrementing the ref count.
     {
-       let mut guard = self.cache.lock();
-       let _cached_block = guard.take(); 
+      let mut guard = self.cache.lock();
+      let _cached_block = guard.take();
     }
 
     // 3. Forget self to prevent double-drop of `shared` (which we read above).
-    // Note: `self.cache` itself (the Mutex) is also forgotten/leaked, 
-    // but Mutexes generally don't have critical Drop logic other than 
-    // OS resource cleanup (which is usually fine to skip for std/parking_lot mutexes 
+    // Note: `self.cache` itself (the Mutex) is also forgotten/leaked,
+    // but Mutexes generally don't have critical Drop logic other than
+    // OS resource cleanup (which is usually fine to skip for std/parking_lot mutexes
     // that are just memory state). If using a Mutex that requires Drop, this leaks.
     // parking_lot::Mutex is just a byte in memory, so forgetting it is safe.
     std::mem::forget(self);
@@ -248,8 +246,7 @@ impl<T: Send> AsyncSender<T> {
     if total == 0 {
       return Ok(0);
     }
-    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire)
-    {
+    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire) {
       return Err(TrySendBatchError {
         sent: 0,
         unsent: items,
@@ -268,8 +265,7 @@ impl<T: Send> AsyncSender<T> {
     if items.is_empty() {
       return Ok(0);
     }
-    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire)
-    {
+    if self.closed.load(Ordering::Relaxed) || self.shared.receiver_dropped.load(Ordering::Acquire) {
       return Err(SendError::Closed);
     }
     let total = items.len();
@@ -380,7 +376,11 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
       return Poll::Ready(Ok(0));
     }
     if this.producer.closed.load(Ordering::Relaxed)
-      || this.producer.shared.receiver_dropped.load(Ordering::Acquire)
+      || this
+        .producer
+        .shared
+        .receiver_dropped
+        .load(Ordering::Acquire)
     {
       return Poll::Ready(Err(SendBatchError {
         sent: 0,
@@ -412,7 +412,11 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
       return Poll::Ready(Ok(0));
     }
     if this.producer.closed.load(Ordering::Relaxed)
-      || this.producer.shared.receiver_dropped.load(Ordering::Acquire)
+      || this
+        .producer
+        .shared
+        .receiver_dropped
+        .load(Ordering::Acquire)
     {
       return Poll::Ready(Err(SendError::Closed));
     }

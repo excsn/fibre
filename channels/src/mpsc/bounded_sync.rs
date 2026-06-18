@@ -604,7 +604,10 @@ impl<T: Send> Receiver<T> {
       return Err(TryRecvError::Disconnected);
     }
     let mut msgs = Vec::new();
-    let k = self.shared.channel.try_recv_batch_internal(&mut msgs, max)?;
+    let k = self
+      .shared
+      .channel
+      .try_recv_batch_internal(&mut msgs, max)?;
     debug_assert_eq!(k, msgs.len());
     Ok(unwrap_batch_messages(&self.shared.gate, msgs, out))
   }

@@ -1,11 +1,13 @@
-use bench_matrix::{criterion_runner::sync_suite::SyncBenchmarkSuite, AbstractCombination, MatrixCellValue};
+use bench_matrix::{
+  criterion_runner::sync_suite::SyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
+};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::{
   thread::{self, available_parallelism},
   time::{Duration, Instant},
 };
 
-use fibre::mpmc as mpmc;
+use fibre::mpmc;
 
 const ITEM_VALUE: u64 = 42;
 
@@ -108,12 +110,16 @@ fn benchmark_logic_mpmc_sync(
 
   // Wait for producers first
   for handle in producer_handles {
-    handle.join().expect("MPMC v2 sync producer thread panicked");
+    handle
+      .join()
+      .expect("MPMC v2 sync producer thread panicked");
   }
 
   // Then wait for consumers to finish draining
   for handle in consumer_handles {
-    handle.join().expect("MPMC v2 sync consumer thread panicked");
+    handle
+      .join()
+      .expect("MPMC v2 sync consumer thread panicked");
   }
 
   let duration = start_time.elapsed();

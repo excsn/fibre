@@ -1,6 +1,6 @@
 use crate::internal::cache_padded::CachePadded;
-use parking_lot::Mutex;
 use core::fmt;
+use parking_lot::Mutex;
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -217,8 +217,11 @@ impl<T> UnboundedBlockQueue<T> {
             // only ever spins on the slot currently being filled.
             slot.state.store(SLOT_WRITING, Ordering::Release);
             unsafe {
-              (*slot.value.get())
-                .write(iter.next().expect("push_batch: iterator yielded fewer than `count` items"));
+              (*slot.value.get()).write(
+                iter
+                  .next()
+                  .expect("push_batch: iterator yielded fewer than `count` items"),
+              );
             }
             slot.state.store(SLOT_READY, Ordering::Release);
           }
@@ -653,7 +656,13 @@ mod tests {
   #[test]
   fn test_push_batch_pop_batch_block_boundaries() {
     // Cover batches below, at, and above BLOCK_CAPACITY.
-    for &n in &[1usize, BLOCK_CAPACITY - 1, BLOCK_CAPACITY, BLOCK_CAPACITY + 1, BLOCK_CAPACITY * 3 + 5] {
+    for &n in &[
+      1usize,
+      BLOCK_CAPACITY - 1,
+      BLOCK_CAPACITY,
+      BLOCK_CAPACITY + 1,
+      BLOCK_CAPACITY * 3 + 5,
+    ] {
       let q = UnboundedBlockQueue::new();
       let mut cache = None;
       let items: Vec<usize> = (0..n).collect();

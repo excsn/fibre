@@ -24,8 +24,8 @@ use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
 // --- Producer Parking State Machine ---
-pub(crate) const PARK_IDLE: u8 = 0;      // No one is parked or unparking.
-pub(crate) const PARK_PARKED: u8 = 1;    // Producer has written its thread handle and is about to park.
+pub(crate) const PARK_IDLE: u8 = 0; // No one is parked or unparking.
+pub(crate) const PARK_PARKED: u8 = 1; // Producer has written its thread handle and is about to park.
 pub(crate) const PARK_CONSUMING: u8 = 2; // A consumer has claimed the thread handle and will unpark.
 
 // --- Telemetry Constants (unchanged) ---
@@ -223,14 +223,21 @@ impl<T: Send + Clone> SpmcShared<T> {
       telemetry::log_event(None, LOC_WAKEP, EVT_WAKEP_SYNC_ARMED, None);
       if self
         .producer_parked_sync_flag
-        .compare_exchange(PARK_PARKED, PARK_CONSUMING, Ordering::AcqRel, Ordering::Acquire)
+        .compare_exchange(
+          PARK_PARKED,
+          PARK_CONSUMING,
+          Ordering::AcqRel,
+          Ordering::Acquire,
+        )
         .is_ok()
       {
         telemetry::log_event(None, LOC_WAKEP, EVT_WAKEP_CAS_OK, None);
         // Safety: CONSUMING state gives us exclusive access to producer_thread_sync;
         // the producer is parked and will not touch the slot until we store PARK_IDLE.
         let thread_to_unpark = unsafe { (*self.producer_thread_sync.get()).take() };
-        self.producer_parked_sync_flag.store(PARK_IDLE, Ordering::Release);
+        self
+          .producer_parked_sync_flag
+          .store(PARK_IDLE, Ordering::Release);
         if let Some(thread) = thread_to_unpark {
           telemetry::log_event(
             None,
@@ -426,7 +433,9 @@ impl<T: Send + Clone> SpmcShared<T> {
     }
 
     if written > 0 {
-      self.head.store(current_head_idx + written, Ordering::Release);
+      self
+        .head
+        .store(current_head_idx + written, Ordering::Release);
     }
     // Wake outside all slot locks, in one coalesced pass.
     for waker in wakers_to_wake {
@@ -506,7 +515,9 @@ pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (Sender<T>, Recei
   assert!(capacity > 0, "SPMC channel capacity must be > 0");
   let shared = Arc::new(SpmcShared::new(capacity));
   let initial_tail = Arc::new(AtomicUsize::new(0));
-  shared.tails_writer.modify(|list| list.push(Arc::clone(&initial_tail)));
+  shared
+    .tails_writer
+    .modify(|list| list.push(Arc::clone(&initial_tail)));
   (
     Sender {
       shared: Arc::clone(&shared),
@@ -977,7 +988,11 @@ impl<T: Send + Clone> AsyncReceiver<T> {
 
   /// Receives up to `max` items asynchronously, appending them to the end of
   /// `out`. Resolves with the number appended. Cancel-safe.
-  pub fn recv_batch_mut<'a>(&'a self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T> {
+  pub fn recv_batch_mut<'a>(
+    &'a self,
+    out: &'a mut Vec<T>,
+    max: usize,
+  ) -> RecvBatchMutFuture<'a, T> {
     RecvBatchMutFuture {
       receiver: self,
       out,
@@ -1055,7 +1070,10 @@ impl<T: Send + Clone> Clone for Receiver<T> {
     let new_tail_val = self.tail.load(Ordering::Acquire);
     let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
     let _lock = self.shared.tails_mutex.lock();
-    self.shared.tails_writer.modify(|list| list.push(Arc::clone(&new_consumer_tail)));
+    self
+      .shared
+      .tails_writer
+      .modify(|list| list.push(Arc::clone(&new_consumer_tail)));
     Self {
       shared: Arc::clone(&self.shared),
       tail: new_consumer_tail,
@@ -1068,7 +1086,10 @@ impl<T: Send + Clone> Clone for AsyncReceiver<T> {
     let new_tail_val = self.tail.load(Ordering::Acquire);
     let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
     let _lock = self.shared.tails_mutex.lock();
-    self.shared.tails_writer.modify(|list| list.push(Arc::clone(&new_consumer_tail)));
+    self
+      .shared
+      .tails_writer
+      .modify(|list| list.push(Arc::clone(&new_consumer_tail)));
     Self {
       shared: Arc::clone(&self.shared),
       tail: new_consumer_tail,
@@ -1079,7 +1100,9 @@ impl<T: Send + Clone> Clone for AsyncReceiver<T> {
 
 fn drop_receiver_internal<T: Send + Clone>(shared: &SpmcShared<T>, tail_arc: &Arc<AtomicUsize>) {
   let _lock = shared.tails_mutex.lock();
-  shared.tails_writer.modify(|list| list.retain(|t_arc| !Arc::ptr_eq(t_arc, tail_arc)));
+  shared
+    .tails_writer
+    .modify(|list| list.retain(|t_arc| !Arc::ptr_eq(t_arc, tail_arc)));
   drop(_lock);
   shared.wake_producer();
 }
@@ -1139,7 +1162,10 @@ impl<T: Send + Clone> Sender<T> {
       unsafe {
         *self.shared.producer_thread_sync.get() = Some(thread::current());
       }
-      self.shared.producer_parked_sync_flag.store(PARK_PARKED, Ordering::Release);
+      self
+        .shared
+        .producer_parked_sync_flag
+        .store(PARK_PARKED, Ordering::Release);
       std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
 
       let min_tail_recheck;
@@ -1166,7 +1192,9 @@ impl<T: Send + Clone> Sender<T> {
             ) {
               Ok(_) => {
                 // We won the race: clear the thread handle we wrote.
-                unsafe { *self.shared.producer_thread_sync.get() = None; }
+                unsafe {
+                  *self.shared.producer_thread_sync.get() = None;
+                }
                 break;
               }
               Err(PARK_CONSUMING) => std::hint::spin_loop(),
@@ -1208,7 +1236,9 @@ impl<T: Send + Clone> Sender<T> {
                 EVT_P_CAS_UNARM_SUCCESS,
                 None,
               );
-              unsafe { *self.shared.producer_thread_sync.get() = None; }
+              unsafe {
+                *self.shared.producer_thread_sync.get() = None;
+              }
               break;
             }
             Err(PARK_CONSUMING) => {
@@ -1219,7 +1249,12 @@ impl<T: Send + Clone> Sender<T> {
                 EVT_P_CAS_UNARM_FAIL,
                 None,
               );
-              while self.shared.producer_parked_sync_flag.load(Ordering::Acquire) != PARK_IDLE {
+              while self
+                .shared
+                .producer_parked_sync_flag
+                .load(Ordering::Acquire)
+                != PARK_IDLE
+              {
                 std::hint::spin_loop();
               }
               break;
@@ -1249,7 +1284,11 @@ impl<T: Send + Clone> Sender<T> {
       // Post-wakeup: resolve any spurious wakeup or mid-CONSUMING races before
       // re-entering the send loop.
       loop {
-        match self.shared.producer_parked_sync_flag.load(Ordering::Acquire) {
+        match self
+          .shared
+          .producer_parked_sync_flag
+          .load(Ordering::Acquire)
+        {
           PARK_IDLE => break, // Normal: consumer completed the full handoff.
           PARK_PARKED => {
             // Spurious wakeup: try to de-arm.
@@ -1259,7 +1298,9 @@ impl<T: Send + Clone> Sender<T> {
               .compare_exchange(PARK_PARKED, PARK_IDLE, Ordering::AcqRel, Ordering::Acquire)
               .is_ok()
             {
-              unsafe { *self.shared.producer_thread_sync.get() = None; }
+              unsafe {
+                *self.shared.producer_thread_sync.get() = None;
+              }
               break;
             }
             // CAS failed: consumer just moved to CONSUMING; spin.
@@ -1448,7 +1489,11 @@ impl<T: Send + Clone> Sender<T> {
 
     // Post-wakeup: resolve spurious wakeups / mid-CONSUMING races.
     loop {
-      match self.shared.producer_parked_sync_flag.load(Ordering::Acquire) {
+      match self
+        .shared
+        .producer_parked_sync_flag
+        .load(Ordering::Acquire)
+      {
         PARK_IDLE => break,
         PARK_PARKED => {
           if self
@@ -1912,8 +1957,13 @@ impl<'a, T: Send + Clone> Future for RecvBatchFuture<'a, T> {
       return Poll::Ready(Err(RecvError::Disconnected));
     }
     let mut out = Vec::new();
-    match poll_recv_batch_internal(&self.receiver.shared, &self.receiver.tail, cx, &mut out, self.max)
-    {
+    match poll_recv_batch_internal(
+      &self.receiver.shared,
+      &self.receiver.tail,
+      cx,
+      &mut out,
+      self.max,
+    ) {
       Poll::Ready(Ok(_)) => Poll::Ready(Ok(out)),
       Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
       Poll::Pending => Poll::Pending,
@@ -1941,7 +1991,13 @@ impl<'a, T: Send + Clone> Future for RecvBatchMutFuture<'a, T> {
       return Poll::Ready(Err(RecvError::Disconnected));
     }
     let max = this.max;
-    poll_recv_batch_internal(&this.receiver.shared, &this.receiver.tail, cx, this.out, max)
+    poll_recv_batch_internal(
+      &this.receiver.shared,
+      &this.receiver.tail,
+      cx,
+      this.out,
+      max,
+    )
   }
 }
 

@@ -1,6 +1,6 @@
 //! Implementation of the synchronous, blocking send and receive logic for the MPMC channel.
 
-use super::core::{SyncWaiter, WaiterData, STATE_CANCELLED, STATE_SUCCESS, STATE_WAITING};
+use super::core::{SyncWaiter, WaiterData, STATE_CANCELLED, STATE_WAITING};
 use super::{Receiver, Sender};
 use crate::error::{
   BatchSendErrorReason, RecvError, SendBatchError, SendError, TryRecvError, TrySendError,
@@ -17,49 +17,36 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
   let mut current_item_opt = Some(item);
 
   loop {
-    let item_to_send = current_item_opt
-      .take()
-      .expect("Item should always exist at the start of the loop");
+    let item_to_send = current_item_opt.take().unwrap();
 
-    // --- Phase 1: Attempt a non-blocking send ---
     match sender.shared.try_send_core(item_to_send) {
-      Ok(()) => return Ok(()), // Success!
-      Err(TrySendError::Closed(_)) => {
-        return Err(SendError::Closed);
-      }
+      Ok(()) => return Ok(()),
+      Err(TrySendError::Closed(_)) => return Err(SendError::Closed),
       Err(TrySendError::Full(returned_item)) => {
         current_item_opt = Some(returned_item);
       }
       Err(TrySendError::Sent(_)) => unreachable!(),
     }
 
-    // --- Phase 2: Prepare to park (state on the stack, no heap allocation) ---
     let done_flag = AtomicU8::new(STATE_WAITING);
     let done_ptr = &done_flag as *const AtomicU8;
-    let is_rendezvous = sender.shared.capacity == 0;
 
     let waiter = SyncWaiter {
       thread: thread::current(),
-      data: if is_rendezvous {
-        Some(WaiterData::SenderItem(current_item_opt.take()))
-      } else {
-        None
-      },
+      data: Some(WaiterData::SenderItem(current_item_opt.take())), // Unconditional stash
       state: done_ptr,
     };
 
-    // --- Phase 3: Lock, re-check, and commit to parking ---
     {
       let mut guard = sender.shared.internal.lock();
 
-      if !guard.waiting_async_receivers.is_empty()
-        || !guard.waiting_sync_receivers.is_empty()
-        || (sender.shared.capacity > 0 && guard.queue.len() < sender.shared.capacity)
+      if !guard.is_full(sender.shared.capacity)
+        && (!guard.waiting_async_receivers.is_empty()
+          || !guard.waiting_sync_receivers.is_empty()
+          || (sender.shared.capacity > 0 && guard.len() < sender.shared.capacity))
       {
-        if is_rendezvous {
-          let mut temp_waiter = waiter;
-          current_item_opt = temp_waiter.take_item_from_sender_slot();
-        }
+        let mut temp_waiter = waiter;
+        current_item_opt = temp_waiter.take_item_from_sender_slot(); // Unconditional reclaim
         continue;
       }
 
@@ -70,20 +57,48 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
       guard.waiting_sync_senders.push_back(waiter);
     }
 
-    // --- Phase 4: Wait ---
-    // done_flag lives on the stack above; adaptive_wait borrows it by ref.
-    // The stack frame stays alive until adaptive_wait returns (STATE_SUCCESS).
-    backoff::adaptive_wait(|| done_flag.load(Ordering::Acquire) == STATE_SUCCESS);
+    // Bitwise wait loop: exits when FINISHED (Bit 0 / 0x01) is set
+    backoff::adaptive_wait(|| {
+      let st = done_flag.load(Ordering::Acquire);
+      (st & 0x01) != 0
+    });
 
-    // --- Phase 5: Handle wake-up ---
-    if is_rendezvous {
-      if sender.is_closed() && done_flag.load(Ordering::Acquire) != STATE_SUCCESS {
-        return Err(SendError::Closed);
+    let final_state = done_flag.load(Ordering::Acquire);
+
+    // Check if we closed (Bit 1 / 0x02 is 0)
+    if (final_state & 0x02) == 0 {
+      let mut guard = sender.shared.internal.lock();
+      if let Some(pos) = guard
+        .waiting_sync_senders
+        .iter()
+        .position(|w| w.state == done_ptr)
+      {
+        let mut retrieved_waiter = guard.waiting_sync_senders.remove(pos).unwrap();
+        current_item_opt = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
       }
+      drop(guard);
+      return Err(SendError::Closed);
+    }
+
+    // It was a success!
+    // If it was rendezvous (Bit 2 / 0x04 is set), the receiver popped the waiter and stole the item.
+    if (final_state & 0x04) != 0 {
       return Ok(());
     }
 
-    // For buffered channels, being woken means space may be available — loop to retry.
+    // Space retry (Buffered, Bit 2 / 0x04 is 0): the receiver just set the flag.
+    // The waiter is still in the queue, and our item is still in it.
+    let mut guard = sender.shared.internal.lock();
+    if let Some(pos) = guard
+      .waiting_sync_senders
+      .iter()
+      .position(|w| w.state == done_ptr)
+    {
+      let mut retrieved_waiter = guard.waiting_sync_senders.remove(pos).unwrap();
+      current_item_opt = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+    }
+    drop(guard);
+    // Loop back to retry
   }
 }
 
@@ -99,13 +114,9 @@ pub(crate) fn send_batch_sync<T: Send>(
   }
   let mut iter = items.into_iter();
   let mut sent = 0;
-  let is_rendezvous = sender.shared.capacity == 0;
-  // Holds an item reclaimed from an un-queued rendezvous waiter so it is
-  // retried before the iterator is consumed further.
   let mut pending: Option<T> = None;
 
   loop {
-    // --- Phase 1: non-blocking batch send (pending item first) ---
     if let Some(item) = pending.take() {
       let mut once = std::iter::once(item);
       let (k, reason) = sender.shared.try_send_batch_core(&mut once, 1);
@@ -133,41 +144,34 @@ pub(crate) fn send_batch_sync<T: Send>(
       }
     }
 
-    // --- Phase 2: prepare to park (rendezvous waiters carry the next item) ---
     let done_flag = AtomicU8::new(STATE_WAITING);
     let done_ptr = &done_flag as *const AtomicU8;
 
     let waiter = SyncWaiter {
       thread: thread::current(),
-      data: if is_rendezvous {
-        Some(WaiterData::SenderItem(
-          pending.take().or_else(|| iter.next()),
-        ))
-      } else {
-        None
-      },
+      data: Some(WaiterData::SenderItem(
+        pending.take().or_else(|| iter.next()),
+      )), // Unconditional stash
       state: done_ptr,
     };
 
-    // --- Phase 3: Lock, re-check, and commit to parking ---
     {
       let mut guard = sender.shared.internal.lock();
 
-      if !guard.waiting_async_receivers.is_empty()
-        || !guard.waiting_sync_receivers.is_empty()
-        || (sender.shared.capacity > 0 && guard.queue.len() < sender.shared.capacity)
+      if !guard.is_full(sender.shared.capacity)
+        && (!guard.waiting_async_receivers.is_empty()
+          || !guard.waiting_sync_receivers.is_empty()
+          || (sender.shared.capacity > 0 && guard.len() < sender.shared.capacity))
       {
-        if is_rendezvous {
-          let mut temp_waiter = waiter;
-          pending = temp_waiter.take_item_from_sender_slot();
-        }
+        let mut temp_waiter = waiter;
+        pending = temp_waiter.take_item_from_sender_slot(); // Unconditional reclaim
         continue;
       }
 
       if guard.receiver_count == 0 {
         let mut temp_waiter = waiter;
         let mut unsent: Vec<T> = temp_waiter
-          .take_item_from_sender_slot()
+          .take_item_from_sender_slot() // Unconditional reclaim
           .into_iter()
           .collect();
         unsent.extend(iter.by_ref());
@@ -177,21 +181,52 @@ pub(crate) fn send_batch_sync<T: Send>(
       guard.waiting_sync_senders.push_back(waiter);
     }
 
-    // --- Phase 4: Wait ---
-    backoff::adaptive_wait(|| done_flag.load(Ordering::Acquire) == STATE_SUCCESS);
+    backoff::adaptive_wait(|| {
+      let st = done_flag.load(Ordering::Acquire);
+      (st & 0x01) != 0
+    });
 
-    // --- Phase 5: Handle wake-up ---
-    if is_rendezvous {
-      // The waiter (and its payload) was taken by a receiver, or by a close
-      // path; either way it left our hands. Mirror the single-item `send_sync`
-      // optimism: count it as sent. If the channel closed, the next loop
-      // iteration reports Closed for the remainder.
+    let final_state = done_flag.load(Ordering::Acquire);
+
+    // Check if we closed (Bit 1 / 0x02 is 0)
+    if (final_state & 0x02) == 0 {
+      let mut guard = sender.shared.internal.lock();
+      let mut unsent_item = None;
+      if let Some(pos) = guard
+        .waiting_sync_senders
+        .iter()
+        .position(|w| w.state == done_ptr)
+      {
+        let mut retrieved_waiter = guard.waiting_sync_senders.remove(pos).unwrap();
+        unsent_item = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+      }
+      drop(guard);
+
+      let mut unsent: Vec<T> = unsent_item.into_iter().collect();
+      unsent.extend(iter.by_ref());
+      return Err(SendBatchError { sent, unsent });
+    }
+
+    // It was a success!
+    if (final_state & 0x04) != 0 {
+      // Handoff complete
       sent += 1;
       if sent == total {
         return Ok(total);
       }
+    } else {
+      // Space retry
+      let mut guard = sender.shared.internal.lock();
+      if let Some(pos) = guard
+        .waiting_sync_senders
+        .iter()
+        .position(|w| w.state == done_ptr)
+      {
+        let mut retrieved_waiter = guard.waiting_sync_senders.remove(pos).unwrap();
+        pending = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+      }
+      drop(guard);
     }
-    // For buffered channels, being woken means space may be available — loop to retry.
   }
 }
 
@@ -261,8 +296,19 @@ pub(crate) fn recv_batch_sync<T: Send>(
       guard.waiting_sync_receivers.push_back(waiter);
     }
 
-    // --- Phase 4: Wait, then loop to drain ---
-    backoff::adaptive_wait(|| done_flag.load(Ordering::Acquire) == STATE_SUCCESS);
+    // --- Phase 4: Wait ---
+    backoff::adaptive_wait(|| {
+      let st = done_flag.load(Ordering::Acquire);
+      (st & 0x01) != 0
+    });
+
+    let final_state = done_flag.load(Ordering::Acquire);
+    if (final_state & 0x02) == 0 {
+      let mut guard = receiver.shared.internal.lock();
+      guard.waiting_sync_receivers.retain(|w| w.state != done_ptr);
+      drop(guard);
+      return Err(RecvError::Disconnected);
+    }
   }
 }
 
@@ -304,13 +350,22 @@ pub(crate) fn recv_sync<T: Send>(receiver: &Receiver<T>) -> Result<T, RecvError>
     }
 
     // --- Phase 4: Wait ---
-    backoff::adaptive_wait(|| done_flag.load(Ordering::Acquire) == STATE_SUCCESS);
+    backoff::adaptive_wait(|| {
+      let st = done_flag.load(Ordering::Acquire);
+      (st & 0x01) != 0
+    });
 
-    // --- Phase 5: Handle wake-up ---
-    // Being woken means an item is likely available. Loop to the top to try_recv_core.
+    let final_state = done_flag.load(Ordering::Acquire);
+    if (final_state & 0x02) == 0 {
+      let mut guard = receiver.shared.internal.lock();
+      guard.waiting_sync_receivers.retain(|w| w.state != done_ptr);
+      drop(guard);
+      return Err(RecvError::Disconnected);
+    }
   }
 }
 
+/// The synchronous, blocking receive operation with a timeout.
 /// The synchronous, blocking receive operation with a timeout.
 pub(crate) fn recv_timeout_sync<T: Send>(
   receiver: &Receiver<T>,
@@ -374,11 +429,11 @@ pub(crate) fn recv_timeout_sync<T: Send>(
           return Err(RecvErrorTimeout::Timeout);
         }
         Err(_) => {
-          // STATE_SUCCESS: a sender committed the handoff concurrently. Must complete.
+          // SUCCESS or CLOSED: a sender committed the handoff concurrently or channel closed. Must complete.
           match receiver.shared.try_recv_core() {
             Ok(item) => return Ok(item),
             Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
-            Err(TryRecvError::Empty) => unreachable!("state was SUCCESS but channel empty"),
+            Err(TryRecvError::Empty) => unreachable!("state was finished but channel empty"),
           }
         }
       }
@@ -388,7 +443,8 @@ pub(crate) fn recv_timeout_sync<T: Send>(
     thread::park_timeout(remaining_timeout);
 
     // Check if a sender committed the handoff.
-    if done_flag.load(Ordering::Acquire) == STATE_SUCCESS {
+    let st = done_flag.load(Ordering::Acquire);
+    if (st & 0x01) != 0 {
       match receiver.shared.try_recv_core() {
         Ok(item) => return Ok(item),
         Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),

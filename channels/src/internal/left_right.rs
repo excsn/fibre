@@ -290,15 +290,8 @@ mod tests {
         let mut last_version = 0;
         while !finished.load(Ordering::Acquire) {
           let guard = rh.enter();
-          assert!(
-            guard.is_consistent(),
-            "Inconsistent read: {:?}",
-            *guard
-          );
-          assert!(
-            guard.version >= last_version,
-            "Version went backwards!"
-          );
+          assert!(guard.is_consistent(), "Inconsistent read: {:?}", *guard);
+          assert!(guard.version >= last_version, "Version went backwards!");
           last_version = guard.version;
           thread::yield_now();
         }

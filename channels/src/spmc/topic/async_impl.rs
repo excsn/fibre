@@ -94,7 +94,7 @@ where
       }
     }
   }
-  
+
   /// Returns `true` if all receivers for this channel have been dropped.
   pub fn is_closed(&self) -> bool {
     self.dispatcher.receiver_count.load(Ordering::Relaxed) == 0
@@ -220,8 +220,8 @@ where
   }
 
   pub fn is_closed(&self) -> bool {
-    self.closed.load(Ordering::Relaxed) ||
-    (self.dispatcher.upgrade().is_none() && self.consumer.is_empty())
+    self.closed.load(Ordering::Relaxed)
+      || (self.dispatcher.upgrade().is_none() && self.consumer.is_empty())
   }
 
   pub fn close(&self) -> Result<(), CloseError> {

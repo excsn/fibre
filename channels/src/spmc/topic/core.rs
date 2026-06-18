@@ -2,8 +2,8 @@
 
 #![cfg(feature = "topic")]
 
-use crate::internal::left_right;
 use super::mailbox;
+use crate::internal::left_right;
 use papaya::HashMap;
 use std::fmt;
 use std::hash::Hash;

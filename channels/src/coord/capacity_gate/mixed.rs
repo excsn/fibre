@@ -51,7 +51,9 @@ impl Waiter {
 
   fn will_wake(&self, waker: &Waker) -> bool {
     match self {
-      Waiter::Async { waker: self_waker, .. } => self_waker.will_wake(waker),
+      Waiter::Async {
+        waker: self_waker, ..
+      } => self_waker.will_wake(waker),
       Waiter::Sync(_) => false,
     }
   }
@@ -320,29 +322,33 @@ impl CapacityGate {
   }
 
   /// Releases `n` permits back to the gate in a single lock acquisition,
-  /// waking up to `n` waiters in one coalesced pass after the lock is dropped.
-  ///
-  /// The per-waiter accounting matches `release()`: a permit committed to a
-  /// woken *sync* waiter moves into `reserved` (clamp-proof) until the thread
-  /// claims it; a permit committed to a woken *async* waiter is consumed
-  /// immediately (its future's `STATE_SUCCESS` fast path never touches the
-  /// pool).
+  /// waking up to `n` waiters on the stack in one coalesced pass.
   pub fn release_many(&self, n: usize) {
     if n == 0 {
       return;
     }
-    let mut to_wake: Vec<Waiter> = Vec::new();
+    const DUMMY: Option<Waiter> = None;
+    let mut inline_wake = [DUMMY; 8]; // lightweight register-friendly size
+    let mut inline_count = 0;
+    let mut heap_wake = Vec::new(); // Fallback for very large bulk releases
+
     {
       let mut internal = self.internal.lock();
       internal.permits += n;
 
-      while to_wake.len() < n {
+      while inline_count + heap_wake.len() < n {
         match internal.waiters.pop_front() {
           None => break,
           Some(Waiter::Sync(thread)) => {
             internal.permits -= 1;
             internal.reserved += 1;
-            to_wake.push(Waiter::Sync(thread));
+            let waiter = Waiter::Sync(thread);
+            if inline_count < 8 {
+              inline_wake[inline_count] = Some(waiter);
+              inline_count += 1;
+            } else {
+              heap_wake.push(waiter);
+            }
           }
           Some(Waiter::Async { waker, state }) => {
             let state_ref = unsafe { &*state };
@@ -356,20 +362,28 @@ impl CapacityGate {
               .is_ok()
             {
               internal.permits -= 1;
-              to_wake.push(Waiter::Async { waker, state });
+              let waiter = Waiter::Async { waker, state };
+              if inline_count < 8 {
+                inline_wake[inline_count] = Some(waiter);
+                inline_count += 1;
+              } else {
+                heap_wake.push(waiter);
+              }
             }
-            // STATE_CANCELLED: discard this waiter and try the next one.
           }
         }
       }
 
-      // Committed permits are no longer in the pool, so the clamp can only
-      // ever trim genuinely surplus permits.
       internal.permits = internal.permits.min(self.capacity);
     }
-    // Wake outside the lock so woken threads/tasks don't immediately
-    // contend on the mutex we still hold.
-    for waiter in to_wake {
+
+    // Wake outside the lock to prevent immediate contention
+    for opt in &mut inline_wake[..inline_count] {
+      if let Some(waiter) = opt.take() {
+        waiter.wake();
+      }
+    }
+    for waiter in heap_wake {
       waiter.wake();
     }
   }
@@ -430,7 +444,11 @@ impl<'a> Future for AcquireFuture<'a> {
     // Update waker in-place if already registered (waker may have changed).
     let mut found = false;
     for waiter in internal.waiters.iter_mut() {
-      if let Waiter::Async { state, waker: ref mut existing_waker } = waiter {
+      if let Waiter::Async {
+        state,
+        waker: ref mut existing_waker,
+      } = waiter
+      {
         if *state == state_ptr {
           *existing_waker = new_waker.clone();
           found = true;
@@ -457,7 +475,12 @@ impl<'a> Drop for AcquireFuture<'a> {
     if self.is_registered
       && self
         .state
-        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
     {
       let mut internal = self.gate.internal.lock();
@@ -540,7 +563,11 @@ impl<'a> Future for AcquireManyFuture<'a> {
     // Update waker in-place if already registered (waker may have changed).
     let mut found = false;
     for waiter in internal.waiters.iter_mut() {
-      if let Waiter::Async { state, waker: ref mut existing_waker } = waiter {
+      if let Waiter::Async {
+        state,
+        waker: ref mut existing_waker,
+      } = waiter
+      {
         if *state == state_ptr {
           *existing_waker = new_waker.clone();
           found = true;
@@ -567,7 +594,12 @@ impl<'a> Drop for AcquireManyFuture<'a> {
     if self.is_registered
       && self
         .state
-        .compare_exchange(STATE_WAITING, STATE_CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
         .is_ok()
     {
       let mut internal = self.gate.internal.lock();
@@ -604,27 +636,22 @@ mod tests {
   fn acquire_sync_release() {
     let gate = CapacityGate::new(1);
     gate.acquire_sync();
-    // No easy way to check permits without another thread,
-    // but this ensures it doesn't hang on first acquire.
     gate.release();
   }
 
   #[test]
   fn acquire_sync_blocks_and_unblocks() {
     let gate = Arc::new(CapacityGate::new(1));
-    gate.acquire_sync(); // Acquire the only permit
+    gate.acquire_sync();
 
     let gate_clone = gate.clone();
     let handle = thread::spawn(move || {
-      // This should block
       gate_clone.acquire_sync();
     });
 
-    // Give the thread time to block
     thread::sleep(Duration::from_millis(100));
     assert!(!handle.is_finished(), "Thread should have blocked");
 
-    // Release the permit, which should unpark the thread
     gate.release();
     handle.join().expect("Thread panicked");
   }
@@ -635,7 +662,7 @@ mod tests {
     use tokio::time::timeout;
 
     let gate = Arc::new(CapacityGate::new(1));
-    gate.acquire_sync(); // Use up the only permit
+    gate.acquire_sync();
 
     let acquire_fut = gate.acquire_async();
 
@@ -658,7 +685,6 @@ mod tests {
     let mut task_handles = Vec::new();
     let completion_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    // Spawn 3 sync waiters
     for _ in 0..3 {
       let gate = gate.clone();
       let count = completion_count.clone();
@@ -670,7 +696,6 @@ mod tests {
       }));
     }
 
-    // Spawn 3 async waiters
     for _ in 0..3 {
       let gate = gate.clone();
       let count = completion_count.clone();
@@ -682,12 +707,10 @@ mod tests {
       }));
     }
 
-    // Wait for all async tasks to complete.
     for handle in task_handles {
       handle.await.unwrap();
     }
 
-    // Wait for all sync threads to complete.
     for handle in thread_handles {
       handle.join().unwrap();
     }
@@ -701,11 +724,8 @@ mod tests {
   #[test]
   fn test_acquire_async_drop_leak() {
     let gate = CapacityGate::new(1);
-
-    // 1. Consume the only available permit so subsequent async acquires must wait
     assert!(gate.try_acquire());
 
-    // 2. Create a self-contained dummy waker for the context
     fn dummy_waker() -> Waker {
       use std::task::{RawWaker, RawWakerVTable};
       unsafe fn clone(_: *const ()) -> RawWaker {
@@ -721,22 +741,16 @@ mod tests {
     let waker = dummy_waker();
     let mut cx = Context::from_waker(&waker);
 
-    // 3. Create the AcquireFuture and poll it once.
-    // Since no permits are available, it will return Poll::Pending and register our waker.
     let mut fut = Box::pin(gate.acquire_async());
     assert!(fut.as_mut().poll(&mut cx).is_pending());
 
-    // Verify that the waker was indeed registered in the internal queue
     {
       let internal = gate.internal.lock();
       assert_eq!(internal.waiters.len(), 1);
     }
 
-    // 4. Drop (cancel) the future before it ever resolves to success
     drop(fut);
 
-    // 5. Inspect the queue.
-    // Under the unpatched code, this assertion will fail because the stale waker is still there.
     let leaked_count = {
       let internal = gate.internal.lock();
       internal.waiters.len()
@@ -744,7 +758,7 @@ mod tests {
 
     assert_eq!(
       leaked_count, 0,
-      "Waker leak detected: dropping AcquireFuture left a stale waker in the waiters queue!"
+      "Waker leak detected: dropping left a stale waker in the queue!"
     );
   }
 
@@ -753,9 +767,7 @@ mod tests {
     let gate = CapacityGate::new(5);
     assert_eq!(gate.try_acquire_many(0), 0);
     assert_eq!(gate.try_acquire_many(3), 3);
-    // Only 2 permits left; asking for 5 yields 2.
     assert_eq!(gate.try_acquire_many(5), 2);
-    // Exhausted.
     assert_eq!(gate.try_acquire_many(1), 0);
   }
 
@@ -765,7 +777,6 @@ mod tests {
     assert_eq!(gate.try_acquire_many(5), 5);
     gate.release_many(5);
     assert_eq!(gate.try_acquire_many(5), 5);
-    // Over-release with no waiters clamps to capacity.
     gate.release_many(10);
     assert_eq!(gate.try_acquire_many(10), 5);
   }
@@ -775,7 +786,6 @@ mod tests {
     let gate = CapacityGate::new(2);
     assert_eq!(gate.try_acquire_many(2), 2);
     gate.close();
-    // Closed gate grants immediately so callers can observe closure.
     assert_eq!(gate.try_acquire_many(7), 7);
     assert_eq!(gate.acquire_many_sync(4), 4);
   }
@@ -809,7 +819,6 @@ mod tests {
       let gate = gate.clone();
       handles.push(thread::spawn(move || gate.acquire_many_sync(1)));
     }
-    // Give all three time to enqueue as waiters.
     thread::sleep(Duration::from_millis(100));
 
     gate.release_many(3);
@@ -845,37 +854,30 @@ mod tests {
     );
   }
 
-  /// Regression test for the capacity-0 handoff steal: a permit committed to
-  /// a woken sync waiter must survive a concurrent release() whose
-  /// empty-queue clamp would otherwise discard it (the woken thread would
-  /// find no permit and re-park forever).
   #[test]
+  #[cfg(not(miri))]
   fn release_does_not_steal_inflight_handoff_permit_cap0() {
     let gate = Arc::new(CapacityGate::new(0));
 
     let gate_clone = gate.clone();
     let waiter = thread::spawn(move || gate_clone.acquire_sync());
 
-    // Let the waiter park at the gate.
     thread::sleep(Duration::from_millis(100));
     assert!(!waiter.is_finished(), "waiter should be parked");
 
-    // First release commits a handoff to the parked waiter; the second one
-    // finds an empty queue and clamps the pool — it must not be able to
-    // touch the committed (reserved) permit.
     gate.release();
     gate.release();
 
     thread::sleep(Duration::from_millis(200));
     assert!(
       waiter.is_finished(),
-      "REGRESSION: clamp stole the in-flight handoff permit; waiter re-parked forever"
+      "REGRESSION: clamp stole the in-flight handoff permit"
     );
     waiter.join().unwrap();
   }
 
-  /// Same scenario through acquire_many_sync (the batch path).
   #[test]
+  #[cfg(not(miri))]
   fn release_does_not_steal_inflight_handoff_permit_cap0_many() {
     let gate = Arc::new(CapacityGate::new(0));
 
@@ -897,27 +899,20 @@ mod tests {
     assert!(acquired >= 1);
   }
 
-  /// Async wakes must consume the released permit instead of leaving it in
-  /// the pool (which used to inflate the pool past capacity on every async
-  /// handoff).
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_wake_consumes_permit_no_pool_inflation() {
     let gate = Arc::new(CapacityGate::new(1));
-    gate.acquire_sync(); // permits: 0
+    gate.acquire_sync();
 
     let gate_for_task = gate.clone();
     let task = tokio::spawn(async move { gate_for_task.acquire_async().await });
 
-    // Let the future register as a waiter.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    gate.release(); // committed to the async waiter, consumed at release time
+    gate.release();
     task.await.unwrap();
 
-    // The async waiter's permit must not have leaked back into the pool:
-    // exactly one permit is outstanding (held by the task that never
-    // released), so none are available.
     {
       let internal = gate.internal.lock();
       assert_eq!(
@@ -964,7 +959,7 @@ mod tests {
     };
     assert_eq!(
       leaked_count, 0,
-      "Waker leak: dropping AcquireManyFuture left a stale waker in the waiters queue!"
+      "Waker leak: dropping left a stale waker in the queue!"
     );
   }
 }

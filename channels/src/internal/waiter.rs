@@ -39,18 +39,38 @@ impl<T> SyncWaiterNode<T> {
   }
 
   pub(crate) fn wake(&self) {
-    self.notified.store(true, std::sync::atomic::Ordering::Release);
+    self
+      .notified
+      .store(true, std::sync::atomic::Ordering::Release);
     self.thread.unpark();
   }
 }
 
 impl<T> LinkedNode for SyncWaiterNode<T> {
-  #[inline(always)] fn prev(&self) -> Option<NonNull<Self>> { self.prev }
-  #[inline(always)] fn next(&self) -> Option<NonNull<Self>> { self.next }
-  #[inline(always)] fn set_prev(&mut self, ptr: Option<NonNull<Self>>) { self.prev = ptr; }
-  #[inline(always)] fn set_next(&mut self, ptr: Option<NonNull<Self>>) { self.next = ptr; }
-  #[inline(always)] fn set_enqueued(&mut self, val: bool) { self.enqueued = val; }
-  #[inline(always)] fn is_enqueued(&self) -> bool { self.enqueued }
+  #[inline(always)]
+  fn prev(&self) -> Option<NonNull<Self>> {
+    self.prev
+  }
+  #[inline(always)]
+  fn next(&self) -> Option<NonNull<Self>> {
+    self.next
+  }
+  #[inline(always)]
+  fn set_prev(&mut self, ptr: Option<NonNull<Self>>) {
+    self.prev = ptr;
+  }
+  #[inline(always)]
+  fn set_next(&mut self, ptr: Option<NonNull<Self>>) {
+    self.next = ptr;
+  }
+  #[inline(always)]
+  fn set_enqueued(&mut self, val: bool) {
+    self.enqueued = val;
+  }
+  #[inline(always)]
+  fn is_enqueued(&self) -> bool {
+    self.enqueued
+  }
 }
 
 #[derive(Debug)]
@@ -83,12 +103,30 @@ impl<T> AsyncWaiterNode<T> {
 }
 
 impl<T> LinkedNode for AsyncWaiterNode<T> {
-  #[inline(always)] fn prev(&self) -> Option<NonNull<Self>> { self.prev }
-  #[inline(always)] fn next(&self) -> Option<NonNull<Self>> { self.next }
-  #[inline(always)] fn set_prev(&mut self, ptr: Option<NonNull<Self>>) { self.prev = ptr; }
-  #[inline(always)] fn set_next(&mut self, ptr: Option<NonNull<Self>>) { self.next = ptr; }
-  #[inline(always)] fn set_enqueued(&mut self, val: bool) { self.enqueued = val; }
-  #[inline(always)] fn is_enqueued(&self) -> bool { self.enqueued }
+  #[inline(always)]
+  fn prev(&self) -> Option<NonNull<Self>> {
+    self.prev
+  }
+  #[inline(always)]
+  fn next(&self) -> Option<NonNull<Self>> {
+    self.next
+  }
+  #[inline(always)]
+  fn set_prev(&mut self, ptr: Option<NonNull<Self>>) {
+    self.prev = ptr;
+  }
+  #[inline(always)]
+  fn set_next(&mut self, ptr: Option<NonNull<Self>>) {
+    self.next = ptr;
+  }
+  #[inline(always)]
+  fn set_enqueued(&mut self, val: bool) {
+    self.enqueued = val;
+  }
+  #[inline(always)]
+  fn is_enqueued(&self) -> bool {
+    self.enqueued
+  }
 }
 
 // Safety: WaiterNode is owned by a single task/thread (Future or Receiver).
@@ -696,7 +734,7 @@ mod tests {
     let flag = Arc::new(AtomicBool::new(false));
     let mut node = AsyncWaiterNode::<()>::new();
     node.waker = Some(make_flag_waker(flag.clone()));
-    
+
     node.wake();
     assert!(flag.load(Ordering::SeqCst));
   }
@@ -798,7 +836,9 @@ mod tests {
 
   #[test]
   fn test_stress_concurrent() {
-    let queue = Arc::new(std::sync::Mutex::new(WaiterQueue::<SyncWaiterNode<usize>>::new()));
+    let queue = Arc::new(std::sync::Mutex::new(
+      WaiterQueue::<SyncWaiterNode<usize>>::new(),
+    ));
     let barrier = Arc::new(std::sync::Barrier::new(4));
     let mut handles = vec![];
 

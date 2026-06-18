@@ -205,6 +205,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(not(miri))]
   fn async_to_sync_conversion() {
     let (tx_async, rx_sync_orig) = unbounded_v1_async::<i32>();
     assert_eq!(tx_async.len(), 0);

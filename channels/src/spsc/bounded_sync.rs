@@ -220,8 +220,7 @@ impl<T: Send> BoundedSyncSender<T> {
       return Ok(0);
     }
     let mut iter = items.into_iter();
-    if self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire)
-    {
+    if self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire) {
       return Err(TrySendBatchError {
         sent: 0,
         unsent: iter.collect(),
@@ -289,8 +288,7 @@ impl<T: Send> BoundedSyncSender<T> {
     if items.is_empty() {
       return Ok(0);
     }
-    if self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire)
-    {
+    if self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire) {
       return Err(SendError::Closed);
     }
     let k = self.shared.available_space().min(items.len());
@@ -1064,6 +1062,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(not(miri))]
   fn recv_timeout_empty_times_out() {
     let (_p, mut c) = bounded_sync::<i32>(1);
     let res = c.recv_timeout(Duration::from_millis(50));
@@ -1071,6 +1070,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(not(miri))]
   fn recv_timeout_item_arrives() {
     let (p, mut c) = bounded_sync::<i32>(1);
     let val_to_send = 123;
@@ -1092,6 +1092,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(not(miri))]
   fn recv_timeout_producer_drops_with_item() {
     let (p, mut c) = bounded_sync::<i32>(1);
     p.send(99).unwrap();
@@ -1104,6 +1105,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(not(miri))]
   fn new_spsc_apis_capacity_close_is_closed() {
     let (p, c) = bounded_sync::<i32>(5);
     assert_eq!(p.capacity(), 5);

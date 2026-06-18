@@ -172,7 +172,10 @@ mod tests {
     let s = format!("{:?}", p);
     assert!(s.contains("CachePadded"));
     assert!(s.contains("value: 10"));
-    assert!(s.contains(&format!("alignment: {}", CachePadded::<i32>::alignment_value())));
+    assert!(s.contains(&format!(
+      "alignment: {}",
+      CachePadded::<i32>::alignment_value()
+    )));
   }
 
   #[test]

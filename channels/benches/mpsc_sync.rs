@@ -87,8 +87,8 @@ fn mpsc_sync_benches(c: &mut Criterion) {
   let core_count = usize::from(available_parallelism().unwrap()) as u64;
   let parameter_axes = vec![
     vec![
-      MatrixCellValue::Unsigned(1),          // SPSC-like scenario
-      MatrixCellValue::Unsigned(4),          // MPSC scenario
+      MatrixCellValue::Unsigned(1), // SPSC-like scenario
+      MatrixCellValue::Unsigned(4), // MPSC scenario
       MatrixCellValue::Unsigned(core_count),
     ], // Num Senders
     vec![

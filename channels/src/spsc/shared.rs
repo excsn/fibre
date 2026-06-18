@@ -115,14 +115,21 @@ impl<T> SpscShared<T> {
     if self.consumer_parked_sync_flag.load(Ordering::Relaxed) == PARK_PARKED {
       if self
         .consumer_parked_sync_flag
-        .compare_exchange(PARK_PARKED, PARK_CONSUMING, Ordering::AcqRel, Ordering::Relaxed)
+        .compare_exchange(
+          PARK_PARKED,
+          PARK_CONSUMING,
+          Ordering::AcqRel,
+          Ordering::Relaxed,
+        )
         .is_ok()
       {
         // Exclusive access to the cell until we store IDLE.
         let thread_handle = unsafe { (*self.consumer_thread_sync.get()).take() };
         // store(IDLE, Release) pairs with the Acquire loads in post_wakeup_wait, ensuring
         // the consumer sees IDLE only after take() is complete.
-        self.consumer_parked_sync_flag.store(PARK_IDLE, Ordering::Release);
+        self
+          .consumer_parked_sync_flag
+          .store(PARK_IDLE, Ordering::Release);
         if let Some(t) = thread_handle {
           sync_util::unpark_thread(&t);
         }
@@ -137,11 +144,18 @@ impl<T> SpscShared<T> {
     if self.producer_parked_sync_flag.load(Ordering::Relaxed) == PARK_PARKED {
       if self
         .producer_parked_sync_flag
-        .compare_exchange(PARK_PARKED, PARK_CONSUMING, Ordering::AcqRel, Ordering::Relaxed)
+        .compare_exchange(
+          PARK_PARKED,
+          PARK_CONSUMING,
+          Ordering::AcqRel,
+          Ordering::Relaxed,
+        )
         .is_ok()
       {
         let thread_handle = unsafe { (*self.producer_thread_sync.get()).take() };
-        self.producer_parked_sync_flag.store(PARK_IDLE, Ordering::Release);
+        self
+          .producer_parked_sync_flag
+          .store(PARK_IDLE, Ordering::Release);
         if let Some(t) = thread_handle {
           sync_util::unpark_thread(&t);
         }
@@ -205,7 +219,9 @@ impl<T> SpscShared<T> {
     }
 
     if written > 0 {
-      self.head.store(head.wrapping_add(written), Ordering::Release);
+      self
+        .head
+        .store(head.wrapping_add(written), Ordering::Release);
       self.wake_consumer();
     }
     written

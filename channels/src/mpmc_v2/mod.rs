@@ -25,10 +25,13 @@ use crate::error::{
   TryRecvError, TrySendBatchError, TrySendError,
 };
 
-// Re-export the futures for the public API, allowing users to `await` on sends/receives.
+use self::core::{
+  MpmcShared, STATE_CANCELLED, STATE_CLOSED_BUFFERED, STATE_CLOSED_RENDEZVOUS, STATE_SUCCESS_SPACE,
+  STATE_WAITING,
+};
+
 pub use async_impl::{
-  RecvBatchFuture, RecvBatchMutFuture, RecvFuture, SendBatchFuture, SendBatchMutFuture,
-  SendFuture,
+  RecvBatchFuture, RecvBatchMutFuture, RecvFuture, SendBatchFuture, SendBatchMutFuture, SendFuture,
 };
 
 mod async_impl;
@@ -36,8 +39,7 @@ mod backoff;
 mod core;
 mod sync_impl;
 
-use self::core::{MpmcShared, STATE_CANCELLED, STATE_SUCCESS, STATE_WAITING};
-use ::core::mem;
+use core::mem;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -312,46 +314,41 @@ impl<T: Send> Sender<T> {
   }
 
   fn close_internal(&self) {
-    let sync_waiters;
-    let async_waiters;
+    let mut to_wake = Vec::new();
     {
       let mut guard = self.shared.internal.lock();
       guard.sender_count -= 1;
-      // If we are the last sender, the channel is now disconnected.
-      // We must wake up all waiting receivers to notify them.
       if guard.sender_count == 0 {
-        sync_waiters = std::mem::take(&mut guard.waiting_sync_receivers);
-        async_waiters = std::mem::take(&mut guard.waiting_async_receivers);
-      } else {
-        return;
+        for waiter in &guard.waiting_sync_receivers {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              STATE_CLOSED_BUFFERED,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+          }
+        }
+        for waiter in &guard.waiting_async_receivers {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              STATE_CLOSED_BUFFERED,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+          }
+        }
       }
     }
-    // Wake waiters outside the lock. Use CAS to skip already-cancelled waiters.
-    for waiter in sync_waiters {
-      if unsafe { &*waiter.state }
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_SUCCESS,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-      {
-        waiter.thread.unpark();
-      }
-    }
-    for waiter in async_waiters {
-      if unsafe { &*waiter.state }
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_SUCCESS,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-      {
-        waiter.waker.wake();
-      }
+    for w in to_wake {
+      w.wake();
     }
   }
 
@@ -509,54 +506,81 @@ impl<T: Send> Receiver<T> {
   }
 
   fn close_internal(&self) {
-    let sync_waiters;
-    let async_waiters;
+    let mut to_wake = Vec::new();
     {
       let mut guard = self.shared.internal.lock();
       guard.receiver_count -= 1;
-      // If we are the last receiver, the channel is now closed to senders.
-      // We must wake up all waiting senders to notify them.
-      if guard.receiver_count == 0 {
-        sync_waiters = std::mem::take(&mut guard.waiting_sync_senders);
-        async_waiters = std::mem::take(&mut guard.waiting_async_senders);
+      let is_real_close = guard.receiver_count == 0;
+
+      let closed_state = if is_real_close {
+        if self.shared.capacity == 0 {
+          STATE_CLOSED_RENDEZVOUS
+        } else {
+          STATE_CLOSED_BUFFERED
+        }
       } else {
-        // Not the last receiver. To prevent deadlocks in rendezvous channels,
-        // we wake one waiting sender of each type. They can try again and
-        // potentially find another active receiver.
-        sync_waiters = guard.waiting_sync_senders.pop_front().into_iter().collect();
-        async_waiters = guard
-          .waiting_async_senders
-          .pop_front()
-          .into_iter()
-          .collect();
+        STATE_SUCCESS_SPACE
+      };
+
+      if is_real_close {
+        for waiter in &guard.waiting_sync_senders {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              closed_state,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+          }
+        }
+        for waiter in &guard.waiting_async_senders {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              closed_state,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+          }
+        }
+      } else {
+        if let Some(waiter) = guard.waiting_sync_senders.front() {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              closed_state,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+          }
+        }
+        if let Some(waiter) = guard.waiting_async_senders.front() {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              closed_state,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+          }
+        }
       }
     }
-    // Wake waiters outside the lock. Use CAS to skip already-cancelled waiters.
-    for waiter in sync_waiters {
-      if unsafe { &*waiter.state }
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_SUCCESS,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-      {
-        waiter.thread.unpark();
-      }
-    }
-    for waiter in async_waiters {
-      if unsafe { &*waiter.state }
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_SUCCESS,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-      {
-        waiter.waker.wake();
-      }
+
+    for w in to_wake {
+      w.wake();
     }
   }
 
@@ -728,43 +752,41 @@ impl<T: Send> AsyncSender<T> {
   }
 
   fn close_internal(&self) {
-    let sync_waiters;
-    let async_waiters;
+    let mut to_wake = Vec::new();
     {
       let mut guard = self.shared.internal.lock();
       guard.sender_count -= 1;
       if guard.sender_count == 0 {
-        sync_waiters = std::mem::take(&mut guard.waiting_sync_receivers);
-        async_waiters = std::mem::take(&mut guard.waiting_async_receivers);
-      } else {
-        return;
+        for waiter in &guard.waiting_sync_receivers {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              STATE_CLOSED_BUFFERED,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+          }
+        }
+        for waiter in &guard.waiting_async_receivers {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              STATE_CLOSED_BUFFERED,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+          }
+        }
       }
     }
-    for waiter in sync_waiters {
-      if unsafe { &*waiter.state }
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_SUCCESS,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-      {
-        waiter.thread.unpark();
-      }
-    }
-    for waiter in async_waiters {
-      if unsafe { &*waiter.state }
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_SUCCESS,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-      {
-        waiter.waker.wake();
-      }
+    for w in to_wake {
+      w.wake();
     }
   }
 
@@ -853,7 +875,11 @@ impl<T: Send> AsyncReceiver<T> {
 
   /// Receives up to `max` items asynchronously, appending them to the end of
   /// `out`. Resolves with the number appended. Cancel-safe.
-  pub fn recv_batch_mut<'a>(&'a self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T> {
+  pub fn recv_batch_mut<'a>(
+    &'a self,
+    out: &'a mut Vec<T>,
+    max: usize,
+  ) -> RecvBatchMutFuture<'a, T> {
     async_impl::RecvBatchMutFuture::new(self, out, max)
   }
 
@@ -894,48 +920,81 @@ impl<T: Send> AsyncReceiver<T> {
   }
 
   fn close_internal(&self) {
-    let sync_waiters;
-    let async_waiters;
+    let mut to_wake = Vec::new();
     {
       let mut guard = self.shared.internal.lock();
       guard.receiver_count -= 1;
-      if guard.receiver_count == 0 {
-        sync_waiters = std::mem::take(&mut guard.waiting_sync_senders);
-        async_waiters = std::mem::take(&mut guard.waiting_async_senders);
+      let is_real_close = guard.receiver_count == 0;
+
+      let closed_state = if is_real_close {
+        if self.shared.capacity == 0 {
+          STATE_CLOSED_RENDEZVOUS
+        } else {
+          STATE_CLOSED_BUFFERED
+        }
       } else {
-        sync_waiters = guard.waiting_sync_senders.pop_front().into_iter().collect();
-        async_waiters = guard
-          .waiting_async_senders
-          .pop_front()
-          .into_iter()
-          .collect();
+        STATE_SUCCESS_SPACE
+      };
+
+      if is_real_close {
+        for waiter in &guard.waiting_sync_senders {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              closed_state,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+          }
+        }
+        for waiter in &guard.waiting_async_senders {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              closed_state,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+          }
+        }
+      } else {
+        if let Some(waiter) = guard.waiting_sync_senders.front() {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              closed_state,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+          }
+        }
+        if let Some(waiter) = guard.waiting_async_senders.front() {
+          if unsafe { &*waiter.state }
+            .compare_exchange(
+              STATE_WAITING,
+              closed_state,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+          }
+        }
       }
     }
-    for waiter in sync_waiters {
-      if unsafe { &*waiter.state }
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_SUCCESS,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-      {
-        waiter.thread.unpark();
-      }
-    }
-    for waiter in async_waiters {
-      if unsafe { &*waiter.state }
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_SUCCESS,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-      {
-        waiter.waker.wake();
-      }
+
+    for w in to_wake {
+      w.wake();
     }
   }
 
