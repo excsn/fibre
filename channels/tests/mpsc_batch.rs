@@ -221,63 +221,6 @@ fn bounded_sync_permit_conservation() {
 }
 
 #[test]
-fn bounded_sync_rendezvous_try_send_batch_no_receiver_ready() {
-  let (tx, _rx) = mpsc::bounded::<u32>(0);
-  let err = tx.try_send_batch(vec![1, 2, 3]).unwrap_err();
-  assert_eq!(err.sent, 0);
-  assert_eq!(err.reason, BatchSendErrorReason::Full);
-  assert_eq!(err.unsent, vec![1, 2, 3]);
-}
-
-#[test]
-fn bounded_sync_rendezvous_send_batch_completes_via_recvs() {
-  let (tx, rx) = mpsc::bounded::<u32>(0);
-  let producer = thread::spawn(move || tx.send_batch(vec![1, 2, 3]).unwrap());
-
-  // Rendezvous readiness permits are only delivered to senders already parked
-  // at the gate (a permit released early is discarded), so let the producer
-  // park before each recv — same sequencing as the existing single-item
-  // rendezvous tests.
-  let mut got = Vec::new();
-  for _ in 0..3 {
-    thread::sleep(Duration::from_millis(100));
-    got.push(rx.recv().unwrap());
-  }
-  assert_eq!(producer.join().unwrap(), 3);
-  assert_eq!(got, vec![1, 2, 3]);
-}
-
-#[test]
-fn bounded_sync_rendezvous_recv_timeout_no_livelock() {
-  // Regression test: recv_timeout on a capacity-0 channel releases a
-  // readiness permit at entry AND inside its retry loop. The second release
-  // used to hit the CapacityGate's empty-queue clamp and discard the permit
-  // already committed to the woken (but not yet running) sender, which then
-  // re-parked — livelocking the handoff forever. The gate now reserves
-  // committed handoff permits out of the clamp's reach.
-  let (tx, rx) = mpsc::bounded::<u32>(0);
-  let producer = thread::spawn(move || tx.send_batch(vec![1, 2, 3, 4, 5]).unwrap());
-
-  let mut got = Vec::new();
-  let mut attempts = 0;
-  while got.len() < 5 {
-    attempts += 1;
-    assert!(
-      attempts < 200,
-      "livelock: handoffs are not completing (got {:?})",
-      got
-    );
-    match rx.recv_timeout(Duration::from_millis(50)) {
-      Ok(v) => got.push(v),
-      Err(fibre::error::RecvErrorTimeout::Timeout) => continue,
-      Err(e) => panic!("unexpected error: {e:?}"),
-    }
-  }
-  assert_eq!(producer.join().unwrap(), 5);
-  assert_eq!(got, vec![1, 2, 3, 4, 5]);
-}
-
-#[test]
 fn bounded_sync_recv_batch_blocks_until_first() {
   let (tx, rx) = mpsc::bounded::<u32>(8);
   let consumer = thread::spawn(move || rx.recv_batch(8).unwrap());
@@ -351,33 +294,6 @@ mod bounded_async_tests {
     let err = send_task.await.unwrap().unwrap_err();
     assert_eq!(err.sent + err.unsent.len(), 10);
     assert_eq!(err.unsent, ((err.sent as u32)..10).collect::<Vec<_>>());
-  }
-
-  #[tokio::test]
-  async fn async_rendezvous_recv_batch_against_blocking_senders() {
-    let (tx, rx) = mpsc::bounded_async::<u32>(0);
-    let mut senders = Vec::new();
-    for i in 0..3 {
-      let tx = tx.clone();
-      senders.push(tokio::spawn(async move { tx.send(i).await }));
-    }
-    drop(tx);
-
-    // Let all senders park at the capacity gate before signalling readiness:
-    // a rendezvous permit released with no parked sender is discarded.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let mut got = Vec::new();
-    while got.len() < 3 {
-      let mut batch = timeout(LONG_TIMEOUT, rx.recv_batch(10)).await.unwrap().unwrap();
-      got.append(&mut batch);
-      tokio::task::yield_now().await;
-    }
-    got.sort();
-    assert_eq!(got, vec![0, 1, 2]);
-    for s in senders {
-      s.await.unwrap().unwrap();
-    }
   }
 
   #[tokio::test]

@@ -20,12 +20,22 @@
 
 Fibre offers a wide range of channel types, each optimized for a specific producer-consumer pattern:
 
-*   **`spsc`**: A lock-free Single-Producer, Single-Consumer ring buffer, ideal for maximum throughput in 1-to-1 communication. Bounded. Requires `T: Send`.
-*   **`mpsc`**: A lock-free Multi-Producer, Single-Consumer channel, perfect for scenarios where many tasks need to send work to a single processing task. Supports both bounded and unbounded modes. Requires `T: Send`.
+*   **`spsc`**: A lock-free Single-Producer, Single-Consumer ring buffer, ideal for maximum throughput in 1-to-1 communication. Bounded, plus a zero-capacity `spsc::rendezvous`. Requires `T: Send`.
+*   **`mpsc`**: A lock-free Multi-Producer, Single-Consumer channel, perfect for scenarios where many tasks need to send work to a single processing task. Supports bounded, unbounded, and zero-capacity `mpsc::rendezvous` modes. Requires `T: Send`.
 *   **`spmc`**: A "broadcast" style Single-Producer, Multi-Consumer channel where each message is cloned and delivered to every active consumer. Bounded. Requires `T: Send + Clone`.
 *   **`spmc::topic`**: A "publish-subscribe" variant of SPMC where the producer sends messages to named topics, and consumers subscribe to the topics they're interested in. The sender is non-blocking, dropping messages for slow consumers. Requires `K: Send + Sync + Hash + Eq + Clone` and `T: Send + Clone`.
-*   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic. Supports bounded (including rendezvous) and "unbounded" capacities. Requires `T: Send`.
+*   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic. Supports bounded, "unbounded", and zero-capacity `mpmc::rendezvous` modes. Requires `T: Send`.
 *   **`oneshot`**: A channel for sending a single value once, perfect for futures and promise-style patterns. Requires `T: Send`.
+
+**Capacity modes by channel type**
+
+| Capacity mode | SPSC | MPSC | SPMC | SPMC Topic | MPMC | Oneshot |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Bounded | ✅ | ✅ | ✅ | ✅ (mailbox) | ✅ | N/A |
+| Unbounded | ❌ | ✅ | ❌ | ❌ | ✅ | N/A |
+| Rendezvous (zero-capacity) | ✅ | ✅ | ❌ | ❌ | ✅ | N/A |
+
+Rendezvous channels are a dedicated, zero-capacity family with their own cancel-safe direct-handoff semantics.
 
 ### Hybrid Sync/Async API
 

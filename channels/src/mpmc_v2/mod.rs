@@ -37,6 +37,7 @@ pub use async_impl::{
 mod async_impl;
 mod backoff;
 mod core;
+pub mod rendezvous;
 mod sync_impl;
 
 use std::mem;
@@ -96,9 +97,16 @@ pub struct AsyncReceiver<T: Send> {
 
 /// Creates a new synchronous bounded MPMC channel.
 ///
-/// A capacity of `0` creates a "rendezvous" channel, where a `send` will block
-/// until a `recv` is ready to take the value.
+/// # Panics
+///
+/// Panics if `capacity == 0`. Zero-capacity rendezvous channels are a distinct
+/// channel family with their own cancel-safe direct-handoff semantics; use
+/// [`mpmc::rendezvous`](rendezvous::rendezvous) instead.
 pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+  assert!(
+    capacity != 0,
+    "mpmc::bounded(0) is not a rendezvous channel; use mpmc::rendezvous::rendezvous() instead"
+  );
   let shared = Arc::new(MpmcShared::new(capacity));
   (
     Sender {
@@ -121,9 +129,16 @@ pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>) {
 
 /// Creates a new asynchronous bounded MPMC channel.
 ///
-/// A capacity of `0` creates a "rendezvous" channel, where `send().await` will not
-/// complete until a `recv().await` is ready to take the value.
+/// # Panics
+///
+/// Panics if `capacity == 0`. Use
+/// [`mpmc::rendezvous_async`](rendezvous::rendezvous_async) for a zero-capacity
+/// rendezvous channel.
 pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>) {
+  assert!(
+    capacity != 0,
+    "mpmc::bounded_async(0) is not a rendezvous channel; use mpmc::rendezvous::rendezvous_async() instead"
+  );
   let shared = Arc::new(MpmcShared::new(capacity));
   (
     AsyncSender {
@@ -1167,7 +1182,7 @@ mod tests {
       unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
     }
 
-    let (_tx, rx) = bounded_async::<i32>(0);
+    let (_tx, rx) = bounded_async::<i32>(1);
     let rx_clone = rx.clone();
 
     let mut fut1 = Box::pin(rx.recv());

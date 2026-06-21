@@ -120,11 +120,6 @@ fn sync_v2_unbounded_channel() {
 }
 
 #[test]
-fn sync_v2_rendezvous_channel() {
-  run_sync_mpmc_test(2, 2, ITEMS_MEDIUM, 0);
-}
-
-#[test]
 fn sync_v2_drop_producer_signals_disconnect() {
   let (tx, rx) = mpmc::bounded::<i32>(5);
   let tx2 = tx.clone();

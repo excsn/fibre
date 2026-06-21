@@ -73,7 +73,10 @@ impl<T> SpscShared<T> {
   /// Pub(crate) constructor for SpscShared.
   /// Used by `bounded_sync` and `bounded_async` to create the shared core.
   pub(crate) fn new_internal(capacity: usize) -> Self {
-    assert!(capacity > 0, "SPSC channel capacity must be greater than 0");
+    assert!(
+      capacity > 0,
+      "spsc bounded(0) is not a rendezvous channel; use spsc::rendezvous::rendezvous() instead"
+    );
     let mut buffer_vec = Vec::with_capacity(capacity);
     for _ in 0..capacity {
       buffer_vec.push(CachePadded::new(UnsafeCell::new(MaybeUninit::uninit())));

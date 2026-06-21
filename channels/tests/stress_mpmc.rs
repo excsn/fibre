@@ -190,8 +190,8 @@ async fn run_async_fuzzer(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn test_matrix_fuzz_async_apis() {
-  // Test Rendezvous (Cap 0), Tiny (Cap 2), Unaligned (Cap 13), Large (Cap 1024)
-  for cap in [0, 2, 13, 513, 1024] {
+  // Tiny (Cap 2), Unaligned (Cap 13), Large (Cap 513/1024)
+  for cap in [2, 13, 513, 1024] {
     run_async_fuzzer(cap, 8, 8, 1_000_000).await;
   }
 }
@@ -334,7 +334,7 @@ fn test_matrix_fuzz_sync_apis() {
     );
   }
 
-  for cap in [0, 2, 13, 1024] {
+  for cap in [2, 13, 1024] {
     run_sync_fuzzer(cap, 8, 8, 1_000_000);
   }
 }

@@ -3,5 +3,6 @@
 pub(crate) mod blocked_deque;
 pub(crate) mod cache_padded;
 pub(crate) mod left_right;
+pub(crate) mod rendezvous;
 pub(crate) mod unsynchronized_ring;
 pub(crate) mod waiter;

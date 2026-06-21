@@ -136,7 +136,7 @@ fn mpmc_sync_benches(c: &mut Criterion) {
   let parameter_axes = vec![
     vec![
       // Axis 0: Capacity
-      MatrixCellValue::Unsigned(0), // Rendezvous
+      // MatrixCellValue::Unsigned(0), // Rendezvous
       MatrixCellValue::Unsigned(4),
       MatrixCellValue::Unsigned(128),
     ],

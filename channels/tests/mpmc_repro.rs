@@ -101,7 +101,7 @@ fn repro_sync_timeout_capacity_bypass() {
 #[cfg(not(miri))]
 #[tokio::test]
 async fn repro_async_rendezvous_payload_leak() {
-  let (tx, _rx) = fibre::mpmc::bounded_async::<std::sync::Arc<()>>(0); // Rendezvous
+  let (tx, _rx) = fibre::mpmc::rendezvous::rendezvous_async::<std::sync::Arc<()>>(); // Rendezvous
 
   // 1. Create a payload we can track
   let payload = std::sync::Arc::new(());
@@ -438,4 +438,121 @@ fn test_mpmc_sync_batch_recv_lost_wakeup() {
   } else {
     println!("[TEST] Sync Sender successfully unblocked after batch receive.");
   }
+}
+
+#[cfg(not(miri))]
+#[tokio::test]
+async fn repro_mpmc_cancel_safety_delivery_leak() {
+  use fibre::mpmc;
+  use std::future::Future;
+  use std::pin::pin;
+  use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+  // A dummy waker so we can manually poll the future and control its exact lifetime.
+  fn dummy_waker() -> Waker {
+    unsafe fn clone(_: *const ()) -> RawWaker {
+      RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+    unsafe fn wake(_: *const ()) {}
+    unsafe fn wake_by_ref(_: *const ()) {}
+    unsafe fn drop_raw(_: *const ()) {}
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_raw);
+    unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+  }
+
+  let waker = dummy_waker();
+  let mut cx = Context::from_waker(&waker);
+
+  // 1. Create a bounded channel with capacity 1
+  let (tx, rx) = mpmc::bounded_async::<i32>(1);
+
+  // 2. Fill the channel
+  tx.send(10).await.unwrap();
+  assert_eq!(tx.len(), 1);
+
+  // 3. Create a SendFuture for the next item and poll it exactly once.
+  // Because the channel is full, this will return Pending.
+  // Crucially, it stashes the item '20' inside the channel's wait queue.
+  let mut send_fut = pin!(tx.send(20));
+  assert!(
+    send_fut.as_mut().poll(&mut cx).is_pending(),
+    "Future should park because the channel is full"
+  );
+
+  // 4. The receiver pulls the first item.
+  // BUG TRIGGER: Inside Fibre, pulling '10' creates space. Fibre immediately
+  // sees our parked `send_fut`, steals '20' from it, pushes it into the ring
+  // buffer on the sender's behalf, and fires the waker.
+  let first_item = rx.try_recv().unwrap();
+  assert_eq!(first_item, 10);
+
+  // 5. The sender task is cancelled BEFORE it can be polled again.
+  // We simulate a `tokio::select!` or `tokio::time::timeout` giving up on
+  // the future by dropping it here.
+  drop(send_fut);
+
+  // 6. OBSERVE THE BUG:
+  // The sender dropped the future, meaning the caller assumes the send was
+  // aborted and will NOT increment any external `queued_count`.
+  // However, the item '20' is successfully sitting inside the channel!
+  let ghost_item = rx.try_recv();
+
+  assert!(
+    ghost_item.is_err(),
+    "CRITICAL BUG: SendFuture was cancelled/dropped, but the item was successfully delivered!\n\
+         The caller has no way of knowing the item was sent. Item found: {:?}",
+    ghost_item
+  );
+}
+
+#[cfg(not(miri))]
+#[tokio::test]
+async fn repro_mpmc_early_deposit_before_future_resolves() {
+  use fibre::mpmc;
+  use std::future::Future;
+  use std::pin::pin;
+  use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+  fn dummy_waker() -> Waker {
+    unsafe fn clone(_: *const ()) -> RawWaker {
+      RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+    unsafe fn wake(_: *const ()) {}
+    unsafe fn wake_by_ref(_: *const ()) {}
+    unsafe fn drop_raw(_: *const ()) {}
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_raw);
+    unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+  }
+
+  let waker = dummy_waker();
+  let mut cx = Context::from_waker(&waker);
+
+  let (tx, rx) = mpmc::bounded_async::<i32>(1);
+
+  // 1. Fill the channel
+  tx.send(10).await.unwrap();
+
+  // 2. Park a SendFuture for the next item
+  let mut send_fut = pin!(tx.send(20));
+  assert!(
+    send_fut.as_mut().poll(&mut cx).is_pending(),
+    "Future should park because the channel is full"
+  );
+
+  // 3. Receiver makes space.
+  // Behind the scenes, Fibre steals '20' from `send_fut` and pushes it into the ring buffer.
+  assert_eq!(rx.try_recv().unwrap(), 10);
+
+  // 4. OBSERVE BUG #2 (Early Deposit):
+  // We attempt to receive from the channel again.
+  // The `send_fut` has NOT been polled yet, so it has NOT returned `Ok(())`
+  // to the producing task. To the producer, the item has not been sent.
+  let early_item = rx.try_recv();
+
+  assert!(
+    early_item.is_err(),
+    "CRITICAL BUG: Item was deposited into the channel and received BEFORE the \
+         SendFuture resolved Ok(())! The receiver saw the item early. Got: {:?}",
+    early_item
+  );
 }

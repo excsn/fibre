@@ -1,7 +1,6 @@
 use super::*;
 use crate::mpsc::{bounded, bounded_async};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -269,76 +268,6 @@ async fn sender_unblocks_when_receiver_dropped() {
 
   // The waiter should now complete with an error
   waiter_handle.await.unwrap();
-}
-
-#[cfg(not(miri))]
-#[tokio::test]
-async fn zero_capacity_channel_async_rendezvous() {
-  let (tx, rx) = bounded_async::<i32>(0);
-  let completed_send = Arc::new(AtomicUsize::new(0));
-
-  let completed_send_clone = completed_send.clone();
-  let sender_handle = tokio::spawn(async move {
-    tx.send(1).await.unwrap();
-    // This line should only be reached after the receiver has picked up the message
-    completed_send_clone.store(1, Ordering::Relaxed);
-  });
-
-  // Give the sender a moment to call send() and wait
-  tokio::time::sleep(Duration::from_millis(20)).await;
-  assert_eq!(
-    completed_send.load(Ordering::Relaxed),
-    0,
-    "Send should not complete before recv"
-  );
-
-  // Now receive, which should unblock the sender
-  assert_eq!(rx.recv().await.unwrap(), 1);
-
-  // Give the sender task time to run to completion
-  tokio::time::sleep(Duration::from_millis(20)).await;
-  assert_eq!(
-    completed_send.load(Ordering::Relaxed),
-    1,
-    "Send should have completed after recv"
-  );
-
-  sender_handle.await.unwrap();
-}
-
-#[test]
-fn zero_capacity_channel_sync_rendezvous() {
-  let (tx, rx) = bounded::<()>(0);
-  let tx_ready = Arc::new(std::sync::Barrier::new(2));
-  let send_complete = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-  let tx_ready_clone = tx_ready.clone();
-  let send_complete_clone = send_complete.clone();
-  let sender_handle = thread::spawn(move || {
-    // Signal that the sender is ready to send
-    tx_ready_clone.wait();
-    // This will block until the receiver calls recv()
-    tx.send(()).unwrap();
-    send_complete_clone.store(true, Ordering::Relaxed);
-  });
-
-  // Wait for the sender to be ready to send
-  tx_ready.wait();
-  // Give the sender thread time to block in the send() call
-  thread::sleep(Duration::from_millis(50));
-  assert!(
-    !send_complete.load(Ordering::Relaxed),
-    "Send should not complete before recv"
-  );
-
-  // This will unblock the sender
-  rx.recv().unwrap();
-
-  sender_handle.join().unwrap();
-  assert!(
-    send_complete.load(Ordering::Relaxed),
-    "Send should be complete after recv"
-  );
 }
 
 #[cfg(not(miri))]

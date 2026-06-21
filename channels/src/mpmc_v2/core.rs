@@ -28,7 +28,6 @@ pub(crate) const STATE_CANCELLED: u8 = 8;
 pub(crate) enum Storage<T> {
   Bounded(UnsynchronizedRingBuffer<T>),
   Unbounded(VecDeque<T>),
-  Rendezvous(Option<T>), // Stack-allocated single-slot handoff mailbox
 }
 
 impl<T> Storage<T> {
@@ -37,13 +36,6 @@ impl<T> Storage<T> {
     match self {
       Self::Bounded(ring) => ring.len(),
       Self::Unbounded(deque) => deque.len(),
-      Self::Rendezvous(slot) => {
-        if slot.is_some() {
-          1
-        } else {
-          0
-        }
-      }
     }
   }
 
@@ -52,7 +44,6 @@ impl<T> Storage<T> {
     match self {
       Self::Bounded(ring) => ring.is_empty(),
       Self::Unbounded(deque) => deque.is_empty(),
-      Self::Rendezvous(slot) => slot.is_none(),
     }
   }
 
@@ -64,14 +55,6 @@ impl<T> Storage<T> {
         deque.push_back(item);
         Ok(())
       }
-      Self::Rendezvous(slot) => {
-        if slot.is_none() {
-          *slot = Some(item);
-          Ok(())
-        } else {
-          Err(item) // Slot already occupied by an in-flight handoff
-        }
-      }
     }
   }
 
@@ -80,7 +63,6 @@ impl<T> Storage<T> {
     match self {
       Self::Bounded(ring) => ring.pop(),
       Self::Unbounded(deque) => deque.pop_front(),
-      Self::Rendezvous(slot) => slot.take(), // Extract the in-flight handoff item
     }
   }
 
@@ -97,13 +79,6 @@ impl<T> Storage<T> {
       Self::Unbounded(deque) => {
         out.extend(deque.drain(..count));
       }
-      Self::Rendezvous(slot) => {
-        if count > 0 {
-          if let Some(item) = slot.take() {
-            out.push(item);
-          }
-        }
-      }
     }
   }
 
@@ -112,9 +87,6 @@ impl<T> Storage<T> {
     match self {
       Self::Bounded(ring) => ring.clear(),
       Self::Unbounded(deque) => deque.clear(),
-      Self::Rendezvous(slot) => {
-        let _ = slot.take();
-      }
     }
   }
 
@@ -123,7 +95,6 @@ impl<T> Storage<T> {
     match self {
       Self::Bounded(ring) => ring.is_full(),
       Self::Unbounded(_) => false, // Unbounded queue is never full
-      Self::Rendezvous(slot) => slot.is_some(), // Full if the single-slot mailbox is occupied
     }
   }
 }
@@ -309,12 +280,9 @@ unsafe impl<T: Send> Sync for MpmcShared<T> {}
 
 impl<T: Send> MpmcShared<T> {
   /// Creates a new shared core for the channel with a given capacity.
-  /// Creates a new shared core for the channel with a given capacity.
   pub(crate) fn new(capacity: usize) -> Self {
     let queue = if capacity == usize::MAX {
       Storage::Unbounded(VecDeque::new())
-    } else if capacity == 0 {
-      Storage::Rendezvous(None) // <-- Allocates ZERO heap memory
     } else {
       Storage::Bounded(UnsynchronizedRingBuffer::new(capacity))
     };

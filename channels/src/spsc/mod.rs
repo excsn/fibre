@@ -108,6 +108,7 @@
 // `bounded_async` contains the asynchronous P/C wrappers and futures.
 mod bounded_async;
 mod bounded_sync;
+pub mod rendezvous;
 mod shared;
 
 // Publicly re-export the primary channel constructors and types.

@@ -255,13 +255,16 @@ _(Note: `T` must generally be `Send`. Specific trait bounds like `Clone` are not
 A flexible channel for many-to-many communication.
 
 *   **Constructors:**
-    *   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)`
-    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`
+    *   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)` (Panics if capacity is 0 — use `mpmc::rendezvous`).
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (Panics if capacity is 0 — use `mpmc::rendezvous`).
     *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`
     *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`
+    *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff.
+    *   `pub fn rendezvous::rendezvous_async<T: Send>() -> (rendezvous::AsyncSender<T>, rendezvous::AsyncReceiver<T>)`
 *   **Handles:**
     *   `Sender<T: Send>` (`Clone`) and `Receiver<T: Send>` (`Clone`).
     *   `AsyncSender<T: Send>` (`Clone`) and `AsyncReceiver<T: Send>` (`Clone`). `AsyncReceiver` implements `futures::Stream`.
+    *   Rendezvous handles `rendezvous::{Sender, Receiver, AsyncSender, AsyncReceiver}` (all `Clone`) expose `send`/`recv`/`try_*`/`recv_timeout`/`close`/conversions but no batch API.
 *   **Key Methods:**
     *   `send(...)`: Sync sends block, async sends return a `Future`.
     *   `try_send(&self, item: T) -> Result<(), TrySendError<T>>`
@@ -278,8 +281,9 @@ An optimized lock-free channel for many-to-one communication.
 *   **Constructors:**
     *   `pub fn unbounded<T: Send>() -> (UnboundedSender<T>, UnboundedReceiver<T>)`
     *   `pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>)`
-    *   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>)`
-    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)`
+    *   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>)` (Panics if capacity is 0 — use `mpsc::rendezvous`).
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (Panics if capacity is 0 — use `mpsc::rendezvous`).
+    *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff (senders `Clone`; single receiver, `!Clone`). `_async` variant available. No batch API.
 *   **Handles (Unbounded):**
     *   `UnboundedSender<T: Send>` (sync, `Clone`) and `UnboundedReceiver<T: Send>` (sync, `!Clone`).
     *   `UnboundedAsyncSender<T: Send>` (async, `Clone`) and `UnboundedAsyncReceiver<T: Send>` (async, `!Clone`). `UnboundedAsyncReceiver` implements `futures::Stream`.
@@ -334,8 +338,9 @@ A flexible publish-subscribe channel for one-to-many communication. Messages are
 A high-performance lock-free channel for one-to-one communication (bounded). `T` must be `Send`.
 
 *   **Constructors:**
-    *   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (Panics if capacity is 0).
-    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncBoundedSpscSender<T>, AsyncBoundedSpscReceiver<T>)` (Panics if capacity is 0).
+    *   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (Panics if capacity is 0 — use `spsc::rendezvous`).
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncBoundedSpscSender<T>, AsyncBoundedSpscReceiver<T>)` (Panics if capacity is 0 — use `spsc::rendezvous`).
+    *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff (both ends `!Clone`). `_async` variant available. No batch API.
 *   **Handles:**
     *   `BoundedSyncSender<T: Send>` (`!Clone`) and `BoundedSyncReceiver<T: Send>` (`!Clone`).
     *   `AsyncBoundedSpscSender<T: Send>` (`!Clone`) and `AsyncBoundedSpscReceiver<T: Send>` (`!Clone`). `AsyncBoundedSpscReceiver` implements `futures::Stream`.
@@ -380,7 +385,7 @@ All core channels (`spsc`, `mpsc`, `spmc`, `mpmc`) provide a uniform batch API t
 *   **Partial progress, no silent drops.** By-value sends return the count sent *and* the unsent remainder on interruption (`.into_unsent()` recovers the items). In-place sends drain only what was actually sent.
 *   **Blocking/async `recv_batch(max)` waits for at least one item**, then drains up to `max` without further waiting — the latency-friendly semantic for burst draining.
 *   **Empty input or `max == 0`** returns immediately with `Ok(0)` / an empty vector, even on a closed channel.
-*   **Rendezvous channels** (capacity 0, `mpsc::bounded(0)` / `mpmc::bounded(0)`): non-blocking batch sends transfer only as many items as receivers are ready for; blocking batch sends degrade gracefully to item-by-item handoff. A batch receive on `mpmc` extracts payloads directly from all currently parked senders in one pass.
+*   **Rendezvous channels** (`spsc`/`mpsc`/`mpmc::rendezvous`) do **not** provide batch operations — they are a dedicated zero-capacity family exposing only single-item `send`/`recv` and `try_*`. The buffered `bounded`/`unbounded` constructors are the ones that offer batch.
 *   **Cancellation.** Dropping a pending by-value async send-batch future drops the unsent remainder (consistent with the single-item send futures). The `_mut` send futures are cancel-safe: unsent items remain in your vector. All batch receive futures are cancel-safe.
 
 ### Sync Example (bounded MPSC)

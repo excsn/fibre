@@ -139,8 +139,10 @@ A high-performance, lock-free, bounded channel for one producer and one consumer
 
 ### Functions
 
-*   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)`
-*   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncBoundedSpscSender<T>, AsyncBoundedSpscReceiver<T>)`
+*   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (panics if `capacity == 0`)
+*   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncBoundedSpscSender<T>, AsyncBoundedSpscReceiver<T>)` (panics if `capacity == 0`)
+*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff; both ends `!Clone`. Handles expose `send`/`recv`/`try_send`/`try_recv`/`recv_timeout` (receiver)/`close`/`is_closed`/`len`/`is_empty`/`is_full`/`capacity`/`to_async`/`to_sync`. No batch API.
+*   `pub fn rendezvous::rendezvous_async<T: Send>() -> (rendezvous::AsyncSender<T>, rendezvous::AsyncReceiver<T>)`
 
 ### Struct `BoundedSyncSender<T>`
 
@@ -209,8 +211,9 @@ An optimized channel for multiple producers and one consumer.
 
 *   `pub fn unbounded<T: Send>() -> (UnboundedSender<T>, UnboundedReceiver<T>)`
 *   `pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>)`
-*   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>)`
-*   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)`
+*   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
+*   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
+*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff; senders `Clone`, single receiver `!Clone`. No batch API. `_async` variant available.
 
 ### Unbounded MPSC Types
 
@@ -317,10 +320,11 @@ A flexible, lock-based channel for many producers and many consumers.
 
 ### Functions
 
-*   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)`
-*   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`
+*   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
+*   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
 *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`
 *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`
+*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff; senders and receivers `Clone`. No batch API. `_async` variant available.
 
 ### Struct `Sender<T: Send>`
 

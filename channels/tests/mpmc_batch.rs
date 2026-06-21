@@ -114,58 +114,6 @@ fn sync_recv_batch_disconnected() {
 }
 
 #[test]
-fn sync_rendezvous_try_send_batch_no_receiver() {
-  let (tx, _rx) = mpmc::bounded::<u32>(0);
-  let err = tx.try_send_batch(vec![1, 2, 3]).unwrap_err();
-  assert_eq!(err.sent, 0);
-  assert_eq!(err.reason, BatchSendErrorReason::Full);
-}
-
-#[test]
-fn sync_rendezvous_recv_batch_extracts_parked_senders() {
-  let (tx, rx) = mpmc::bounded::<u32>(0);
-  let mut senders = Vec::new();
-  for i in 0..3 {
-    let tx = tx.clone();
-    senders.push(thread::spawn(move || tx.send(i)));
-  }
-  drop(tx);
-
-  // Let all three senders park with their payloads.
-  thread::sleep(Duration::from_millis(150));
-
-  // A single batch recv extracts the parked payloads directly.
-  let got = rx.recv_batch(10).unwrap();
-  let mut all: Vec<u32> = got;
-  while all.len() < 3 {
-    all.extend(rx.recv_batch(10).unwrap());
-  }
-  all.sort();
-  assert_eq!(all, vec![0, 1, 2]);
-  for s in senders {
-    s.join().unwrap().unwrap();
-  }
-}
-
-#[test]
-fn sync_rendezvous_send_batch_completes_via_recvs() {
-  let (tx, rx) = mpmc::bounded::<u32>(0);
-  let producer = thread::spawn(move || tx.send_batch(vec![1, 2, 3, 4, 5]).unwrap());
-
-  let mut got = Vec::new();
-  while got.len() < 5 {
-    got.push(rx.recv().unwrap());
-  }
-  assert_eq!(producer.join().unwrap(), 5);
-  // Note: the MPMC rendezvous design does not guarantee per-producer FIFO
-  // order (a parked sender's payload is extracted before the handoff queue
-  // is drained — true for single-item sends as well), so assert completeness
-  // rather than order.
-  got.sort();
-  assert_eq!(got, vec![1, 2, 3, 4, 5]);
-}
-
-#[test]
 fn sync_mp_mc_batch_totals() {
   #[cfg(not(miri))]
   const BATCHES: usize = 50;
@@ -260,19 +208,6 @@ mod async_tests {
   }
 
   #[tokio::test]
-  async fn async_rendezvous_send_batch_mut_cancel_recovers_parked_item() {
-    let (tx, _rx) = mpmc::bounded_async::<u32>(0);
-    let mut items = vec![1, 2, 3];
-    {
-      let fut = tx.send_batch_mut(&mut items);
-      let res = timeout(Duration::from_millis(100), fut).await;
-      assert!(res.is_err(), "no receiver: future must stay pending");
-    }
-    // The payload parked in the waiter slot must be recovered on cancel.
-    assert_eq!(items, vec![1, 2, 3]);
-  }
-
-  #[tokio::test]
   async fn async_send_batch_closed_mid_batch() {
     let (tx, rx) = mpmc::bounded_async::<u32>(2);
     let send_task = tokio::spawn(async move { tx.send_batch((0..10).collect()).await });
@@ -283,30 +218,6 @@ mod async_tests {
     let err = send_task.await.unwrap().unwrap_err();
     assert_eq!(err.sent + err.unsent.len(), 10);
     assert_eq!(err.unsent, ((err.sent as u32)..10).collect::<Vec<_>>());
-  }
-
-  #[tokio::test]
-  async fn async_rendezvous_recv_batch_extracts_parked_senders() {
-    let (tx, rx) = mpmc::bounded_async::<u32>(0);
-    let mut senders = Vec::new();
-    for i in 0..3 {
-      let tx = tx.clone();
-      senders.push(tokio::spawn(async move { tx.send(i).await }));
-    }
-    drop(tx);
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let mut all = Vec::new();
-    while all.len() < 3 {
-      let got = timeout(LONG_TIMEOUT, rx.recv_batch(10)).await.unwrap().unwrap();
-      all.extend(got);
-    }
-    all.sort();
-    assert_eq!(all, vec![0, 1, 2]);
-    for s in senders {
-      s.await.unwrap().unwrap();
-    }
   }
 
   #[tokio::test]

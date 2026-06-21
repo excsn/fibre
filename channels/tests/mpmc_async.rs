@@ -126,12 +126,6 @@ async fn async_v2_unbounded_channel() {
 }
 
 #[cfg(not(miri))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn async_v2_rendezvous_channel() {
-  run_async_mpmc_test(2, 2, ITEMS_MEDIUM, 0).await;
-}
-
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_v2_drop_producer_signals_disconnect() {
   let (tx, rx) = mpmc::bounded_async::<i32>(5);
