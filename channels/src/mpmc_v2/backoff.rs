@@ -34,3 +34,17 @@ where
     thread::park();
   }
 }
+
+#[inline(always)]
+pub(crate) fn spin_backoff(spin_count: &mut usize, limit: usize) -> bool {
+  if *spin_count < limit {
+    let spins = 1 << (*spin_count / 4);
+    for _ in 0..spins {
+      spin_hint();
+    }
+    *spin_count += 1;
+    true
+  } else {
+    false
+  }
+}

@@ -99,66 +99,27 @@ impl<T> Storage<T> {
   }
 }
 
-// --- Waiter & Data Structs ---
-
-/// Data that a parked sender might hold, specifically for rendezvous channels where
-/// the item is transferred directly without being buffered.
-#[derive(Debug)]
-pub(crate) enum WaiterData<T> {
-  SenderItem(Option<T>),
-}
+// --- Waiter Structs ---
 
 /// Represents a parked synchronous thread waiting for an operation to complete.
 #[derive(Debug)]
-pub(crate) struct SyncWaiter<T> {
-  /// The handle to the parked thread, used for `unpark()`.
+pub(crate) struct SyncWaiter {
   pub(crate) thread: Thread,
-  /// A slot for a rendezvous item. `None` for buffered waiters.
-  pub(crate) data: Option<WaiterData<T>>,
-  /// Raw pointer to the atomic state flag on the waiting thread's stack frame.
-  /// Safety: valid as long as the waiter is live in the queue (the thread is parked).
   pub(crate) state: *const AtomicU8,
 }
 
-impl<T> SyncWaiter<T> {
-  /// Takes the item from a rendezvous sender's waiter slot.
-  pub(crate) fn take_item_from_sender_slot(&mut self) -> Option<T> {
-    if let Some(WaiterData::SenderItem(item_opt)) = self.data.as_mut() {
-      item_opt.take()
-    } else {
-      None
-    }
-  }
-}
-
-unsafe impl<T: Send> Send for SyncWaiter<T> {}
-unsafe impl<T: Send> Sync for SyncWaiter<T> {}
+unsafe impl Send for SyncWaiter {}
+unsafe impl Sync for SyncWaiter {}
 
 /// Represents a parked asynchronous task waiting for an operation to complete.
 #[derive(Debug)]
-pub(crate) struct AsyncWaiter<T> {
-  /// The waker for the parked future, used for `wake()`.
+pub(crate) struct AsyncWaiter {
   pub(crate) waker: Waker,
-  /// A slot for a rendezvous item. `None` for buffered waiters.
-  pub(crate) data: Option<WaiterData<T>>,
-  /// Raw pointer to the atomic state flag within the pinned future or AsyncReceiver struct.
-  /// Safety: valid as long as the waiter is live in the queue (the future is pinned/alive).
   pub(crate) state: *const AtomicU8,
 }
 
-impl<T> AsyncWaiter<T> {
-  /// Takes the item from a rendezvous sender's waiter slot.
-  pub(crate) fn take_item_from_sender_slot(&mut self) -> Option<T> {
-    if let Some(WaiterData::SenderItem(item_opt)) = self.data.as_mut() {
-      item_opt.take()
-    } else {
-      None
-    }
-  }
-}
-
-unsafe impl<T: Send> Send for AsyncWaiter<T> {}
-unsafe impl<T: Send> Sync for AsyncWaiter<T> {}
+unsafe impl Send for AsyncWaiter {}
+unsafe impl Sync for AsyncWaiter {}
 
 /// A wake handle collected under the central mutex and woken after it is
 /// released, so woken threads/tasks don't immediately contend on the lock.
@@ -184,13 +145,13 @@ pub(crate) struct MpmcChannelInternal<T> {
   /// Cached count of items in the queue (prevents enum branching on invariants).
   pub(crate) queue_len: usize,
   /// Queue of parked synchronous senders.
-  pub(crate) waiting_sync_senders: VecDeque<SyncWaiter<T>>,
+  pub(crate) waiting_sync_senders: VecDeque<SyncWaiter>,
   /// Queue of parked asynchronous senders.
-  pub(crate) waiting_async_senders: VecDeque<AsyncWaiter<T>>,
+  pub(crate) waiting_async_senders: VecDeque<AsyncWaiter>,
   /// Queue of parked synchronous receivers.
-  pub(crate) waiting_sync_receivers: VecDeque<SyncWaiter<T>>,
+  pub(crate) waiting_sync_receivers: VecDeque<SyncWaiter>,
   /// Queue of parked asynchronous receivers.
-  pub(crate) waiting_async_receivers: VecDeque<AsyncWaiter<T>>,
+  pub(crate) waiting_async_receivers: VecDeque<AsyncWaiter>,
   /// The number of active `Sender` and `AsyncSender` handles.
   pub(crate) sender_count: usize,
   /// The number of active `Receiver` and `AsyncReceiver` handles.
@@ -380,19 +341,13 @@ impl<T: Send> MpmcShared<T> {
           if waiter_state
             .compare_exchange(
               STATE_WAITING,
-              STATE_SUCCESS_HANDOFF, // Item successfully taken
+              STATE_SUCCESS_SPACE,
               Ordering::SeqCst,
               Ordering::SeqCst,
             )
             .is_ok()
           {
-            let mut waiter = guard.waiting_async_senders.remove(i).unwrap();
-            if let Some(sender_item) = waiter.take_item_from_sender_slot() {
-              guard
-                .push_back(sender_item)
-                .ok()
-                .expect("MPMC push_back failed");
-            }
+            let waiter = guard.waiting_async_senders.remove(i).unwrap();
             to_wake = Some(WakeRef::Waker(waiter.waker));
             break;
           } else {
@@ -408,19 +363,13 @@ impl<T: Send> MpmcShared<T> {
             if waiter_state
               .compare_exchange(
                 STATE_WAITING,
-                STATE_SUCCESS_HANDOFF, // Item successfully taken
+                STATE_SUCCESS_SPACE,
                 Ordering::SeqCst,
                 Ordering::SeqCst,
               )
               .is_ok()
             {
-              let mut waiter = guard.waiting_sync_senders.remove(i).unwrap();
-              if let Some(sender_item) = waiter.take_item_from_sender_slot() {
-                guard
-                  .push_back(sender_item)
-                  .ok()
-                  .expect("MPMC push_back failed");
-              }
+              let waiter = guard.waiting_sync_senders.remove(i).unwrap();
               to_wake = Some(WakeRef::Thread(waiter.thread));
               break;
             } else {
@@ -437,56 +386,6 @@ impl<T: Send> MpmcShared<T> {
       return Ok(item);
     }
 
-    // --- Priority 2: Check for a waiting rendezvous sender (Direct Handoff) ---
-    let mut i = 0;
-    while i < guard.waiting_async_senders.len() {
-      let waiter = &guard.waiting_async_senders[i];
-      if waiter.data.is_some() {
-        let waiter_state = unsafe { &*waiter.state };
-        if waiter_state
-          .compare_exchange(
-            STATE_WAITING,
-            STATE_SUCCESS_HANDOFF,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-          )
-          .is_ok()
-        {
-          let mut waiter = guard.waiting_async_senders.remove(i).unwrap();
-          let item = waiter.take_item_from_sender_slot().unwrap();
-          drop(guard);
-          waiter.waker.wake();
-          return Ok(item);
-        }
-      }
-      i += 1;
-    }
-
-    let mut i = 0;
-    while i < guard.waiting_sync_senders.len() {
-      let waiter = &guard.waiting_sync_senders[i];
-      if waiter.data.is_some() {
-        let waiter_state = unsafe { &*waiter.state };
-        if waiter_state
-          .compare_exchange(
-            STATE_WAITING,
-            STATE_SUCCESS_HANDOFF,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-          )
-          .is_ok()
-        {
-          let mut waiter = guard.waiting_sync_senders.remove(i).unwrap();
-          let item = waiter.take_item_from_sender_slot().unwrap();
-          drop(guard);
-          waiter.thread.unpark();
-          return Ok(item);
-        }
-      }
-      i += 1;
-    }
-
-    // --- Priority 3: Check for disconnection ---
     if guard.sender_count == 0 {
       return Err(TryRecvError::Disconnected);
     }
@@ -622,56 +521,7 @@ impl<T: Send> MpmcShared<T> {
         got += from_buffer;
       }
 
-      // --- Priority 2: Extract payloads from waiting rendezvous senders ---
-      let mut i = 0;
-      while got < max && i < guard.waiting_async_senders.len() {
-        let waiter = &guard.waiting_async_senders[i];
-        if waiter.data.is_some() {
-          let waiter_state = unsafe { &*waiter.state };
-          if waiter_state
-            .compare_exchange(
-              STATE_WAITING,
-              STATE_SUCCESS_HANDOFF,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            let mut waiter = guard.waiting_async_senders.remove(i).unwrap();
-            out.push(waiter.take_item_from_sender_slot().unwrap());
-            to_wake.push(WakeRef::Waker(waiter.waker));
-            got += 1;
-            continue;
-          }
-        }
-        i += 1;
-      }
-
-      let mut i = 0;
-      while got < max && i < guard.waiting_sync_senders.len() {
-        let waiter = &guard.waiting_sync_senders[i];
-        if waiter.data.is_some() {
-          let waiter_state = unsafe { &*waiter.state };
-          if waiter_state
-            .compare_exchange(
-              STATE_WAITING,
-              STATE_SUCCESS_HANDOFF,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            let mut waiter = guard.waiting_sync_senders.remove(i).unwrap();
-            out.push(waiter.take_item_from_sender_slot().unwrap());
-            to_wake.push(WakeRef::Thread(waiter.thread));
-            got += 1;
-            continue;
-          }
-        }
-        i += 1;
-      }
-
-      // --- Priority 3: Wake and backfill from buffered senders ---
+      // --- Priority 2: Wake buffered senders ---
       if self.capacity > 0 && from_buffer > 0 {
         let mut woken = 0;
         let max_to_wake = from_buffer + (max - got);
@@ -683,24 +533,13 @@ impl<T: Send> MpmcShared<T> {
           if waiter_state
             .compare_exchange(
               STATE_WAITING,
-              STATE_SUCCESS_HANDOFF,
+              STATE_SUCCESS_SPACE,
               Ordering::SeqCst,
               Ordering::SeqCst,
             )
             .is_ok()
           {
-            let mut waiter = guard.waiting_async_senders.remove(i).unwrap();
-            if let Some(sender_item) = waiter.take_item_from_sender_slot() {
-              if got < max {
-                out.push(sender_item);
-                got += 1;
-              } else {
-                guard
-                  .push_back(sender_item)
-                  .ok()
-                  .expect("MPMC push_back failed");
-              }
-            }
+            let waiter = guard.waiting_async_senders.remove(i).unwrap();
             to_wake.push(WakeRef::Waker(waiter.waker));
             woken += 1;
           } else {
@@ -715,24 +554,13 @@ impl<T: Send> MpmcShared<T> {
           if waiter_state
             .compare_exchange(
               STATE_WAITING,
-              STATE_SUCCESS_HANDOFF,
+              STATE_SUCCESS_SPACE,
               Ordering::SeqCst,
               Ordering::SeqCst,
             )
             .is_ok()
           {
-            let mut waiter = guard.waiting_sync_senders.remove(i).unwrap();
-            if let Some(sender_item) = waiter.take_item_from_sender_slot() {
-              if got < max {
-                out.push(sender_item);
-                got += 1;
-              } else {
-                guard
-                  .push_back(sender_item)
-                  .ok()
-                  .expect("MPMC push_back failed");
-              }
-            }
+            let waiter = guard.waiting_sync_senders.remove(i).unwrap();
             to_wake.push(WakeRef::Thread(waiter.thread));
             woken += 1;
           } else {
@@ -803,7 +631,6 @@ impl<T: Send> MpmcShared<T> {
           unsafe { (*state_ptr).store(STATE_WAITING, Ordering::SeqCst) };
           let waiter = AsyncWaiter {
             waker: new_waker.clone(),
-            data: None,
             state: state_ptr,
           };
           guard.waiting_async_receivers.push_back(waiter);
@@ -856,7 +683,6 @@ impl<T: Send> MpmcShared<T> {
           unsafe { (*state_ptr).store(STATE_WAITING, Ordering::SeqCst) };
           let waiter = AsyncWaiter {
             waker: new_waker.clone(),
-            data: None,
             state: state_ptr,
           };
           guard.waiting_async_receivers.push_back(waiter);
@@ -873,11 +699,7 @@ impl<T> Drop for MpmcShared<T> {
     let guard = self.internal.get_mut();
 
     guard.queue.clear();
-    for mut waiter in guard.waiting_sync_senders.drain(..) {
-      let _ = waiter.take_item_from_sender_slot();
-    }
-    for mut waiter in guard.waiting_async_senders.drain(..) {
-      let _ = waiter.take_item_from_sender_slot();
-    }
+    guard.waiting_sync_senders.clear();
+    guard.waiting_async_senders.clear();
   }
 }

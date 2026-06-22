@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "channels",
+  "channels/bench",
   "cache",
   "ioc",
   "logging",
@@ -17,3 +18,8 @@ homepage = "https://github.com/excsn/fibre"
 repository = "https://github.com/excsn/fibre"
 
 [workspace.dependencies]
+bench_matrix = { version = "0" }
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[profile.release]
+debug = true

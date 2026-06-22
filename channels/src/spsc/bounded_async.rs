@@ -5,7 +5,7 @@ use crate::error::{
   BatchSendErrorReason, CloseError, RecvError, SendBatchError, SendError, TryRecvError,
   TrySendBatchError, TrySendError,
 };
-use crate::spsc::shared::SpscShared;
+use crate::spsc::shared::{Role, SpscShared, WakeRef};
 
 use core::marker::PhantomPinned;
 use std::future::Future;
@@ -27,23 +27,20 @@ pub struct AsyncBoundedSpscSender<T> {
 pub struct AsyncBoundedSpscReceiver<T> {
   pub(crate) shared: Arc<SpscShared<T>>,
   pub(crate) closed: AtomicBool,
+  is_registered: bool,
 }
 
 unsafe impl<T: Send> Send for AsyncBoundedSpscSender<T> {}
 unsafe impl<T: Send> Send for AsyncBoundedSpscReceiver<T> {}
 
-// Methods that do not require T: Send (e.g., for Drop)
 impl<T> AsyncBoundedSpscSender<T> {
   fn close_internal(&self) {
     self.shared.producer_dropped.store(true, Ordering::Release);
-    atomic::fence(Ordering::SeqCst);
-    self.shared.wake_consumer();
+    self.shared.drop_sender();
   }
 }
 
-// Methods that require T: Send
 impl<T: Send> AsyncBoundedSpscSender<T> {
-  /// Crate-internal constructor for tests or other channel types.
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
     Self {
       shared,
@@ -51,61 +48,32 @@ impl<T: Send> AsyncBoundedSpscSender<T> {
     }
   }
 
-  /// Converts this asynchronous SPSC producer into a synchronous one.
   pub fn to_sync(self) -> BoundedSyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
     BoundedSyncSender::from_shared(shared)
   }
 
-  /// Sends an item into the channel asynchronously.
-  ///
-  /// The returned future will complete with `Ok(())` if the send was successful,
-  /// or `Err(SendError::Closed)` if the consumer has been dropped.
   pub fn send(&self, item: T) -> SendFuture<'_, T> {
     SendFuture::new(self, item)
   }
 
-  /// Attempts to send an item into the channel without blocking (asynchronously).
-  ///
-  /// This is a non-blocking operation that returns immediately.
-  ///
-  /// # Errors
-  ///
-  /// - `Err(TrySendError::Full(item))` if the channel is full.
-  /// - `Err(TrySendError::Closed(item))` if the consumer has been dropped.
   pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TrySendError::Closed(item));
     }
-    let shared = &self.shared;
-    if shared.consumer_dropped.load(Ordering::Acquire) {
+    if self.shared.consumer_dropped.load(Ordering::Acquire) {
       return Err(TrySendError::Closed(item));
     }
-    let head = shared.head.load(Ordering::Relaxed);
-    let tail = shared.tail.load(Ordering::Acquire);
-    if shared.is_full(head, tail) {
-      return Err(TrySendError::Full(item));
+    match self.shared.ring.push(item) {
+      Ok(()) => {
+        self.shared.notify_receivers();
+        Ok(())
+      }
+      Err(returned) => Err(TrySendError::Full(returned)),
     }
-    let slot_idx = head % shared.capacity;
-    unsafe {
-      (*shared.buffer[slot_idx].get()).write(item);
-    }
-    shared.head.store(head.wrapping_add(1), Ordering::Release);
-    shared.wake_consumer();
-    Ok(())
   }
 
-  /// Sends a batch of items asynchronously, taking ownership of the vector.
-  ///
-  /// The returned future resolves with `Ok(n)` once every item has been sent,
-  /// or [`SendBatchError`] (carrying the count sent and the unsent remainder)
-  /// if the consumer drops mid-batch.
-  ///
-  /// Note: if the future is dropped (cancelled) after partial progress, the
-  /// already-sent prefix stays in the channel and the unsent remainder is
-  /// dropped. Use [`send_batch_mut`](Self::send_batch_mut) for a cancel-safe
-  /// variant.
   pub fn send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T> {
     let total = items.len();
     SendBatchFuture {
@@ -113,37 +81,28 @@ impl<T: Send> AsyncBoundedSpscSender<T> {
       iter: items.into_iter(),
       total,
       sent: 0,
+      is_registered: false,
       _phantom: PhantomPinned,
     }
   }
 
-  /// Sends a batch of items asynchronously in place, draining sent items from
-  /// the front of `items`.
-  ///
-  /// Cancel-safe: if the future is dropped, every unsent item remains in
-  /// `items`. The future resolves with the number of items sent, or
-  /// `Err(SendError::Closed)` if the consumer drops (unsent items remain in
-  /// `items`).
   pub fn send_batch_mut<'a>(&'a self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T> {
     SendBatchMutFuture {
       sender: self,
       items,
       sent: 0,
+      is_registered: false,
       _phantom: PhantomPinned,
     }
   }
 
-  /// Attempts to send a batch of items without blocking, taking ownership of
-  /// the input vector. See [`BoundedSyncSender::try_send_batch`] for the full
-  /// semantics; this is the same non-blocking operation.
   pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
     let total = items.len();
     if total == 0 {
       return Ok(0);
     }
     let mut iter = items.into_iter();
-    if self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire)
-    {
+    if self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire) {
       return Err(TrySendBatchError {
         sent: 0,
         unsent: iter.collect(),
@@ -167,31 +126,28 @@ impl<T: Send> AsyncBoundedSpscSender<T> {
     }
   }
 
-  /// Attempts to send a batch in place without blocking, draining sent items
-  /// from the front of `items`. Returns `Ok(k)` with the count sent (`0` if
-  /// the channel was full); `Err(SendError::Closed)` only if the channel is
-  /// closed and zero items were sent by this call.
   pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
     if items.is_empty() {
       return Ok(0);
     }
-    if self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire)
-    {
+    if self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire) {
       return Err(SendError::Closed);
     }
-    let k = self.shared.available_space().min(items.len());
-    if k == 0 {
-      return Ok(0);
+    let batch = std::mem::take(items);
+    match self.try_send_batch(batch) {
+      Ok(n) => Ok(n),
+      Err(e) => {
+        let (sent, reason) = (e.sent, e.reason);
+        *items = e.unsent;
+        if sent == 0 && matches!(reason, BatchSendErrorReason::Closed) {
+          Err(SendError::Closed)
+        } else {
+          Ok(sent)
+        }
+      }
     }
-    let mut drain = items.drain(..k);
-    let written = self.shared.write_batch(&mut drain, k);
-    debug_assert_eq!(written, k);
-    Ok(written)
   }
 
-  /// Closes the sending end of the channel.
-  /// This is an explicit alternative to `drop`. If the channel is not already
-  /// closed, this will signal to the receiver that no more messages will be sent.
   pub fn close(&self) -> Result<(), CloseError> {
     if self
       .closed
@@ -205,38 +161,27 @@ impl<T: Send> AsyncBoundedSpscSender<T> {
     }
   }
 
-  /// Returns `true` if the receiver has been dropped.
   pub fn is_closed(&self) -> bool {
     self.closed.load(Ordering::Relaxed) || self.shared.consumer_dropped.load(Ordering::Acquire)
   }
 
-  /// Returns the total capacity of the channel.
   pub fn capacity(&self) -> usize {
-    self.shared.capacity
+    self.shared.capacity()
   }
 
-  /// Returns the number of items currently in the channel.
   #[inline]
   pub fn len(&self) -> usize {
-    let head = self.shared.head.load(Ordering::Acquire);
-    let tail = self.shared.tail.load(Ordering::Acquire);
-    self.shared.current_len(head, tail)
+    self.shared.len()
   }
 
-  /// Returns `true` if the channel is currently empty.
   #[inline]
   pub fn is_empty(&self) -> bool {
-    let head = self.shared.head.load(Ordering::Acquire);
-    let tail = self.shared.tail.load(Ordering::Acquire);
-    self.shared.is_empty(head, tail)
+    self.shared.is_empty()
   }
 
-  /// Returns `true` if the channel is currently full.
   #[inline]
   pub fn is_full(&self) -> bool {
-    let head = self.shared.head.load(Ordering::Acquire);
-    let tail = self.shared.tail.load(Ordering::Acquire);
-    self.shared.is_full(head, tail)
+    self.shared.is_full()
   }
 }
 
@@ -244,115 +189,79 @@ impl<T: Send> AsyncBoundedSpscSender<T> {
 impl<T> AsyncBoundedSpscReceiver<T> {
   fn close_internal(&self) {
     self.shared.consumer_dropped.store(true, Ordering::Release);
-    atomic::fence(Ordering::SeqCst);
-    self.shared.wake_producer();
+    self.shared.drop_receiver();
   }
 }
 
 // Methods that require T: Send
 impl<T: Send> AsyncBoundedSpscReceiver<T> {
-  /// Crate-internal constructor for tests or other channel types.
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
     Self {
       shared,
       closed: AtomicBool::new(false),
+      is_registered: false,
     }
   }
 
-  /// Converts this asynchronous SPSC consumer into a synchronous one.
   pub fn to_sync(self) -> BoundedSyncReceiver<T> {
+    if self.is_registered {
+      self.shared.unregister(Role::Recv);
+    }
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
     BoundedSyncReceiver::from_shared(shared)
   }
 
-  /// Receives an item from the channel asynchronously.
-  ///
-  /// The returned future will complete with `Ok(T)` when an item is received,
-  /// or `Err(RecvError::Disconnected)` if the producer has been dropped and
-  /// the channel is empty.
   pub fn recv(&self) -> ReceiveFuture<'_, T> {
     ReceiveFuture::new(self)
   }
 
-  /// Attempts to receive an item from the channel without blocking (asynchronously).
-  ///
-  /// This is a non-blocking operation that returns immediately.
-  ///
-  /// # Errors
-  ///
-  /// - `Ok(T)` if an item was successfully received.
-  /// - `Err(TryRecvError::Empty)` if the channel is currently empty but the producer is alive.
-  /// - `Err(TryRecvError::Disconnected)` if the producer has been dropped and the channel is empty.
   pub fn try_recv(&self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
     }
-    let shared = &self.shared;
-    let tail = shared.tail.load(Ordering::Relaxed);
-    let head = shared.head.load(Ordering::Acquire);
-
-    if shared.is_empty(head, tail) {
-      if shared.producer_dropped.load(Ordering::Acquire) {
-        let final_head = shared.head.load(Ordering::Acquire);
-        if final_head == tail {
-          return Err(TryRecvError::Disconnected);
+    match self.shared.ring.pop() {
+      Some(item) => {
+        self.shared.notify_senders();
+        Ok(item)
+      }
+      None => {
+        if !self.shared.senders_alive() {
+          if let Some(item) = self.shared.ring.pop() {
+            self.shared.notify_senders();
+            return Ok(item);
+          }
+          Err(TryRecvError::Disconnected)
+        } else {
+          Err(TryRecvError::Empty)
         }
-        let slot_idx = tail % shared.capacity;
-        let item = unsafe { (*shared.buffer[slot_idx].get()).assume_init_read() };
-        shared.tail.store(tail.wrapping_add(1), Ordering::Release);
-        shared.wake_producer();
-        return Ok(item);
-      } else {
-        return Err(TryRecvError::Empty);
       }
     }
-
-    let slot_idx = tail % shared.capacity;
-    let item = unsafe { (*shared.buffer[slot_idx].get()).assume_init_read() };
-    shared.tail.store(tail.wrapping_add(1), Ordering::Release);
-    shared.wake_producer();
-    Ok(item)
   }
 
-  /// Receives up to `max` items asynchronously. The returned future resolves
-  /// once at least one item is available, draining up to `max` items without
-  /// further waiting (returns between 1 and `max` items in FIFO order), or
-  /// with `Err(RecvError::Disconnected)` if the channel is empty and the
-  /// producer has been dropped.
-  ///
-  /// Cancel-safe: items are only removed from the channel in the poll that
-  /// resolves the future.
   pub fn recv_batch(&self, max: usize) -> RecvBatchFuture<'_, T> {
     RecvBatchFuture {
       receiver: self,
       max,
+      is_registered: false,
     }
   }
 
-  /// Receives up to `max` items asynchronously, appending them to the end of
-  /// `out`. The future resolves with the number of items appended once at
-  /// least one is available. Cancel-safe.
   pub fn recv_batch_mut<'a>(&'a self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T> {
     RecvBatchMutFuture {
       receiver: self,
       out,
       max,
+      is_registered: false,
     }
   }
 
-  /// Attempts to receive up to `max` items without blocking. Returns 1..=max
-  /// items in FIFO order, `Err(TryRecvError::Empty)` if no items are
-  /// available, or `Err(TryRecvError::Disconnected)` if the channel is empty
-  /// and the producer has been dropped.
   pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError> {
     let mut out = Vec::new();
     self.try_recv_batch_mut(&mut out, max)?;
     Ok(out)
   }
 
-  /// Attempts to receive up to `max` items without blocking, appending them
-  /// to the end of `out`. Returns the number of items appended.
   pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
     if max == 0 {
       return Ok(0);
@@ -364,9 +273,7 @@ impl<T: Send> AsyncBoundedSpscReceiver<T> {
     if k > 0 {
       return Ok(k);
     }
-    if self.shared.producer_dropped.load(Ordering::Acquire) {
-      // The producer may have written items right before dropping; re-check
-      // so we drain the channel before reporting disconnection.
+    if !self.shared.senders_alive() {
       let k = self.shared.read_batch(out, max);
       if k > 0 {
         return Ok(k);
@@ -376,7 +283,6 @@ impl<T: Send> AsyncBoundedSpscReceiver<T> {
     Err(TryRecvError::Empty)
   }
 
-  /// Closes the receiving end of the channel.
   pub fn close(&self) -> Result<(), CloseError> {
     if self
       .closed
@@ -390,45 +296,31 @@ impl<T: Send> AsyncBoundedSpscReceiver<T> {
     }
   }
 
-  /// Returns `true` if the producer has been dropped and the channel is empty.
   pub fn is_closed(&self) -> bool {
     self.closed.load(Ordering::Relaxed)
-      || (self.shared.producer_dropped.load(Ordering::Acquire) && self.is_empty())
+      || (!self.shared.senders_alive() && self.shared.is_empty())
   }
 
-  /// Returns the total capacity of the channel.
   pub fn capacity(&self) -> usize {
-    self.shared.capacity
+    self.shared.capacity()
   }
 
-  /// Returns the number of items currently in the channel.
   #[inline]
   pub fn len(&self) -> usize {
-    let head = self.shared.head.load(Ordering::Acquire);
-    let tail = self.shared.tail.load(Ordering::Acquire);
-    self.shared.current_len(head, tail)
+    self.shared.len()
   }
 
-  /// Returns `true` if the channel is currently empty.
   #[inline]
   pub fn is_empty(&self) -> bool {
-    let head = self.shared.head.load(Ordering::Acquire);
-    let tail = self.shared.tail.load(Ordering::Acquire);
-    self.shared.is_empty(head, tail)
+    self.shared.is_empty()
   }
 
-  /// Returns `true` if the channel is currently full.
   #[inline]
   pub fn is_full(&self) -> bool {
-    let head = self.shared.head.load(Ordering::Acquire);
-    let tail = self.shared.tail.load(Ordering::Acquire);
-    self.shared.is_full(head, tail)
+    self.shared.is_full()
   }
 }
 
-/// Creates a new asynchronous bounded SPSC channel with the given capacity.
-///
-/// `capacity` must be greater than 0. Panics if capacity is 0.
 pub fn bounded_async<T: Send>(
   capacity: usize,
 ) -> (AsyncBoundedSpscSender<T>, AsyncBoundedSpscReceiver<T>) {
@@ -443,6 +335,7 @@ pub fn bounded_async<T: Send>(
     AsyncBoundedSpscReceiver {
       shared: shared_arc,
       closed: AtomicBool::new(false),
+      is_registered: false,
     },
   )
 }
@@ -455,10 +348,22 @@ impl<T> Drop for AsyncBoundedSpscSender<T> {
   }
 }
 
+impl<T> Drop for AsyncBoundedSpscReceiver<T> {
+  fn drop(&mut self) {
+    if self.is_registered {
+      self.shared.unregister(Role::Recv);
+    }
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
+    }
+  }
+}
+
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T> {
   sender: &'a AsyncBoundedSpscSender<T>,
   item: Option<T>,
+  is_registered: bool,
   _phantom: PhantomPinned,
 }
 
@@ -467,6 +372,7 @@ impl<'a, T> SendFuture<'a, T> {
     SendFuture {
       sender,
       item: Some(item),
+      is_registered: false,
       _phantom: PhantomPinned,
     }
   }
@@ -476,69 +382,86 @@ impl<'a, T: Unpin + Send> Future for SendFuture<'a, T> {
   type Output = Result<(), SendError>;
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    loop {
-      let this = unsafe { self.as_mut().get_unchecked_mut() };
-      let shared = &this.sender.shared;
+    let this = unsafe { self.as_mut().get_unchecked_mut() };
+    let shared = &this.sender.shared;
 
-      if this.item.is_none() {
-        return Poll::Ready(Ok(()));
-      }
+    loop {
+      let mut item = match this.item.take() {
+        Some(it) => it,
+        None => return Poll::Ready(Ok(())),
+      };
 
       if this.sender.closed.load(Ordering::Relaxed)
         || shared.consumer_dropped.load(Ordering::Acquire)
       {
-        this.item = None;
+        if this.is_registered {
+          shared.unregister(Role::Send);
+          this.is_registered = false;
+        }
         return Poll::Ready(Err(SendError::Closed));
       }
 
-      let head = shared.head.load(Ordering::Relaxed);
-      let tail = shared.tail.load(Ordering::Acquire);
-
-      if !shared.is_full(head, tail) {
-        let item_to_send = this.item.take().unwrap();
-        let slot_idx = head % shared.capacity;
-        unsafe {
-          (*shared.buffer[slot_idx].get()).write(item_to_send);
+      match shared.ring.push(item) {
+        Ok(()) => {
+          if this.is_registered {
+            shared.unregister(Role::Send);
+            this.is_registered = false;
+          }
+          shared.notify_receivers();
+          return Poll::Ready(Ok(()));
         }
-        shared.head.store(head.wrapping_add(1), Ordering::Release);
-        shared.wake_consumer();
-        return Poll::Ready(Ok(()));
+        Err(returned) => item = returned,
       }
 
-      shared.producer_waker_async.register(cx.waker());
+      shared.register(Role::Send, WakeRef::Waker(cx.waker().clone()), std::ptr::null());
+      this.is_registered = true;
+      shared.pre_park_fence();
 
-      // Re-check after registration
-      if shared.consumer_dropped.load(Ordering::Acquire) {
-        continue;
-      }
-      let head_after_register = shared.head.load(Ordering::Relaxed);
-      let tail_after_register = shared.tail.load(Ordering::Acquire);
-      if !shared.is_full(head_after_register, tail_after_register) {
-        continue;
+      if this.sender.closed.load(Ordering::Relaxed)
+        || shared.consumer_dropped.load(Ordering::Acquire)
+      {
+        if this.is_registered {
+          shared.unregister(Role::Send);
+          this.is_registered = false;
+        }
+        this.item = Some(item);
+        return Poll::Ready(Err(SendError::Closed));
       }
 
-      return Poll::Pending;
+      match shared.ring.push(item) {
+        Ok(()) => {
+          if this.is_registered {
+            shared.unregister(Role::Send);
+            this.is_registered = false;
+          }
+          shared.notify_receivers();
+          return Poll::Ready(Ok(()));
+        }
+        Err(returned) => {
+          this.item = Some(returned);
+          return Poll::Pending;
+        }
+      }
     }
   }
 }
 
 impl<'a, T> Drop for SendFuture<'a, T> {
   fn drop(&mut self) {
-    // If self.item is Some, it means the send did not complete.
-    // The item is dropped here when Option<T> is dropped.
+    if self.is_registered {
+      self.sender.shared.unregister(Role::Send);
+    }
   }
 }
 
 /// Future returned by [`AsyncBoundedSpscSender::send_batch`].
-///
-/// Resolves with `Ok(n)` once all items are sent, or `SendBatchError` on
-/// closure. If dropped before completion, the unsent remainder is dropped.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchFuture<'a, T> {
   sender: &'a AsyncBoundedSpscSender<T>,
   iter: std::vec::IntoIter<T>,
   total: usize,
   sent: usize,
+  is_registered: bool,
   _phantom: PhantomPinned,
 }
 
@@ -550,11 +473,19 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
     let shared = &this.sender.shared;
     loop {
       if this.sent == this.total {
+        if this.is_registered {
+          shared.unregister(Role::Send);
+          this.is_registered = false;
+        }
         return Poll::Ready(Ok(this.total));
       }
       if this.sender.closed.load(Ordering::Relaxed)
         || shared.consumer_dropped.load(Ordering::Acquire)
       {
+        if this.is_registered {
+          shared.unregister(Role::Send);
+          this.is_registered = false;
+        }
         return Poll::Ready(Err(SendBatchError {
           sent: this.sent,
           unsent: this.iter.by_ref().collect(),
@@ -564,34 +495,49 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
       let written = shared.write_batch(&mut this.iter, this.total - this.sent);
       this.sent += written;
       if this.sent == this.total {
+        if this.is_registered {
+          shared.unregister(Role::Send);
+          this.is_registered = false;
+        }
         return Poll::Ready(Ok(this.total));
       }
 
-      shared.producer_waker_async.register(cx.waker());
+      shared.register(Role::Send, WakeRef::Waker(cx.waker().clone()), std::ptr::null());
+      this.is_registered = true;
+      shared.pre_park_fence();
 
-      // Re-check after registration
-      if shared.consumer_dropped.load(Ordering::Acquire) {
+      let written_after = shared.write_batch(&mut this.iter, this.total - this.sent);
+      this.sent += written_after;
+      if this.sent == this.total {
+        shared.unregister(Role::Send);
+        this.is_registered = false;
+        return Poll::Ready(Ok(this.total));
+      }
+      if this.sender.closed.load(Ordering::Relaxed)
+        || shared.consumer_dropped.load(Ordering::Acquire)
+      {
         continue;
       }
-      let head_after_register = shared.head.load(Ordering::Relaxed);
-      let tail_after_register = shared.tail.load(Ordering::Acquire);
-      if !shared.is_full(head_after_register, tail_after_register) {
-        continue;
-      }
-
       return Poll::Pending;
     }
   }
 }
 
+impl<'a, T> Drop for SendBatchFuture<'a, T> {
+  fn drop(&mut self) {
+    if self.is_registered {
+      self.sender.shared.unregister(Role::Send);
+    }
+  }
+}
+
 /// Future returned by [`AsyncBoundedSpscSender::send_batch_mut`].
-///
-/// Cancel-safe: unsent items remain in the caller's vector.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchMutFuture<'a, T> {
   sender: &'a AsyncBoundedSpscSender<T>,
   items: &'a mut Vec<T>,
   sent: usize,
+  is_registered: bool,
   _phantom: PhantomPinned,
 }
 
@@ -603,11 +549,19 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
     let shared = &this.sender.shared;
     loop {
       if this.items.is_empty() {
+        if this.is_registered {
+          shared.unregister(Role::Send);
+          this.is_registered = false;
+        }
         return Poll::Ready(Ok(this.sent));
       }
       if this.sender.closed.load(Ordering::Relaxed)
         || shared.consumer_dropped.load(Ordering::Acquire)
       {
+        if this.is_registered {
+          shared.unregister(Role::Send);
+          this.is_registered = false;
+        }
         return Poll::Ready(Err(SendError::Closed));
       }
 
@@ -621,27 +575,33 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
         continue;
       }
 
-      shared.producer_waker_async.register(cx.waker());
+      shared.register(Role::Send, WakeRef::Waker(cx.waker().clone()), std::ptr::null());
+      this.is_registered = true;
+      shared.pre_park_fence();
 
-      // Re-check after registration
-      if shared.consumer_dropped.load(Ordering::Acquire) {
+      let k_after = shared.available_space().min(this.items.len());
+      if k_after > 0 {
+        let mut drain = this.items.drain(..k_after);
+        let written = shared.write_batch(&mut drain, k_after);
+        debug_assert_eq!(written, k_after);
+        drop(drain);
+        this.sent += k_after;
         continue;
       }
-      let head_after_register = shared.head.load(Ordering::Relaxed);
-      let tail_after_register = shared.tail.load(Ordering::Acquire);
-      if !shared.is_full(head_after_register, tail_after_register) {
+      if this.sender.closed.load(Ordering::Relaxed)
+        || shared.consumer_dropped.load(Ordering::Acquire)
+      {
         continue;
       }
-
       return Poll::Pending;
     }
   }
 }
 
-impl<T> Drop for AsyncBoundedSpscReceiver<T> {
+impl<'a, T> Drop for SendBatchMutFuture<'a, T> {
   fn drop(&mut self) {
-    if !self.closed.swap(true, Ordering::AcqRel) {
-      self.close_internal();
+    if self.is_registered {
+      self.sender.shared.unregister(Role::Send);
     }
   }
 }
@@ -649,43 +609,56 @@ impl<T> Drop for AsyncBoundedSpscReceiver<T> {
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct ReceiveFuture<'a, T> {
   receiver: &'a AsyncBoundedSpscReceiver<T>,
+  is_registered: bool,
 }
 
 impl<'a, T> ReceiveFuture<'a, T> {
   fn new(receiver: &'a AsyncBoundedSpscReceiver<T>) -> Self {
-    ReceiveFuture { receiver }
+    ReceiveFuture {
+      receiver,
+      is_registered: false,
+    }
   }
 }
 
 impl<'a, T: Send> Future for ReceiveFuture<'a, T> {
   type Output = Result<T, RecvError>;
 
-  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    if self.receiver.closed.load(Ordering::Relaxed) {
+  fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    let this = unsafe { self.as_mut().get_unchecked_mut() };
+    if this.receiver.closed.load(Ordering::Relaxed) {
       return Poll::Ready(Err(RecvError::Disconnected));
     }
-    self.receiver.shared.poll_recv_internal(cx)
+    this.receiver.shared.poll_recv_internal(cx, &mut this.is_registered)
+  }
+}
+
+impl<'a, T> Drop for ReceiveFuture<'a, T> {
+  fn drop(&mut self) {
+    if self.is_registered {
+      self.receiver.shared.unregister(Role::Recv);
+    }
   }
 }
 
 /// Future returned by [`AsyncBoundedSpscReceiver::recv_batch`].
-///
-/// Cancel-safe: items are only removed in the poll that resolves the future.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct RecvBatchFuture<'a, T> {
   receiver: &'a AsyncBoundedSpscReceiver<T>,
   max: usize,
+  is_registered: bool,
 }
 
 impl<'a, T: Send> Future for RecvBatchFuture<'a, T> {
   type Output = Result<Vec<T>, RecvError>;
 
-  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    if self.max == 0 {
+  fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    let this = unsafe { self.as_mut().get_unchecked_mut() };
+    if this.max == 0 {
       return Poll::Ready(Ok(Vec::new()));
     }
     let mut out = Vec::new();
-    match poll_recv_batch_spsc(self.receiver, cx, &mut out, self.max) {
+    match poll_recv_batch_spsc(this.receiver, cx, &mut out, this.max, &mut this.is_registered) {
       Poll::Ready(Ok(_)) => Poll::Ready(Ok(out)),
       Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
       Poll::Pending => Poll::Pending,
@@ -693,37 +666,50 @@ impl<'a, T: Send> Future for RecvBatchFuture<'a, T> {
   }
 }
 
+impl<'a, T> Drop for RecvBatchFuture<'a, T> {
+  fn drop(&mut self) {
+    if self.is_registered {
+      self.receiver.shared.unregister(Role::Recv);
+    }
+  }
+}
+
 /// Future returned by [`AsyncBoundedSpscReceiver::recv_batch_mut`].
-///
-/// Cancel-safe: items are only removed in the poll that resolves the future.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct RecvBatchMutFuture<'a, T> {
   receiver: &'a AsyncBoundedSpscReceiver<T>,
   out: &'a mut Vec<T>,
   max: usize,
+  is_registered: bool,
 }
 
 impl<'a, T: Send> Future for RecvBatchMutFuture<'a, T> {
   type Output = Result<usize, RecvError>;
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let this = &mut *self;
+    let this = unsafe { self.as_mut().get_unchecked_mut() };
     if this.max == 0 {
       return Poll::Ready(Ok(0));
     }
     let max = this.max;
-    poll_recv_batch_spsc(this.receiver, cx, this.out, max)
+    poll_recv_batch_spsc(this.receiver, cx, this.out, max, &mut this.is_registered)
   }
 }
 
-/// Shared poll logic for SPSC batch receive futures. Mirrors
-/// `SpscShared::poll_recv_internal` (register waker, re-check, Pending) but
-/// drains up to `max` items in one pass.
+impl<'a, T> Drop for RecvBatchMutFuture<'a, T> {
+  fn drop(&mut self) {
+    if self.is_registered {
+      self.receiver.shared.unregister(Role::Recv);
+    }
+  }
+}
+
 fn poll_recv_batch_spsc<T: Send>(
   receiver: &AsyncBoundedSpscReceiver<T>,
   cx: &mut Context<'_>,
   out: &mut Vec<T>,
   max: usize,
+  is_registered: &mut bool,
 ) -> Poll<Result<usize, RecvError>> {
   if receiver.closed.load(Ordering::Relaxed) {
     return Poll::Ready(Err(RecvError::Disconnected));
@@ -732,28 +718,48 @@ fn poll_recv_batch_spsc<T: Send>(
   loop {
     let k = shared.read_batch(out, max);
     if k > 0 {
+      if *is_registered {
+        shared.unregister(Role::Recv);
+        *is_registered = false;
+      }
       return Poll::Ready(Ok(k));
     }
 
     if shared.producer_dropped.load(Ordering::Acquire) {
-      // Drain anything written just before the producer dropped.
       let k = shared.read_batch(out, max);
       if k > 0 {
+        if *is_registered {
+          shared.unregister(Role::Recv);
+          *is_registered = false;
+        }
         return Poll::Ready(Ok(k));
+      }
+      if *is_registered {
+        shared.unregister(Role::Recv);
+        *is_registered = false;
       }
       return Poll::Ready(Err(RecvError::Disconnected));
     }
 
-    shared.consumer_waker_async.register(cx.waker());
+    shared.register(Role::Recv, WakeRef::Waker(cx.waker().clone()), std::ptr::null());
+    *is_registered = true;
+    shared.pre_park_fence();
 
-    // Critical re-check after registration
-    let tail = shared.tail.load(Ordering::Relaxed);
-    let head_after_register = shared.head.load(Ordering::Acquire);
-    if !shared.is_empty(head_after_register, tail) || shared.producer_dropped.load(Ordering::Acquire)
-    {
-      continue;
+    let k_after = shared.read_batch(out, max);
+    if k_after > 0 {
+      shared.unregister(Role::Recv);
+      *is_registered = false;
+      return Poll::Ready(Ok(k_after));
     }
-
+    if !shared.senders_alive() {
+      shared.unregister(Role::Recv);
+      *is_registered = false;
+      let k_end = shared.read_batch(out, max);
+      if k_end > 0 {
+        return Poll::Ready(Ok(k_end));
+      }
+      return Poll::Ready(Err(RecvError::Disconnected));
+    }
     return Poll::Pending;
   }
 }
@@ -765,7 +771,8 @@ impl<T: Send> Stream for AsyncBoundedSpscReceiver<T> {
     if self.closed.load(Ordering::Relaxed) {
       return Poll::Ready(None);
     }
-    match self.shared.poll_recv_internal(cx) {
+    let receiver = self.get_mut();
+    match receiver.shared.poll_recv_internal(cx, &mut receiver.is_registered) {
       Poll::Ready(Ok(value)) => Poll::Ready(Some(value)),
       Poll::Ready(Err(_)) => Poll::Ready(None),
       Poll::Pending => Poll::Pending,

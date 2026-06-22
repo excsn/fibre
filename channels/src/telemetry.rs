@@ -10,23 +10,23 @@ pub mod enabled {
 
   static NEXT_EVENT_SEQUENCE_ID: AtomicUsize = AtomicUsize::new(0);
 
+  // Used by the regular (low-frequency) log_event path.
   #[derive(Clone)]
   pub struct TelemetryEvent {
-    pub seq_id: usize, // A global sequence number for all events
+    pub seq_id: usize,
     pub timestamp: Instant,
     pub os_thread_id: ThreadId,
-    pub tokio_task_id: Option<TokioTaskId>, // Optional: Tokio's task ID
-    pub item_id: Option<usize>,             // Optional ID for the specific data item
-    pub location: String,                   // Code location (e.g., module::function)
-    pub event_type: String, // User-defined event type (e.g., "SendAttempt", "RecvSuccess")
-    pub message: Option<String>, // Optional human-readable message or details
+    pub tokio_task_id: Option<TokioTaskId>,
+    pub item_id: Option<usize>,
+    pub location: String,
+    pub event_type: String,
+    pub message: Option<String>,
   }
 
   impl fmt::Debug for TelemetryEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       f.debug_struct("TelemetryEvent")
         .field("seq", &self.seq_id)
-        // .field("ts_offset_micros", &"TODO_CALC_OFFSET") // Placeholder for relative time
         .field("os_tid", &self.os_thread_id)
         .field(
           "tokio_tid",
@@ -43,6 +43,79 @@ pub mod enabled {
         .finish()
     }
   }
+
+  // Separate record type for the stall ring: location/event_type are always
+  // static string literals at every call site, so we skip the two to_string()
+  // allocs that TelemetryEvent would require.
+  #[derive(Clone)]
+  struct StallRecord {
+    seq_id: usize,
+    timestamp: Instant,
+    os_thread_id: ThreadId,
+    tokio_task_id: Option<TokioTaskId>,
+    item_id: Option<usize>,
+    location: &'static str,
+    event_type: &'static str,
+    message: Option<String>,
+  }
+
+  // --- Lock-free stall ring -------------------------------------------------
+  //
+  // 256 independent per-slot parking_lot::Mutex slots indexed by an atomic
+  // cursor. Writers do one fetch_add + one uncontended per-slot lock. Two
+  // writers contend only if they land on the same slot mod 256 simultaneously,
+  // which is rare and still correct. Reads (dump) iterate all slots
+  // independently.
+
+  const STALL_RING_CAP: usize = 256;
+
+  struct StallRing {
+    cursor: AtomicUsize,
+    slots: Box<[parking_lot::Mutex<Option<StallRecord>>]>,
+  }
+
+  // SAFETY: StallRecord contains no thread-affine types; parking_lot::Mutex is
+  // Send + Sync.
+  unsafe impl Send for StallRing {}
+  unsafe impl Sync for StallRing {}
+
+  impl StallRing {
+    fn new() -> Self {
+      StallRing {
+        cursor: AtomicUsize::new(0),
+        slots: (0..STALL_RING_CAP)
+          .map(|_| parking_lot::Mutex::new(None))
+          .collect::<Vec<_>>()
+          .into_boxed_slice(),
+      }
+    }
+
+    #[inline]
+    fn push(&self, record: StallRecord) {
+      let idx = self.cursor.fetch_add(1, Ordering::Relaxed) & (STALL_RING_CAP - 1);
+      // Drops the evicted entry (if any) while holding the per-slot lock.
+      *self.slots[idx].lock() = Some(record);
+    }
+
+    fn snapshot_sorted(&self) -> Vec<StallRecord> {
+      let mut out = Vec::with_capacity(STALL_RING_CAP);
+      for slot in self.slots.iter() {
+        if let Some(r) = slot.lock().clone() {
+          out.push(r);
+        }
+      }
+      out.sort_by_key(|r| r.seq_id);
+      out
+    }
+
+    fn clear(&self) {
+      for slot in self.slots.iter() {
+        *slot.lock() = None;
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
 
   type CounterKey = (String, String); // (location, counter_name)
 
@@ -64,17 +137,16 @@ pub mod enabled {
 
   lazy_static::lazy_static! {
       static ref GLOBAL_COLLECTOR: Mutex<CollectorData> = Mutex::new(CollectorData::new());
+      static ref STALL_RING: StallRing = StallRing::new();
   }
 
-  // Internal function to record an event
   fn record_event_internal(
     item_id: Option<usize>,
     location: &str,
     event_type: &str,
     message: Option<String>,
   ) {
-    let tokio_task_id = tokio::task::try_id().map(|id| id);
-
+    let tokio_task_id = tokio::task::try_id();
     let event = TelemetryEvent {
       seq_id: NEXT_EVENT_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed),
       timestamp: Instant::now(),
@@ -85,12 +157,30 @@ pub mod enabled {
       event_type: event_type.to_string(),
       message,
     };
-
     if let Ok(mut collector) = GLOBAL_COLLECTOR.lock() {
       collector.events.push(event);
     } else {
       eprintln!("[TELEMETRY FT-ERROR] Global collector mutex poisoned while recording event.");
     }
+  }
+
+  fn record_stall_event_internal(
+    item_id: Option<usize>,
+    location: &'static str,
+    event_type: &'static str,
+    message: Option<String>,
+  ) {
+    let record = StallRecord {
+      seq_id: NEXT_EVENT_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed),
+      timestamp: Instant::now(),
+      os_thread_id: thread::current().id(),
+      tokio_task_id: tokio::task::try_id(),
+      item_id,
+      location,
+      event_type,
+      message,
+    };
+    STALL_RING.push(record);
   }
 
   fn increment_counter_internal(location: &str, counter_name: &str) {
@@ -113,9 +203,7 @@ pub mod enabled {
       } else {
         println!("\n[Events] Recorded Events ({}):", collector.events.len());
         let mut sorted_events = collector.events.clone();
-        // Sort by sequence ID to ensure chronological order if timestamps are too close
         sorted_events.sort_by_key(|e| e.seq_id);
-
         for event in sorted_events.iter() {
           let time_since_start = event.timestamp.duration_since(collector.start_time);
           let os_tid_short = format!("{:?}", event.os_thread_id)
@@ -126,7 +214,6 @@ pub mod enabled {
             .tokio_task_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| "---".to_string());
-
           println!(
             "  +{:<10.6}s [Seq:{:<5}] OS_TID:{:<6} TaskID:{:<6} Item:{:<6} Loc:{:<25} Evt:{:<30} Msg: {}",
             time_since_start.as_secs_f64(),
@@ -160,6 +247,48 @@ pub mod enabled {
     }
   }
 
+  fn print_stall_report_internal() {
+    let start_time = match GLOBAL_COLLECTOR.lock() {
+      Ok(c) => c.start_time,
+      Err(_) => Instant::now(),
+    };
+    let records = STALL_RING.snapshot_sorted();
+
+    println!(
+      "\n--- Fibre Stall Diagnostics Report (Last {} Events) ---",
+      STALL_RING_CAP
+    );
+    println!("Report generated at: {:?}", Instant::now());
+
+    if records.is_empty() {
+      println!("\n[Stall Events] No recent stall diagnostic events recorded.");
+    } else {
+      for r in &records {
+        let time_since_start = r.timestamp.duration_since(start_time);
+        let os_tid_short = format!("{:?}", r.os_thread_id)
+          .trim_start_matches("ThreadId(")
+          .trim_end_matches(')')
+          .to_string();
+        let tokio_tid_str = r
+          .tokio_task_id
+          .map(|id| id.to_string())
+          .unwrap_or_else(|| "---".to_string());
+        println!(
+          "  +{:<10.6}s [Seq:{:<5}] OS_TID:{:<6} TaskID:{:<6} Item:{:<6} Loc:{:<25} Evt:{:<30} Msg: {}",
+          time_since_start.as_secs_f64(),
+          r.seq_id,
+          os_tid_short,
+          tokio_tid_str,
+          r.item_id.map_or_else(|| "N/A".to_string(), |id| id.to_string()),
+          r.location,
+          r.event_type,
+          r.message.as_deref().unwrap_or("")
+        );
+      }
+    }
+    println!("\n--- End of Stall Diagnostics Report ---");
+  }
+
   fn clear_data_internal() {
     if let Ok(mut collector) = GLOBAL_COLLECTOR.lock() {
       collector.events.clear();
@@ -168,15 +297,11 @@ pub mod enabled {
     } else {
       eprintln!("[TELEMETRY FT-ERROR] Global collector mutex poisoned, cannot clear data.");
     }
+    STALL_RING.clear();
     NEXT_EVENT_SEQUENCE_ID.store(0, Ordering::Relaxed);
   }
 
   // --- Public Instrumentation Functions ---
-  // `enter_span_fn` is removed as we are not doing context-based spans anymore.
-  // If you want to mark blocks, you'd use two log_event_fn calls.
-  // Example: log_event_fn(None, "my_func", "BlockStart", Some("Doing X"));
-  //          ...
-  //          log_event_fn(None, "my_func", "BlockEnd", Some("Done X"));
 
   pub fn log_event_fn(
     item_id: Option<usize>,
@@ -187,12 +312,25 @@ pub mod enabled {
     record_event_internal(item_id, location, event_type, message);
   }
 
+  pub fn log_stall_event_fn(
+    item_id: Option<usize>,
+    location: &'static str,
+    event_type: &'static str,
+    message: Option<String>,
+  ) {
+    record_stall_event_internal(item_id, location, event_type, message);
+  }
+
   pub fn increment_counter_fn(location: &str, counter_name: &str) {
     increment_counter_internal(location, counter_name);
   }
 
   pub fn print_telemetry_report_fn() {
     print_report_internal();
+  }
+
+  pub fn print_stall_report_fn() {
+    print_stall_report_internal();
   }
 
   pub fn clear_telemetry_fn() {
@@ -202,7 +340,6 @@ pub mod enabled {
 
 #[cfg(not(feature = "fibre_logging"))]
 pub mod disabled {
-  // No TelemetrySpanGuard needed
   #[inline(always)]
   pub fn log_event_fn(
     _item_id: Option<usize>,
@@ -212,30 +349,84 @@ pub mod disabled {
   ) {
   }
   #[inline(always)]
+  pub fn log_stall_event_fn(
+    _item_id: Option<usize>,
+    _location: &'static str,
+    _event_type: &'static str,
+    _message: Option<String>,
+  ) {
+  }
+  #[inline(always)]
   pub fn increment_counter_fn(_location: &str, _counter_name: &str) {}
   #[inline(always)]
   pub fn print_telemetry_report_fn() {}
   #[inline(always)]
+  pub fn print_stall_report_fn() {}
+  #[inline(always)]
   pub fn clear_telemetry_fn() {}
+}
+
+// Declarative macros — `#[cfg(...)]` inside each arm prevents eager argument
+// evaluation (including format! calls) when fibre_logging is disabled.
+#[macro_export]
+macro_rules! log_stall {
+  ($item_id:expr, $location:expr, $event_type:expr) => {
+    #[cfg(feature = "fibre_logging")]
+    $crate::telemetry::log_stall_event($item_id, $location, $event_type, None);
+  };
+  ($item_id:expr, $location:expr, $event_type:expr, $($arg:tt)+) => {
+    #[cfg(feature = "fibre_logging")]
+    $crate::telemetry::log_stall_event(
+      $item_id,
+      $location,
+      $event_type,
+      Some(format!($($arg)+)),
+    );
+  };
+}
+
+#[macro_export]
+macro_rules! log_event {
+  ($item_id:expr, $location:expr, $event_type:expr) => {
+    #[cfg(feature = "fibre_logging")]
+    $crate::telemetry::log_event($item_id, $location, $event_type, None);
+  };
+  ($item_id:expr, $location:expr, $event_type:expr, $($arg:tt)+) => {
+    #[cfg(feature = "fibre_logging")]
+    $crate::telemetry::log_event(
+      $item_id,
+      $location,
+      $event_type,
+      Some(format!($($arg)+)),
+    );
+  };
+}
+
+#[macro_export]
+macro_rules! increment_counter {
+  ($location:expr, $counter_name:expr) => {
+    #[cfg(feature = "fibre_logging")]
+    $crate::telemetry::increment_counter($location, $counter_name);
+  };
 }
 
 // Re-export the correct set of functions based on the feature flag
 #[cfg(feature = "fibre_logging")]
 pub use enabled::{
   clear_telemetry_fn as clear_telemetry,
-  // enter_span_fn as enter_span, // Removed
   increment_counter_fn as increment_counter,
   log_event_fn as log_event,
+  log_stall_event_fn as log_stall_event,
   print_telemetry_report_fn as print_telemetry_report,
-  // TelemetrySpanGuard, // Removed
+  print_stall_report_fn as print_stall_report,
 };
 
 #[cfg(not(feature = "fibre_logging"))]
 pub use disabled::{
   clear_telemetry_fn as clear_telemetry,
-  // enter_span_fn as enter_span, // Removed
   increment_counter_fn as increment_counter,
   log_event_fn as log_event,
+  log_stall_event_fn as log_stall_event,
   print_telemetry_report_fn as print_telemetry_report,
-  // TelemetrySpanGuard, // Removed
+  print_stall_report_fn as print_stall_report,
 };

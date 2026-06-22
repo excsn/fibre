@@ -1,6 +1,6 @@
 //! Implementation of the synchronous, blocking send and receive logic for the MPMC channel.
 
-use super::core::{SyncWaiter, WaiterData, STATE_CANCELLED, STATE_WAITING};
+use super::core::{SyncWaiter, STATE_CANCELLED, STATE_WAITING};
 use super::{Receiver, Sender};
 use crate::error::{
   BatchSendErrorReason, RecvError, SendBatchError, SendError, TryRecvError, TrySendError,
@@ -33,7 +33,6 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
 
     let waiter = SyncWaiter {
       thread: thread::current(),
-      data: Some(WaiterData::SenderItem(current_item_opt.take())), // Unconditional stash
       state: done_ptr,
     };
 
@@ -45,8 +44,6 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
           || !guard.waiting_sync_receivers.is_empty()
           || (sender.shared.capacity > 0 && guard.len() < sender.shared.capacity))
       {
-        let mut temp_waiter = waiter;
-        current_item_opt = temp_waiter.take_item_from_sender_slot(); // Unconditional reclaim
         continue;
       }
 
@@ -73,8 +70,7 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
         .iter()
         .position(|w| w.state == done_ptr)
       {
-        let mut retrieved_waiter = guard.waiting_sync_senders.remove(pos).unwrap();
-        current_item_opt = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+        let _ = guard.waiting_sync_senders.remove(pos).unwrap();
       }
       drop(guard);
       return Err(SendError::Closed);
@@ -87,18 +83,16 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
     }
 
     // Space retry (Buffered, Bit 2 / 0x04 is 0): the receiver just set the flag.
-    // The waiter is still in the queue, and our item is still in it.
     let mut guard = sender.shared.internal.lock();
     if let Some(pos) = guard
       .waiting_sync_senders
       .iter()
       .position(|w| w.state == done_ptr)
     {
-      let mut retrieved_waiter = guard.waiting_sync_senders.remove(pos).unwrap();
-      current_item_opt = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+      let _ = guard.waiting_sync_senders.remove(pos).unwrap();
     }
     drop(guard);
-    // Loop back to retry
+    // current_item_opt is still Some(item) locally. Loop back to retry.
   }
 }
 
@@ -149,9 +143,6 @@ pub(crate) fn send_batch_sync<T: Send>(
 
     let waiter = SyncWaiter {
       thread: thread::current(),
-      data: Some(WaiterData::SenderItem(
-        pending.take().or_else(|| iter.next()),
-      )), // Unconditional stash
       state: done_ptr,
     };
 
@@ -163,17 +154,11 @@ pub(crate) fn send_batch_sync<T: Send>(
           || !guard.waiting_sync_receivers.is_empty()
           || (sender.shared.capacity > 0 && guard.len() < sender.shared.capacity))
       {
-        let mut temp_waiter = waiter;
-        pending = temp_waiter.take_item_from_sender_slot(); // Unconditional reclaim
         continue;
       }
 
       if guard.receiver_count == 0 {
-        let mut temp_waiter = waiter;
-        let mut unsent: Vec<T> = temp_waiter
-          .take_item_from_sender_slot() // Unconditional reclaim
-          .into_iter()
-          .collect();
+        let mut unsent: Vec<T> = pending.take().into_iter().collect();
         unsent.extend(iter.by_ref());
         return Err(SendBatchError { sent, unsent });
       }
@@ -191,18 +176,16 @@ pub(crate) fn send_batch_sync<T: Send>(
     // Check if we closed (Bit 1 / 0x02 is 0)
     if (final_state & 0x02) == 0 {
       let mut guard = sender.shared.internal.lock();
-      let mut unsent_item = None;
       if let Some(pos) = guard
         .waiting_sync_senders
         .iter()
         .position(|w| w.state == done_ptr)
       {
-        let mut retrieved_waiter = guard.waiting_sync_senders.remove(pos).unwrap();
-        unsent_item = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+        let _ = guard.waiting_sync_senders.remove(pos).unwrap();
       }
       drop(guard);
 
-      let mut unsent: Vec<T> = unsent_item.into_iter().collect();
+      let mut unsent: Vec<T> = pending.take().into_iter().collect();
       unsent.extend(iter.by_ref());
       return Err(SendBatchError { sent, unsent });
     }
@@ -222,10 +205,10 @@ pub(crate) fn send_batch_sync<T: Send>(
         .iter()
         .position(|w| w.state == done_ptr)
       {
-        let mut retrieved_waiter = guard.waiting_sync_senders.remove(pos).unwrap();
-        pending = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+        let _ = guard.waiting_sync_senders.remove(pos).unwrap();
       }
       drop(guard);
+      // Loop back to retry pushing the pending item.
     }
   }
 }
@@ -274,7 +257,6 @@ pub(crate) fn recv_batch_sync<T: Send>(
     let done_ptr = &done_flag as *const AtomicU8;
     let waiter = SyncWaiter {
       thread: thread::current(),
-      data: None,
       state: done_ptr,
     };
 
@@ -327,7 +309,6 @@ pub(crate) fn recv_sync<T: Send>(receiver: &Receiver<T>) -> Result<T, RecvError>
     let done_ptr = &done_flag as *const AtomicU8;
     let waiter = SyncWaiter {
       thread: thread::current(),
-      data: None, // Receivers never hold data in their waiter struct.
       state: done_ptr,
     };
 
@@ -385,7 +366,6 @@ pub(crate) fn recv_timeout_sync<T: Send>(
   let done_ptr = &done_flag as *const AtomicU8;
   let waiter = SyncWaiter {
     thread: thread::current(),
-    data: None,
     state: done_ptr,
   };
 

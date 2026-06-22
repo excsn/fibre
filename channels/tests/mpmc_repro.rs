@@ -556,3 +556,53 @@ async fn repro_mpmc_early_deposit_before_future_resolves() {
     early_item
   );
 }
+
+// ===========================================================================
+// Test 5: Lost Wakeup on MPMC Batch Send
+// ===========================================================================
+#[test]
+#[cfg(not(miri))]
+fn test_mpmc_batch_send_lost_wakeup() {
+  use fibre::mpmc;
+  use std::thread;
+  use std::time::Duration;
+
+  let cap = 10;
+  let num_consumers = 4;
+  let (tx, rx) = mpmc::bounded::<usize>(cap);
+
+  let mut handles = Vec::new();
+
+  // 1. Spawn multiple consumers that will park on the empty channel.
+  for _ in 0..num_consumers {
+    let rx_clone = rx.clone();
+    handles.push(thread::spawn(move || {
+      // Use recv_timeout so the test fails cleanly instead of hanging forever
+      rx_clone.recv_timeout(Duration::from_millis(500))
+    }));
+  }
+
+  // Give consumers time to firmly park in the waiting queue.
+  thread::sleep(Duration::from_millis(50));
+
+  // 2. Send a batch of exactly `num_consumers` items.
+  // BUG TRIGGER: If the batch send only issues a single `wake_one()`, 
+  // 3 out of the 4 consumers will remain parked and time out.
+  let batch: Vec<usize> = (0..num_consumers).collect();
+  let sent = tx.try_send_batch(batch).expect("Send batch failed");
+  assert_eq!(sent, num_consumers);
+
+  // 3. Await all consumers. If any timed out, we lost a wakeup.
+  let mut received = 0;
+  for (i, h) in handles.into_iter().enumerate() {
+    let res = h.join().unwrap();
+    assert!(
+      res.is_ok(),
+      "REGRESSION/BUG: Consumer {} lost wakeup and timed out! Only 1 receiver was woken by the batch send.",
+      i
+    );
+    received += 1;
+  }
+
+  assert_eq!(received, num_consumers);
+}

@@ -1,0 +1,17 @@
+[package]
+name = "fibre_bench"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "fibre_bench"
+path = "src/main.rs"
+
+[dependencies]
+fibre = { path = ".." }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+
+[features]
+fibre_logging = ["fibre/fibre_logging"]

@@ -2,10 +2,7 @@
 
 use futures_core::Stream;
 
-use super::core::{
-  AsyncWaiter, WaiterData, STATE_CANCELLED, STATE_CLOSED_BUFFERED, STATE_CLOSED_RENDEZVOUS,
-  STATE_SUCCESS_HANDOFF, STATE_SUCCESS_SPACE, STATE_WAITING,
-};
+use super::core::{AsyncWaiter, STATE_CANCELLED, STATE_SUCCESS_SPACE, STATE_WAITING};
 use super::{AsyncReceiver, AsyncSender};
 use crate::error::{BatchSendErrorReason, SendBatchError, SendError, TrySendError};
 use crate::RecvError;
@@ -56,10 +53,15 @@ impl<T: Send> Drop for SendFuture<'_, T> {
         )
         .is_ok()
     {
-      // Eagerly unlink the waiter so the future's memory can be safely freed.
       let mut guard = self.sender.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
-      guard.waiting_async_senders.retain(|w| w.state != state_ptr);
+      if let Some(pos) = guard
+        .waiting_async_senders
+        .iter()
+        .position(|w| w.state == state_ptr)
+      {
+        let _ = guard.waiting_async_senders.remove(pos).unwrap();
+      }
     }
   }
 }
@@ -75,45 +77,24 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
       if this.is_registered {
         let st = this.state.load(Ordering::SeqCst);
 
-        // Bit 0 / 0x01 is the FINISHED bit
         if (st & 0x01) != 0 {
           this.is_registered = false;
 
-          // Check if we closed (Bit 1 / 0x02 is 0)
-          if (st & 0x02) == 0 {
-            let mut guard = this.sender.shared.internal.lock();
-            if let Some(pos) = guard
-              .waiting_async_senders
-              .iter()
-              .position(|w| w.state == state_ptr)
-            {
-              let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
-              this.item = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
-            }
-            drop(guard);
-            return Poll::Ready(Err(SendError::Closed));
-          }
-
-          // It was a success!
-          // If rendezvous (Bit 2 / 0x04 is set), the receiver took the item. We are done!
-          if (st & 0x04) != 0 {
-            return Poll::Ready(Ok(()));
-          }
-
-          // If buffered (Bit 2 / 0x04 is 0), space opened up, but we still have the item.
-          // Reclaim it and loop back to retry.
           let mut guard = this.sender.shared.internal.lock();
           if let Some(pos) = guard
             .waiting_async_senders
             .iter()
             .position(|w| w.state == state_ptr)
           {
-            let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
-            this.item = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+            let _ = guard.waiting_async_senders.remove(pos).unwrap();
           }
           drop(guard);
+
+          if (st & 0x02) == 0 {
+            return Poll::Ready(Err(SendError::Closed));
+          }
+          // STATE_SUCCESS_SPACE: item is still in this.item, loop back to retry
         } else {
-          // Still parked: a spurious poll — update the waker in place.
           let mut guard = this.sender.shared.internal.lock();
           if let Some(w) = guard
             .waiting_async_senders
@@ -123,8 +104,6 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
             w.waker = cx.waker().clone();
             return Poll::Pending;
           }
-          // Popped but our state not yet flipped (a close path holds the
-          // waiter outside the lock): spin briefly and re-check.
           drop(guard);
           std::hint::spin_loop();
           continue 'poll_loop;
@@ -135,25 +114,23 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
         return Poll::Ready(Ok(()));
       }
 
-      // --- Phase 1: Try to send without parking ---
       let item_to_send = this.item.take().unwrap();
       match this.sender.shared.try_send_core(item_to_send) {
         Ok(()) => {
           this.is_registered = false;
-          return Poll::Ready(Ok(())); // Success!
+          return Poll::Ready(Ok(()));
         }
         Err(TrySendError::Full(returned_item)) => {
           this.item = Some(returned_item);
         }
-        Err(TrySendError::Closed(_)) => {
+        Err(TrySendError::Closed(returned_item)) => {
+          this.item = Some(returned_item);
           this.is_registered = false;
           return Poll::Ready(Err(SendError::Closed));
         }
         Err(TrySendError::Sent(_)) => unreachable!(),
       }
 
-      // --- Phase 2: Prepare to park ---
-      // --- Phase 3: Lock, re-check, and commit to parking ---
       {
         let mut guard = this.sender.shared.internal.lock();
 
@@ -167,7 +144,6 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
         }
 
         if guard.receiver_count == 0 {
-          this.item = None;
           this.is_registered = false;
           return Poll::Ready(Err(SendError::Closed));
         }
@@ -175,13 +151,10 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
         this.is_registered = true;
         this.state.store(STATE_WAITING, Ordering::SeqCst);
 
-        let data = Some(WaiterData::SenderItem(this.item.take())); // Unconditional stash
-        let waiter = AsyncWaiter {
+        guard.waiting_async_senders.push_back(AsyncWaiter {
           waker: cx.waker().clone(),
-          data,
           state: state_ptr,
-        };
-        guard.waiting_async_senders.push_back(waiter);
+        });
 
         return Poll::Pending;
       }
@@ -238,11 +211,15 @@ impl<T: Send> Drop for SendBatchFuture<'_, T> {
         )
         .is_ok()
     {
-      // Eagerly unlink the waiter so the future's memory can be safely freed.
-      // A rendezvous payload in the waiter slot is dropped with it.
       let mut guard = self.sender.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
-      guard.waiting_async_senders.retain(|w| w.state != state_ptr);
+      if let Some(pos) = guard
+        .waiting_async_senders
+        .iter()
+        .position(|w| w.state == state_ptr)
+      {
+        let _ = guard.waiting_async_senders.remove(pos).unwrap();
+      }
     }
   }
 }
@@ -265,21 +242,18 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
           // Check if we closed (Bit 1 / 0x02 is 0)
           if (st & 0x02) == 0 {
             let mut guard = this.sender.shared.internal.lock();
-            let mut unsent_item = None;
             if let Some(pos) = guard
               .waiting_async_senders
               .iter()
               .position(|w| w.state == state_ptr)
             {
-              let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
-              unsent_item = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+              let _ = guard.waiting_async_senders.remove(pos).unwrap();
             }
             drop(guard);
             return Poll::Ready(Err(SendBatchError {
               sent: this.sent,
-              unsent: unsent_item
-                .into_iter()
-                .collect::<Vec<_>>()
+              unsent: this.pending
+                .take()
                 .into_iter()
                 .chain(this.iter.by_ref())
                 .collect(),
@@ -294,15 +268,14 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
               return Poll::Ready(Ok(this.total));
             }
           } else {
-            // Space retry: reclaim the item
+            // Space retry: remove the waiter, item stays in this.pending
             let mut guard = this.sender.shared.internal.lock();
             if let Some(pos) = guard
               .waiting_async_senders
               .iter()
               .position(|w| w.state == state_ptr)
             {
-              let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
-              this.pending = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+              let _ = guard.waiting_async_senders.remove(pos).unwrap();
             }
             drop(guard);
           }
@@ -384,13 +357,9 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
 
         this.is_registered = true;
         this.state.store(STATE_WAITING, Ordering::SeqCst);
-        let data = Some(WaiterData::SenderItem(
-          this.pending.take().or_else(|| this.iter.next()),
-        )); // Unconditional stash
 
         guard.waiting_async_senders.push_back(AsyncWaiter {
           waker: cx.waker().clone(),
-          data,
           state: state_ptr,
         });
         return Poll::Pending;
@@ -447,20 +416,14 @@ impl<T: Send> Drop for SendBatchMutFuture<'_, T> {
     {
       let mut guard = self.sender.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
-      // Recover an in-flight payload back into the caller's vector
-      // before unlinking, preserving cancel safety.
-      if let Some(w) = guard
+      if let Some(pos) = guard
         .waiting_async_senders
-        .iter_mut()
-        .find(|w| w.state == state_ptr)
+        .iter()
+        .position(|w| w.state == state_ptr)
       {
-        if let Some(item) = w.take_item_from_sender_slot() {
-          self.items.insert(0, item);
-        }
+        let _ = guard.waiting_async_senders.remove(pos).unwrap();
       }
-      guard.waiting_async_senders.retain(|w| w.state != state_ptr);
     }
-    // Also recover any stashed item waiting locally in pending
     if let Some(item) = self.pending.take() {
       self.items.insert(0, item);
     }
@@ -485,19 +448,14 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
           // Check if we closed (Bit 1 / 0x02 is 0)
           if (st & 0x02) == 0 {
             let mut guard = this.sender.shared.internal.lock();
-            let mut unsent_item = None;
             if let Some(pos) = guard
               .waiting_async_senders
               .iter()
               .position(|w| w.state == state_ptr)
             {
-              let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
-              unsent_item = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+              let _ = guard.waiting_async_senders.remove(pos).unwrap();
             }
             drop(guard);
-            if let Some(item) = unsent_item {
-              this.items.insert(0, item);
-            }
             return Poll::Ready(Err(SendError::Closed));
           }
 
@@ -505,15 +463,14 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
           if (st & 0x04) != 0 {
             this.sent += 1;
           } else {
-            // Space retry: reclaim the item
+            // Space retry: remove the waiter, item stays in this.pending
             let mut guard = this.sender.shared.internal.lock();
             if let Some(pos) = guard
               .waiting_async_senders
               .iter()
               .position(|w| w.state == state_ptr)
             {
-              let mut retrieved_waiter = guard.waiting_async_senders.remove(pos).unwrap();
-              this.pending = retrieved_waiter.take_item_from_sender_slot(); // Unconditional reclaim
+              let _ = guard.waiting_async_senders.remove(pos).unwrap();
             }
             drop(guard);
           }
@@ -587,14 +544,8 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
         this.is_registered = true;
         this.state.store(STATE_WAITING, Ordering::SeqCst);
 
-        // BUGFIX: Always consume any existing pending item before draining the vector.
-        let data = Some(WaiterData::SenderItem(
-          this.pending.take().or_else(|| Some(this.items.remove(0))),
-        )); // Unconditional stash
-
         guard.waiting_async_senders.push_back(AsyncWaiter {
           waker: cx.waker().clone(),
-          data,
           state: state_ptr,
         });
         return Poll::Pending;
