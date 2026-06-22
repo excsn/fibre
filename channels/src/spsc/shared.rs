@@ -344,19 +344,15 @@ impl<T> SpscShared<T> {
   // --- Core APIs -----------------------------------------------------------
 
   pub(crate) fn write_batch<I: Iterator<Item = T>>(&self, iter: &mut I, limit: usize) -> usize {
-    if limit == 0 {
-      return 0;
-    }
+    let to_send = limit.min(self.available_space());
     let mut sent = 0;
-    while sent < limit {
+    for _ in 0..to_send {
       let Some(item) = iter.next() else { break };
-      match self.ring.push(item) {
-        Ok(()) => {
-          sent += 1;
-          self.notify_receivers();
-        }
-        Err(_) => break,
-      }
+      self.ring.push(item).ok().expect("SPSC push failed despite pre-checked space");
+      sent += 1;
+    }
+    if sent > 0 {
+      self.notify_receivers();
     }
     sent
   }
