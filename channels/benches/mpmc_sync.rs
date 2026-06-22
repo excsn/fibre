@@ -7,7 +7,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use fibre::mpmc;
+use fibre::mpmc as mpmc;
 
 const ITEM_VALUE: u64 = 42;
 

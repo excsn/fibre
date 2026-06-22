@@ -174,7 +174,7 @@ fn mpmc_async_benches(c: &mut Criterion) {
   AsyncBenchmarkSuite::new(
     c,
     &rt,
-    "MpmcV2Async".to_string(), // New benchmark group name
+    "MpmcAsync".to_string(),
     Some(parameter_names),
     parameter_axes,
     Box::new(extract_mpmc_config),
