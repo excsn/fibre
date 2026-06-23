@@ -10,6 +10,8 @@
 
 `fibre` is stable. The API is stable, but minor breaking changes may occur before version 1.0 as feedback is incorporated and improvements are made.
 
+**Performance highlights** (Apple M4 Pro) — **SPSC** ~190 Melem/s sync · ~205 Melem/s async · **MPSC** 9.1 / 36 Melem/s (sync/async, 1P) · **SPMC** 15–20 Melem/s broadcast · **SPMC Topic** up to 15 Melem/s async (14 subs) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128 1P/1C) · **Oneshot** ~10 Melem/s async — [details](#performance) · [bench data](./docs/benches/)
+
 ## Notable Users
 
 [Hi Stakes Markets Game](https://www.histakesgame.com) -  The worlds most advanced financial simulator, available on iPhone and Android.
@@ -24,7 +26,7 @@ Fibre offers a wide range of channel types, each optimized for a specific produc
 *   **`mpsc`**: A lock-free Multi-Producer, Single-Consumer channel, perfect for scenarios where many tasks need to send work to a single processing task. Supports bounded, unbounded, and zero-capacity `mpsc::rendezvous` modes. Requires `T: Send`.
 *   **`spmc`**: A "broadcast" style Single-Producer, Multi-Consumer channel where each message is cloned and delivered to every active consumer. Bounded. Requires `T: Send + Clone`.
 *   **`spmc::topic`**: A "publish-subscribe" variant of SPMC where the producer sends messages to named topics, and consumers subscribe to the topics they're interested in. The sender is non-blocking, dropping messages for slow consumers. Requires `K: Send + Sync + Hash + Eq + Clone` and `T: Send + Clone`.
-*   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic. Supports bounded, "unbounded", and zero-capacity `mpmc::rendezvous` modes. Requires `T: Send`.
+*   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic. Supports bounded, "unbounded", and zero-capacity `mpmc::rendezvous` modes. Both `send` and `recv` futures are cancel-safe. Requires `T: Send`.
 *   **`oneshot`**: A channel for sending a single value once, perfect for futures and promise-style patterns. Requires `T: Send`.
 
 **Capacity modes by channel type**
@@ -107,6 +109,28 @@ Performance is a primary goal. Fibre uses proven, high-performance algorithms fo
 *   **Clear Error Handling & Drop Safety:** Descriptive error types (`TrySendError<T>`, `RecvError`, `CloseError`) allow for value recovery and clear error reporting. Channels correctly signal disconnection when handles are dropped or explicitly closed, and any buffered items are properly deallocated.
 *   **Defined Disconnect Semantics:** Fibre follows a consistent two-sided disconnection contract across all channel types. When all **senders** are dropped or closed, any items already buffered in the channel remain readable; receivers will drain them before observing `Disconnected`. When a **receiver** is dropped or explicitly closed, that handle immediately returns `Disconnected` on any subsequent receive call — it does not attempt to drain remaining buffered items. This distinction is important for graceful shutdown: drop your senders to let receivers drain cleanly, rather than closing receivers while items are still in flight.
 *   **Thread Safety:** Each channel type enforces appropriate `Send` and `Sync` bounds, ensuring correct concurrent usage. For example, SPSC and MPSC consumer handles are `!Sync` as they are designed for single-threaded consumption.
+
+## Performance
+
+Benchmarks on Apple M4 Pro; full results in [`docs/benches/`](./docs/benches/).
+
+| Channel | Configuration | Sync | Async |
+| :--- | :--- | ---: | ---: |
+| **SPSC** | any capacity, 1P / 1C | ~190 Melem/s | ~205 Melem/s |
+| **MPSC** | 1P | 9.1 Melem/s | 36.3 Melem/s |
+| **MPSC** | 14P | 6.1 Melem/s | 6.4 Melem/s |
+| **SPMC** | Cap-128, 1C (broadcast) | 15.0 Melem/s | 14.8 Melem/s |
+| **SPMC** | Cap-128, 4C (broadcast) | 15.7 Melem/s | 19.5 Melem/s |
+| **SPMC Topic** | 1 subscriber | 18.1 Melem/s | 7.8 Melem/s |
+| **SPMC Topic** | 14 subscribers | 726 Kelem/s | 14.9 Melem/s |
+| **MPMC** | Cap-128, 1P / 1C | 22.2 Melem/s | 73.2 Melem/s |
+| **MPMC** | Cap-128, 14P / 14C | 14.3 Melem/s | 19.9 Melem/s |
+| **Oneshot** | — | — | 10.4 Melem/s |
+
+- SPSC throughput is flat across all buffer sizes (Cap-1 → Cap-1024) in both sync and async modes.
+- SPMC figures are per-message sent; each message is cloned and delivered to every consumer.
+- SPMC Topic's async 14-subscriber result (14.9 Melem/s) is ~20× faster than the sync equivalent (726 Kelem/s) because the non-blocking sender fully decouples producers from slow subscribers.
+- MPMC async at 73 Melem/s (Cap-128, 1P / 1C) avoids lock overhead when the buffer has slack.
 
 ## Installation
 
