@@ -4,36 +4,41 @@
 ## Results
 
 ### `SpscSync/Cap-1_Items-1000`
-- **Time:** 5.9740 µs – 6.0014 µs – 6.0257 µs
+- **Time:** 5.5350 µs – 5.5585 µs – 5.5767 µs  
+- **Throughput:** 179.32 Melem/s – 179.90 Melem/s – 180.67 Melem/s
 
 ### `SpscSync/Cap-1_Items-100000`
-- **Time:** 597.84 µs – 601.73 µs – 605.59 µs  
-- **Throughput:** 1.6513 Melem/s – 1.6619 Melem/s – 1.6727 Melem/s
+- **Time:** 526.49 µs – 529.81 µs – 532.78 µs  
+- **Throughput:** 187.69 Melem/s – 188.75 Melem/s – 189.94 Melem/s
 
 ### `SpscSync/Cap-1_Items-1000000`
-- **Time:** 5.9739 ms – 5.9867 ms – 6.0063 ms  
-- **Throughput:** 16.649 Melem/s – 16.704 Melem/s – 16.739 Melem/s
+- **Time:** 5.2646 ms – 5.2690 ms – 5.2730 ms  
+- **Throughput:** 189.65 Melem/s – 189.79 Melem/s – 189.95 Melem/s
+
+---
 
 ### `SpscSync/Cap-128_Items-1000`
-- **Time:** 5.9906 µs – 6.0101 µs – 6.0491 µs  
-- **Throughput:** 165.31 Gelem/s – 166.39 Gelem/s – 166.93 Gelem/s
+- **Time:** 5.5083 µs – 5.5526 µs – 5.5860 µs  
+- **Throughput:** 179.02 Melem/s – 180.10 Melem/s – 181.54 Melem/s
 
 ### `SpscSync/Cap-128_Items-100000`
-- **Time:** 596.21 µs – 597.54 µs – 599.33 µs  
-- **Throughput:** 1.6685 Melem/s – 1.6735 Melem/s – 1.6773 Melem/s
+- **Time:** 527.42 µs – 529.05 µs – 530.07 µs  
+- **Throughput:** 188.65 Melem/s – 189.02 Melem/s – 189.60 Melem/s
 
 ### `SpscSync/Cap-128_Items-1000000`
-- **Time:** 5.9266 ms – 5.9596 ms – 5.9761 ms  
-- **Throughput:** 16.733 Melem/s – 16.780 Melem/s – 16.873 Melem/s
+- **Time:** 5.2515 ms – 5.2623 ms – 5.2715 ms  
+- **Throughput:** 189.70 Melem/s – 190.03 Melem/s – 190.42 Melem/s
+
+---
 
 ### `SpscSync/Cap-1024_Items-1000`
-- **Time:** 5.9857 µs – 5.9957 µs – 6.0099 µs  
-- **Throughput:** 166.39 Gelem/s – 166.79 Gelem/s – 167.07 Gelem/s
+- **Time:** 5.5435 µs – 5.5746 µs – 5.5913 µs  
+- **Throughput:** 178.85 Melem/s – 179.38 Melem/s – 180.39 Melem/s
 
 ### `SpscSync/Cap-1024_Items-100000`
-- **Time:** 596.44 µs – 598.73 µs – 600.95 µs  
-- **Throughput:** 1.6640 Melem/s – 1.6702 Melem/s – 1.6766 Melem/s
+- **Time:** 526.29 µs – 527.87 µs – 529.04 µs  
+- **Throughput:** 189.02 Melem/s – 189.44 Melem/s – 190.01 Melem/s
 
 ### `SpscSync/Cap-1024_Items-1000000`
-- **Time:** 5.9677 ms – 5.9950 ms – 6.0149 ms  
-- **Throughput:** 16.625 Melem/s – 16.681 Melem/s – 16.757 Melem/s
+- **Time:** 5.2544 ms – 5.2651 ms – 5.2780 ms  
+- **Throughput:** 189.47 Melem/s – 189.93 Melem/s – 190.32 Melem/s

@@ -4,30 +4,29 @@
 ## Results
 
 ### `MpscAsync/Prod-1_Items-100000`
-
-* **Time:** 5.6628 ms – 5.7491 ms – 5.8065 ms
+- **Time:** 2.6948 ms – 2.7324 ms – 2.7737 ms  
+- **Throughput:** 36.053 Melem/s – 36.598 Melem/s – 37.109 Melem/s
 
 ### `MpscAsync/Prod-1_Items-1000000`
+- **Time:** 27.383 ms – 27.515 ms – 27.684 ms  
+- **Throughput:** 36.121 Melem/s – 36.344 Melem/s – 36.519 Melem/s
 
-* **Time:** 67.531 ms – 68.453 ms – 69.059 ms
-* **Throughput:** 1.4480 Melem/s – 1.4609 Melem/s – 1.4808 Melem/s
+---
 
 ### `MpscAsync/Prod-4_Items-100000`
-
-* **Time:** 11.659 ms – 11.927 ms – 12.125 ms
-* **Throughput:** 82.475 Melem/s – 83.843 Melem/s – 85.768 Melem/s
+- **Time:** 10.018 ms – 10.257 ms – 10.555 ms  
+- **Throughput:** 9.4745 Melem/s – 9.7496 Melem/s – 9.9822 Melem/s
 
 ### `MpscAsync/Prod-4_Items-1000000`
+- **Time:** 102.22 ms – 103.08 ms – 104.12 ms  
+- **Throughput:** 9.6043 Melem/s – 9.7010 Melem/s – 9.7831 Melem/s
 
-* **Time:** 128.73 ms – 132.76 ms – 135.54 ms
-* **Throughput:** 737.80 Kelem/s – 753.23 Kelem/s – 776.85 Kelem/s
+---
 
 ### `MpscAsync/Prod-14_Items-100000`
-
-* **Time:** 19.879 ms – 20.424 ms – 20.800 ms
-* **Throughput:** 48.077 Melem/s – 48.963 Melem/s – 50.304 Melem/s
+- **Time:** 15.605 ms – 15.644 ms – 15.678 ms  
+- **Throughput:** 6.3785 Melem/s – 6.3922 Melem/s – 6.4081 Melem/s
 
 ### `MpscAsync/Prod-14_Items-1000000`
-
-* **Time:** 202.68 ms – 209.05 ms – 215.62 ms
-* **Throughput:** 463.78 Kelem/s – 478.35 Kelem/s – 493.39 Kelem/s
+- **Time:** 156.99 ms – 157.34 ms – 157.62 ms  
+- **Throughput:** 6.3442 Melem/s – 6.3558 Melem/s – 6.3696 Melem/s

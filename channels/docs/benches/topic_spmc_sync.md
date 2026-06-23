@@ -4,60 +4,53 @@
 ## Results
 
 ### `TopicSpmcSync/Subs-1_MailboxCap-1_Items-10000`
-
-* **Time:** 704.57 µs – 717.27 µs – 723.79 µs
+- **Time:** 1.2332 ms – 1.2391 ms – 1.2490 ms  
+- **Throughput:** 8.0064 Melem/s – 8.0702 Melem/s – 8.1090 Melem/s
 
 ### `TopicSpmcSync/Subs-1_MailboxCap-1_Items-100000`
-
-* **Time:** 6.4824 ms – 6.6899 ms – 6.8080 ms
-* **Throughput:** 1.4689 Melem/s – 1.4948 Melem/s – 1.5426 Melem/s
+- **Time:** 5.4923 ms – 5.5337 ms – 5.5745 ms  
+- **Throughput:** 17.939 Melem/s – 18.071 Melem/s – 18.207 Melem/s
 
 ### `TopicSpmcSync/Subs-1_MailboxCap-128_Items-10000`
-
-* **Time:** 915.63 µs – 922.03 µs – 925.61 µs
-* **Throughput:** 108.04 Melem/s – 108.46 Melem/s – 109.21 Melem/s
+- **Time:** 1.1468 ms – 1.1509 ms – 1.1585 ms  
+- **Throughput:** 8.6319 Melem/s – 8.6890 Melem/s – 8.7201 Melem/s
 
 ### `TopicSpmcSync/Subs-1_MailboxCap-128_Items-100000`
+- **Time:** 9.2659 ms – 9.3053 ms – 9.3365 ms  
+- **Throughput:** 10.711 Melem/s – 10.747 Melem/s – 10.792 Melem/s
 
-* **Time:** 8.8832 ms – 9.1000 ms – 9.2081 ms
-* **Throughput:** 1.0860 Melem/s – 1.0989 Melem/s – 1.1257 Melem/s
+---
 
 ### `TopicSpmcSync/Subs-4_MailboxCap-1_Items-10000`
-
-* **Time:** 3.2241 ms – 3.3146 ms – 3.4562 ms
-* **Throughput:** 28.933 Melem/s – 30.169 Melem/s – 31.017 Melem/s
+- **Time:** 3.3155 ms – 3.5708 ms – 3.8892 ms  
+- **Throughput:** 10.285 Melem/s – 11.202 Melem/s – 12.065 Melem/s
 
 ### `TopicSpmcSync/Subs-4_MailboxCap-1_Items-100000`
-
-* **Time:** 30.895 ms – 31.725 ms – 32.817 ms
-* **Throughput:** 1.2189 Melem/s – 1.2608 Melem/s – 1.2947 Melem/s
+- **Time:** 32.873 ms – 33.679 ms – 34.443 ms  
+- **Throughput:** 11.613 Melem/s – 11.877 Melem/s – 12.168 Melem/s
 
 ### `TopicSpmcSync/Subs-4_MailboxCap-128_Items-10000`
-
-* **Time:** 3.9214 ms – 4.5504 ms – 5.2296 ms
-* **Throughput:** 76.488 Melem/s – 87.904 Melem/s – 102.01 Melem/s
+- **Time:** 4.2012 ms – 4.3062 ms – 4.5013 ms  
+- **Throughput:** 8.8864 Melem/s – 9.2888 Melem/s – 9.5211 Melem/s
 
 ### `TopicSpmcSync/Subs-4_MailboxCap-128_Items-100000`
+- **Time:** 38.007 ms – 38.558 ms – 39.049 ms  
+- **Throughput:** 10.244 Melem/s – 10.374 Melem/s – 10.524 Melem/s
 
-* **Time:** 36.798 ms – 40.398 ms – 47.631 ms
-* **Throughput:** 839.79 Kelem/s – 990.14 Kelem/s – 1.0870 Melem/s
+---
 
 ### `TopicSpmcSync/Subs-14_MailboxCap-1_Items-10000`
-
-* **Time:** 211.12 ms – 214.76 ms – 219.01 ms
-* **Throughput:** 1.8264 Melem/s – 1.8625 Melem/s – 1.8946 Melem/s
+- **Time:** 194.96 ms – 198.35 ms – 201.33 ms  
+- **Throughput:** 695.36 Kelem/s – 705.81 Kelem/s – 718.11 Kelem/s
 
 ### `TopicSpmcSync/Subs-14_MailboxCap-1_Items-100000`
-
-* **Time:** 2.0999 s – 2.1381 s – 2.1858 s
-* **Throughput:** 64.050 Kelem/s – 65.478 Kelem/s – 66.668 Kelem/s
+- **Time:** 1.8222 s – 1.9265 s – 1.9991 s  
+- **Throughput:** 700.32 Kelem/s – 726.71 Kelem/s – 768.29 Kelem/s
 
 ### `TopicSpmcSync/Subs-14_MailboxCap-128_Items-10000`
-
-* **Time:** 209.39 ms – 215.04 ms – 224.33 ms
-* **Throughput:** 6.2408 Melem/s – 6.5105 Melem/s – 6.6861 Melem/s
+- **Time:** 194.14 ms – 198.32 ms – 202.42 ms  
+- **Throughput:** 691.63 Kelem/s – 705.93 Kelem/s – 721.12 Kelem/s
 
 ### `TopicSpmcSync/Subs-14_MailboxCap-128_Items-100000`
-
-* **Time:** 2.0981 s – 2.1334 s – 2.1724 s
-* **Throughput:** 64.444 Kelem/s – 65.623 Kelem/s – 66.728 Kelem/s
+- **Time:** 1.9320 s – 1.9561 s – 1.9780 s  
+- **Throughput:** 707.77 Kelem/s – 715.73 Kelem/s – 724.63 Kelem/s

@@ -4,24 +4,29 @@
 ## Results
 
 ### `SpmcAsync/Cons-1_Cap-1_Items-100000`
-- **Time:** 739.24 ms – 743.42 ms – 748.88 ms
+- **Time:** 778.37 ms – 780.61 ms – 782.75 ms  
+- **Throughput:** 127.75 Kelem/s – 128.10 Kelem/s – 128.47 Kelem/s
 
 ### `SpmcAsync/Cons-1_Cap-128_Items-100000`
-- **Time:** 7.0008 ms – 7.0199 ms – 7.0423 ms  
-- **Throughput:** 14.200 Melem/s – 14.245 Melem/s – 14.284 Melem/s
+- **Time:** 6.6843 ms – 6.7435 ms – 6.7953 ms  
+- **Throughput:** 14.716 Melem/s – 14.829 Melem/s – 14.960 Melem/s
+
+---
 
 ### `SpmcAsync/Cons-4_Cap-1_Items-100000`
-- **Time:** 728.52 ms – 732.77 ms – 737.74 ms  
-- **Throughput:** 135.55 Kelem/s – 136.47 Kelem/s – 137.27 Kelem/s
+- **Time:** 785.62 ms – 787.89 ms – 790.17 ms  
+- **Throughput:** 506.22 Kelem/s – 507.68 Kelem/s – 509.15 Kelem/s
 
 ### `SpmcAsync/Cons-4_Cap-128_Items-100000`
-- **Time:** 17.735 ms – 18.145 ms – 18.528 ms  
-- **Throughput:** 21.589 Melem/s – 22.044 Melem/s – 22.554 Melem/s
+- **Time:** 20.325 ms – 20.461 ms – 20.623 ms  
+- **Throughput:** 19.396 Melem/s – 19.549 Melem/s – 19.680 Melem/s
+
+---
 
 ### `SpmcAsync/Cons-14_Cap-1_Items-100000`
-- **Time:** 783.07 ms – 786.67 ms – 790.52 ms  
-- **Throughput:** 505.99 Kelem/s – 508.47 Kelem/s – 510.81 Kelem/s
+- **Time:** 805.24 ms – 807.45 ms – 809.61 ms  
+- **Throughput:** 1.7292 Melem/s – 1.7338 Melem/s – 1.7386 Melem/s
 
 ### `SpmcAsync/Cons-14_Cap-128_Items-100000`
-- **Time:** 112.03 ms – 114.51 ms – 116.75 ms  
-- **Throughput:** 11.992 Melem/s – 12.227 Melem/s – 12.496 Melem/s
+- **Time:** 119.32 ms – 119.85 ms – 120.38 ms  
+- **Throughput:** 11.630 Melem/s – 11.682 Melem/s – 11.733 Melem/s

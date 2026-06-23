@@ -1,4 +1,4 @@
-# Fibre Benchmark: Async vs Sync
+# Kanal Benchmark: Async vs Sync
 **Test Machine:** MacBook M4 Pro
 
 ## Legend
