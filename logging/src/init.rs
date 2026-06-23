@@ -404,8 +404,10 @@ mod tests {
       "{}.dev.{}",
       DEFAULT_CONFIG_BASE_NAME, DEFAULT_CONFIG_EXTENSION
     ));
-    env::remove_var("FIBRE_ENV");
-    env::remove_var("APP_ENV");
+    unsafe {
+      env::remove_var("FIBRE_ENV");
+      env::remove_var("APP_ENV");
+    }
 
     let result = find_config_file(None);
     assert!(matches!(result, Err(Error::ConfigNotFound(_))));
