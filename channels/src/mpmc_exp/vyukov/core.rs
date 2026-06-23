@@ -256,7 +256,7 @@ struct SlabEntry {
   next: u32,
   /// Bumped on every free so any outstanding handle to a recycled slot is
   /// rejected by `remove` — makes post-wake `unregister` a safe no-op.
-  gen: u32,
+  _gen: u32,
 }
 
 /// O(1) FIFO waiter queue. A slab of `SlabEntry`s threaded by two intrusive
@@ -309,7 +309,7 @@ impl WaiterSlab {
         notified,
         prev: self.tail,
         next: NIL,
-        gen: 0,
+        _gen: 0,
       });
       i
     };
@@ -320,8 +320,8 @@ impl WaiterSlab {
     }
     self.tail = idx;
     self.len += 1;
-    let gen = self.entries[idx as usize].gen;
-    ((gen as u64) << 32) | idx as u64
+    let _gen = self.entries[idx as usize]._gen;
+    ((_gen as u64) << 32) | idx as u64
   }
 
   /// Unlinks `idx` from the FIFO order, recycles it, bumps its generation, and
@@ -345,7 +345,7 @@ impl WaiterSlab {
     let wake = e.wake.take();
     let notified = e.notified;
     e.notified = ptr::null();
-    e.gen = e.gen.wrapping_add(1);
+    e._gen = e._gen.wrapping_add(1);
     e.prev = NIL;
     e.next = self.free_head;
     self.free_head = idx;
@@ -366,9 +366,9 @@ impl WaiterSlab {
   /// live (index in range and generation current); a stale handle is ignored.
   fn remove(&mut self, id: u64) -> bool {
     let idx = (id & 0xFFFF_FFFF) as u32;
-    let gen = (id >> 32) as u32;
+    let _gen = (id >> 32) as u32;
     match self.entries.get(idx as usize) {
-      Some(e) if e.gen == gen && e.wake.is_some() => {
+      Some(e) if e._gen == _gen && e.wake.is_some() => {
         self.remove_index(idx);
         true
       }

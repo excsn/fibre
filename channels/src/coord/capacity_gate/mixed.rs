@@ -446,7 +446,7 @@ impl<'a> Future for AcquireFuture<'a> {
     for waiter in internal.waiters.iter_mut() {
       if let Waiter::Async {
         state,
-        waker: ref mut existing_waker,
+        waker: existing_waker,
       } = waiter
       {
         if *state == state_ptr {
@@ -565,7 +565,7 @@ impl<'a> Future for AcquireManyFuture<'a> {
     for waiter in internal.waiters.iter_mut() {
       if let Waiter::Async {
         state,
-        waker: ref mut existing_waker,
+        waker: existing_waker,
       } = waiter
       {
         if *state == state_ptr {
