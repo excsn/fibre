@@ -11,7 +11,7 @@ exclude = []
 resolver = "2"
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "MPL-2.0"
 authors = ["Excerion Sun <dev@excsn.com>"]
 homepage = "https://github.com/excsn/fibre"
