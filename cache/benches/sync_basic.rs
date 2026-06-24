@@ -1,14 +1,16 @@
+use std::hint::black_box;
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::{Duration, Instant};
+
 use bench_matrix::{
   criterion_runner::sync_suite::SyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use fibre_cache::builder::maintenance_frequency;
 use fibre_cache::{builder::CacheBuilder, Cache};
 use rand::prelude::{SliceRandom, StdRng};
 use rand::SeedableRng;
-use std::sync::{Arc, Barrier};
-use std::thread;
-use std::time::{Duration, Instant};
 
 // --- Config, State, Context ---
 

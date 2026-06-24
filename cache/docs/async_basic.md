@@ -1,4 +1,4 @@
-# AsyncBasicOps Benchmark: `Op-GetHit`
+# AsyncBasicOps Benchmark
 
 **Test Machine:** MacBook M4 Pro
 
@@ -6,195 +6,184 @@
 
 ### `AsyncBasicOps/Op-GetHit_Cap-10000_Items-10000_Tasks-1`
 
-* **Time:** 606.59 µs – 607.65 µs – 608.73 µs
+* **Time:** 595.80 µs – 599.11 µs – 603.75 µs
+* **Throughput:** 16.563 Melem/s – 16.692 Melem/s – 16.784 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-10000_Items-10000_Tasks-4`
 
-* **Time:** 497.56 µs – 499.51 µs – 502.04 µs
-* **Throughput:** 19.919 Melem/s – 20.020 Melem/s – 20.098 Melem/s
+* **Time:** 497.48 µs – 499.65 µs – 502.41 µs
+* **Throughput:** 19.904 Melem/s – 20.014 Melem/s – 20.101 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-10000_Items-10000_Tasks-8`
 
-* **Time:** 626.06 µs – 626.69 µs – 627.33 µs
-* **Throughput:** 15.941 Melem/s – 15.957 Melem/s – 15.973 Melem/s
+* **Time:** 626.90 µs – 627.70 µs – 628.54 µs
+* **Throughput:** 15.910 Melem/s – 15.931 Melem/s – 15.952 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-10000_Items-100000_Tasks-1`
 
-* **Time:** 8.8809 ms – 9.0395 ms – 9.2271 ms
-* **Throughput:** 1.0838 Melem/s – 1.1063 Melem/s – 1.1260 Melem/s
+* **Time:** 9.9251 ms – 10.144 ms – 10.384 ms
+* **Throughput:** 9.6305 Melem/s – 9.8585 Melem/s – 10.075 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-10000_Items-100000_Tasks-4`
 
-* **Time:** 5.6873 ms – 5.7285 ms – 5.7756 ms
-* **Throughput:** 17.314 Melem/s – 17.457 Melem/s – 17.583 Melem/s
+* **Time:** 6.6263 ms – 6.8670 ms – 7.1255 ms
+* **Throughput:** 14.034 Melem/s – 14.562 Melem/s – 15.091 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-10000_Items-100000_Tasks-8`
 
-* **Time:** 6.3817 ms – 6.4221 ms – 6.4735 ms
-* **Throughput:** 15.448 Melem/s – 15.571 Melem/s – 15.670 Melem/s
+* **Time:** 6.4094 ms – 6.4708 ms – 6.5403 ms
+* **Throughput:** 15.290 Melem/s – 15.454 Melem/s – 15.602 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-100000_Items-10000_Tasks-1`
 
-* **Time:** 623.05 µs – 631.26 µs – 638.88 µs
-* **Throughput:** 156.52 Melem/s – 158.41 Melem/s – 160.50 Melem/s
+* **Time:** 615.30 µs – 617.10 µs – 619.12 µs
+* **Throughput:** 16.152 Melem/s – 16.205 Melem/s – 16.252 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-100000_Items-10000_Tasks-4`
 
-* **Time:** 500.28 µs – 502.64 µs – 505.86 µs
-* **Throughput:** 19.768 Melem/s – 19.895 Melem/s – 19.989 Melem/s
+* **Time:** 505.81 µs – 509.06 µs – 513.29 µs
+* **Throughput:** 19.482 Melem/s – 19.644 Melem/s – 19.770 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-100000_Items-10000_Tasks-8`
 
-* **Time:** 628.87 µs – 630.13 µs – 632.01 µs
-* **Throughput:** 15.823 Melem/s – 15.870 Melem/s – 15.902 Melem/s
+* **Time:** 627.41 µs – 632.64 µs – 641.77 µs
+* **Throughput:** 15.582 Melem/s – 15.807 Melem/s – 15.939 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-100000_Items-100000_Tasks-1`
 
-* **Time:** 8.8046 ms – 8.9217 ms – 9.0496 ms
-* **Throughput:** 1.1050 Melem/s – 1.1209 Melem/s – 1.1358 Melem/s
+* **Time:** 9.7295 ms – 9.9963 ms – 10.296 ms
+* **Throughput:** 9.7122 Melem/s – 10.004 Melem/s – 10.278 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-100000_Items-100000_Tasks-4`
 
-* **Time:** 5.8665 ms – 5.9301 ms – 6.0050 ms
-* **Throughput:** 16.653 Melem/s – 16.863 Melem/s – 17.046 Melem/s
+* **Time:** 6.3581 ms – 6.5869 ms – 6.8421 ms
+* **Throughput:** 14.615 Melem/s – 15.182 Melem/s – 15.728 Melem/s
 
 ### `AsyncBasicOps/Op-GetHit_Cap-100000_Items-100000_Tasks-8`
 
-* **Time:** 6.3761 ms – 6.4068 ms – 6.4397 ms
-* **Throughput:** 15.529 Melem/s – 15.608 Melem/s – 15.684 Melem/s
+* **Time:** 6.4321 ms – 6.4753 ms – 6.5213 ms
+* **Throughput:** 15.334 Melem/s – 15.443 Melem/s – 15.547 Melem/s
 
 ---
-
-# AsyncBasicOps Benchmark: `Op-GetMiss`
-
-**Test Machine:** MacBook M4 Pro
-
-## Results
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-10000_Items-10000_Tasks-1`
 
-* **Time:** 233.67 µs – 238.78 µs – 244.03 µs
-* **Throughput:** 409.79 Melem/s – 418.80 Melem/s – 427.96 Melem/s
+* **Time:** 197.19 µs – 201.42 µs – 205.97 µs
+* **Throughput:** 48.550 Melem/s – 49.647 Melem/s – 50.712 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-10000_Items-10000_Tasks-4`
 
-* **Time:** 294.26 µs – 295.71 µs – 297.70 µs
-* **Throughput:** 33.591 Melem/s – 33.817 Melem/s – 33.984 Melem/s
+* **Time:** 293.84 µs – 297.29 µs – 300.98 µs
+* **Throughput:** 33.225 Melem/s – 33.637 Melem/s – 34.032 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-10000_Items-10000_Tasks-8`
 
-* **Time:** 458.44 µs – 461.21 µs – 464.40 µs
-* **Throughput:** 21.533 Melem/s – 21.682 Melem/s – 21.813 Melem/s
+* **Time:** 454.38 µs – 457.31 µs – 460.84 µs
+* **Throughput:** 21.699 Melem/s – 21.867 Melem/s – 22.008 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-10000_Items-100000_Tasks-1`
 
-* **Time:** 3.6713 ms – 3.6780 ms – 3.6849 ms
-* **Throughput:** 2.7137 Melem/s – 2.7189 Melem/s – 2.7238 Melem/s
+* **Time:** 3.6595 ms – 3.6772 ms – 3.6992 ms
+* **Throughput:** 27.033 Melem/s – 27.194 Melem/s – 27.326 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-10000_Items-100000_Tasks-4`
 
-* **Time:** 3.2768 ms – 3.3005 ms – 3.3323 ms
-* **Throughput:** 30.010 Melem/s – 30.299 Melem/s – 30.517 Melem/s
+* **Time:** 3.2858 ms – 3.3277 ms – 3.3784 ms
+* **Throughput:** 29.600 Melem/s – 30.051 Melem/s – 30.434 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-10000_Items-100000_Tasks-8`
 
-* **Time:** 4.7573 ms – 4.7981 ms – 4.8409 ms
-* **Throughput:** 20.657 Melem/s – 20.842 Melem/s – 21.020 Melem/s
+* **Time:** 4.7331 ms – 4.7777 ms – 4.8240 ms
+* **Throughput:** 20.730 Melem/s – 20.931 Melem/s – 21.128 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-100000_Items-10000_Tasks-1`
 
-* **Time:** 236.32 µs – 241.56 µs – 246.87 µs
-* **Throughput:** 405.08 Melem/s – 413.98 Melem/s – 423.15 Melem/s
+* **Time:** 196.88 µs – 200.55 µs – 204.56 µs
+* **Throughput:** 48.885 Melem/s – 49.862 Melem/s – 50.792 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-100000_Items-10000_Tasks-4`
 
-* **Time:** 294.34 µs – 295.39 µs – 296.56 µs
-* **Throughput:** 33.720 Melem/s – 33.853 Melem/s – 33.974 Melem/s
+* **Time:** 286.04 µs – 287.04 µs – 288.15 µs
+* **Throughput:** 34.704 Melem/s – 34.839 Melem/s – 34.960 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-100000_Items-10000_Tasks-8`
 
-* **Time:** 458.26 µs – 460.25 µs – 462.44 µs
-* **Throughput:** 21.624 Melem/s – 21.728 Melem/s – 21.822 Melem/s
+* **Time:** 467.82 µs – 470.93 µs – 473.91 µs
+* **Throughput:** 21.101 Melem/s – 21.235 Melem/s – 21.376 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-100000_Items-100000_Tasks-1`
 
-* **Time:** 3.6784 ms – 3.6847 ms – 3.6914 ms
-* **Throughput:** 2.7090 Melem/s – 2.7139 Melem/s – 2.7186 Melem/s
+* **Time:** 3.6592 ms – 3.6740 ms – 3.6907 ms
+* **Throughput:** 27.095 Melem/s – 27.218 Melem/s – 27.328 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-100000_Items-100000_Tasks-4`
 
-* **Time:** 3.2795 ms – 3.2968 ms – 3.3162 ms
-* **Throughput:** 30.155 Melem/s – 30.332 Melem/s – 30.493 Melem/s
+* **Time:** 3.3004 ms – 3.3270 ms – 3.3579 ms
+* **Throughput:** 29.780 Melem/s – 30.057 Melem/s – 30.300 Melem/s
 
 ### `AsyncBasicOps/Op-GetMiss_Cap-100000_Items-100000_Tasks-8`
 
-* **Time:** 4.7040 ms – 4.7344 ms – 4.7664 ms
-* **Throughput:** 20.980 Melem/s – 21.122 Melem/s – 21.259 Melem/s
+* **Time:** 4.6905 ms – 4.7398 ms – 4.7918 ms
+* **Throughput:** 20.869 Melem/s – 21.098 Melem/s – 21.320 Melem/s
 
 ---
 
-# AsyncBasicOps Benchmark: `Op-Insert`
-
-**Test Machine:** MacBook M4 Pro
-
-## Results
-
 ### `AsyncBasicOps/Op-Insert_Cap-10000_Items-10000_Tasks-1`
 
-* **Time:** 983.78 µs – 986.69 µs – 990.37 µs
-* **Throughput:** 100.97 Melem/s – 101.35 Melem/s – 101.65 Melem/s
+* **Time:** 1.0292 ms – 1.0379 ms – 1.0489 ms
+* **Throughput:** 9.5335 Melem/s – 9.6351 Melem/s – 9.7158 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-10000_Items-10000_Tasks-4`
 
-* **Time:** 1.0396 ms – 1.0503 ms – 1.0647 ms
-* **Throughput:** 9.3923 Melem/s – 9.5215 Melem/s – 9.6195 Melem/s
+* **Time:** 1.0517 ms – 1.0560 ms – 1.0612 ms
+* **Throughput:** 9.4233 Melem/s – 9.4695 Melem/s – 9.5085 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-10000_Items-10000_Tasks-8`
 
-* **Time:** 1.5476 ms – 1.5538 ms – 1.5608 ms
-* **Throughput:** 6.4071 Melem/s – 6.4358 Melem/s – 6.4614 Melem/s
+* **Time:** 1.4539 ms – 1.4580 ms – 1.4626 ms
+* **Throughput:** 6.8371 Melem/s – 6.8589 Melem/s – 6.8783 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-10000_Items-100000_Tasks-1`
 
-* **Time:** 11.496 ms – 11.618 ms – 11.750 ms
-* **Throughput:** 851.09 Kelem/s – 860.76 Kelem/s – 869.84 Kelem/s
+* **Time:** 11.931 ms – 12.154 ms – 12.406 ms
+* **Throughput:** 8.0608 Melem/s – 8.2278 Melem/s – 8.3816 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-10000_Items-100000_Tasks-4`
 
-* **Time:** 10.629 ms – 10.912 ms – 11.231 ms
-* **Throughput:** 8.9042 Melem/s – 9.1645 Melem/s – 9.4079 Melem/s
+* **Time:** 10.752 ms – 11.005 ms – 11.287 ms
+* **Throughput:** 8.8598 Melem/s – 9.0872 Melem/s – 9.3002 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-10000_Items-100000_Tasks-8`
 
-* **Time:** 13.963 ms – 14.035 ms – 14.113 ms
-* **Throughput:** 7.0858 Melem/s – 7.1248 Melem/s – 7.1616 Melem/s
+* **Time:** 13.259 ms – 13.376 ms – 13.502 ms
+* **Throughput:** 7.4064 Melem/s – 7.4759 Melem/s – 7.5420 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-100000_Items-10000_Tasks-1`
 
-* **Time:** 986.42 µs – 992.29 µs – 999.35 µs
-* **Throughput:** 100.06 Melem/s – 100.78 Melem/s – 101.38 Melem/s
+* **Time:** 1.0458 ms – 1.0556 ms – 1.0679 ms
+* **Throughput:** 9.3639 Melem/s – 9.4732 Melem/s – 9.5622 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-100000_Items-10000_Tasks-4`
 
-* **Time:** 987.38 µs – 993.02 µs – 999.73 µs
-* **Throughput:** 10.003 Melem/s – 10.070 Melem/s – 10.128 Melem/s
+* **Time:** 1.0197 ms – 1.0246 ms – 1.0303 ms
+* **Throughput:** 9.7061 Melem/s – 9.7602 Melem/s – 9.8064 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-100000_Items-10000_Tasks-8`
 
-* **Time:** 1.5464 ms – 1.5522 ms – 1.5582 ms
-* **Throughput:** 6.4178 Melem/s – 6.4426 Melem/s – 6.4664 Melem/s
+* **Time:** 1.4440 ms – 1.4530 ms – 1.4630 ms
+* **Throughput:** 6.8352 Melem/s – 6.8825 Melem/s – 6.9251 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-100000_Items-100000_Tasks-1`
 
-* **Time:** 11.986 ms – 12.049 ms – 12.120 ms
-* **Throughput:** 825.10 Kelem/s – 829.95 Kelem/s – 834.27 Kelem/s
+* **Time:** 12.129 ms – 12.230 ms – 12.341 ms
+* **Throughput:** 8.1032 Melem/s – 8.1764 Melem/s – 8.2444 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-100000_Items-100000_Tasks-4`
 
-* **Time:** 10.652 ms – 10.860 ms – 11.089 ms
-* **Throughput:** 9.0182 Melem/s – 9.2082 Melem/s – 9.3880 Melem/s
+* **Time:** 10.294 ms – 10.426 ms – 10.573 ms
+* **Throughput:** 9.4582 Melem/s – 9.5918 Melem/s – 9.7144 Melem/s
 
 ### `AsyncBasicOps/Op-Insert_Cap-100000_Items-100000_Tasks-8`
 
-* **Time:** 13.943 ms – 14.016 ms – 14.090 ms
-* **Throughput:** 7.0973 Melem/s – 7.1347 Melem/s – 7.1719 Melem/s
+* **Time:** 13.073 ms – 13.152 ms – 13.236 ms
+* **Throughput:** 7.5550 Melem/s – 7.6033 Melem/s – 7.6494 Melem/s

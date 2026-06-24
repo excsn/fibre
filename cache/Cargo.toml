@@ -57,11 +57,11 @@ rand_distr = "^0.5"
 rand_pcg = "^0.9"
 
 [[bench]]
-name = "async_basic_ops"
+name = "async_basic"
 harness = false
 
 [[bench]]
-name = "sync_basic_ops"
+name = "sync_basic"
 harness = false
 
 [[bench]]

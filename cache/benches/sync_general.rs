@@ -1,3 +1,4 @@
+use std::hint::black_box;
 use std::sync::{
   atomic::{AtomicUsize, Ordering},
   Arc, Barrier,
@@ -8,7 +9,7 @@ use std::time::{Duration, Instant};
 use bench_matrix::{
   criterion_runner::sync_suite::SyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use fibre_cache::{
   builder::{maintenance_frequency, CacheBuilder},
   BuildError as CacheBuilderError, Cache,

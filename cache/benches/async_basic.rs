@@ -1,15 +1,17 @@
+use std::future::Future;
+use std::hint::black_box;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use bench_matrix::{
   criterion_runner::async_suite::AsyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use fibre_cache::builder::maintenance_frequency;
 use fibre_cache::{builder::CacheBuilder, AsyncCache};
 use futures_util::future;
 use rand::prelude::{SliceRandom, StdRng};
 use rand::SeedableRng;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 use tokio::sync::Barrier;

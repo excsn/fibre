@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::hint::black_box;
 use std::pin::Pin;
 use std::sync::{
   atomic::{AtomicUsize, Ordering},
@@ -9,7 +10,7 @@ use std::time::{Duration, Instant};
 use bench_matrix::{
   criterion_runner::async_suite::AsyncBenchmarkSuite, AbstractCombination, MatrixCellValue,
 };
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use fibre_cache::builder::maintenance_frequency;
 use fibre_cache::{builder::CacheBuilder, AsyncCache, BuildError as CacheBuilderError};
 use futures_util::future;
