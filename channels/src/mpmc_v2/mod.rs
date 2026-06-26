@@ -41,8 +41,8 @@ pub mod rendezvous;
 mod sync_impl;
 
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 // --- Public Structs (Sync) ---
 
@@ -344,7 +344,7 @@ impl<T: Send> Sender<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
           }
         }
         for waiter in &guard.waiting_async_receivers {
@@ -357,7 +357,7 @@ impl<T: Send> Sender<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
           }
         }
       }
@@ -548,7 +548,7 @@ impl<T: Send> Receiver<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
           }
         }
         for waiter in &guard.waiting_async_senders {
@@ -561,7 +561,7 @@ impl<T: Send> Receiver<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
           }
         }
       } else {
@@ -575,7 +575,7 @@ impl<T: Send> Receiver<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
           }
         }
         if let Some(waiter) = guard.waiting_async_senders.front() {
@@ -588,7 +588,7 @@ impl<T: Send> Receiver<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
           }
         }
       }
@@ -782,7 +782,7 @@ impl<T: Send> AsyncSender<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
           }
         }
         for waiter in &guard.waiting_async_receivers {
@@ -795,7 +795,7 @@ impl<T: Send> AsyncSender<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
           }
         }
       }
@@ -962,7 +962,7 @@ impl<T: Send> AsyncReceiver<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
           }
         }
         for waiter in &guard.waiting_async_senders {
@@ -975,7 +975,7 @@ impl<T: Send> AsyncReceiver<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
           }
         }
       } else {
@@ -989,7 +989,7 @@ impl<T: Send> AsyncReceiver<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Thread(waiter.thread.clone()));
+            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
           }
         }
         if let Some(waiter) = guard.waiting_async_senders.front() {
@@ -1002,7 +1002,7 @@ impl<T: Send> AsyncReceiver<T> {
             )
             .is_ok()
           {
-            to_wake.push(crate::mpmc_v2::core::WakeRef::Waker(waiter.waker.clone()));
+            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
           }
         }
       }
@@ -1117,6 +1117,7 @@ impl<T: Send> Drop for AsyncReceiver<T> {
 mod tests {
   use super::*;
   use std::future::Future;
+  use std::pin::pin;
   use std::sync::Arc;
   use std::task::{Context, RawWaker, RawWakerVTable, Waker};
   use std::thread;
@@ -1170,7 +1171,7 @@ mod tests {
   }
 
   #[test]
-  fn test_mpmc_v2_async_waker_collision_deadlock() {
+  fn test_async_recv_registers_distinct_waiters_for_concurrent_futures() {
     fn dummy_waker() -> Waker {
       unsafe fn clone(_: *const ()) -> RawWaker {
         RawWaker::new(std::ptr::null(), &VTABLE)
@@ -1234,5 +1235,182 @@ mod tests {
         "Queue is not empty after dropping both futures!"
       );
     }
+  }
+
+  #[tokio::test(flavor = "current_thread")]
+  async fn test_recv_batch_drop_unlinks_waiter_after_data_ready() {
+    println!("\n--- STARTING DETERMINISTIC UAF REPRODUCTION ---");
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, RawWaker, RawWakerVTable, Waker};
+
+    fn dummy_waker() -> Waker {
+      unsafe fn clone(_: *const ()) -> RawWaker {
+        RawWaker::new(std::ptr::null(), &VTABLE)
+      }
+      unsafe fn wake(_: *const ()) {}
+      unsafe fn wake_by_ref(_: *const ()) {}
+      unsafe fn drop_raw(_: *const ()) {}
+      static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_raw);
+      unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+    }
+    let waker = dummy_waker();
+    let mut cx = Context::from_waker(&waker);
+
+    let (tx, rx) = bounded_async::<i32>(10);
+    let _tx_keepalive = tx.clone();
+
+    println!("STEP 1: Polling RecvBatchFuture to park it...");
+    let mut recv_fut = Box::pin(rx.recv_batch(1));
+    assert!(recv_fut.as_mut().poll(&mut cx).is_pending());
+
+    {
+      let guard = rx.shared.internal.lock();
+      println!(
+        "QUEUE STATE: {} receivers parked.",
+        guard.waiting_async_receivers.len()
+      );
+      assert_eq!(guard.waiting_async_receivers.len(), 1);
+    }
+
+    println!("STEP 2: Sending data to change parked state to STATE_SUCCESS_SPACE (3)...");
+    tx.try_send(42).unwrap();
+
+    println!(
+      "STEP 3: Polling RecvBatchFuture again (sets is_registered=false, skips queue removal)..."
+    );
+    let res = recv_fut.as_mut().poll(&mut cx);
+    assert!(res.is_ready());
+
+    println!("STEP 4: Dropping the future (is_registered=false, queue NOT cleaned)...");
+    drop(recv_fut);
+
+    {
+      let guard = rx.shared.internal.lock();
+      println!(
+        "QUEUE STATE POST-DROP: {} receivers parked.",
+        guard.waiting_async_receivers.len()
+      );
+      assert_eq!(
+        guard.waiting_async_receivers.len(),
+        0,
+        "The pointer was leaked in the queue!"
+      );
+    }
+
+    println!("--- REPRODUCTION COMPLETED ---");
+  }
+
+  #[test]
+  fn test_recv_batch_drop_unlinks_waiter_after_channel_close() {
+    fn dummy_waker() -> std::task::Waker {
+      unsafe fn clone(_: *const ()) -> std::task::RawWaker {
+        std::task::RawWaker::new(std::ptr::null(), &VTABLE)
+      }
+      unsafe fn wake(_: *const ()) {}
+      unsafe fn wake_by_ref(_: *const ()) {}
+      unsafe fn drop_raw(_: *const ()) {}
+      static VTABLE: std::task::RawWakerVTable =
+        std::task::RawWakerVTable::new(clone, wake, wake_by_ref, drop_raw);
+      unsafe { std::task::Waker::from_raw(std::task::RawWaker::new(std::ptr::null(), &VTABLE)) }
+    }
+
+    let waker = dummy_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+
+    // 1. Create a channel with multiple receivers so dropping one doesn't trigger a total shutdown.
+    let (tx, rx1) = bounded_async::<i32>(1);
+    let rx2 = rx1.clone();
+
+    // 2. Fill the channel buffer
+    tx.try_send(100).unwrap();
+
+    // 3. Create a SendFuture using Box::pin to bypass all compiler stack-lifetime magic.
+    let mut send_fut = Box::pin(tx.send(200));
+    assert!(send_fut.as_mut().poll(&mut cx).is_pending());
+
+    // 4. Drop rx1.
+    // Sets the parked sender's state to STATE_SUCCESS_SPACE.
+    drop(rx1);
+
+    // 5. Explicitly drop the SendFuture.
+    // Since it is heap-allocated, this runs the destructor immediately.
+    drop(send_fut);
+
+    // 6. Verify that the queue is now completely empty.
+    let leaked_count = {
+      let guard = tx.shared.internal.lock();
+      guard.waiting_async_senders.len()
+    };
+
+    assert_eq!(
+      leaked_count, 0,
+      "CRITICAL BUG: A dropped SendFuture left a dangling raw pointer in the queue! Count = {}",
+      leaked_count
+    );
+
+    // 7. Clean up remaining resources
+    let _ = rx2.try_recv();
+  }
+
+  #[tokio::test]
+  async fn test_send_drop_unlinks_waiter_after_receiver_disconnect() {
+    // 1. Create a dummy waker to manually poll futures
+    fn dummy_waker() -> Waker {
+      unsafe fn clone(_: *const ()) -> RawWaker {
+        RawWaker::new(std::ptr::null(), &VTABLE)
+      }
+      unsafe fn wake(_: *const ()) {}
+      unsafe fn wake_by_ref(_: *const ()) {}
+      unsafe fn drop_raw(_: *const ()) {}
+      static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_raw);
+      unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+    }
+    let waker = dummy_waker();
+    let mut cx = Context::from_waker(&waker);
+
+    // 2. Create the victim channel
+    let (tx, rx) = bounded_async::<i32>(1);
+    let _tx2 = tx.clone(); // Keep a clone alive so sender_count > 0
+
+    // 3. Park a receiver future.
+    // This pushes a raw pointer to its inline `state` into the queue.
+    let mut recv_fut = Box::pin(rx.recv_batch(1));
+    assert!(recv_fut.as_mut().poll(&mut cx).is_pending());
+
+    // Verify the pointer is in the queue
+    {
+      let guard = rx.shared.internal.lock();
+      assert_eq!(
+        guard.waiting_async_receivers.len(),
+        1,
+        "Waiter should be registered"
+      );
+    }
+
+    // 4. Wake the receiver via sender close.
+    // Because _tx2 exists, this is a partial close. It sets the waiter's state
+    // to STATE_SUCCESS_SPACE (3) but LEAVES the raw pointer in the queue.
+    tx.close().unwrap();
+
+    // 5. Drop the future.
+    // BUG: In the buggy code, compare_exchange(WAITING, CANCELLED) fails because
+    // state is 3. It skips the queue removal, leaving a dangling pointer.
+    drop(recv_fut);
+
+    // 6. Assert the queue is empty.
+    // If the bug exists, this will PANIC because the queue length is still 1.
+    // This proves the Use-After-Free vulnerability exists without actually
+    // causing a segfault that kills the test runner.
+    let leaked_count = {
+      let guard = rx.shared.internal.lock();
+      guard.waiting_async_receivers.len()
+    };
+
+    assert_eq!(
+      leaked_count, 0,
+      "REGRESSION: Dropped RecvBatchFuture left a dangling pointer in the queue! \
+             This will cause a Use-After-Free segfault (address 0x3) on the next channel operation."
+    );
   }
 }

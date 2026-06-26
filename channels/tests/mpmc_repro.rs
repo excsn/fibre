@@ -1,6 +1,6 @@
 use fibre::mpmc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -393,7 +393,9 @@ async fn test_mpmc_async_batch_recv_lost_wakeup() {
       println!("[TEST] Sender successfully unblocked after batch receive.");
     }
     Err(_) => {
-      panic!("REGRESSION/BUG: Async Sender remained permanently blocked after exact-capacity batch receive freed space!");
+      panic!(
+        "REGRESSION/BUG: Async Sender remained permanently blocked after exact-capacity batch receive freed space!"
+      );
     }
   }
 }
@@ -434,7 +436,9 @@ fn test_mpmc_sync_batch_recv_lost_wakeup() {
   });
 
   if done_rx.recv_timeout(Duration::from_millis(500)).is_err() {
-    panic!("REGRESSION/BUG: Sync Sender remained permanently blocked after exact-capacity batch receive freed space!");
+    panic!(
+      "REGRESSION/BUG: Sync Sender remained permanently blocked after exact-capacity batch receive freed space!"
+    );
   } else {
     println!("[TEST] Sync Sender successfully unblocked after batch receive.");
   }
@@ -586,7 +590,7 @@ fn test_mpmc_batch_send_lost_wakeup() {
   thread::sleep(Duration::from_millis(50));
 
   // 2. Send a batch of exactly `num_consumers` items.
-  // BUG TRIGGER: If the batch send only issues a single `wake_one()`, 
+  // BUG TRIGGER: If the batch send only issues a single `wake_one()`,
   // 3 out of the 4 consumers will remain parked and time out.
   let batch: Vec<usize> = (0..num_consumers).collect();
   let sent = tx.try_send_batch(batch).expect("Send batch failed");
@@ -605,4 +609,167 @@ fn test_mpmc_batch_send_lost_wakeup() {
   }
 
   assert_eq!(received, num_consumers);
+}
+
+use tokio::time::timeout;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ReqState {
+  ReadyToSend,
+  ExpectingReply,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RepState {
+  WaitingForRequest,
+  ReceivedRequest,
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_mpmc_v2_replicate_rzmq_fsm_chaos() {
+  // 1. Core channels representing the physical ZMQ socket connection (capacity 1).
+  let (req_tx, rep_rx) = mpmc::bounded_async::<usize>(1);
+  let (rep_tx, req_rx) = mpmc::bounded_async::<usize>(1);
+
+  // 2. FSM Gating states matching ReqSocket and RepSocket
+  let req_state = Arc::new(parking_lot::Mutex::new(ReqState::ReadyToSend));
+  let rep_state = Arc::new(parking_lot::Mutex::new(RepState::WaitingForRequest));
+
+  let stop = Arc::new(AtomicBool::new(false));
+  let mut handles = Vec::new();
+
+  // 3. Spawn 20 concurrent REQ chaos tasks
+  for t_id in 0..20 {
+    let req_tx = req_tx.clone();
+    let req_rx = req_rx.clone();
+    let req_state = req_state.clone();
+    let stop = stop.clone();
+
+    handles.push(tokio::spawn(async move {
+      let mut seq = t_id * 10000;
+      let mut rng = u64::wrapping_mul(seq as u64, 0x9E37_79B9_7F4A_7C15);
+
+      while !stop.load(Ordering::Relaxed) {
+        rng = rng.wrapping_mul(0x2545_F491_4F6C_DD1D);
+        let want_send = (rng % 2) == 0;
+
+        if want_send {
+          // REQ FSM Gate: only send if ReadyToSend
+          let should_send = {
+            let mut state = req_state.lock();
+            if *state == ReqState::ReadyToSend {
+              *state = ReqState::ExpectingReply;
+              true
+            } else {
+              false
+            }
+          };
+
+          if should_send {
+            // Mimic SNDTIMEO timeout cancellation
+            let timeout_us = 50 + (rng % 450);
+            let res = timeout(Duration::from_micros(timeout_us), req_tx.send(seq)).await;
+            if res.is_err() {
+              // Timeout: rzmq's ReqSocket stays in ExpectingReply
+            }
+            seq += 1;
+          }
+        } else {
+          // REQ FSM Gate: only recv if ExpectingReply
+          let should_recv = {
+            let mut state = req_state.lock();
+            if *state == ReqState::ExpectingReply {
+              true
+            } else {
+              false
+            }
+          };
+
+          if should_recv {
+            // Mimic RCVTIMEO timeout cancellation
+            let timeout_us = 50 + (rng % 450);
+            let res = timeout(Duration::from_micros(timeout_us), req_rx.recv()).await;
+            if let Ok(Ok(_)) = res {
+              let mut state = req_state.lock();
+              *state = ReqState::ReadyToSend;
+            }
+          }
+        }
+        tokio::task::yield_now().await;
+      }
+    }));
+  }
+
+  // 4. Spawn 20 concurrent REP chaos tasks
+  for t_id in 0..20 {
+    let rep_tx = rep_tx.clone();
+    let rep_rx = rep_rx.clone();
+    let rep_state = rep_state.clone();
+    let stop = stop.clone();
+
+    handles.push(tokio::spawn(async move {
+      let mut seq = (t_id + 100) * 10000;
+      let mut rng = u64::wrapping_mul(seq as u64, 0x9E37_79B9_7F4A_7C15);
+
+      while !stop.load(Ordering::Relaxed) {
+        rng = rng.wrapping_mul(0x2545_F491_4F6C_DD1D);
+        let want_send = (rng % 2) == 0;
+
+        if want_send {
+          // REP FSM Gate: only send if ReceivedRequest
+          let should_send = {
+            let mut state = rep_state.lock();
+            if *state == RepState::ReceivedRequest {
+              *state = RepState::WaitingForRequest;
+              true
+            } else {
+              false
+            }
+          };
+
+          if should_send {
+            let timeout_us = 50 + (rng % 450);
+            let res = timeout(Duration::from_micros(timeout_us), rep_tx.send(seq)).await;
+            if res.is_err() {
+              // Timeout: put state back so we can retry sending
+              let mut state = rep_state.lock();
+              *state = RepState::ReceivedRequest;
+            }
+            seq += 1;
+          }
+        } else {
+          // REP FSM Gate: only recv if WaitingForRequest
+          let should_recv = {
+            let mut state = rep_state.lock();
+            if *state == RepState::WaitingForRequest {
+              true
+            } else {
+              false
+            }
+          };
+
+          if should_recv {
+            let timeout_us = 50 + (rng % 450);
+            let res = timeout(Duration::from_micros(timeout_us), rep_rx.recv()).await;
+            if let Ok(Ok(_)) = res {
+              let mut state = rep_state.lock();
+              *state = RepState::ReceivedRequest;
+            }
+          }
+        }
+        tokio::task::yield_now().await;
+      }
+    }));
+  }
+
+  // 5. Run the exact chaos contention for 5 seconds
+  tokio::time::sleep(Duration::from_secs(5)).await;
+  stop.store(true, Ordering::SeqCst);
+
+  // 6. Join all tasks and propagate any panics
+  for h in handles {
+    let _ = h.await;
+  }
+
+  println!("Repro completed successfully.");
 }

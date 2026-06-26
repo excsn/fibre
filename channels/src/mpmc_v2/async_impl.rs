@@ -42,26 +42,16 @@ impl<'a, T: Send> SendFuture<'a, T> {
 
 impl<T: Send> Drop for SendFuture<'_, T> {
   fn drop(&mut self) {
-    if self.is_registered
-      && self
-        .state
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_CANCELLED,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-    {
+    if self.is_registered {
+      let _ = self.state.compare_exchange(
+        STATE_WAITING,
+        STATE_CANCELLED,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+      );
       let mut guard = self.sender.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
-      if let Some(pos) = guard
-        .waiting_async_senders
-        .iter()
-        .position(|w| w.state == state_ptr)
-      {
-        let _ = guard.waiting_async_senders.remove(pos).unwrap();
-      }
+      guard.waiting_async_senders.retain(|w| w.state != state_ptr);
     }
   }
 }
@@ -200,26 +190,16 @@ impl<'a, T: Send> SendBatchFuture<'a, T> {
 
 impl<T: Send> Drop for SendBatchFuture<'_, T> {
   fn drop(&mut self) {
-    if self.is_registered
-      && self
-        .state
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_CANCELLED,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-    {
+    if self.is_registered {
+      let _ = self.state.compare_exchange(
+        STATE_WAITING,
+        STATE_CANCELLED,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+      );
       let mut guard = self.sender.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
-      if let Some(pos) = guard
-        .waiting_async_senders
-        .iter()
-        .position(|w| w.state == state_ptr)
-      {
-        let _ = guard.waiting_async_senders.remove(pos).unwrap();
-      }
+      guard.waiting_async_senders.retain(|w| w.state != state_ptr);
     }
   }
 }
@@ -403,26 +383,16 @@ impl<'a, T: Send> SendBatchMutFuture<'a, T> {
 
 impl<T: Send> Drop for SendBatchMutFuture<'_, T> {
   fn drop(&mut self) {
-    if self.is_registered
-      && self
-        .state
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_CANCELLED,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-    {
+    if self.is_registered {
+      let _ = self.state.compare_exchange(
+        STATE_WAITING,
+        STATE_CANCELLED,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+      );
       let mut guard = self.sender.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
-      if let Some(pos) = guard
-        .waiting_async_senders
-        .iter()
-        .position(|w| w.state == state_ptr)
-      {
-        let _ = guard.waiting_async_senders.remove(pos).unwrap();
-      }
+      guard.waiting_async_senders.retain(|w| w.state != state_ptr);
     }
     if let Some(item) = self.pending.take() {
       self.items.insert(0, item);
@@ -626,17 +596,13 @@ impl<'a, T: Send> Future for RecvBatchFuture<'a, T> {
 
 impl<T: Send> Drop for RecvBatchFuture<'_, T> {
   fn drop(&mut self) {
-    if self.is_registered
-      && self
-        .state
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_CANCELLED,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-    {
+    if self.is_registered {
+      let _ = self.state.compare_exchange(
+        STATE_WAITING,
+        STATE_CANCELLED,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+      );
       let mut guard = self.receiver.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
       guard
@@ -715,17 +681,13 @@ impl<'a, T: Send> Future for RecvBatchMutFuture<'a, T> {
 
 impl<T: Send> Drop for RecvBatchMutFuture<'_, T> {
   fn drop(&mut self) {
-    if self.is_registered
-      && self
-        .state
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_CANCELLED,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-    {
+    if self.is_registered {
+      let _ = self.state.compare_exchange(
+        STATE_WAITING,
+        STATE_CANCELLED,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+      );
       let mut guard = self.receiver.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
       guard
@@ -796,17 +758,13 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
 
 impl<T: Send> Drop for RecvFuture<'_, T> {
   fn drop(&mut self) {
-    if self.is_registered
-      && self
-        .state
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_CANCELLED,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-    {
+    if self.is_registered {
+      let _ = self.state.compare_exchange(
+        STATE_WAITING,
+        STATE_CANCELLED,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+      );
       // Eagerly unlink the waiter so the future's memory can be safely freed.
       let mut guard = self.receiver.shared.internal.lock();
       let state_ptr = &self.state as *const AtomicU8;
