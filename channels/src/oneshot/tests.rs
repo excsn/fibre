@@ -308,7 +308,7 @@ fn test_oneshot_drop_race_leak() {
 
   // 2. Lock the value_slot Mutex using the cloned `shared` pointer, NOT `tx`.
   // This keeps `tx` unborrowed and eligible to be moved.
-  let lock_guard = shared.value_slot.lock().unwrap();
+  let lock_guard = shared.value_slot.lock();
 
   // 3. Spawn a thread to send the tracked item.
   // This moves `tx` into the closure safely.

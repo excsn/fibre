@@ -836,7 +836,7 @@ mod tests {
 
   #[test]
   fn test_stress_concurrent() {
-    let queue = Arc::new(std::sync::Mutex::new(
+    let queue = Arc::new(parking_lot::Mutex::new(
       WaiterQueue::<SyncWaiterNode<usize>>::new(),
     ));
     let barrier = Arc::new(std::sync::Barrier::new(4));
@@ -850,7 +850,7 @@ mod tests {
         let ptr = get_ptr(&mut node);
         b.wait();
         for _ in 0..1000 {
-          let mut g = q.lock().unwrap();
+          let mut g = q.lock();
           unsafe {
             g.push_back(ptr);
             g.remove(ptr);
@@ -863,7 +863,7 @@ mod tests {
       h.join().unwrap();
     }
 
-    let g = queue.lock().unwrap();
+    let g = queue.lock();
     assert!(g.is_empty());
   }
 }

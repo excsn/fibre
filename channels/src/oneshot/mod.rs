@@ -283,8 +283,7 @@ impl<T> Receiver<T> {
       let mut guard = self
         .shared
         .value_slot
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .lock();
       if let Some(mut mu_value) = guard.take() {
         unsafe {
           mu_value.assume_init_drop();

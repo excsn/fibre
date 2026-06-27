@@ -51,13 +51,13 @@ struct Args {
   )]
   flavor: Flavor,
 
-  #[arg(short = 'p', long, default_value_t = 14, help = "Number of producers")]
+  #[arg(short = 'p', long, default_value_t = 1, help = "Number of producers")]
   producers: usize,
 
-  #[arg(short = 'n', long, default_value_t = 14, help = "Number of consumers")]
+  #[arg(short = 'n', long, default_value_t = 1, help = "Number of consumers")]
   consumers: usize,
 
-  #[arg(short = 'C', long, default_value_t = 4, help = "Channel capacity (bounded only)")]
+  #[arg(short = 'C', long, default_value_t = 128, help = "Channel capacity (bounded only)")]
   capacity: usize,
 
   #[arg(short = 'i', long, default_value_t = 1_000_000, help = "Total items to send")]
@@ -199,4 +199,5 @@ fn main() {
       result.duration, result.sent, result.received, throughput_m,
     );
   }
+  fibre::telemetry::print_stall_report();
 }

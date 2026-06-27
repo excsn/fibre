@@ -1,11 +1,11 @@
 use crate::async_util::AtomicWaker;
-use crate::error::{RecvError, TryRecvError, TrySendError}; // Assuming SendError is needed by Sender
+use crate::error::{RecvError, TryRecvError, TrySendError};
 
 use core::task::{Context, Poll};
 use std::fmt;
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering}; // Added spin_loop_hint
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use parking_lot::Mutex;
 
 // State constants for OneShotShared::state
 pub(super) const STATE_EMPTY: usize = 0; // No value, receiver may be waiting. Initial state.
@@ -93,7 +93,7 @@ impl<T> OneShotShared<T> {
           .compare_exchange(STATE_SENT, STATE_TAKEN, Ordering::AcqRel, Ordering::Relaxed)
           .is_ok()
         {
-          let mut guard = self.value_slot.lock().unwrap_or_else(|e| e.into_inner());
+          let mut guard = self.value_slot.lock();
           if let Some(mut mu_value) = guard.take() {
             unsafe {
               mu_value.assume_init_drop();
@@ -167,10 +167,7 @@ impl<T> OneShotShared<T> {
 
         // We are the chosen sender.
         // Lock is held very briefly.
-        let mut guard = self
-          .value_slot
-          .lock()
-          .expect("Oneshot value_slot mutex poisoned");
+        let mut guard = self.value_slot.lock();
         *guard = Some(MaybeUninit::new(value));
 
         // Now transition from WRITING to SENT.
@@ -219,10 +216,7 @@ impl<T> OneShotShared<T> {
         .is_ok()
       {
         // Successfully claimed the value.
-        let mut guard = self
-          .value_slot
-          .lock()
-          .expect("Oneshot value_slot mutex poisoned");
+        let mut guard = self.value_slot.lock();
         match guard.take() {
           Some(mu_value) => unsafe { Ok(mu_value.assume_init()) },
           None => {
@@ -341,7 +335,7 @@ impl<T> Drop for OneShotShared<T> {
     if self.state.load(Ordering::Relaxed) == STATE_SENT {
       // Safety: &mut self guarantees exclusive access (Arc strong count == 0).
       // STATE_SENT means the value was written into value_slot but never taken.
-      let guard = self.value_slot.get_mut().unwrap_or_else(|e| e.into_inner());
+      let guard = self.value_slot.get_mut();
       if let Some(mut mu_value) = guard.take() {
         unsafe {
           mu_value.assume_init_drop();

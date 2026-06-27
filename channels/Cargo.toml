@@ -20,7 +20,7 @@ exclude = [
 [features]
 default = ["topic"]
 topic = ["dep:papaya"]
-fibre_logging = ["dep:tokio"]
+diagnostics = ["dep:tokio"]
 
 [dependencies]
 lazy_static = "^1"
@@ -50,21 +50,16 @@ name = "mpmc_sync"
 harness = false
 
 [[bench]]
-name = "mpsc_async"
+name = "mpsc_bounded"
 harness = false
 
 [[bench]]
-name = "mpsc_sync"
+name = "mpsc_unbounded"
 harness = false
 
 [[bench]]
-name = "mpsc_v2_async"
+name = "mpsc_rendezvous"
 harness = false
-
-[[bench]]
-name = "mpsc_v2_sync"
-harness = false
-
 
 [[bench]]
 name = "oneshot"

@@ -1,9 +1,10 @@
-#[cfg(feature = "fibre_logging")]
+#[cfg(feature = "diagnostics")]
 pub mod enabled {
+  use std::cell::UnsafeCell;
   use std::collections::HashMap;
   use std::fmt;
   use std::sync::atomic::{AtomicUsize, Ordering};
-  use std::sync::Mutex;
+  use parking_lot::Mutex;
   use std::thread::{self, ThreadId};
   use std::time::Instant;
   use tokio::task::Id as TokioTaskId;
@@ -44,75 +45,63 @@ pub mod enabled {
     }
   }
 
-  // Separate record type for the stall ring: location/event_type are always
-  // static string literals at every call site, so we skip the two to_string()
-  // allocs that TelemetryEvent would require.
-  #[derive(Clone)]
+  // --- Zero-barrier stall flight recorder ------------------------------------
+  //
+  // Each thread owns one slot in TRACES and writes with only Relaxed atomics
+  // and plain UnsafeCell stores. No Mutex, no String, no allocator call.
+  // This is essential for catching Heisenbugs: a Mutex or heap allocation here
+  // would emit the SeqCst barriers that mask the very races we want to observe.
+
+  const MAX_THREADS: usize = 32;
+  const STALL_RING_CAP: usize = 128;
+
+  // Fields are all Copy primitives — no allocation, no drop, no barrier.
+  #[derive(Clone, Copy)]
   struct StallRecord {
     seq_id: usize,
-    timestamp: Instant,
-    os_thread_id: ThreadId,
-    tokio_task_id: Option<TokioTaskId>,
-    item_id: Option<usize>,
     location: &'static str,
     event_type: &'static str,
-    message: Option<String>,
+    state_val: usize,
+    head: usize,
+    tail: usize,
   }
 
-  // --- Lock-free stall ring -------------------------------------------------
-  //
-  // 256 independent per-slot parking_lot::Mutex slots indexed by an atomic
-  // cursor. Writers do one fetch_add + one uncontended per-slot lock. Two
-  // writers contend only if they land on the same slot mod 256 simultaneously,
-  // which is rare and still correct. Reads (dump) iterate all slots
-  // independently.
+  impl StallRecord {
+    const fn empty() -> Self {
+      Self { seq_id: 0, location: "", event_type: "", state_val: 0, head: 0, tail: 0 }
+    }
+  }
 
-  const STALL_RING_CAP: usize = 256;
-
-  struct StallRing {
+  struct ThreadTrace {
     cursor: AtomicUsize,
-    slots: Box<[parking_lot::Mutex<Option<StallRecord>>]>,
+    records: [UnsafeCell<StallRecord>; STALL_RING_CAP],
   }
 
-  // SAFETY: StallRecord contains no thread-affine types; parking_lot::Mutex is
-  // Send + Sync.
-  unsafe impl Send for StallRing {}
-  unsafe impl Sync for StallRing {}
+  // SAFETY: Each ThreadTrace slot is owned by exactly one thread (determined
+  // by MY_TRACE_IDX). Only that thread writes; the dump path reads only after
+  // a stall (quiescent state), so there is no concurrent write+read in practice.
+  unsafe impl Send for ThreadTrace {}
+  unsafe impl Sync for ThreadTrace {}
 
-  impl StallRing {
-    fn new() -> Self {
-      StallRing {
+  impl ThreadTrace {
+    const fn new() -> Self {
+      Self {
         cursor: AtomicUsize::new(0),
-        slots: (0..STALL_RING_CAP)
-          .map(|_| parking_lot::Mutex::new(None))
-          .collect::<Vec<_>>()
-          .into_boxed_slice(),
+        records: [const { UnsafeCell::new(StallRecord::empty()) }; STALL_RING_CAP],
       }
-    }
-
-    #[inline]
-    fn push(&self, record: StallRecord) {
-      let idx = self.cursor.fetch_add(1, Ordering::Relaxed) & (STALL_RING_CAP - 1);
-      // Drops the evicted entry (if any) while holding the per-slot lock.
-      *self.slots[idx].lock() = Some(record);
-    }
-
-    fn snapshot_sorted(&self) -> Vec<StallRecord> {
-      let mut out = Vec::with_capacity(STALL_RING_CAP);
-      for slot in self.slots.iter() {
-        if let Some(r) = slot.lock().clone() {
-          out.push(r);
-        }
-      }
-      out.sort_by_key(|r| r.seq_id);
-      out
     }
 
     fn clear(&self) {
-      for slot in self.slots.iter() {
-        *slot.lock() = None;
-      }
+      self.cursor.store(0, Ordering::Relaxed);
     }
+  }
+
+  static NEXT_THREAD_ID: AtomicUsize = AtomicUsize::new(0);
+  static TRACES: [ThreadTrace; MAX_THREADS] = [const { ThreadTrace::new() }; MAX_THREADS];
+
+  thread_local! {
+    static MY_TRACE_IDX: usize =
+      NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed) % MAX_THREADS;
   }
 
   // -------------------------------------------------------------------------
@@ -137,7 +126,6 @@ pub mod enabled {
 
   lazy_static::lazy_static! {
       static ref GLOBAL_COLLECTOR: Mutex<CollectorData> = Mutex::new(CollectorData::new());
-      static ref STALL_RING: StallRing = StallRing::new();
   }
 
   fn record_event_internal(
@@ -157,147 +145,125 @@ pub mod enabled {
       event_type: event_type.to_string(),
       message,
     };
-    if let Ok(mut collector) = GLOBAL_COLLECTOR.lock() {
-      collector.events.push(event);
-    } else {
-      eprintln!("[TELEMETRY FT-ERROR] Global collector mutex poisoned while recording event.");
-    }
+    GLOBAL_COLLECTOR.lock().events.push(event);
   }
 
   fn record_stall_event_internal(
-    item_id: Option<usize>,
     location: &'static str,
     event_type: &'static str,
-    message: Option<String>,
+    state_val: usize,
+    head: usize,
+    tail: usize,
   ) {
-    let record = StallRecord {
-      seq_id: NEXT_EVENT_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed),
-      timestamp: Instant::now(),
-      os_thread_id: thread::current().id(),
-      tokio_task_id: tokio::task::try_id(),
-      item_id,
-      location,
-      event_type,
-      message,
-    };
-    STALL_RING.push(record);
+    MY_TRACE_IDX.with(|&idx| {
+      let trace = &TRACES[idx];
+      let c = trace.cursor.load(Ordering::Relaxed);
+      let seq = NEXT_EVENT_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed);
+      // SAFETY: only this thread writes to slot `c % STALL_RING_CAP`.
+      unsafe {
+        *trace.records[c % STALL_RING_CAP].get() =
+          StallRecord { seq_id: seq, location, event_type, state_val, head, tail };
+      }
+      trace.cursor.store(c.wrapping_add(1), Ordering::Relaxed);
+    });
   }
 
   fn increment_counter_internal(location: &str, counter_name: &str) {
     let key = (location.to_string(), counter_name.to_string());
-    if let Ok(mut collector) = GLOBAL_COLLECTOR.lock() {
-      *collector.counters.entry(key).or_insert(0) += 1;
-    } else {
-      eprintln!("[TELEMETRY FT-ERROR] Global collector mutex poisoned while incrementing counter.");
-    }
+    *GLOBAL_COLLECTOR.lock().counters.entry(key).or_insert(0) += 1;
   }
 
   fn print_report_internal() {
-    if let Ok(collector) = GLOBAL_COLLECTOR.lock() {
-      println!("\n--- Fibre Telemetry Report (Feature: fibre_logging) ---");
-      println!("Report generated at: {:?}", Instant::now());
-      println!("Collection started at: {:?}", collector.start_time);
-
-      if collector.events.is_empty() {
-        println!("\n[Events] No detailed events recorded.");
-      } else {
-        println!("\n[Events] Recorded Events ({}):", collector.events.len());
-        let mut sorted_events = collector.events.clone();
-        sorted_events.sort_by_key(|e| e.seq_id);
-        for event in sorted_events.iter() {
-          let time_since_start = event.timestamp.duration_since(collector.start_time);
-          let os_tid_short = format!("{:?}", event.os_thread_id)
-            .trim_start_matches("ThreadId(")
-            .trim_end_matches(')')
-            .to_string();
-          let tokio_tid_str = event
-            .tokio_task_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "---".to_string());
-          println!(
-            "  +{:<10.6}s [Seq:{:<5}] OS_TID:{:<6} TaskID:{:<6} Item:{:<6} Loc:{:<25} Evt:{:<30} Msg: {}",
-            time_since_start.as_secs_f64(),
-            event.seq_id,
-            os_tid_short,
-            tokio_tid_str,
-            event.item_id.map_or_else(|| "N/A".to_string(), |id| id.to_string()),
-            event.location,
-            event.event_type,
-            event.message.as_deref().unwrap_or("")
-          );
-        }
-      }
-
-      if collector.counters.is_empty() {
-        println!("\n[Counters] No counters recorded.");
-      } else {
-        println!(
-          "\n[Counters] Recorded Counters ({}):",
-          collector.counters.len()
-        );
-        let mut sorted_counters: Vec<_> = collector.counters.iter().collect();
-        sorted_counters.sort_by_key(|(k, _v)| *k);
-        for ((loc, name), count) in sorted_counters {
-          println!("  Loc:{:<25} Counter:{:<30} Value: {}", loc, name, count);
-        }
-      }
-      println!("\n--- End of Telemetry Report ---");
-    } else {
-      eprintln!("[TELEMETRY FT-ERROR] Global collector mutex poisoned, cannot print report.");
-    }
-  }
-
-  fn print_stall_report_internal() {
-    let start_time = match GLOBAL_COLLECTOR.lock() {
-      Ok(c) => c.start_time,
-      Err(_) => Instant::now(),
-    };
-    let records = STALL_RING.snapshot_sorted();
-
-    println!(
-      "\n--- Fibre Stall Diagnostics Report (Last {} Events) ---",
-      STALL_RING_CAP
-    );
+    let collector = GLOBAL_COLLECTOR.lock();
+    println!("\n--- Fibre Telemetry Report (Feature: diagnostics) ---");
     println!("Report generated at: {:?}", Instant::now());
+    println!("Collection started at: {:?}", collector.start_time);
 
-    if records.is_empty() {
-      println!("\n[Stall Events] No recent stall diagnostic events recorded.");
+    if collector.events.is_empty() {
+      println!("\n[Events] No detailed events recorded.");
     } else {
-      for r in &records {
-        let time_since_start = r.timestamp.duration_since(start_time);
-        let os_tid_short = format!("{:?}", r.os_thread_id)
+      println!("\n[Events] Recorded Events ({}):", collector.events.len());
+      let mut sorted_events = collector.events.clone();
+      sorted_events.sort_by_key(|e| e.seq_id);
+      for event in sorted_events.iter() {
+        let time_since_start = event.timestamp.duration_since(collector.start_time);
+        let os_tid_short = format!("{:?}", event.os_thread_id)
           .trim_start_matches("ThreadId(")
           .trim_end_matches(')')
           .to_string();
-        let tokio_tid_str = r
+        let tokio_tid_str = event
           .tokio_task_id
           .map(|id| id.to_string())
           .unwrap_or_else(|| "---".to_string());
         println!(
           "  +{:<10.6}s [Seq:{:<5}] OS_TID:{:<6} TaskID:{:<6} Item:{:<6} Loc:{:<25} Evt:{:<30} Msg: {}",
           time_since_start.as_secs_f64(),
-          r.seq_id,
+          event.seq_id,
           os_tid_short,
           tokio_tid_str,
-          r.item_id.map_or_else(|| "N/A".to_string(), |id| id.to_string()),
-          r.location,
-          r.event_type,
-          r.message.as_deref().unwrap_or("")
+          event.item_id.map_or_else(|| "N/A".to_string(), |id| id.to_string()),
+          event.location,
+          event.event_type,
+          event.message.as_deref().unwrap_or("")
         );
       }
     }
-    println!("\n--- End of Stall Diagnostics Report ---");
+
+    if collector.counters.is_empty() {
+      println!("\n[Counters] No counters recorded.");
+    } else {
+      println!(
+        "\n[Counters] Recorded Counters ({}):",
+        collector.counters.len()
+      );
+      let mut sorted_counters: Vec<_> = collector.counters.iter().collect();
+      sorted_counters.sort_by_key(|(k, _v)| *k);
+      for ((loc, name), count) in sorted_counters {
+        println!("  Loc:{:<25} Counter:{:<30} Value: {}", loc, name, count);
+      }
+    }
+    println!("\n--- End of Telemetry Report ---");
+  }
+
+  fn print_stall_report_internal() {
+    println!("\n--- Fibre Stall Diagnostics (Zero-Barrier Flight Recorder) ---");
+    let mut all: Vec<(usize, StallRecord)> = Vec::new();
+    for (tid, trace) in TRACES.iter().enumerate() {
+      let c = trace.cursor.load(Ordering::Relaxed);
+      if c == 0 {
+        continue;
+      }
+      let start = c.saturating_sub(STALL_RING_CAP);
+      for i in start..c {
+        // SAFETY: reading during a quiescent dump; the owning thread is stalled.
+        let r = unsafe { *trace.records[i % STALL_RING_CAP].get() };
+        if !r.location.is_empty() {
+          all.push((tid, r));
+        }
+      }
+    }
+    all.sort_by_key(|(_, r)| r.seq_id);
+    if all.is_empty() {
+      println!("  (no events recorded)");
+    } else {
+      for (tid, r) in &all {
+        println!(
+          "  [Seq:{:<6}] T:{:<2} {:<35} {:<25} state={:<5} head={:<6} tail={:<6}",
+          r.seq_id, tid, r.location, r.event_type, r.state_val, r.head, r.tail
+        );
+      }
+    }
+    println!("--- End ({} events across {} threads) ---\n", all.len(), MAX_THREADS);
   }
 
   fn clear_data_internal() {
-    if let Ok(mut collector) = GLOBAL_COLLECTOR.lock() {
-      collector.events.clear();
-      collector.counters.clear();
-      collector.start_time = Instant::now();
-    } else {
-      eprintln!("[TELEMETRY FT-ERROR] Global collector mutex poisoned, cannot clear data.");
+    let mut collector = GLOBAL_COLLECTOR.lock();
+    collector.events.clear();
+    collector.counters.clear();
+    collector.start_time = Instant::now();
+    for trace in TRACES.iter() {
+      trace.clear();
     }
-    STALL_RING.clear();
     NEXT_EVENT_SEQUENCE_ID.store(0, Ordering::Relaxed);
   }
 
@@ -313,12 +279,13 @@ pub mod enabled {
   }
 
   pub fn log_stall_event_fn(
-    item_id: Option<usize>,
     location: &'static str,
     event_type: &'static str,
-    message: Option<String>,
+    state_val: usize,
+    head: usize,
+    tail: usize,
   ) {
-    record_stall_event_internal(item_id, location, event_type, message);
+    record_stall_event_internal(location, event_type, state_val, head, tail);
   }
 
   pub fn increment_counter_fn(location: &str, counter_name: &str) {
@@ -338,7 +305,7 @@ pub mod enabled {
   }
 } // mod enabled
 
-#[cfg(not(feature = "fibre_logging"))]
+#[cfg(not(feature = "diagnostics"))]
 pub mod disabled {
   #[inline(always)]
   pub fn log_event_fn(
@@ -350,10 +317,11 @@ pub mod disabled {
   }
   #[inline(always)]
   pub fn log_stall_event_fn(
-    _item_id: Option<usize>,
     _location: &'static str,
     _event_type: &'static str,
-    _message: Option<String>,
+    _state_val: usize,
+    _head: usize,
+    _tail: usize,
   ) {
   }
   #[inline(always)]
@@ -366,21 +334,18 @@ pub mod disabled {
   pub fn clear_telemetry_fn() {}
 }
 
-// Declarative macros — `#[cfg(...)]` inside each arm prevents eager argument
-// evaluation (including format! calls) when fibre_logging is disabled.
+// log_stall! — zero-barrier flight recorder. Arguments are all integers
+// (no format!, no String) so no allocator call ever reaches the macro body.
 #[macro_export]
 macro_rules! log_stall {
-  ($item_id:expr, $location:expr, $event_type:expr) => {
-    #[cfg(feature = "fibre_logging")]
-    $crate::telemetry::log_stall_event($item_id, $location, $event_type, None);
-  };
-  ($item_id:expr, $location:expr, $event_type:expr, $($arg:tt)+) => {
-    #[cfg(feature = "fibre_logging")]
+  ($location:expr, $event_type:expr, $state:expr, $head:expr, $tail:expr) => {
+    #[cfg(feature = "diagnostics")]
     $crate::telemetry::log_stall_event(
-      $item_id,
       $location,
       $event_type,
-      Some(format!($($arg)+)),
+      $state as usize,
+      $head as usize,
+      $tail as usize,
     );
   };
 }
@@ -388,11 +353,11 @@ macro_rules! log_stall {
 #[macro_export]
 macro_rules! log_event {
   ($item_id:expr, $location:expr, $event_type:expr) => {
-    #[cfg(feature = "fibre_logging")]
+    #[cfg(feature = "diagnostics")]
     $crate::telemetry::log_event($item_id, $location, $event_type, None);
   };
   ($item_id:expr, $location:expr, $event_type:expr, $($arg:tt)+) => {
-    #[cfg(feature = "fibre_logging")]
+    #[cfg(feature = "diagnostics")]
     $crate::telemetry::log_event(
       $item_id,
       $location,
@@ -405,13 +370,13 @@ macro_rules! log_event {
 #[macro_export]
 macro_rules! increment_counter {
   ($location:expr, $counter_name:expr) => {
-    #[cfg(feature = "fibre_logging")]
+    #[cfg(feature = "diagnostics")]
     $crate::telemetry::increment_counter($location, $counter_name);
   };
 }
 
 // Re-export the correct set of functions based on the feature flag
-#[cfg(feature = "fibre_logging")]
+#[cfg(feature = "diagnostics")]
 pub use enabled::{
   clear_telemetry_fn as clear_telemetry,
   increment_counter_fn as increment_counter,
@@ -421,7 +386,7 @@ pub use enabled::{
   print_stall_report_fn as print_stall_report,
 };
 
-#[cfg(not(feature = "fibre_logging"))]
+#[cfg(not(feature = "diagnostics"))]
 pub use disabled::{
   clear_telemetry_fn as clear_telemetry,
   increment_counter_fn as increment_counter,

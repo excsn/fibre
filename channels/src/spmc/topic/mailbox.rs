@@ -5,7 +5,8 @@ use crate::RecvErrorTimeout;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
@@ -100,7 +101,7 @@ impl<T> MailboxProducer<T> {
   /// This operation is **non-blocking**. If the mailbox buffer is full,
   /// the message is dropped, and the function returns immediately.
   pub(crate) fn deliver(&self, value: T) {
-    let mut guard = self.shared.internal.lock().unwrap();
+    let mut guard = self.shared.internal.lock();
 
     // If the buffer is full, drop the message and increment the counter.
     if guard.buffer.len() >= guard.capacity {
@@ -115,7 +116,7 @@ impl<T> MailboxProducer<T> {
 
   /// Signals to the consumer that the channel is disconnected.
   pub(crate) fn disconnect(&self) {
-    let mut guard = self.shared.internal.lock().unwrap();
+    let mut guard = self.shared.internal.lock();
     if !guard.is_disconnected {
       guard.is_disconnected = true;
       self.shared.wake_consumer(&mut guard);
@@ -124,12 +125,12 @@ impl<T> MailboxProducer<T> {
 
   /// Returns the capacity of the mailbox.
   pub(crate) fn capacity(&self) -> usize {
-    self.shared.internal.lock().unwrap().capacity
+    self.shared.internal.lock().capacity
   }
 
   /// Returns true if the mailbox buffer is empty.
   pub(crate) fn is_empty(&self) -> bool {
-    self.shared.internal.lock().unwrap().buffer.is_empty()
+    self.shared.internal.lock().buffer.is_empty()
   }
 }
 
@@ -147,7 +148,7 @@ impl<T> Drop for MailboxProducer<T> {
 impl<T> MailboxConsumer<T> {
   /// Attempts to receive a message without blocking.
   pub(crate) fn try_recv(&self) -> Result<T, TryRecvError> {
-    let mut guard = self.shared.internal.lock().unwrap();
+    let mut guard = self.shared.internal.lock();
 
     if let Some(value) = guard.buffer.pop_front() {
       Ok(value)
@@ -161,7 +162,7 @@ impl<T> MailboxConsumer<T> {
   /// Receives a message, blocking the current thread if the mailbox is empty.
   pub(crate) fn recv_sync(&self) -> Result<T, RecvError> {
     loop {
-      let mut guard = self.shared.internal.lock().unwrap();
+      let mut guard = self.shared.internal.lock();
       match guard.buffer.pop_front() {
         Some(value) => return Ok(value),
         None => {
@@ -181,7 +182,7 @@ impl<T> MailboxConsumer<T> {
   pub(crate) fn recv_timeout_sync(&self, timeout: Duration) -> Result<T, RecvErrorTimeout> {
     let start_time = Instant::now();
     loop {
-      let mut guard = self.shared.internal.lock().unwrap();
+      let mut guard = self.shared.internal.lock();
       match guard.buffer.pop_front() {
         Some(value) => return Ok(value),
         None => {
@@ -211,12 +212,12 @@ impl<T> MailboxConsumer<T> {
 
   /// Returns the capacity of the mailbox.
   pub(crate) fn capacity(&self) -> usize {
-    self.shared.internal.lock().unwrap().capacity
+    self.shared.internal.lock().capacity
   }
 
   /// Returns true if the mailbox buffer is empty.
   pub(crate) fn is_empty(&self) -> bool {
-    self.shared.internal.lock().unwrap().buffer.is_empty()
+    self.shared.internal.lock().buffer.is_empty()
   }
 }
 
@@ -231,7 +232,7 @@ impl<'a, T> Future for RecvFuture<'a, T> {
   type Output = Result<T, RecvError>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let mut guard = self.consumer.shared.internal.lock().unwrap();
+    let mut guard = self.consumer.shared.internal.lock();
 
     // Try to receive a value.
     if let Some(value) = guard.buffer.pop_front() {
@@ -261,7 +262,7 @@ impl<'a, T> Future for RecvFuture<'a, T> {
 impl<T> MailboxConsumer<T> {
   #[cfg(test)]
   fn dropped_count(&self) -> u64 {
-    self.shared.internal.lock().unwrap().dropped_count
+    self.shared.internal.lock().dropped_count
   }
 }
 
