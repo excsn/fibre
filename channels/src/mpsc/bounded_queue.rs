@@ -149,7 +149,6 @@ pub struct BoundedQueue<T: Send> {
 
   // Handle coordination
   sender_count: CachePadded<AtomicUsize>,
-  receiver_count: CachePadded<AtomicUsize>,
   receiver_dropped: CachePadded<AtomicBool>,
   waiters: Mutex<Waiters>,
   recv_waiter_count: CachePadded<AtomicUsize>,
@@ -213,7 +212,6 @@ impl<T: Send> BoundedQueue<T> {
       tail: CachePadded::new(UnsafeCell::new(stub_ptr)),
       chunk_stack,
       sender_count: CachePadded::new(AtomicUsize::new(1)),
-      receiver_count: CachePadded::new(AtomicUsize::new(1)),
       receiver_dropped: CachePadded::new(AtomicBool::new(false)),
       waiters: Mutex::new(Waiters {
         senders: VecDeque::new(),
@@ -256,15 +254,9 @@ impl<T: Send> BoundedQueue<T> {
     }
   }
 
-  pub fn add_receiver(&self) {
-    self.receiver_count.fetch_add(1, Ordering::Relaxed);
-  }
-
   pub fn drop_receiver(&self) {
     self.receiver_dropped.store(true, Ordering::Release);
-    if self.receiver_count.fetch_sub(1, Ordering::AcqRel) == 1 {
-      self.wake_all_senders();
-    }
+    self.wake_all_senders();
   }
 
   #[inline]
@@ -274,8 +266,7 @@ impl<T: Send> BoundedQueue<T> {
 
   #[inline]
   pub fn receivers_alive(&self) -> bool {
-    self.receiver_count.load(Ordering::Acquire) != 0
-      && !self.receiver_dropped.load(Ordering::Acquire)
+    !self.receiver_dropped.load(Ordering::Acquire)
   }
 
   fn register_send(&self, prev_id: Option<u64>, wake: Waiter, notified: *const AtomicBool) -> u64 {
