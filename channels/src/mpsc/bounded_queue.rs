@@ -162,7 +162,7 @@ unsafe impl<T: Send> Sync for BoundedQueue<T> {}
 impl<T: Send> BoundedQueue<T> {
   pub fn new(capacity: usize) -> Self {
     assert!(capacity > 0, "Queue capacity must be greater than 0");
-    let chunk_size = if capacity < 16 { capacity } else { 16 };
+    let chunk_size = if capacity < 8 { capacity } else { capacity / 2 };
     let num_chunks = capacity / chunk_size;
     let actual_capacity = num_chunks * chunk_size;
     let total_nodes = actual_capacity + 1; // +1 for the Vyukov stub node
