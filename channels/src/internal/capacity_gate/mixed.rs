@@ -15,8 +15,8 @@ use std::fmt;
 use std::future::Future;
 use std::marker::PhantomPinned;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::task::{Context, Poll, Waker};
 use std::thread::{self, Thread};
 

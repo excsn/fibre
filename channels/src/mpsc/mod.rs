@@ -6,13 +6,10 @@
 //! send to an asynchronous `AsyncReceiver`.
 
 mod block_queue;
-mod bounded_async;
-mod bounded_sync;
+pub(crate) mod bounded_queue;
 pub mod rendezvous;
 mod unbounded;
 mod unbounded_v2;
-
-use crate::coord::CapacityGate;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -31,14 +28,13 @@ pub use unbounded_v2::{
   SendFuture as UnboundedSendFuture, Sender as UnboundedSender,
 };
 
-pub use bounded_async::{
+pub use bounded_queue::{
   AsyncReceiver as BoundedAsyncReceiver, AsyncSender as BoundedAsyncSender,
-  RecvBatchFuture as BoundedRecvBatchFuture, RecvBatchMutFuture as BoundedRecvBatchMutFuture,
-  RecvFuture as BoundedRecvFuture, SendBatchFuture as BoundedSendBatchFuture,
-  SendBatchMutFuture as BoundedSendBatchMutFuture, SendFuture as BoundedSendFuture,
+  BoundedRecvBatchFuture, BoundedRecvBatchMutFuture,
+  BoundedSendBatchFuture, BoundedSendBatchMutFuture,
+  RecvFuture as BoundedRecvFuture, SendFuture as BoundedSendFuture,
+  Receiver as BoundedReceiver, Sender as BoundedSender,
 };
-
-pub use bounded_sync::{Receiver as BoundedReceiver, Sender as BoundedSender};
 
 // --- Unbounded V2 (Segmented Linked List) Constructors ---
 /// Creates a new unbounded synchronous MPSC channel.
@@ -113,21 +109,7 @@ pub fn bounded<T: Send>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T
     capacity != 0,
     "mpsc::bounded(0) is not a rendezvous channel; use mpsc::rendezvous::rendezvous() instead"
   );
-  let shared = Arc::new(bounded_sync::BoundedMpscShared {
-    gate: Arc::new(CapacityGate::new(capacity)),
-    channel: Arc::new(unbounded_v2::MpscShared::new()),
-  });
-
-  let sender = BoundedSender {
-    shared: shared.clone(),
-    closed: AtomicBool::new(false),
-  };
-  let receiver = BoundedReceiver {
-    shared,
-    closed: AtomicBool::new(false),
-  };
-
-  (sender, receiver)
+  bounded_queue::bounded(capacity)
 }
 
 /// Creates a new bounded asynchronous MPSC channel with a given capacity.
@@ -142,21 +124,7 @@ pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, Bounde
     capacity != 0,
     "mpsc::bounded_async(0) is not a rendezvous channel; use mpsc::rendezvous::rendezvous_async() instead"
   );
-  let shared = Arc::new(bounded_sync::BoundedMpscShared {
-    gate: Arc::new(CapacityGate::new(capacity)),
-    channel: Arc::new(unbounded_v2::MpscShared::new()),
-  });
-
-  let sender = BoundedAsyncSender {
-    shared: shared.clone(),
-    closed: AtomicBool::new(false),
-  };
-  let receiver = BoundedAsyncReceiver {
-    shared,
-    closed: AtomicBool::new(false),
-  };
-
-  (sender, receiver)
+  bounded_queue::bounded_async(capacity)
 }
 
 #[cfg(test)]
