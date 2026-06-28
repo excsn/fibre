@@ -1119,6 +1119,7 @@ impl<T: Send> Receiver<T> {
         if is_registered {
           self.shared.unregister_recv();
         }
+        pool.flush(&self.shared);
         return Ok(k);
       }
 
@@ -1130,6 +1131,7 @@ impl<T: Send> Receiver<T> {
           if is_registered {
             self.shared.unregister_recv();
           }
+          pool.flush(&self.shared);
           return Ok(k_end);
         }
         if is_registered {
@@ -1171,6 +1173,7 @@ impl<T: Send> Receiver<T> {
     let mut pool = self.cache.lock();
     let k = self.pop_batch_lock_free(out, max, &mut *pool);
     if k > 0 {
+      pool.flush(&self.shared);
       return Ok(k);
     }
     pool.flush(&self.shared);
@@ -1178,6 +1181,7 @@ impl<T: Send> Receiver<T> {
     if !self.shared.senders_alive() {
       let k_end = self.pop_batch_lock_free(out, max, &mut *pool);
       if k_end > 0 {
+        pool.flush(&self.shared);
         return Ok(k_end);
       }
       return Err(TryRecvError::Disconnected);
@@ -1520,12 +1524,14 @@ impl<T: Send> AsyncReceiver<T> {
     let mut pool = self.cache.lock();
     let k = self.pop_batch_lock_free(out, max, &mut *pool);
     if k > 0 {
+      pool.flush(&self.shared);
       return Ok(k);
     }
     pool.flush(&self.shared);
     if !self.shared.senders_alive() {
       let k_end = self.pop_batch_lock_free(out, max, &mut *pool);
       if k_end > 0 {
+        pool.flush(&self.shared);
         return Ok(k_end);
       }
       return Err(TryRecvError::Disconnected);
@@ -2018,6 +2024,7 @@ fn poll_recv_batch_async_impl<T: Send>(
         shared.unregister_recv();
         *is_registered = false;
       }
+      pool.flush(shared);
       return Poll::Ready(Ok(k));
     }
 
@@ -2030,6 +2037,7 @@ fn poll_recv_batch_async_impl<T: Send>(
           shared.unregister_recv();
           *is_registered = false;
         }
+        pool.flush(shared);
         return Poll::Ready(Ok(k_end));
       }
       if *is_registered {
@@ -2047,6 +2055,7 @@ fn poll_recv_batch_async_impl<T: Send>(
     if k_after > 0 {
       shared.unregister_recv();
       *is_registered = false;
+      pool.flush(shared);
       return Poll::Ready(Ok(k_after));
     }
     if !shared.senders_alive() {
