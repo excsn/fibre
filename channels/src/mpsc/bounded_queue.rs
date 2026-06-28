@@ -27,8 +27,8 @@ use crate::error::{
 use crate::internal::cache_padded::CachePadded;
 use crate::sync_util;
 
-// --- Configurable Batch Size ---
 const SENTINEL_IDX: u32 = u32::MAX;
+const SYNC_SPIN_LIMIT: usize = 100;
 
 // --- Private Waiter Coordination ---
 pub enum Waiter {
@@ -46,10 +46,9 @@ impl Waiter {
   }
 }
 
-struct Waiters {
-  senders: VecDeque<(u64, Waiter, *const AtomicBool)>,
-  sender_next_id: u64,
-  receiver: Option<(Waiter, *const AtomicBool)>,
+struct SendWaiters {
+  queue: VecDeque<(u64, Waiter, *const AtomicBool)>,
+  next_id: u64,
 }
 
 // --- Intrusive Node ---
@@ -150,7 +149,9 @@ pub struct BoundedQueue<T: Send> {
   // Handle coordination
   sender_count: CachePadded<AtomicUsize>,
   receiver_dropped: CachePadded<AtomicBool>,
-  waiters: Mutex<Waiters>,
+  send_waiters: Mutex<SendWaiters>,
+  recv_waiter: Mutex<Option<(Waiter, *const AtomicBool)>>,
+  park_gate: Mutex<()>,
   recv_waiter_count: CachePadded<AtomicUsize>,
   send_waiter_count: CachePadded<AtomicUsize>,
   current_len: CachePadded<AtomicUsize>,
@@ -162,7 +163,11 @@ unsafe impl<T: Send> Sync for BoundedQueue<T> {}
 impl<T: Send> BoundedQueue<T> {
   pub fn new(capacity: usize) -> Self {
     assert!(capacity > 0, "Queue capacity must be greater than 0");
-    let chunk_size = if capacity < 8 { capacity } else { capacity / 2 };
+    let chunk_size = if capacity < 8 {
+      capacity
+    } else {
+      (capacity / 2).min(64)
+    };
     let num_chunks = capacity / chunk_size;
     let actual_capacity = num_chunks * chunk_size;
     let total_nodes = actual_capacity + 1; // +1 for the Vyukov stub node
@@ -213,11 +218,12 @@ impl<T: Send> BoundedQueue<T> {
       chunk_stack,
       sender_count: CachePadded::new(AtomicUsize::new(1)),
       receiver_dropped: CachePadded::new(AtomicBool::new(false)),
-      waiters: Mutex::new(Waiters {
-        senders: VecDeque::new(),
-        sender_next_id: 0,
-        receiver: None,
+      send_waiters: Mutex::new(SendWaiters {
+        queue: VecDeque::new(),
+        next_id: 0,
       }),
+      recv_waiter: Mutex::new(None),
+      park_gate: Mutex::new(()),
       recv_waiter_count: CachePadded::new(AtomicUsize::new(0)),
       send_waiter_count: CachePadded::new(AtomicUsize::new(0)),
       current_len: CachePadded::new(AtomicUsize::new(0)),
@@ -270,47 +276,45 @@ impl<T: Send> BoundedQueue<T> {
   }
 
   fn register_send(&self, prev_id: Option<u64>, wake: Waiter, notified: *const AtomicBool) -> u64 {
-    let mut g = self.waiters.lock();
+    let mut g = self.send_waiters.lock();
     if let Some(id) = prev_id {
-      g.senders.retain(|(sid, _, _)| *sid != id);
+      g.queue.retain(|(sid, _, _)| *sid != id);
     }
-    let id = g.sender_next_id;
-    g.sender_next_id = g.sender_next_id.wrapping_add(1);
-    g.senders.push_back((id, wake, notified));
+    let id = g.next_id;
+    g.next_id = g.next_id.wrapping_add(1);
+    g.queue.push_back((id, wake, notified));
     self
       .send_waiter_count
-      .store(g.senders.len(), Ordering::Release);
+      .store(g.queue.len(), Ordering::Release);
     id
   }
 
   fn unregister_send(&self, id: u64) {
-    let mut g = self.waiters.lock();
-    let prev = g.senders.len();
-    g.senders.retain(|(sid, _, _)| *sid != id);
-    if g.senders.len() != prev {
+    let mut g = self.send_waiters.lock();
+    let prev = g.queue.len();
+    g.queue.retain(|(sid, _, _)| *sid != id);
+    if g.queue.len() != prev {
       self
         .send_waiter_count
-        .store(g.senders.len(), Ordering::Release);
+        .store(g.queue.len(), Ordering::Release);
     }
   }
 
   fn register_recv(&self, wake: Waiter, notified: *const AtomicBool) {
-    let mut g = self.waiters.lock();
-    g.receiver = Some((wake, notified));
+    *self.recv_waiter.lock() = Some((wake, notified));
     self.recv_waiter_count.store(1, Ordering::Release);
   }
 
   fn unregister_recv(&self) {
-    let mut g = self.waiters.lock();
-    g.receiver = None;
+    *self.recv_waiter.lock() = None;
     self.recv_waiter_count.store(0, Ordering::Release);
   }
 
   fn notify_receiver(&self) {
     fence(Ordering::SeqCst);
     if self.recv_waiter_count.load(Ordering::Relaxed) != 0 {
-      let mut g = self.waiters.lock();
-      if let Some((waiter, notified)) = g.receiver.take() {
+      let mut g = self.recv_waiter.lock();
+      if let Some((waiter, notified)) = g.take() {
         self.recv_waiter_count.store(0, Ordering::Release);
         if !notified.is_null() {
           unsafe { (*notified).store(true, Ordering::Release) };
@@ -324,11 +328,11 @@ impl<T: Send> BoundedQueue<T> {
   fn notify_senders(&self) {
     fence(Ordering::SeqCst);
     if self.send_waiter_count.load(Ordering::Relaxed) != 0 {
-      let mut g = self.waiters.lock();
-      if let Some((_id, waiter, notified)) = g.senders.pop_front() {
+      let mut g = self.send_waiters.lock();
+      if let Some((_id, waiter, notified)) = g.queue.pop_front() {
         self
           .send_waiter_count
-          .store(g.senders.len(), Ordering::Release);
+          .store(g.queue.len(), Ordering::Release);
         if !notified.is_null() {
           unsafe { (*notified).store(true, Ordering::Release) };
         }
@@ -339,27 +343,21 @@ impl<T: Send> BoundedQueue<T> {
   }
 
   fn wake_all_receivers(&self) {
-    let mut to_wake = Vec::new();
-    {
-      let mut g = self.waiters.lock();
-      if let Some((waiter, notified)) = g.receiver.take() {
-        self.recv_waiter_count.store(0, Ordering::Release);
-        if !notified.is_null() {
-          unsafe { (*notified).store(true, Ordering::Release) };
-        }
-        to_wake.push(waiter);
+    let waiter = self.recv_waiter.lock().take();
+    if let Some((waiter, notified)) = waiter {
+      self.recv_waiter_count.store(0, Ordering::Release);
+      if !notified.is_null() {
+        unsafe { (*notified).store(true, Ordering::Release) };
       }
-    }
-    for w in to_wake {
-      w.wake();
+      waiter.wake();
     }
   }
 
   fn wake_all_senders(&self) {
     let mut to_wake = Vec::new();
     {
-      let mut g = self.waiters.lock();
-      while let Some((_id, waiter, notified)) = g.senders.pop_front() {
+      let mut g = self.send_waiters.lock();
+      while let Some((_id, waiter, notified)) = g.queue.pop_front() {
         if !notified.is_null() {
           unsafe { (*notified).store(true, Ordering::Release) };
         }
@@ -466,7 +464,10 @@ unsafe impl<T: Send> Send for LocalCache<T> {}
 
 impl<T> Default for LocalCache<T> {
   fn default() -> Self {
-    Self { head: std::ptr::null_mut(), count: 0 }
+    Self {
+      head: std::ptr::null_mut(),
+      count: 0,
+    }
   }
 }
 
@@ -556,6 +557,18 @@ unsafe impl<T: Send> Sync for AsyncReceiver<T> {}
 
 impl<T: Send> Sender<T> {
   #[inline]
+  unsafe fn enqueue_node(&self, node: *mut Node<T>, item: T) {
+    unsafe {
+      (*node).val.get().write(Some(item));
+      (*node).next.store(std::ptr::null_mut(), Ordering::Relaxed);
+      let old_head = self.shared.head.swap(node, Ordering::AcqRel);
+      (*old_head).next.store(node, Ordering::Release);
+    }
+    self.shared.current_len.fetch_add(1, Ordering::Relaxed);
+    self.shared.notify_receiver();
+  }
+
+  #[inline]
   fn allocate_node(&self, pool: &mut LocalCache<T>) -> Result<*mut Node<T>, SendError> {
     if let Some(node) = pool.pop_node(&self.shared) {
       return Ok(node);
@@ -604,22 +617,40 @@ impl<T: Send> Sender<T> {
       return Err(SendError::Closed);
     }
     let mut pool = self.cache.lock();
+
+    // 1. Try to get a node from local cache or chunk stack.
+    if let Some(node) = pool.pop_node(&self.shared) {
+      unsafe { self.enqueue_node(node, item) };
+      return Ok(());
+    }
+
+    // 2. Adaptive Spinning: Only spin-yield if the chunk size is very small.
+    // For larger chunk sizes, space is recycled in coarse blocks,
+    // so spinning is highly likely to waste CPU.
+    if self.shared.chunk_size <= 4 {
+      for _ in 0..SYNC_SPIN_LIMIT {
+        if let Some(node) = pool.pop_node(&self.shared) {
+          unsafe { self.enqueue_node(node, item) };
+          return Ok(());
+        }
+        std::thread::yield_now();
+      }
+    }
+
+    // 3. Blocking Path: Skip spinning for larger chunk sizes and park immediately.
+    drop(pool); // Unlock cache before locking the park gate
+
+    let _gate = self.shared.park_gate.lock();
+    let mut pool = self.cache.lock();
+
+    // Re-check one last time under the lock
+    if let Some(node) = pool.pop_node(&self.shared) {
+      unsafe { self.enqueue_node(node, item) };
+      return Ok(());
+    }
+
     let node_ptr = self.allocate_node(&mut *pool)?;
-
-    unsafe {
-      (*node_ptr).val.get().write(Some(item));
-      (*node_ptr)
-        .next
-        .store(std::ptr::null_mut(), Ordering::Relaxed);
-    }
-
-    let old_head = self.shared.head.swap(node_ptr, Ordering::AcqRel);
-    unsafe {
-      (*old_head).next.store(node_ptr, Ordering::Release);
-    }
-
-    self.shared.current_len.fetch_add(1, Ordering::Relaxed);
-    self.shared.notify_receiver();
+    unsafe { self.enqueue_node(node_ptr, item) };
     Ok(())
   }
 
@@ -928,6 +959,18 @@ impl<T: Send> Receiver<T> {
         continue;
       }
 
+      let mut saw_item = false;
+      for _ in 0..SYNC_SPIN_LIMIT {
+        if !unsafe { (*tail).next.load(Ordering::Acquire) }.is_null() {
+          saw_item = true;
+          break;
+        }
+        std::thread::yield_now();
+      }
+      if saw_item {
+        continue;
+      }
+
       self
         .shared
         .register_recv(Waiter::Sync(thread::current()), notified_ptr);
@@ -1028,12 +1071,7 @@ impl<T: Send> Receiver<T> {
     }
   }
 
-  fn pop_batch_lock_free(
-    &self,
-    out: &mut Vec<T>,
-    max: usize,
-    pool: &mut LocalCache<T>,
-  ) -> usize {
+  fn pop_batch_lock_free(&self, out: &mut Vec<T>, max: usize, pool: &mut LocalCache<T>) -> usize {
     let mut popped = 0;
     unsafe {
       let mut tail = *self.shared.tail.get();
@@ -1495,12 +1533,7 @@ impl<T: Send> AsyncReceiver<T> {
     Err(TryRecvError::Empty)
   }
 
-  fn pop_batch_lock_free(
-    &self,
-    out: &mut Vec<T>,
-    max: usize,
-    pool: &mut LocalCache<T>,
-  ) -> usize {
+  fn pop_batch_lock_free(&self, out: &mut Vec<T>, max: usize, pool: &mut LocalCache<T>) -> usize {
     let mut popped = 0;
     unsafe {
       let mut tail = *self.shared.tail.get();
@@ -1637,7 +1670,10 @@ pub struct RecvFuture<'a, T: Send> {
 
 impl<'a, T: Send> RecvFuture<'a, T> {
   fn new(receiver: &'a AsyncReceiver<T>) -> Self {
-    RecvFuture { receiver, is_registered: false }
+    RecvFuture {
+      receiver,
+      is_registered: false,
+    }
   }
 }
 
@@ -1910,7 +1946,13 @@ impl<'a, T: Send> Future for BoundedRecvBatchFuture<'a, T> {
       return Poll::Ready(Ok(Vec::new()));
     }
     let mut out = Vec::new();
-    match poll_recv_batch_async_impl(this.receiver, cx, &mut out, this.max, &mut this.is_registered) {
+    match poll_recv_batch_async_impl(
+      this.receiver,
+      cx,
+      &mut out,
+      this.max,
+      &mut this.is_registered,
+    ) {
       Poll::Ready(Ok(_)) => Poll::Ready(Ok(out)),
       Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
       Poll::Pending => Poll::Pending,
