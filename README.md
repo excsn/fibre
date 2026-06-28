@@ -32,6 +32,7 @@ Detailed documentation and usage guides can be found within each crate's directo
 *   **`fibre` (Channels)**: [Usage Guide](./channels/README.GUIDE.md) | [API Reference (docs.rs)](https://docs.rs/fibre)
 *   **`fibre_cache` (Cache)**: [Usage Guide](./cache/README.GUIDE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_cache)
 *   **`fibre_ioc` (IoC Container)**: [Usage Guide](./ioc/README.GUIDE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_ioc)
+*   **`fibre_logging` (Logging)**: [Usage Guide](./logging/README.GUIDE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_logging)
 
 ## License
 
