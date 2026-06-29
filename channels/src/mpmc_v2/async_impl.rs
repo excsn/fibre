@@ -95,8 +95,8 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
             return Poll::Pending;
           }
           drop(guard);
-          std::hint::spin_loop();
-          continue 'poll_loop;
+          cx.waker().wake_by_ref();
+          return Poll::Pending;
         }
       }
 
@@ -271,10 +271,10 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
             return Poll::Pending;
           }
           // Popped but our state not yet flipped (a close path holds the
-          // waiter outside the lock): spin briefly and re-check.
+          // waiter outside the lock): yield back to the executor and re-poll.
           drop(guard);
-          std::hint::spin_loop();
-          continue 'poll_loop;
+          cx.waker().wake_by_ref();
+          return Poll::Pending;
         }
       }
 
@@ -455,8 +455,8 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
             return Poll::Pending;
           }
           drop(guard);
-          std::hint::spin_loop();
-          continue 'poll_loop;
+          cx.waker().wake_by_ref();
+          return Poll::Pending;
         }
       }
 
