@@ -332,7 +332,6 @@ impl<T: Send> MpmcShared<T> {
 
     // --- Priority 1: Check the main buffer first (Preserves strict FIFO) ---
     if let Some(item) = guard.pop_front() {
-      let mut to_wake = None;
       if self.capacity > 0 {
         let mut i = 0;
         while i < guard.waiting_async_senders.len() {
@@ -348,41 +347,35 @@ impl<T: Send> MpmcShared<T> {
             .is_ok()
           {
             let waiter = guard.waiting_async_senders.remove(i).unwrap();
-            to_wake = Some(WakeRef::Waker(waiter.waker));
-            break;
+            waiter.waker.wake();
+            return Ok(item);
           } else {
             i += 1;
           }
         }
 
-        if to_wake.is_none() {
-          let mut i = 0;
-          while i < guard.waiting_sync_senders.len() {
-            let waiter = &guard.waiting_sync_senders[i];
-            let waiter_state = unsafe { &*waiter.state };
-            if waiter_state
-              .compare_exchange(
-                STATE_WAITING,
-                STATE_SUCCESS_SPACE,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-              )
-              .is_ok()
-            {
-              let waiter = guard.waiting_sync_senders.remove(i).unwrap();
-              to_wake = Some(WakeRef::Thread(waiter.thread));
-              break;
-            } else {
-              i += 1;
-            }
+        let mut i = 0;
+        while i < guard.waiting_sync_senders.len() {
+          let waiter = &guard.waiting_sync_senders[i];
+          let waiter_state = unsafe { &*waiter.state };
+          if waiter_state
+            .compare_exchange(
+              STATE_WAITING,
+              STATE_SUCCESS_SPACE,
+              Ordering::SeqCst,
+              Ordering::SeqCst,
+            )
+            .is_ok()
+          {
+            let waiter = guard.waiting_sync_senders.remove(i).unwrap();
+            waiter.thread.unpark();
+            return Ok(item);
+          } else {
+            i += 1;
           }
         }
       }
 
-      drop(guard);
-      if let Some(w) = to_wake {
-        w.wake();
-      }
       return Ok(item);
     }
 
@@ -401,104 +394,96 @@ impl<T: Send> MpmcShared<T> {
     if limit == 0 {
       return (0, None);
     }
-    let mut to_wake: Vec<WakeRef> = Vec::new();
-    let result = {
-      let mut guard = self.internal.lock();
+    let mut guard = self.internal.lock();
 
-      if guard.receiver_count == 0 {
-        (0, Some(BatchSendErrorReason::Closed))
-      } else {
-        let mut sent = 0;
-        while sent < limit {
-          // --- Priority 1: hand the item to a waiting receiver ---
-          let mut handed = false;
-          loop {
-            if guard.is_full(self.capacity) {
-              break;
-            }
+    if guard.receiver_count == 0 {
+      return (0, Some(BatchSendErrorReason::Closed));
+    }
 
-            match guard.waiting_async_receivers.pop_front() {
-              None => break,
-              Some(waiter) => {
-                let waiter_state = unsafe { &*waiter.state };
-                if waiter_state
-                  .compare_exchange(
-                    STATE_WAITING,
-                    STATE_SUCCESS_SPACE,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                  )
-                  .is_ok()
-                {
-                  let item = iter.next().expect("iterator shorter than limit");
-                  guard.push_back(item).ok().expect("MPMC push_back failed");
-                  to_wake.push(WakeRef::Waker(waiter.waker));
-                  handed = true;
-                  break;
-                }
-              }
-            }
-          }
-          if !handed {
-            loop {
-              if guard.is_full(self.capacity) {
-                break;
-              }
-
-              match guard.waiting_sync_receivers.pop_front() {
-                None => break,
-                Some(waiter) => {
-                  let waiter_state = unsafe { &*waiter.state };
-                  if waiter_state
-                    .compare_exchange(
-                      STATE_WAITING,
-                      STATE_SUCCESS_SPACE,
-                      Ordering::SeqCst,
-                      Ordering::SeqCst,
-                    )
-                    .is_ok()
-                  {
-                    let item = iter.next().expect("iterator shorter than limit");
-                    guard.push_back(item).ok().expect("MPMC push_back failed");
-                    to_wake.push(WakeRef::Thread(waiter.thread));
-                    handed = true;
-                    break;
-                  }
-                }
-              }
-            }
-          }
-          if handed {
-            sent += 1;
-            continue;
-          }
-
-          // --- Priority 2: push to buffer if space is available ---
-          if self.capacity == 0 {
-            break;
-          }
-          if self.capacity == usize::MAX || guard.len() < self.capacity {
-            let item = iter.next().expect("iterator shorter than limit");
-            guard.push_back(item).ok().expect("MPMC push_back failed");
-            sent += 1;
-          } else {
-            break;
-          }
+    let mut sent = 0;
+    while sent < limit {
+      // --- Priority 1: hand the item to a waiting receiver (wake inside lock) ---
+      let mut handed = false;
+      loop {
+        if guard.is_full(self.capacity) {
+          break;
         }
 
-        let reason = if sent == limit {
-          None
-        } else {
-          Some(BatchSendErrorReason::Full)
-        };
-        (sent, reason)
+        match guard.waiting_async_receivers.pop_front() {
+          None => break,
+          Some(waiter) => {
+            let waiter_state = unsafe { &*waiter.state };
+            if waiter_state
+              .compare_exchange(
+                STATE_WAITING,
+                STATE_SUCCESS_SPACE,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+              )
+              .is_ok()
+            {
+              let item = iter.next().expect("iterator shorter than limit");
+              guard.push_back(item).ok().expect("MPMC push_back failed");
+              waiter.waker.wake();
+              handed = true;
+              break;
+            }
+          }
+        }
       }
-    };
+      if !handed {
+        loop {
+          if guard.is_full(self.capacity) {
+            break;
+          }
 
-    for w in to_wake {
-      w.wake();
+          match guard.waiting_sync_receivers.pop_front() {
+            None => break,
+            Some(waiter) => {
+              let waiter_state = unsafe { &*waiter.state };
+              if waiter_state
+                .compare_exchange(
+                  STATE_WAITING,
+                  STATE_SUCCESS_SPACE,
+                  Ordering::SeqCst,
+                  Ordering::SeqCst,
+                )
+                .is_ok()
+              {
+                let item = iter.next().expect("iterator shorter than limit");
+                guard.push_back(item).ok().expect("MPMC push_back failed");
+                waiter.thread.unpark();
+                handed = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if handed {
+        sent += 1;
+        continue;
+      }
+
+      // --- Priority 2: push to buffer if space is available ---
+      if self.capacity == 0 {
+        break;
+      }
+      if self.capacity == usize::MAX || guard.len() < self.capacity {
+        let item = iter.next().expect("iterator shorter than limit");
+        guard.push_back(item).ok().expect("MPMC push_back failed");
+        sent += 1;
+      } else {
+        break;
+      }
     }
-    result
+
+    let reason = if sent == limit {
+      None
+    } else {
+      Some(BatchSendErrorReason::Full)
+    };
+    (sent, reason)
   }
 
   pub(crate) fn try_recv_batch_core(
@@ -509,81 +494,73 @@ impl<T: Send> MpmcShared<T> {
     if max == 0 {
       return Ok(0);
     }
-    let mut to_wake: Vec<WakeRef> = Vec::new();
-    let result = {
-      let mut guard = self.internal.lock();
-      let mut got = 0;
+    let mut guard = self.internal.lock();
+    let mut got = 0;
 
-      // --- Priority 1: Drain the main buffer first (FIFO preserved) ---
-      let from_buffer = (max - got).min(guard.len());
-      if from_buffer > 0 {
-        guard.drain_into(out, from_buffer);
-        got += from_buffer;
-      }
-
-      // --- Priority 2: Wake buffered senders ---
-      if self.capacity > 0 && from_buffer > 0 {
-        let mut woken = 0;
-        let max_to_wake = from_buffer + (max - got);
-
-        let mut i = 0;
-        while i < guard.waiting_async_senders.len() && woken < max_to_wake {
-          let waiter = &guard.waiting_async_senders[i];
-          let waiter_state = unsafe { &*waiter.state };
-          if waiter_state
-            .compare_exchange(
-              STATE_WAITING,
-              STATE_SUCCESS_SPACE,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            let waiter = guard.waiting_async_senders.remove(i).unwrap();
-            to_wake.push(WakeRef::Waker(waiter.waker));
-            woken += 1;
-          } else {
-            i += 1;
-          }
-        }
-
-        let mut i = 0;
-        while i < guard.waiting_sync_senders.len() && woken < max_to_wake {
-          let waiter = &guard.waiting_sync_senders[i];
-          let waiter_state = unsafe { &*waiter.state };
-          if waiter_state
-            .compare_exchange(
-              STATE_WAITING,
-              STATE_SUCCESS_SPACE,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            let waiter = guard.waiting_sync_senders.remove(i).unwrap();
-            to_wake.push(WakeRef::Thread(waiter.thread));
-            woken += 1;
-          } else {
-            i += 1;
-          }
-        }
-      }
-
-      if got == 0 {
-        if guard.sender_count == 0 {
-          Err(TryRecvError::Disconnected)
-        } else {
-          Err(TryRecvError::Empty)
-        }
-      } else {
-        Ok(got)
-      }
-    };
-
-    for w in to_wake {
-      w.wake();
+    // --- Priority 1: Drain the main buffer first (FIFO preserved) ---
+    let from_buffer = (max - got).min(guard.len());
+    if from_buffer > 0 {
+      guard.drain_into(out, from_buffer);
+      got += from_buffer;
     }
-    result
+
+    // --- Priority 2: Wake buffered senders (inside the lock) ---
+    if self.capacity > 0 && from_buffer > 0 {
+      let mut woken = 0;
+      let max_to_wake = from_buffer + (max - got);
+
+      let mut i = 0;
+      while i < guard.waiting_async_senders.len() && woken < max_to_wake {
+        let waiter = &guard.waiting_async_senders[i];
+        let waiter_state = unsafe { &*waiter.state };
+        if waiter_state
+          .compare_exchange(
+            STATE_WAITING,
+            STATE_SUCCESS_SPACE,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+          )
+          .is_ok()
+        {
+          let waiter = guard.waiting_async_senders.remove(i).unwrap();
+          waiter.waker.wake();
+          woken += 1;
+        } else {
+          i += 1;
+        }
+      }
+
+      let mut i = 0;
+      while i < guard.waiting_sync_senders.len() && woken < max_to_wake {
+        let waiter = &guard.waiting_sync_senders[i];
+        let waiter_state = unsafe { &*waiter.state };
+        if waiter_state
+          .compare_exchange(
+            STATE_WAITING,
+            STATE_SUCCESS_SPACE,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+          )
+          .is_ok()
+        {
+          let waiter = guard.waiting_sync_senders.remove(i).unwrap();
+          waiter.thread.unpark();
+          woken += 1;
+        } else {
+          i += 1;
+        }
+      }
+    }
+
+    if got == 0 {
+      if guard.sender_count == 0 {
+        Err(TryRecvError::Disconnected)
+      } else {
+        Err(TryRecvError::Empty)
+      }
+    } else {
+      Ok(got)
+    }
   }
 
   /// Batch counterpart of `poll_recv_internal`.
