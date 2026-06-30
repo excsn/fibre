@@ -53,7 +53,7 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     // Safety: `SendFuture` is never relied upon to stay pinned — it holds only an
     // `Option<T>`, a shared-ref, and an id, none self-referential, so moving its
-    // fields is sound regardless of `T: Unpin`.
+    // fields is sound.
     let this = unsafe { self.get_unchecked_mut() };
 
     // Already completed (item taken on a prior successful poll).
@@ -213,7 +213,7 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
   type Output = Result<usize, SendBatchError<T>>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    // Safety: no self-referential state; safe to move regardless of `T: Unpin`.
+    // Safety: no self-referential state; safe to move.
     let this = unsafe { self.get_unchecked_mut() };
 
     loop {
@@ -318,7 +318,7 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
   type Output = Result<usize, SendError>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    // Safety: no self-referential state; safe to move regardless of `T: Unpin`.
+    // Safety: no self-referential state; safe to move.
     let this = unsafe { self.get_unchecked_mut() };
 
     loop {

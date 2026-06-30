@@ -122,8 +122,8 @@ pub use bounded_sync::{
 
 pub use bounded_async::{
   bounded_async,            // fn to create async SPSC channel
-  AsyncBoundedSpscReceiver, // Async consumer type
-  AsyncBoundedSpscSender, // Async producer type
+  BoundedAsyncReceiver,     // Async consumer type
+  BoundedAsyncSender,       // Async producer type
   RecvBatchFuture,          // Future returned by async recv_batch
   RecvBatchMutFuture,       // Future returned by async recv_batch_mut
   SendBatchFuture,          // Future returned by async send_batch

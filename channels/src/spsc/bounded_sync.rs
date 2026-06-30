@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::thread::{self};
 use std::time::{Duration, Instant};
 
-use super::bounded_async::{AsyncBoundedSpscReceiver, AsyncBoundedSpscSender};
+use super::bounded_async::{BoundedAsyncReceiver, BoundedAsyncSender};
 use std::mem;
 
 // Adaptive spin backoff constants.
@@ -61,10 +61,10 @@ impl<T: Send> BoundedSyncSender<T> {
     }
   }
 
-  pub fn to_async(self) -> AsyncBoundedSpscSender<T> {
+  pub fn to_async(self) -> BoundedAsyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
-    AsyncBoundedSpscSender::from_shared(shared)
+    BoundedAsyncSender::from_shared(shared)
   }
 
   pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>> {
@@ -333,10 +333,10 @@ impl<T: Send> BoundedSyncReceiver<T> {
     }
   }
 
-  pub fn to_async(self) -> AsyncBoundedSpscReceiver<T> {
+  pub fn to_async(self) -> BoundedAsyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
-    AsyncBoundedSpscReceiver::from_shared(shared)
+    BoundedAsyncReceiver::from_shared(shared)
   }
 
   pub fn try_recv(&self) -> Result<T, TryRecvError> {

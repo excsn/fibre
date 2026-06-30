@@ -62,7 +62,7 @@ The `mpmc`, `mpsc`, `spmc`, and `spsc` channels support full interoperability be
 
 All channels are interacted with via sender and receiver handles (e.g., `Sender`, `Receiver`, `AsyncSender`, `AsyncReceiver`; SPSC uses `BoundedSyncSender`, etc.). These handles control access to the channel and manage its lifetime. When all senders for a channel are dropped, the channel becomes "disconnected" from the perspective of the receiver. When all receivers are dropped, the channel becomes "closed" from the perspective of the sender.
 
-**A key feature of all multi-item asynchronous receiver types (`mpmc::AsyncReceiver`, `mpsc::UnboundedAsyncReceiver`, `mpsc::BoundedAsyncReceiver`, `spmc::AsyncReceiver`, `spmc::topic::AsyncTopicReceiver`, `spsc::AsyncBoundedSpscReceiver`) is that they implement the `futures::Stream` trait.** This allows them to be used with the rich set of combinators provided by `futures::StreamExt`, such as `next()`, `map()`, `filter()`, `for_each`, and `collect()`. The `oneshot::Receiver` is an exception, as it yields at most one item and is used by awaiting its `.recv()` future directly.
+**A key feature of all multi-item asynchronous receiver types (`mpmc::AsyncReceiver`, `mpsc::UnboundedAsyncReceiver`, `mpsc::BoundedAsyncReceiver`, `spmc::AsyncReceiver`, `spmc::topic::AsyncTopicReceiver`, `spsc::BoundedAsyncReceiver`) is that they implement the `futures::Stream` trait.** This allows them to be used with the rich set of combinators provided by `futures::StreamExt`, such as `next()`, `map()`, `filter()`, `for_each`, and `collect()`. The `oneshot::Receiver` is an exception, as it yields at most one item and is used by awaiting its `.recv()` future directly.
 
 ## Quick Start Examples
 
@@ -339,11 +339,11 @@ A high-performance lock-free channel for one-to-one communication (bounded). `T`
 
 *   **Constructors:**
     *   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (Panics if capacity is 0 — use `spsc::rendezvous`).
-    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncBoundedSpscSender<T>, AsyncBoundedSpscReceiver<T>)` (Panics if capacity is 0 — use `spsc::rendezvous`).
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (Panics if capacity is 0 — use `spsc::rendezvous`).
     *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff (both ends `!Clone`). `_async` variant available. No batch API.
 *   **Handles:**
     *   `BoundedSyncSender<T: Send>` (`!Clone`) and `BoundedSyncReceiver<T: Send>` (`!Clone`).
-    *   `AsyncBoundedSpscSender<T: Send>` (`!Clone`) and `AsyncBoundedSpscReceiver<T: Send>` (`!Clone`). `AsyncBoundedSpscReceiver` implements `futures::Stream`.
+    *   `BoundedAsyncSender<T: Send>` (`!Clone`) and `BoundedAsyncReceiver<T: Send>` (`!Clone`). `BoundedAsyncReceiver` implements `futures::Stream`.
 *   **Key Methods:**
     *   `send(...)`: Sync sends block, async sends return a `Future`.
     *   `try_send(...)`

@@ -15,7 +15,7 @@
 
 *   **Sender and Receiver Handles**: Interaction with channels is done through `Sender` and `Receiver` handles. These handles control access and lifetime. When all `Sender` handles for a channel are dropped, it becomes "disconnected." When all `Receiver` handles are dropped, it becomes "closed." Handle cloning semantics vary by channel type (e.g., `mpmc::Sender` is `Clone`, but `spsc::BoundedSyncSender` is not).
 
-*   **Stream API**: All asynchronous receivers that can yield multiple items (`mpmc::AsyncReceiver`, `mpsc::UnboundedAsyncReceiver`, `mpsc::BoundedAsyncReceiver`, `spmc::AsyncReceiver`, `spsc::AsyncBoundedSpscReceiver`, `spmc::topic::AsyncTopicReceiver`) implement the `futures::Stream` trait, allowing them to be used with the rich combinator library from `futures-util`.
+*   **Stream API**: All asynchronous receivers that can yield multiple items (`mpmc::AsyncReceiver`, `mpsc::UnboundedAsyncReceiver`, `mpsc::BoundedAsyncReceiver`, `spmc::AsyncReceiver`, `spsc::BoundedAsyncReceiver`, `spmc::topic::AsyncTopicReceiver`) implement the `futures::Stream` trait, allowing them to be used with the rich combinator library from `futures-util`.
 
 ## 2. Error Handling
 
@@ -140,7 +140,7 @@ A high-performance, lock-free, bounded channel for one producer and one consumer
 ### Functions
 
 *   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (panics if `capacity == 0`)
-*   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncBoundedSpscSender<T>, AsyncBoundedSpscReceiver<T>)` (panics if `capacity == 0`)
+*   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (panics if `capacity == 0`)
 *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff; both ends `!Clone`. Handles expose `send`/`recv`/`try_send`/`try_recv`/`recv_timeout` (receiver)/`close`/`is_closed`/`len`/`is_empty`/`is_full`/`capacity`/`to_async`/`to_sync`. No batch API.
 *   `pub fn rendezvous::rendezvous_async<T: Send>() -> (rendezvous::AsyncSender<T>, rendezvous::AsyncReceiver<T>)`
 
@@ -149,7 +149,7 @@ A high-performance, lock-free, bounded channel for one producer and one consumer
 The synchronous, non-cloneable sending handle.
 
 *   **Methods**:
-    *   `pub fn to_async(self) -> AsyncBoundedSpscSender<T>`
+    *   `pub fn to_async(self) -> BoundedAsyncSender<T>`
     *   `pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>>`
     *   `pub fn send(&self, item: T) -> Result<(), SendError>`
     *   `pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`
@@ -168,7 +168,7 @@ The synchronous, non-cloneable sending handle.
 The synchronous, non-cloneable receiving handle.
 
 *   **Methods**:
-    *   `pub fn to_async(self) -> AsyncBoundedSpscReceiver<T>`
+    *   `pub fn to_async(self) -> BoundedAsyncReceiver<T>`
     *   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
     *   `pub fn recv(&self) -> Result<T, RecvError>`
     *   `pub fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
@@ -179,7 +179,7 @@ The synchronous, non-cloneable receiving handle.
     *   `pub fn close(&self) -> Result<(), CloseError>`
     *   `is_closed`, `capacity`, `len`, `is_empty`, `is_full`
 
-### Struct `AsyncBoundedSpscSender<T>`
+### Struct `BoundedAsyncSender<T>`
 
 The asynchronous, non-cloneable sending handle.
 
@@ -190,7 +190,7 @@ The asynchronous, non-cloneable sending handle.
     *   `pub fn send_batch_mut<'a>(&'a self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T>`: Cancel-safe; resolves with `Result<usize, SendError>`.
     *   `try_send`, `try_send_batch`, `try_send_batch_mut`, `close`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`
 
-### Struct `AsyncBoundedSpscReceiver<T>`
+### Struct `BoundedAsyncReceiver<T>`
 
 The asynchronous, non-cloneable receiving handle. Implements `futures::Stream`.
 

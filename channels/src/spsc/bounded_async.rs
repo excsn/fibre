@@ -17,30 +17,30 @@ use std::task::{Context, Poll};
 
 // --- Async Sender ---
 #[derive(Debug)]
-pub struct AsyncBoundedSpscSender<T> {
+pub struct BoundedAsyncSender<T> {
   pub(crate) shared: Arc<SpscShared<T>>,
   pub(crate) closed: AtomicBool,
 }
 
 // --- Async Receiver ---
 #[derive(Debug)]
-pub struct AsyncBoundedSpscReceiver<T> {
+pub struct BoundedAsyncReceiver<T> {
   pub(crate) shared: Arc<SpscShared<T>>,
   pub(crate) closed: AtomicBool,
   is_registered: bool,
 }
 
-unsafe impl<T: Send> Send for AsyncBoundedSpscSender<T> {}
-unsafe impl<T: Send> Send for AsyncBoundedSpscReceiver<T> {}
+unsafe impl<T: Send> Send for BoundedAsyncSender<T> {}
+unsafe impl<T: Send> Send for BoundedAsyncReceiver<T> {}
 
-impl<T> AsyncBoundedSpscSender<T> {
+impl<T> BoundedAsyncSender<T> {
   fn close_internal(&self) {
     self.shared.producer_dropped.store(true, Ordering::Release);
     self.shared.drop_sender();
   }
 }
 
-impl<T: Send> AsyncBoundedSpscSender<T> {
+impl<T: Send> BoundedAsyncSender<T> {
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
     Self {
       shared,
@@ -186,7 +186,7 @@ impl<T: Send> AsyncBoundedSpscSender<T> {
 }
 
 // Methods that do not require T: Send (e.g., for Drop)
-impl<T> AsyncBoundedSpscReceiver<T> {
+impl<T> BoundedAsyncReceiver<T> {
   fn close_internal(&self) {
     self.shared.consumer_dropped.store(true, Ordering::Release);
     self.shared.drop_receiver();
@@ -194,7 +194,7 @@ impl<T> AsyncBoundedSpscReceiver<T> {
 }
 
 // Methods that require T: Send
-impl<T: Send> AsyncBoundedSpscReceiver<T> {
+impl<T: Send> BoundedAsyncReceiver<T> {
   pub(crate) fn from_shared(shared: Arc<SpscShared<T>>) -> Self {
     Self {
       shared,
@@ -323,16 +323,16 @@ impl<T: Send> AsyncBoundedSpscReceiver<T> {
 
 pub fn bounded_async<T: Send>(
   capacity: usize,
-) -> (AsyncBoundedSpscSender<T>, AsyncBoundedSpscReceiver<T>) {
+) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>) {
   let shared_core = SpscShared::new_internal(capacity);
   let shared_arc = Arc::new(shared_core);
 
   (
-    AsyncBoundedSpscSender {
+    BoundedAsyncSender {
       shared: Arc::clone(&shared_arc),
       closed: AtomicBool::new(false),
     },
-    AsyncBoundedSpscReceiver {
+    BoundedAsyncReceiver {
       shared: shared_arc,
       closed: AtomicBool::new(false),
       is_registered: false,
@@ -340,7 +340,7 @@ pub fn bounded_async<T: Send>(
   )
 }
 
-impl<T> Drop for AsyncBoundedSpscSender<T> {
+impl<T> Drop for BoundedAsyncSender<T> {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
       self.close_internal();
@@ -348,7 +348,7 @@ impl<T> Drop for AsyncBoundedSpscSender<T> {
   }
 }
 
-impl<T> Drop for AsyncBoundedSpscReceiver<T> {
+impl<T> Drop for BoundedAsyncReceiver<T> {
   fn drop(&mut self) {
     if self.is_registered {
       self.shared.unregister(Role::Recv);
@@ -361,14 +361,14 @@ impl<T> Drop for AsyncBoundedSpscReceiver<T> {
 
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T> {
-  sender: &'a AsyncBoundedSpscSender<T>,
+  sender: &'a BoundedAsyncSender<T>,
   item: Option<T>,
   is_registered: bool,
   _phantom: PhantomPinned,
 }
 
 impl<'a, T> SendFuture<'a, T> {
-  fn new(sender: &'a AsyncBoundedSpscSender<T>, item: T) -> Self {
+  fn new(sender: &'a BoundedAsyncSender<T>, item: T) -> Self {
     SendFuture {
       sender,
       item: Some(item),
@@ -378,7 +378,7 @@ impl<'a, T> SendFuture<'a, T> {
   }
 }
 
-impl<'a, T: Unpin + Send> Future for SendFuture<'a, T> {
+impl<'a, T: Send> Future for SendFuture<'a, T> {
   type Output = Result<(), SendError>;
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -454,10 +454,10 @@ impl<'a, T> Drop for SendFuture<'a, T> {
   }
 }
 
-/// Future returned by [`AsyncBoundedSpscSender::send_batch`].
+/// Future returned by [`BoundedAsyncSender::send_batch`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchFuture<'a, T> {
-  sender: &'a AsyncBoundedSpscSender<T>,
+  sender: &'a BoundedAsyncSender<T>,
   iter: std::vec::IntoIter<T>,
   total: usize,
   sent: usize,
@@ -531,10 +531,10 @@ impl<'a, T> Drop for SendBatchFuture<'a, T> {
   }
 }
 
-/// Future returned by [`AsyncBoundedSpscSender::send_batch_mut`].
+/// Future returned by [`BoundedAsyncSender::send_batch_mut`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchMutFuture<'a, T> {
-  sender: &'a AsyncBoundedSpscSender<T>,
+  sender: &'a BoundedAsyncSender<T>,
   items: &'a mut Vec<T>,
   sent: usize,
   is_registered: bool,
@@ -608,12 +608,12 @@ impl<'a, T> Drop for SendBatchMutFuture<'a, T> {
 
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct ReceiveFuture<'a, T> {
-  receiver: &'a AsyncBoundedSpscReceiver<T>,
+  receiver: &'a BoundedAsyncReceiver<T>,
   is_registered: bool,
 }
 
 impl<'a, T> ReceiveFuture<'a, T> {
-  fn new(receiver: &'a AsyncBoundedSpscReceiver<T>) -> Self {
+  fn new(receiver: &'a BoundedAsyncReceiver<T>) -> Self {
     ReceiveFuture {
       receiver,
       is_registered: false,
@@ -641,10 +641,10 @@ impl<'a, T> Drop for ReceiveFuture<'a, T> {
   }
 }
 
-/// Future returned by [`AsyncBoundedSpscReceiver::recv_batch`].
+/// Future returned by [`BoundedAsyncReceiver::recv_batch`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct RecvBatchFuture<'a, T> {
-  receiver: &'a AsyncBoundedSpscReceiver<T>,
+  receiver: &'a BoundedAsyncReceiver<T>,
   max: usize,
   is_registered: bool,
 }
@@ -674,10 +674,10 @@ impl<'a, T> Drop for RecvBatchFuture<'a, T> {
   }
 }
 
-/// Future returned by [`AsyncBoundedSpscReceiver::recv_batch_mut`].
+/// Future returned by [`BoundedAsyncReceiver::recv_batch_mut`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct RecvBatchMutFuture<'a, T> {
-  receiver: &'a AsyncBoundedSpscReceiver<T>,
+  receiver: &'a BoundedAsyncReceiver<T>,
   out: &'a mut Vec<T>,
   max: usize,
   is_registered: bool,
@@ -705,7 +705,7 @@ impl<'a, T> Drop for RecvBatchMutFuture<'a, T> {
 }
 
 fn poll_recv_batch_spsc<T: Send>(
-  receiver: &AsyncBoundedSpscReceiver<T>,
+  receiver: &BoundedAsyncReceiver<T>,
   cx: &mut Context<'_>,
   out: &mut Vec<T>,
   max: usize,
@@ -764,7 +764,7 @@ fn poll_recv_batch_spsc<T: Send>(
   }
 }
 
-impl<T: Send> Stream for AsyncBoundedSpscReceiver<T> {
+impl<T: Send> Stream for BoundedAsyncReceiver<T> {
   type Item = T;
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -1017,7 +1017,7 @@ mod tests {
     let core_shared = create_test_shared_core::<String>(CAPACITY);
 
     let sync_p = BoundedSyncSender::from_shared(core_shared.clone());
-    let async_c = AsyncBoundedSpscReceiver::from_shared(core_shared);
+    let async_c = BoundedAsyncReceiver::from_shared(core_shared);
 
     let val1 = "hello from sync".to_string();
     let val2 = "world from sync".to_string();
@@ -1061,7 +1061,7 @@ mod tests {
       .unwrap();
     let core_shared = create_test_shared_core::<String>(CAPACITY);
 
-    let async_p = AsyncBoundedSpscSender::from_shared(core_shared.clone());
+    let async_p = BoundedAsyncSender::from_shared(core_shared.clone());
     let sync_c = BoundedSyncReceiver::from_shared(core_shared);
 
     let val1_original = "hello from async".to_string();

@@ -42,11 +42,15 @@ rand = "0.9"
 # proptest = "1"
 
 [[bench]]
-name = "mpmc_async"
+name = "mpmc_bounded"
 harness = false
 
 [[bench]]
-name = "mpmc_sync"
+name = "mpmc_rendezvous"
+harness = false
+
+[[bench]]
+name = "mpmc_unbounded"
 harness = false
 
 [[bench]]
