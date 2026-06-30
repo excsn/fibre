@@ -1,12 +1,12 @@
 use super::shared::MpscShared;
 use crate::error::{CloseError, RecvError, TryRecvError};
-use crate::{sync_util, RecvErrorTimeout};
+use crate::{RecvErrorTimeout, sync_util};
 
 use futures_util::stream::Stream;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -280,12 +280,13 @@ impl<T: Send> Receiver<T> {
 }
 
 impl<T: Send> AsyncReceiver<T> {
-  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
     }
     self.shared.try_recv_internal()
   }
+
   pub fn recv(&self) -> RecvFuture<'_, T> {
     RecvFuture { consumer: self }
   }

@@ -2,8 +2,10 @@ mod common;
 use common::*;
 
 use fibre::mpsc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::time::timeout;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 #[cfg(not(miri))]
 #[tokio::test]
@@ -118,4 +120,125 @@ async fn mpsc_sync_producer_to_async_consumer() {
 
   assert_eq!(rx_async.recv().await.unwrap(), 123);
   producer_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_mpsc_bounded_send_reclaims_payload_on_cancel() {
+  let (tx, _rx) = mpsc::bounded_async::<Arc<()>>(1);
+
+  // 1. Fill the channel
+  tx.send(Arc::new(())).await.unwrap();
+
+  let payload = Arc::new(());
+  let weak_ref = Arc::downgrade(&payload);
+
+  // 2. Start a send that will block, then cancel it via timeout
+  {
+    let fut = tx.send(payload.clone());
+    let res = timeout(Duration::from_millis(50), fut).await;
+    assert!(res.is_err(), "Future should park and time out");
+  } // `fut` is dropped here
+
+  // 3. Drop our local strong reference
+  drop(payload);
+
+  // 4. Verify the future reclaimed and dropped the payload
+  assert!(
+    weak_ref.upgrade().is_none(),
+    "Memory Leak: SendFuture was cancelled, but the payload was leaked into the queue!"
+  );
+}
+
+#[tokio::test]
+async fn test_mpsc_bounded_send_does_not_ghost_deliver() {
+  let (tx, rx) = mpsc::bounded_async::<i32>(1);
+
+  // 1. Fill the channel
+  tx.send(10).await.unwrap();
+
+  // 2. Spawn a blocked send
+  let tx_clone = tx.clone();
+  let handle = tokio::spawn(async move {
+    let _ = tx_clone.send(20).await;
+  });
+
+  // Give it time to park
+  tokio::time::sleep(Duration::from_millis(50)).await;
+
+  // 3. Abort the blocked task
+  handle.abort();
+  let _ = handle.await; // Wait for abort to finish
+
+  // 4. The receiver makes space
+  assert_eq!(rx.try_recv(), Ok(10));
+
+  // 5. Verify the cancelled '20' was not ghost-delivered
+  let ghost_item = rx.try_recv();
+  assert!(
+    ghost_item.is_err(),
+    "Ghost Delivery Bug: Cancelled SendFuture delivered an item! Got {:?}",
+    ghost_item
+  );
+}
+
+#[tokio::test]
+async fn test_mpsc_bounded_recv_cancel_safe() {
+  let (tx, rx) = mpsc::bounded_async::<i32>(2);
+
+  // 1. Park a recv future, then cancel it
+  {
+    let fut = rx.recv();
+    let res = timeout(Duration::from_millis(50), fut).await;
+    assert!(res.is_err(), "Future should park and time out");
+  } // `fut` dropped
+
+  // 2. Verify channel still works
+  tx.send(42).await.unwrap();
+  assert_eq!(
+    rx.try_recv(),
+    Ok(42),
+    "Channel broke after RecvFuture was cancelled"
+  );
+}
+
+#[tokio::test]
+async fn test_mpsc_bounded_batch_send_mut_retains_items() {
+  let (tx, rx) = mpsc::bounded_async::<i32>(2);
+
+  // 1. Fill the channel
+  tx.send(1).await.unwrap();
+  tx.send(2).await.unwrap();
+
+  let mut items = vec![3, 4, 5];
+
+  // 2. Attempt batch send, which will block. Cancel it.
+  {
+    let fut = tx.send_batch_mut(&mut items);
+    let res = timeout(Duration::from_millis(50), fut).await;
+    assert!(res.is_err());
+  }
+
+  // 3. Ensure unsent items remain in the original vector
+  assert_eq!(
+    items,
+    vec![3, 4, 5],
+    "Cancelled batch send modified the items vector"
+  );
+  assert_eq!(rx.try_recv(), Ok(1));
+}
+
+#[tokio::test]
+async fn test_mpsc_unbounded_recv_cancel_safe() {
+  let (tx, rx) = mpsc::unbounded_async::<i32>();
+
+  // 1. Park a recv future, then cancel it
+  {
+    let fut = rx.recv();
+    let res = timeout(Duration::from_millis(50), fut).await;
+    assert!(res.is_err(), "Future should park and time out");
+  }
+
+  // 2. Send an item; it must securely reach the receiver despite the prior cancellation
+  tx.send(100).await.unwrap();
+  assert_eq!(rx.try_recv(), Ok(100));
 }

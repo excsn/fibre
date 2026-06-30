@@ -581,7 +581,7 @@ impl<T: Send> Receiver<T> {
 
 // --- Async Receiver Implementation ---
 impl<T: Send> AsyncReceiver<T> {
-  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
     }

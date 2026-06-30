@@ -6,6 +6,7 @@
 //! amortized by using method-local chunk pools coordinated via a
 //! 64-bit packed generational index stack.
 
+use std::fmt;
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::marker::PhantomPinned;
@@ -384,7 +385,7 @@ impl<T: Send> BoundedQueue<T> {
           self.unregister_recv();
           *is_registered = false;
         }
-        let value = unsafe { (*next).val.get().read().take().unwrap() };
+        let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
         unsafe {
           *self.tail.get() = next;
         }
@@ -546,6 +547,46 @@ pub struct AsyncReceiver<T: Send> {
   closed: AtomicBool,
   is_registered: bool,
   pub(crate) cache: Mutex<LocalCache<T>>,
+}
+
+impl<T: Send> fmt::Debug for Sender<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("Sender")
+      .field("capacity", &self.capacity())
+      .field("len", &self.len())
+      .field("closed", &self.closed.load(Ordering::Relaxed))
+      .finish()
+  }
+}
+
+impl<T: Send> fmt::Debug for Receiver<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("Receiver")
+      .field("capacity", &self.capacity())
+      .field("len", &self.len())
+      .field("closed", &self.closed.load(Ordering::Relaxed))
+      .finish()
+  }
+}
+
+impl<T: Send> fmt::Debug for AsyncSender<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("AsyncSender")
+      .field("capacity", &self.capacity())
+      .field("len", &self.len())
+      .field("closed", &self.closed.load(Ordering::Relaxed))
+      .finish()
+  }
+}
+
+impl<T: Send> fmt::Debug for AsyncReceiver<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("AsyncReceiver")
+      .field("capacity", &self.capacity())
+      .field("len", &self.len())
+      .field("closed", &self.closed.load(Ordering::Relaxed))
+      .finish()
+  }
 }
 
 unsafe impl<T: Send> Send for Sender<T> {}
@@ -929,7 +970,7 @@ impl<T: Send> Receiver<T> {
         if is_registered {
           self.shared.unregister_recv();
         }
-        let value = unsafe { (*next).val.get().read().take().unwrap() };
+        let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
         unsafe {
           *self.shared.tail.get() = next;
         }
@@ -995,7 +1036,7 @@ impl<T: Send> Receiver<T> {
         if is_registered {
           self.shared.unregister_recv();
         }
-        let value = unsafe { (*next).val.get().read().take().unwrap() };
+        let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
         unsafe {
           *self.shared.tail.get() = next;
         }
@@ -1054,7 +1095,7 @@ impl<T: Send> Receiver<T> {
     let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
     if !next.is_null() {
-      let value = unsafe { (*next).val.get().read().take().unwrap() };
+      let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
       unsafe {
         *self.shared.tail.get() = next;
       }
@@ -1080,7 +1121,7 @@ impl<T: Send> Receiver<T> {
         if next.is_null() {
           break;
         }
-        let value = (*next).val.get().read().take().unwrap();
+        let value = (&mut *(*next).val.get()).take().unwrap();
         *self.shared.tail.get() = next;
         self.recycle_node(tail, pool);
         tail = next;
@@ -1443,7 +1484,7 @@ impl<T: Send> AsyncReceiver<T> {
     let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
     if !next.is_null() {
-      let value = unsafe { (*next).val.get().read().take().unwrap() };
+      let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
       unsafe {
         *self.shared.tail.get() = next;
       }
@@ -1548,7 +1589,7 @@ impl<T: Send> AsyncReceiver<T> {
         if next.is_null() {
           break;
         }
-        let value = (*next).val.get().read().take().unwrap();
+        let value = (&mut *(*next).val.get()).take().unwrap();
         *self.shared.tail.get() = next;
         self.recycle_node(tail, pool);
         tail = next;
