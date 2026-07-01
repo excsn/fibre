@@ -68,6 +68,14 @@ struct Args {
 
   #[arg(long, default_value_t = 4, help = "Stall ticks before abort")]
   stall_count: usize,
+
+  #[arg(
+    short = 'b',
+    long,
+    default_value_t = 0,
+    help = "Batch size for send_batch/recv_batch (0 = single-item send/recv)"
+  )]
+  batch_size: usize,
 }
 
 fn channel_name(c: Channel) -> &'static str {
@@ -137,10 +145,15 @@ fn main() {
     _ => {}
   }
 
+  if args.batch_size > 0 && matches!(args.flavor, Flavor::Rendezvous) {
+    eprintln!("error: rendezvous flavor has no batch API");
+    std::process::exit(1);
+  }
+
   let is_spmc = matches!(args.channel, Channel::Spmc);
 
   println!(
-    "Channel: {} | Mode: {} | Flavor: {} | Cap: {} | Producers: {} | Consumers: {} | Items: {}",
+    "Channel: {} | Mode: {} | Flavor: {} | Cap: {} | Producers: {} | Consumers: {} | Items: {} | Batch: {}",
     channel_name(args.channel),
     mode_name(args.mode),
     flavor_name(args.flavor),
@@ -148,6 +161,7 @@ fn main() {
     args.producers,
     args.consumers,
     args.items,
+    args.batch_size,
   );
 
   let cfg = BenchConfig {
@@ -157,6 +171,7 @@ fn main() {
     items: args.items,
     stall_ms: args.stall_ms,
     stall_count: args.stall_count,
+    batch_size: args.batch_size,
   };
 
   let result = match (args.channel, args.mode, args.flavor) {
@@ -200,4 +215,68 @@ fn main() {
     );
   }
   fibre::telemetry::print_stall_report();
+  append_result_record(&args, &result, throughput_m);
+}
+
+/// Appends one JSON line per run to `channels/bench/results.jsonl` — config, the full watchdog
+/// tick history, and the final summary — so a session's worth of runs can be reviewed directly
+/// from the file instead of needing terminal output pasted in. Hand-formatted rather than pulling
+/// in serde_json: the shape is small, flat, and every field is either a plain number or an
+/// enum-derived string (nothing needing arbitrary-string escaping).
+fn append_result_record(args: &Args, result: &runners::RunResult, throughput_m: f64) {
+  use std::io::Write as _;
+
+  let ts = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_secs())
+    .unwrap_or(0);
+
+  let mut ticks_json = String::new();
+  for (i, t) in result.watchdog_ticks.iter().enumerate() {
+    if i > 0 {
+      ticks_json.push(',');
+    }
+    let opt = |v: Option<usize>| v.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
+    ticks_json.push_str(&format!(
+      r#"{{"elapsed_ms":{},"sent":{},"received":{},"in_flight":{},"ring_len":{},"send_waiters":{},"recv_waiters":{}}}"#,
+      t.elapsed_ms,
+      t.sent,
+      t.received,
+      t.in_flight,
+      opt(t.ring_len),
+      opt(t.send_waiters),
+      opt(t.recv_waiters),
+    ));
+  }
+
+  let throughput_json = if throughput_m.is_finite() {
+    format!("{throughput_m:.4}")
+  } else {
+    "null".to_string()
+  };
+
+  let line = format!(
+    r#"{{"ts":{},"channel":"{}","mode":"{}","flavor":"{}","capacity":{},"producers":{},"consumers":{},"items":{},"batch_size":{},"stall_ms":{},"stall_count":{},"duration_ms":{:.3},"sent":{},"received":{},"throughput_m_per_sec":{},"ticks":[{}]}}"#,
+    ts,
+    channel_name(args.channel),
+    mode_name(args.mode),
+    flavor_name(args.flavor),
+    args.capacity,
+    args.producers,
+    args.consumers,
+    args.items,
+    args.batch_size,
+    args.stall_ms,
+    args.stall_count,
+    result.duration.as_secs_f64() * 1000.0,
+    result.sent,
+    result.received,
+    throughput_json,
+    ticks_json,
+  );
+
+  let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("results.jsonl");
+  if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    let _ = writeln!(f, "{line}");
+  }
 }

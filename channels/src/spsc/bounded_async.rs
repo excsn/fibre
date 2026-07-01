@@ -11,7 +11,7 @@ use core::marker::PhantomPinned;
 use std::future::Future;
 use std::mem;
 use std::pin::Pin;
-use std::sync::atomic::{self, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -54,11 +54,11 @@ impl<T: Send> BoundedAsyncSender<T> {
     BoundedSyncSender::from_shared(shared)
   }
 
-  pub fn send(&self, item: T) -> SendFuture<'_, T> {
+  pub fn send(&mut self, item: T) -> SendFuture<'_, T> {
     SendFuture::new(self, item)
   }
 
-  pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>> {
+  pub fn try_send(&mut self, item: T) -> Result<(), TrySendError<T>> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TrySendError::Closed(item));
     }
@@ -74,7 +74,7 @@ impl<T: Send> BoundedAsyncSender<T> {
     }
   }
 
-  pub fn send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T> {
+  pub fn send_batch(&mut self, items: Vec<T>) -> SendBatchFuture<'_, T> {
     let total = items.len();
     SendBatchFuture {
       sender: self,
@@ -86,7 +86,7 @@ impl<T: Send> BoundedAsyncSender<T> {
     }
   }
 
-  pub fn send_batch_mut<'a>(&'a self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T> {
+  pub fn send_batch_mut<'a>(&'a mut self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T> {
     SendBatchMutFuture {
       sender: self,
       items,
@@ -96,7 +96,7 @@ impl<T: Send> BoundedAsyncSender<T> {
     }
   }
 
-  pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
+  pub fn try_send_batch(&mut self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
     let total = items.len();
     if total == 0 {
       return Ok(0);
@@ -126,7 +126,7 @@ impl<T: Send> BoundedAsyncSender<T> {
     }
   }
 
-  pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+  pub fn try_send_batch_mut(&mut self, items: &mut Vec<T>) -> Result<usize, SendError> {
     if items.is_empty() {
       return Ok(0);
     }
@@ -212,11 +212,11 @@ impl<T: Send> BoundedAsyncReceiver<T> {
     BoundedSyncReceiver::from_shared(shared)
   }
 
-  pub fn recv(&self) -> ReceiveFuture<'_, T> {
+  pub fn recv(&mut self) -> ReceiveFuture<'_, T> {
     ReceiveFuture::new(self)
   }
 
-  pub fn try_recv(&self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
     }
@@ -239,7 +239,7 @@ impl<T: Send> BoundedAsyncReceiver<T> {
     }
   }
 
-  pub fn recv_batch(&self, max: usize) -> RecvBatchFuture<'_, T> {
+  pub fn recv_batch(&mut self, max: usize) -> RecvBatchFuture<'_, T> {
     RecvBatchFuture {
       receiver: self,
       max,
@@ -247,7 +247,7 @@ impl<T: Send> BoundedAsyncReceiver<T> {
     }
   }
 
-  pub fn recv_batch_mut<'a>(&'a self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T> {
+  pub fn recv_batch_mut<'a>(&'a mut self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T> {
     RecvBatchMutFuture {
       receiver: self,
       out,
@@ -256,13 +256,13 @@ impl<T: Send> BoundedAsyncReceiver<T> {
     }
   }
 
-  pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError> {
+  pub fn try_recv_batch(&mut self, max: usize) -> Result<Vec<T>, TryRecvError> {
     let mut out = Vec::new();
     self.try_recv_batch_mut(&mut out, max)?;
     Ok(out)
   }
 
-  pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
+  pub fn try_recv_batch_mut(&mut self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
     if max == 0 {
       return Ok(0);
     }
@@ -361,14 +361,14 @@ impl<T> Drop for BoundedAsyncReceiver<T> {
 
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T> {
-  sender: &'a BoundedAsyncSender<T>,
+  sender: &'a mut BoundedAsyncSender<T>,
   item: Option<T>,
   is_registered: bool,
   _phantom: PhantomPinned,
 }
 
 impl<'a, T> SendFuture<'a, T> {
-  fn new(sender: &'a BoundedAsyncSender<T>, item: T) -> Self {
+  fn new(sender: &'a mut BoundedAsyncSender<T>, item: T) -> Self {
     SendFuture {
       sender,
       item: Some(item),
@@ -457,7 +457,7 @@ impl<'a, T> Drop for SendFuture<'a, T> {
 /// Future returned by [`BoundedAsyncSender::send_batch`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchFuture<'a, T> {
-  sender: &'a BoundedAsyncSender<T>,
+  sender: &'a mut BoundedAsyncSender<T>,
   iter: std::vec::IntoIter<T>,
   total: usize,
   sent: usize,
@@ -534,7 +534,7 @@ impl<'a, T> Drop for SendBatchFuture<'a, T> {
 /// Future returned by [`BoundedAsyncSender::send_batch_mut`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchMutFuture<'a, T> {
-  sender: &'a BoundedAsyncSender<T>,
+  sender: &'a mut BoundedAsyncSender<T>,
   items: &'a mut Vec<T>,
   sent: usize,
   is_registered: bool,
@@ -608,12 +608,12 @@ impl<'a, T> Drop for SendBatchMutFuture<'a, T> {
 
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct ReceiveFuture<'a, T> {
-  receiver: &'a BoundedAsyncReceiver<T>,
+  receiver: &'a mut BoundedAsyncReceiver<T>,
   is_registered: bool,
 }
 
 impl<'a, T> ReceiveFuture<'a, T> {
-  fn new(receiver: &'a BoundedAsyncReceiver<T>) -> Self {
+  fn new(receiver: &'a mut BoundedAsyncReceiver<T>) -> Self {
     ReceiveFuture {
       receiver,
       is_registered: false,
@@ -644,7 +644,7 @@ impl<'a, T> Drop for ReceiveFuture<'a, T> {
 /// Future returned by [`BoundedAsyncReceiver::recv_batch`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct RecvBatchFuture<'a, T> {
-  receiver: &'a BoundedAsyncReceiver<T>,
+  receiver: &'a mut BoundedAsyncReceiver<T>,
   max: usize,
   is_registered: bool,
 }
@@ -677,7 +677,7 @@ impl<'a, T> Drop for RecvBatchFuture<'a, T> {
 /// Future returned by [`BoundedAsyncReceiver::recv_batch_mut`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct RecvBatchMutFuture<'a, T> {
-  receiver: &'a BoundedAsyncReceiver<T>,
+  receiver: &'a mut BoundedAsyncReceiver<T>,
   out: &'a mut Vec<T>,
   max: usize,
   is_registered: bool,
@@ -813,7 +813,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_send_recv_single_item() {
-    let (p, c) = bounded_async(1);
+    let (mut p, mut c) = bounded_async(1);
     p.send(42i32).await.unwrap();
     assert_eq!(p.len(), 1);
     assert!(!p.is_empty());
@@ -831,7 +831,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_try_send_full_try_recv_empty() {
-    let (p, c) = bounded_async::<i32>(1);
+    let (mut p, mut c) = bounded_async::<i32>(1);
     assert_eq!(p.len(), 0);
     p.try_send(10).unwrap();
     assert_eq!(p.len(), 1);
@@ -858,7 +858,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_send_blocks_then_completes() {
-    let (p, c) = bounded_async::<i32>(1);
+    let (mut p, mut c) = bounded_async::<i32>(1);
 
     assert_eq!(p.len(), 0);
     p.send(1).await.unwrap(); // Fill the channel
@@ -893,7 +893,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_recv_blocks_then_completes() {
-    let (p, c) = bounded_async::<i32>(1);
+    let (mut p, mut c) = bounded_async::<i32>(1);
     assert!(c.is_empty());
 
     let recv_task = tokio::spawn(async move {
@@ -921,7 +921,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_producer_drop_signals_consumer() {
-    let (p, c) = bounded_async::<i32>(1);
+    let (mut p, mut c) = bounded_async::<i32>(1);
     p.send(10).await.unwrap(); // Send an item first
     assert_eq!(c.len(), 1);
     drop(p);
@@ -937,7 +937,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_producer_drop_empty_signals_consumer() {
-    let (p, c) = bounded_async::<i32>(1);
+    let (p, mut c) = bounded_async::<i32>(1);
     drop(p);
     assert_eq!(c.len(), 0);
     match c.recv().await {
@@ -949,7 +949,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_consumer_drop_signals_producer() {
-    let (p, c) = bounded_async::<i32>(1);
+    let (mut p, c) = bounded_async::<i32>(1);
     drop(c);
     match p.send(1).await {
       Err(SendError::Closed) => {}
@@ -961,8 +961,8 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_select_recv_preference() {
-    let (p1, c1) = bounded_async::<i32>(1);
-    let (_p2, c2) = bounded_async::<i32>(1); // This consumer will never receive
+    let (mut p1, mut c1) = bounded_async::<i32>(1);
+    let (_p2, mut c2) = bounded_async::<i32>(1); // This consumer will never receive
 
     p1.send(10).await.unwrap();
     assert_eq!(c1.len(), 1);
@@ -972,20 +972,20 @@ mod tests {
         biased;
         Ok(val) = c1.recv() => {
             assert_eq!(val, 10);
-            assert!(c1.is_empty());
         }
         Ok(_val) = c2.recv() => {
             panic!("[SELECT_RECV] Should not have received from empty c2");
         }
         else => {}
     }
+    assert!(c1.is_empty());
   }
 
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_select_send_blocks_other_completes() {
-    let (p_full, _c_full) = bounded_async::<i32>(1);
-    let (p_can_send, c_can_send) = bounded_async::<i32>(1);
+    let (mut p_full, _c_full) = bounded_async::<i32>(1);
+    let (mut p_can_send, mut c_can_send) = bounded_async::<i32>(1);
 
     p_full.send(1).await.unwrap(); // Fill this channel
     assert!(p_full.is_full());
@@ -1003,9 +1003,9 @@ mod tests {
         }
         res_can_send = p_can_send.send(200) => {
             assert!(res_can_send.is_ok(), "[SELECT_SEND] Send to available channel failed");
-            assert!(p_can_send.is_full());
         }
     }
+    assert!(p_can_send.is_full());
     recv_task.await.unwrap();
   }
 
@@ -1017,7 +1017,7 @@ mod tests {
     let core_shared = create_test_shared_core::<String>(CAPACITY);
 
     let sync_p = BoundedSyncSender::from_shared(core_shared.clone());
-    let async_c = BoundedAsyncReceiver::from_shared(core_shared);
+    let mut async_c = BoundedAsyncReceiver::from_shared(core_shared);
 
     let val1 = "hello from sync".to_string();
     let val2 = "world from sync".to_string();
@@ -1061,7 +1061,7 @@ mod tests {
       .unwrap();
     let core_shared = create_test_shared_core::<String>(CAPACITY);
 
-    let async_p = BoundedAsyncSender::from_shared(core_shared.clone());
+    let mut async_p = BoundedAsyncSender::from_shared(core_shared.clone());
     let sync_c = BoundedSyncReceiver::from_shared(core_shared);
 
     let val1_original = "hello from async".to_string();
@@ -1126,7 +1126,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_try_recv_disconnected() {
-    let (p, c) = bounded_async::<i32>(1);
+    let (mut p, mut c) = bounded_async::<i32>(1);
     p.try_send(1).unwrap();
     assert_eq!(c.try_recv().unwrap(), 1);
     assert!(c.is_empty());
@@ -1139,7 +1139,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_recv_future_disconnected_after_item() {
-    let (p, c) = bounded_async::<i32>(1);
+    let (mut p, mut c) = bounded_async::<i32>(1);
     p.send(1).await.unwrap();
     assert_eq!(c.recv().await.unwrap(), 1);
     assert!(c.is_empty());
@@ -1152,7 +1152,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn new_spsc_apis_close_is_closed() {
-    let (p, c) = bounded_async::<i32>(5);
+    let (mut p, mut c) = bounded_async::<i32>(5);
     assert_eq!(p.capacity(), 5);
     assert_eq!(c.capacity(), 5);
     assert!(!p.is_closed());
@@ -1166,7 +1166,7 @@ mod tests {
     assert!(c.is_closed());
     assert_eq!(c.recv().await, Err(RecvError::Disconnected));
 
-    let (p, c) = bounded_async::<i32>(5);
+    let (mut p, mut c) = bounded_async::<i32>(5);
     c.close().unwrap();
     assert!(c.is_closed());
     assert_eq!(c.close(), Err(CloseError));
@@ -1179,7 +1179,7 @@ mod tests {
   #[cfg(not(miri))]
   #[tokio::test]
   async fn async_sender_unblocks_on_consumer_drop() {
-    let (p, c) = bounded_async(1);
+    let (mut p, c) = bounded_async(1);
     // Fill the channel capacity
     p.send(1).await.unwrap();
 

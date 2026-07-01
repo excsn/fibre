@@ -45,7 +45,7 @@ fn main() {
 
   println!("\n--- SPSC: Async Sender, Async Receiver ---");
   common_async::run_async(async {
-    let (tx, rx) = spsc::bounded_async::<String>(capacity);
+    let (mut tx, mut rx) = spsc::bounded_async::<String>(capacity);
 
     tokio::spawn(async move {
       // tx is moved here
@@ -82,7 +82,7 @@ fn main() {
     let (tx_s, rx_s) = spsc::bounded_sync::<String>(capacity);
 
     // Convert the receiver to async
-    let rx_a = rx_s.to_async();
+    let mut rx_a = rx_s.to_async();
     // tx_s remains sync and is moved to the thread
 
     let sender_thread = thread::spawn(move || {
@@ -120,7 +120,7 @@ fn main() {
   {
     // New scope for this test
     // Start with an async channel
-    let (tx_a, rx_a) = spsc::bounded_async::<String>(capacity);
+    let (mut tx_a, rx_a) = spsc::bounded_async::<String>(capacity);
 
     // Convert the receiver to sync
     let rx_s = rx_a.to_sync();

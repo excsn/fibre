@@ -69,7 +69,7 @@
 //!
 //! async fn async_spsc_example() {
 //!     // Create a bounded asynchronous SPSC channel with a capacity of 3.
-//!     let (producer, mut consumer) = spsc::bounded_async(3);
+//!     let (mut producer, mut consumer) = spsc::bounded_async(3);
 //!
 //!     let producer_task = tokio::spawn(async move {
 //!         for i in 0..7 {

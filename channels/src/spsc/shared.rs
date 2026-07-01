@@ -1,35 +1,59 @@
 use crate::error::RecvError;
 use crate::internal::cache_padded::CachePadded;
 use core::cell::UnsafeCell;
-use core::fmt;
 use core::mem::MaybeUninit;
 use core::task::{Context, Poll, Waker};
 use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
-use std::thread::{self, Thread};
+use std::thread::Thread;
 
 use parking_lot::Mutex;
 
-// --- Ring slot ------------------------------------------------------------
-
-struct Slot<T> {
-  /// Vyukov sequence stamp. Initialized to the slot index. After a producer
-  /// publishes position `p` it holds `p + 1`; after a consumer frees it it holds
-  /// `p + capacity`.
-  seq: AtomicUsize,
-  val: UnsafeCell<MaybeUninit<T>>,
-}
-
 // --- Lock-free ring -------------------------------------------------------
 
+/// Producer-owned state, isolated on its own cache line.
+struct ProducerSide {
+  /// Next position to write. Written only by the producer.
+  tail: AtomicUsize,
+  /// Producer-private snapshot of `head`. A stale value only under-reports
+  /// free space (`head` never moves backwards), so it is always safe to trust
+  /// — but `push` must refresh it before it may report the ring full.
+  cached_head: UnsafeCell<usize>,
+}
+
+/// Consumer-owned state, isolated on its own cache line.
+struct ConsumerSide {
+  /// Next position to read. Written only by the consumer.
+  head: AtomicUsize,
+  /// Consumer-private snapshot of `tail`; same staleness rules as
+  /// `cached_head`, mirrored.
+  cached_tail: UnsafeCell<usize>,
+}
+
+/// Owned-index SPSC ring (Lamport queue with cached counterpart indices).
+///
+/// Each side owns its index outright — the producer is the only writer of
+/// `tail`, the consumer the only writer of `head` — so neither side ever needs
+/// a CAS. Each side works against a private cached copy of the other side's
+/// index and only pays a cross-core Acquire load when the cache can no longer
+/// prove progress is possible. Items live in one contiguous unpadded buffer;
+/// only the two index groups are cache-padded.
+///
+/// # Soundness
+/// Producer-side methods (`push`, `producer_free_space`) require exclusive
+/// producer access and consumer-side methods (`pop`) exclusive consumer
+/// access: they mutate the private caches through `UnsafeCell`. Callers uphold
+/// this — the sync handles are `!Sync` and not `Clone`, the async handles take
+/// `&mut self` for every ring-touching operation, and the sync<->async
+/// conversions consume the handle.
 pub(crate) struct Ring<T> {
-  buf: Box<[CachePadded<Slot<T>>]>,
+  buf: Box<[UnsafeCell<MaybeUninit<T>>]>,
   mask: usize,
   /// Channel capacity: the requested `n`, `<= buf.len()`. The physical buffer
   /// (`mask + 1`) is rounded up to a power of two for index masking and is a
   /// separate quantity; fullness and `capacity()` both use this logical value.
   cap: usize,
-  enqueue_pos: CachePadded<AtomicUsize>,
-  dequeue_pos: CachePadded<AtomicUsize>,
+  p: CachePadded<ProducerSide>,
+  c: CachePadded<ConsumerSide>,
 }
 
 impl<T> Ring<T> {
@@ -38,18 +62,21 @@ impl<T> Ring<T> {
     // Physical buffer: a power of two (>= 2) for fast index masking.
     let phys = capacity.next_power_of_two().max(2);
     let mut v = Vec::with_capacity(phys);
-    for i in 0..phys {
-      v.push(CachePadded::new(Slot {
-        seq: AtomicUsize::new(i),
-        val: UnsafeCell::new(MaybeUninit::uninit()),
-      }));
+    for _ in 0..phys {
+      v.push(UnsafeCell::new(MaybeUninit::uninit()));
     }
     Ring {
       buf: v.into_boxed_slice(),
       mask: phys - 1,
       cap: capacity,
-      enqueue_pos: CachePadded::new(AtomicUsize::new(0)),
-      dequeue_pos: CachePadded::new(AtomicUsize::new(0)),
+      p: CachePadded::new(ProducerSide {
+        tail: AtomicUsize::new(0),
+        cached_head: UnsafeCell::new(0),
+      }),
+      c: CachePadded::new(ConsumerSide {
+        head: AtomicUsize::new(0),
+        cached_tail: UnsafeCell::new(0),
+      }),
     }
   }
 
@@ -60,13 +87,12 @@ impl<T> Ring<T> {
 
   #[inline]
   pub(crate) fn len(&self) -> usize {
-    loop {
-      let head = self.dequeue_pos.load(Ordering::Acquire);
-      let tail = self.enqueue_pos.load(Ordering::Acquire);
-      if head == self.dequeue_pos.load(Ordering::Acquire) {
-        return tail.wrapping_sub(head);
-      }
-    }
+    // Observer snapshot. `head` is loaded first so the later `tail` load can
+    // only be at or ahead of it (no negative wrap); clamped because `tail` may
+    // keep advancing between the two loads.
+    let head = self.c.head.load(Ordering::Acquire);
+    let tail = self.p.tail.load(Ordering::Acquire);
+    tail.wrapping_sub(head).min(self.cap)
   }
 
   #[inline]
@@ -79,69 +105,65 @@ impl<T> Ring<T> {
     self.len() >= self.cap
   }
 
-  /// Lock-free enqueue. Returns `Err(item)` if the ring is full.
-  pub(crate) fn push(&self, item: T) -> Result<(), T> {
-    let mut pos = self.enqueue_pos.load(Ordering::Relaxed);
-    loop {
-      let head = self.dequeue_pos.load(Ordering::Acquire);
-      if pos.wrapping_sub(head) >= self.cap {
-        return Err(item);
-      }
-      let slot = &self.buf[pos & self.mask];
-      let seq = slot.seq.load(Ordering::Acquire);
-      let diff = seq as isize - pos as isize;
-      if diff == 0 {
-        match self.enqueue_pos.compare_exchange_weak(
-          pos,
-          pos.wrapping_add(1),
-          Ordering::Relaxed,
-          Ordering::Relaxed,
-        ) {
-          Ok(_) => {
-            unsafe { (*slot.val.get()).write(item) };
-            slot.seq.store(pos.wrapping_add(1), Ordering::Release);
-            return Ok(());
-          }
-          Err(actual) => pos = actual,
-        }
-      } else if diff < 0 {
-        return Err(item);
-      } else {
-        pos = self.enqueue_pos.load(Ordering::Relaxed);
-      }
-    }
+  /// Free slots as proven to the producer, refreshing `cached_head`. The result
+  /// is exact at the time of the call and can only grow until the producer
+  /// pushes, so the caller may perform that many pushes infallibly.
+  ///
+  /// Producer-side: see the soundness notes on [`Ring`].
+  #[inline]
+  pub(crate) fn producer_free_space(&self) -> usize {
+    let tail = self.p.tail.load(Ordering::Relaxed);
+    // SAFETY: producer-exclusive method; no other reference to `cached_head`
+    // can exist (soundness notes on `Ring`).
+    let cached_head = unsafe { &mut *self.p.cached_head.get() };
+    *cached_head = self.c.head.load(Ordering::Acquire);
+    self.cap - tail.wrapping_sub(*cached_head)
   }
 
-  /// Lock-free dequeue. Returns `None` if the ring is empty.
-  pub(crate) fn pop(&self) -> Option<T> {
-    let mut pos = self.dequeue_pos.load(Ordering::Relaxed);
-    loop {
-      let slot = &self.buf[pos & self.mask];
-      let seq = slot.seq.load(Ordering::Acquire);
-      let diff = seq as isize - (pos.wrapping_add(1)) as isize;
-      if diff == 0 {
-        match self.dequeue_pos.compare_exchange_weak(
-          pos,
-          pos.wrapping_add(1),
-          Ordering::Relaxed,
-          Ordering::Relaxed,
-        ) {
-          Ok(_) => {
-            let item = unsafe { (*slot.val.get()).assume_init_read() };
-            slot.seq.store(
-              pos.wrapping_add(self.mask).wrapping_add(1),
-              Ordering::Release,
-            );
-            return Some(item);
-          }
-          Err(actual) => pos = actual,
-        }
-      } else if diff < 0 {
-        return None;
-      } else {
-        pos = self.dequeue_pos.load(Ordering::Relaxed);
+  /// Enqueue. Returns `Err(item)` only after a cache refresh proves the ring
+  /// is genuinely full — the waiter protocol in `SpscShared` relies on this
+  /// refresh-before-reporting-full behavior for its post-registration re-check.
+  ///
+  /// Producer-side: see the soundness notes on [`Ring`].
+  pub(crate) fn push(&self, item: T) -> Result<(), T> {
+    let tail = self.p.tail.load(Ordering::Relaxed);
+    // SAFETY: producer-exclusive method; no other reference to `cached_head`
+    // can exist (soundness notes on `Ring`).
+    let cached_head = unsafe { &mut *self.p.cached_head.get() };
+    if tail.wrapping_sub(*cached_head) >= self.cap {
+      *cached_head = self.c.head.load(Ordering::Acquire);
+      if tail.wrapping_sub(*cached_head) >= self.cap {
+        return Err(item);
       }
     }
+    // SAFETY: the slot is free (fullness check above) and unpublished (the
+    // consumer never reads at or past `tail`), and only this producer writes.
+    unsafe { (*self.buf[tail & self.mask].get()).write(item) };
+    self.p.tail.store(tail.wrapping_add(1), Ordering::Release);
+    Ok(())
+  }
+
+  /// Dequeue. Returns `None` only after a cache refresh proves the ring is
+  /// genuinely empty (same waiter-protocol requirement as `push`).
+  ///
+  /// Consumer-side: see the soundness notes on [`Ring`].
+  pub(crate) fn pop(&self) -> Option<T> {
+    let head = self.c.head.load(Ordering::Relaxed);
+    // SAFETY: consumer-exclusive method; no other reference to `cached_tail`
+    // can exist (soundness notes on `Ring`).
+    let cached_tail = unsafe { &mut *self.c.cached_tail.get() };
+    if head == *cached_tail {
+      *cached_tail = self.p.tail.load(Ordering::Acquire);
+      if head == *cached_tail {
+        return None;
+      }
+    }
+    // SAFETY: `head < tail`, so this slot was published by the producer's
+    // Release store of `tail` (paired with the Acquire refresh above) and has
+    // not been consumed yet.
+    let item = unsafe { (*self.buf[head & self.mask].get()).assume_init_read() };
+    self.c.head.store(head.wrapping_add(1), Ordering::Release);
+    Some(item)
   }
 }
 
@@ -217,11 +239,6 @@ impl<T> SpscShared<T> {
   }
 
   #[inline]
-  pub(crate) fn receivers_alive(&self) -> bool {
-    self.receiver_count.load(Ordering::Acquire) != 0
-  }
-
-  #[inline]
   pub(crate) fn capacity(&self) -> usize {
     self.ring.capacity()
   }
@@ -283,11 +300,7 @@ impl<T> SpscShared<T> {
     };
     drop(g);
   }
-
-  pub(crate) fn unregister_recv(&self) {
-    self.unregister(Role::Recv);
-  }
-
+  
   fn wake_one(&self, role: Role) {
     let wake = match role {
       Role::Send => {
@@ -344,11 +357,15 @@ impl<T> SpscShared<T> {
   // --- Core APIs -----------------------------------------------------------
 
   pub(crate) fn write_batch<I: Iterator<Item = T>>(&self, iter: &mut I, limit: usize) -> usize {
-    let to_send = limit.min(self.available_space());
+    let to_send = limit.min(self.ring.producer_free_space());
     let mut sent = 0;
     for _ in 0..to_send {
       let Some(item) = iter.next() else { break };
-      self.ring.push(item).ok().expect("SPSC push failed despite pre-checked space");
+      // Infallible: `producer_free_space` proved these slots free, and only the
+      // consumer can change that — in the direction of more space.
+      if self.ring.push(item).is_err() {
+        unreachable!("spsc write_batch: push failed inside reserved free space");
+      }
       sent += 1;
     }
     if sent > 0 {
@@ -361,16 +378,19 @@ impl<T> SpscShared<T> {
     if max == 0 {
       return 0;
     }
+    let _ = out.try_reserve_exact(max);
     let mut got = 0;
     while got < max {
       match self.ring.pop() {
         Some(item) => {
           out.push(item);
           got += 1;
-          self.notify_senders();
         }
         None => break,
       }
+    }
+    if got > 0 {
+      self.notify_senders();
     }
     got
   }
@@ -445,14 +465,6 @@ impl<T> SpscShared<T> {
       self.wake_one(Role::Send);
     }
   }
-
-  pub(crate) fn add_sender(&self) {
-    self.sender_count.fetch_add(1, Ordering::AcqRel);
-  }
-
-  pub(crate) fn add_receiver(&self) {
-    self.receiver_count.fetch_add(1, Ordering::AcqRel);
-  }
 }
 
 impl<T> std::fmt::Debug for SpscShared<T> {
@@ -461,5 +473,80 @@ impl<T> std::fmt::Debug for SpscShared<T> {
       .field("capacity", &self.capacity())
       .field("len", &self.len())
       .finish_non_exhaustive()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::sync::Arc;
+
+  #[test]
+  fn ring_non_power_of_two_capacity_wraps() {
+    let ring = Ring::<u32>::new(3);
+    assert_eq!(ring.capacity(), 3);
+    // Several full fill/drain cycles across the phys=4 buffer with cap=3.
+    let mut next = 0u32;
+    for _ in 0..10 {
+      for _ in 0..3 {
+        ring.push(next).unwrap();
+        next += 1;
+      }
+      assert!(ring.is_full());
+      assert_eq!(ring.push(999), Err(999));
+      for expected in next - 3..next {
+        assert_eq!(ring.pop(), Some(expected));
+      }
+      assert!(ring.is_empty());
+      assert_eq!(ring.pop(), None);
+    }
+  }
+
+  #[test]
+  fn ring_stale_caches_refresh() {
+    let ring = Ring::<u32>::new(2);
+    ring.push(1).unwrap();
+    ring.push(2).unwrap();
+    // The producer's cached_head still says full after this pop; push must
+    // refresh and succeed rather than report full.
+    assert_eq!(ring.pop(), Some(1));
+    ring.push(3).unwrap();
+    // The consumer's cached_tail is behind the latest push; pop must refresh.
+    assert_eq!(ring.pop(), Some(2));
+    assert_eq!(ring.pop(), Some(3));
+    assert_eq!(ring.pop(), None);
+  }
+
+  #[test]
+  fn ring_drop_releases_unconsumed_items() {
+    struct Droppable(Arc<AtomicUsize>);
+    impl Drop for Droppable {
+      fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+      }
+    }
+
+    let drops = Arc::new(AtomicUsize::new(0));
+    {
+      let ring = Ring::new(4);
+      for _ in 0..3 {
+        assert!(ring.push(Droppable(drops.clone())).is_ok());
+      }
+      // Consume one so head has advanced before the drain.
+      drop(ring.pop());
+      assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+    assert_eq!(drops.load(Ordering::Relaxed), 3);
+  }
+
+  #[test]
+  fn producer_free_space_is_exact_after_refresh() {
+    let shared = SpscShared::<u32>::new_internal(4);
+    assert_eq!(shared.ring.producer_free_space(), 4);
+    shared.ring.push(1).unwrap();
+    shared.ring.push(2).unwrap();
+    assert_eq!(shared.ring.producer_free_space(), 2);
+    assert_eq!(shared.ring.pop(), Some(1));
+    assert_eq!(shared.ring.producer_free_space(), 3);
   }
 }

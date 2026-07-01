@@ -32,14 +32,21 @@ pub fn run_sync(cfg: &BenchConfig) -> RunResult {
   let (tx, rx) = spmc::bounded::<u64>(cfg.capacity);
 
   let start = Instant::now();
+  let batch_size = cfg.batch_size;
 
   let mut consumers = Vec::new();
   for _ in 0..cfg.consumers {
     let rx = rx.clone();
     let received = received.clone();
     consumers.push(thread::spawn(move || {
-      while rx.recv().is_ok() {
-        received.fetch_add(1, Ordering::Relaxed);
+      if batch_size == 0 {
+        while rx.recv().is_ok() {
+          received.fetch_add(1, Ordering::Relaxed);
+        }
+      } else {
+        while let Ok(batch) = rx.recv_batch(batch_size) {
+          received.fetch_add(batch.len(), Ordering::Relaxed);
+        }
       }
     }));
   }
@@ -48,9 +55,23 @@ pub fn run_sync(cfg: &BenchConfig) -> RunResult {
   let items = cfg.items;
   let sent2 = sent.clone();
   let producer = thread::spawn(move || {
-    for i in 0..items as u64 {
-      let _ = tx.send(i);
-      sent2.fetch_add(1, Ordering::Relaxed);
+    if batch_size == 0 {
+      for i in 0..items as u64 {
+        let _ = tx.send(i);
+        sent2.fetch_add(1, Ordering::Relaxed);
+      }
+    } else {
+      let mut remaining = items;
+      while remaining > 0 {
+        let chunk_size = remaining.min(batch_size);
+        match tx.send_batch(vec![0u64; chunk_size]) {
+          Ok(n) => {
+            sent2.fetch_add(n, Ordering::Relaxed);
+            remaining -= n;
+          }
+          Err(_) => break,
+        }
+      }
     }
   });
 
@@ -60,12 +81,13 @@ pub fn run_sync(cfg: &BenchConfig) -> RunResult {
   }
 
   done.store(true, Ordering::Relaxed);
-  let _ = wd.join();
+  let watchdog_ticks = wd.join().unwrap_or_default();
 
   RunResult {
     sent: sent.load(Ordering::Relaxed),
     received: received.load(Ordering::Relaxed),
     duration: start.elapsed(),
+    watchdog_ticks,
   }
 }
 
@@ -95,6 +117,8 @@ pub fn run_async(cfg: &BenchConfig) -> RunResult {
 
   let start = Instant::now();
 
+  let batch_size = cfg.batch_size;
+
   rt.block_on(async {
     let (tx, rx) = spmc::bounded_async::<u64>(cfg.capacity);
 
@@ -103,8 +127,14 @@ pub fn run_async(cfg: &BenchConfig) -> RunResult {
       let rx = rx.clone();
       let received = received.clone();
       consumer_handles.push(tokio::spawn(async move {
-        while rx.recv().await.is_ok() {
-          received.fetch_add(1, Ordering::Relaxed);
+        if batch_size == 0 {
+          while rx.recv().await.is_ok() {
+            received.fetch_add(1, Ordering::Relaxed);
+          }
+        } else {
+          while let Ok(batch) = rx.recv_batch(batch_size).await {
+            received.fetch_add(batch.len(), Ordering::Relaxed);
+          }
         }
       }));
     }
@@ -113,9 +143,23 @@ pub fn run_async(cfg: &BenchConfig) -> RunResult {
     let items = cfg.items;
     let sent = sent.clone();
     let producer = tokio::spawn(async move {
-      for i in 0..items as u64 {
-        let _ = tx.send(i).await;
-        sent.fetch_add(1, Ordering::Relaxed);
+      if batch_size == 0 {
+        for i in 0..items as u64 {
+          let _ = tx.send(i).await;
+          sent.fetch_add(1, Ordering::Relaxed);
+        }
+      } else {
+        let mut remaining = items;
+        while remaining > 0 {
+          let chunk_size = remaining.min(batch_size);
+          match tx.send_batch(vec![0u64; chunk_size]).await {
+            Ok(n) => {
+              sent.fetch_add(n, Ordering::Relaxed);
+              remaining -= n;
+            }
+            Err(_) => break,
+          }
+        }
       }
     });
 
@@ -126,11 +170,12 @@ pub fn run_async(cfg: &BenchConfig) -> RunResult {
   });
 
   done.store(true, Ordering::Relaxed);
-  let _ = wd.join();
+  let watchdog_ticks = wd.join().unwrap_or_default();
 
   RunResult {
     sent: sent.load(Ordering::Relaxed),
     received: received.load(Ordering::Relaxed),
     duration: start.elapsed(),
+    watchdog_ticks,
   }
 }

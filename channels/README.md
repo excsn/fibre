@@ -10,7 +10,7 @@
 
 `fibre` is stable. The API is stable, but minor breaking changes may occur before version 1.0 as feedback is incorporated and improvements are made.
 
-**Performance highlights** (Apple M4 Pro) — **SPSC** ~190 Melem/s sync · ~205 Melem/s async · **MPSC** ~15 / ~25 Melem/s (sync/async, Cap-128, 4–14P) · **SPMC** 15–20 Melem/s broadcast · **SPMC Topic** up to 15 Melem/s async (14 subs) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128 1P/1C) · **Oneshot** ~10 Melem/s async — [details](#performance) · [bench data](./docs/benches/)
+**Performance highlights** (Apple M4 Pro) — **SPSC** 44 / 183 Melem/s (sync/async, Cap-1024; batch up to ~185 Melem/s) · **MPSC** ~15 / ~63 Melem/s (sync/async, Cap-128, 4–14P) · **SPMC** 15–20 Melem/s broadcast · **SPMC Topic** up to 15 Melem/s async (14 subs) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128 1P/1C) · **Oneshot** ~10 Melem/s async — [details](#performance) · [bench data](./docs/benches/)
 
 ## Notable Users
 
@@ -108,7 +108,7 @@ Performance is a primary goal. Fibre uses proven, high-performance algorithms fo
 *   **Explicit Lifecycle Control:** All channel handles provide an idempotent `close()` method as an explicit alternative to `drop`, giving developers fine-grained control over the channel lifecycle.
 *   **Clear Error Handling & Drop Safety:** Descriptive error types (`TrySendError<T>`, `RecvError`, `CloseError`) allow for value recovery and clear error reporting. Channels correctly signal disconnection when handles are dropped or explicitly closed, and any buffered items are properly deallocated.
 *   **Defined Disconnect Semantics:** Fibre follows a consistent two-sided disconnection contract across all channel types. When all **senders** are dropped or closed, any items already buffered in the channel remain readable; receivers will drain them before observing `Disconnected`. When a **receiver** is dropped or explicitly closed, that handle immediately returns `Disconnected` on any subsequent receive call — it does not attempt to drain remaining buffered items. This distinction is important for graceful shutdown: drop your senders to let receivers drain cleanly, rather than closing receivers while items are still in flight.
-*   **Thread Safety:** Each channel type enforces appropriate `Send` and `Sync` bounds, ensuring correct concurrent usage. For example, SPSC and MPSC consumer handles are `!Sync` as they are designed for single-threaded consumption.
+*   **Thread Safety:** Each channel type enforces appropriate `Send` and `Sync` bounds, ensuring correct concurrent usage. For example, SPSC and MPSC sync consumer handles are `!Sync` as they are designed for single-threaded consumption, and SPSC async handles take `&mut self` on their send/receive methods so exclusive single-producer/single-consumer access is checked at compile time.
 
 ## Performance
 
@@ -116,9 +116,10 @@ Benchmarks on Apple M4 Pro; full results in [`docs/benches/`](./docs/benches/).
 
 | Channel | Configuration | Sync | Async |
 | :--- | :--- | ---: | ---: |
-| **SPSC** | any capacity, 1P / 1C | ~190 Melem/s | ~205 Melem/s |
-| **MPSC** | Cap-128, 4P | 15.3 Melem/s | 25.3 Melem/s |
-| **MPSC** | Cap-128, 14P | 14.8 Melem/s | 25.1 Melem/s |
+| **SPSC** | Cap-1024, 1P / 1C | 44.5 Melem/s | 183 Melem/s |
+| **SPSC** | Cap-1024, batch 512 | 180 Melem/s | 146 Melem/s |
+| **MPSC** | Cap-128, 4P | 15.3 Melem/s | 63.2 Melem/s |
+| **MPSC** | Cap-128, 14P | 14.8 Melem/s | 62.9 Melem/s |
 | **SPMC** | Cap-128, 1C (broadcast) | 15.0 Melem/s | 14.8 Melem/s |
 | **SPMC** | Cap-128, 4C (broadcast) | 15.7 Melem/s | 19.5 Melem/s |
 | **SPMC Topic** | 1 subscriber | 18.1 Melem/s | 7.8 Melem/s |
@@ -127,8 +128,8 @@ Benchmarks on Apple M4 Pro; full results in [`docs/benches/`](./docs/benches/).
 | **MPMC** | Cap-128, 14P / 14C | 14.3 Melem/s | 19.9 Melem/s |
 | **Oneshot** | — | — | 10.4 Melem/s |
 
-- SPSC throughput is flat across all buffer sizes (Cap-1 → Cap-1024) in both sync and async modes.
-- MPSC throughput at Cap-128 is remarkably consistent across producer counts: 4P and 14P both sustain ~15 Melem/s sync / ~25 Melem/s async.
+- SPSC numbers are measured with a real spawned producer and consumer (thread or task) per iteration, so they include genuine cross-core synchronization; throughput scales with buffer size (Cap-128: 27 / 139 Melem/s sync/async, Cap-1024: 44.5 / 183 Melem/s). Batch APIs at Cap-1024 reach 150–185 Melem/s sync.
+- MPSC throughput at Cap-128 is remarkably consistent across producer counts: 4P and 14P both sustain ~15 Melem/s sync / ~63 Melem/s async.
 - SPMC figures are per-message sent; each message is cloned and delivered to every consumer.
 - SPMC Topic's async 14-subscriber result (14.9 Melem/s) is ~20× faster than the sync equivalent (726 Kelem/s) because the non-blocking sender fully decouples producers from slow subscribers.
 - MPMC async at 73 Melem/s (Cap-128, 1P / 1C) avoids lock overhead when the buffer has slack.

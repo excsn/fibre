@@ -343,13 +343,13 @@ A high-performance lock-free channel for one-to-one communication (bounded). `T`
     *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff (both ends `!Clone`). `_async` variant available. No batch API.
 *   **Handles:**
     *   `BoundedSyncSender<T: Send>` (`!Clone`) and `BoundedSyncReceiver<T: Send>` (`!Clone`).
-    *   `BoundedAsyncSender<T: Send>` (`!Clone`) and `BoundedAsyncReceiver<T: Send>` (`!Clone`). `BoundedAsyncReceiver` implements `futures::Stream`.
+    *   `BoundedAsyncSender<T: Send>` (`!Clone`) and `BoundedAsyncReceiver<T: Send>` (`!Clone`). `BoundedAsyncReceiver` implements `futures::Stream`. The async handles take `&mut self` on every send/receive method, enforcing the single-producer/single-consumer contract at compile time (their futures remain `Send`).
 *   **Key Methods:**
     *   `send(...)`: Sync sends block, async sends return a `Future`.
     *   `try_send(...)`
     *   `recv(...)`: Sync receives block, async receives return a `Future`.
     *   `BoundedSyncReceiver::recv_timeout(...)`
-    *   Batch: `send_batch`, `try_send_batch`, `send_batch_mut`, `try_send_batch_mut`, `recv_batch`, `try_recv_batch`, `recv_batch_mut`, `try_recv_batch_mut` (see [Batch Operations](#batch-operations)). The whole batch is published with a single ring-index update and one wake.
+    *   Batch: `send_batch`, `try_send_batch`, `send_batch_mut`, `try_send_batch_mut`, `recv_batch`, `try_recv_batch`, `recv_batch_mut`, `try_recv_batch_mut` (see [Batch Operations](#batch-operations)). Wakeups are coalesced to one per batch.
 
 ### Module: `fibre::oneshot`
 

@@ -2,8 +2,8 @@ mod common;
 use common::*;
 
 use fibre::mpsc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 #[test]
@@ -158,4 +158,33 @@ fn mpsc_async_producer_to_sync_consumer() {
 
   // Clean up the producer thread.
   producer_handle.join().unwrap();
+}
+
+#[test]
+fn repro_mpsc_bounded_chunk_hoarding_starvation() {
+  use fibre::error::TrySendError;
+  use fibre::mpsc;
+
+  // Capacity 100. Chunk size becomes 50. Total chunks = 2.
+  let (tx1, rx) = mpsc::bounded::<i32>(100);
+  let tx2 = tx1.clone();
+  let tx3 = tx1.clone();
+
+  // tx1 sends 1 item. It grabs the first chunk of 50 slots.
+  // 49 slots remain hidden in tx1's LocalCache.
+  tx1.try_send(1).unwrap();
+
+  // tx2 sends 1 item. It grabs the second chunk of 50 slots.
+  // 49 slots remain hidden in tx2's LocalCache.
+  tx2.try_send(2).unwrap();
+
+  // The queue physically only holds 2 items.
+  assert_eq!(tx1.len(), 2);
+  assert_eq!(tx1.capacity(), 100);
+
+  // tx3 tries to send. The global chunk stack is empty, but work-stealing
+  // should rescue it by taking half of tx1's or tx2's cached nodes.
+  tx3.try_send(3).expect("work-stealing should have found nodes in a peer cache");
+
+  assert_eq!(tx1.len(), 3);
 }

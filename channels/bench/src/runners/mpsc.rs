@@ -30,6 +30,7 @@ pub fn run_sync(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
 
   let start = Instant::now();
   let items_per_prod = cfg.items / cfg.producers;
+  let batch_size = cfg.batch_size;
 
   match flavor {
     Flavor::Bounded => {
@@ -40,9 +41,23 @@ pub fn run_sync(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
         let tx = tx.clone();
         let sent = sent.clone();
         producers.push(thread::spawn(move || {
-          for i in 0..items_per_prod {
-            let _ = tx.send(i);
-            sent.fetch_add(1, Ordering::Relaxed);
+          if batch_size == 0 {
+            for i in 0..items_per_prod {
+              let _ = tx.send(i);
+              sent.fetch_add(1, Ordering::Relaxed);
+            }
+          } else {
+            let mut remaining = items_per_prod;
+            while remaining > 0 {
+              let chunk_size = remaining.min(batch_size);
+              match tx.send_batch(vec![0usize; chunk_size]) {
+                Ok(n) => {
+                  sent.fetch_add(n, Ordering::Relaxed);
+                  remaining -= n;
+                }
+                Err(_) => break,
+              }
+            }
           }
         }));
       }
@@ -50,8 +65,14 @@ pub fn run_sync(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
 
       let received2 = received.clone();
       let consumer = thread::spawn(move || {
-        while rx.recv().is_ok() {
-          received2.fetch_add(1, Ordering::Relaxed);
+        if batch_size == 0 {
+          while rx.recv().is_ok() {
+            received2.fetch_add(1, Ordering::Relaxed);
+          }
+        } else {
+          while let Ok(batch) = rx.recv_batch(batch_size) {
+            received2.fetch_add(batch.len(), Ordering::Relaxed);
+          }
         }
       });
 
@@ -68,9 +89,23 @@ pub fn run_sync(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
         let tx = tx.clone();
         let sent = sent.clone();
         producers.push(thread::spawn(move || {
-          for i in 0..items_per_prod {
-            let _ = tx.send(i);
-            sent.fetch_add(1, Ordering::Relaxed);
+          if batch_size == 0 {
+            for i in 0..items_per_prod {
+              let _ = tx.send(i);
+              sent.fetch_add(1, Ordering::Relaxed);
+            }
+          } else {
+            let mut remaining = items_per_prod;
+            while remaining > 0 {
+              let chunk_size = remaining.min(batch_size);
+              match tx.send_batch(vec![0usize; chunk_size]) {
+                Ok(n) => {
+                  sent.fetch_add(n, Ordering::Relaxed);
+                  remaining -= n;
+                }
+                Err(_) => break,
+              }
+            }
           }
         }));
       }
@@ -78,8 +113,14 @@ pub fn run_sync(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
 
       let received2 = received.clone();
       let consumer = thread::spawn(move || {
-        while rx.recv().is_ok() {
-          received2.fetch_add(1, Ordering::Relaxed);
+        if batch_size == 0 {
+          while rx.recv().is_ok() {
+            received2.fetch_add(1, Ordering::Relaxed);
+          }
+        } else {
+          while let Ok(batch) = rx.recv_batch(batch_size) {
+            received2.fetch_add(batch.len(), Ordering::Relaxed);
+          }
         }
       });
 
@@ -95,12 +136,13 @@ pub fn run_sync(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
   }
 
   done.store(true, Ordering::Relaxed);
-  let _ = wd.join();
+  let watchdog_ticks = wd.join().unwrap_or_default();
 
   RunResult {
     sent: sent.load(Ordering::Relaxed),
     received: received.load(Ordering::Relaxed),
     duration: start.elapsed(),
+    watchdog_ticks,
   }
 }
 
@@ -129,6 +171,7 @@ pub fn run_async(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
     .unwrap();
 
   let start = Instant::now();
+  let batch_size = cfg.batch_size;
 
   match flavor {
     Flavor::Bounded => {
@@ -141,9 +184,23 @@ pub fn run_async(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
           let tx = tx.clone();
           let sent = sent.clone();
           producer_handles.push(tokio::spawn(async move {
-            for i in 0..items_per_prod {
-              let _ = tx.send(i).await;
-              sent.fetch_add(1, Ordering::Relaxed);
+            if batch_size == 0 {
+              for i in 0..items_per_prod {
+                let _ = tx.send(i).await;
+                sent.fetch_add(1, Ordering::Relaxed);
+              }
+            } else {
+              let mut remaining = items_per_prod;
+              while remaining > 0 {
+                let chunk_size = remaining.min(batch_size);
+                match tx.send_batch(vec![0usize; chunk_size]).await {
+                  Ok(n) => {
+                    sent.fetch_add(n, Ordering::Relaxed);
+                    remaining -= n;
+                  }
+                  Err(_) => break,
+                }
+              }
             }
           }));
         }
@@ -151,8 +208,14 @@ pub fn run_async(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
 
         let received2 = received.clone();
         let consumer: JoinHandle<()> = tokio::spawn(async move {
-          while rx.recv().await.is_ok() {
-            received2.fetch_add(1, Ordering::Relaxed);
+          if batch_size == 0 {
+            while rx.recv().await.is_ok() {
+              received2.fetch_add(1, Ordering::Relaxed);
+            }
+          } else {
+            while let Ok(batch) = rx.recv_batch(batch_size).await {
+              received2.fetch_add(batch.len(), Ordering::Relaxed);
+            }
           }
         });
 
@@ -172,9 +235,23 @@ pub fn run_async(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
           let tx = tx.clone();
           let sent = sent.clone();
           producer_handles.push(tokio::spawn(async move {
-            for i in 0..items_per_prod {
-              let _ = tx.send(i).await;
-              sent.fetch_add(1, Ordering::Relaxed);
+            if batch_size == 0 {
+              for i in 0..items_per_prod {
+                let _ = tx.send(i).await;
+                sent.fetch_add(1, Ordering::Relaxed);
+              }
+            } else {
+              let mut remaining = items_per_prod;
+              while remaining > 0 {
+                let chunk_size = remaining.min(batch_size);
+                match tx.send_batch(vec![0usize; chunk_size]).await {
+                  Ok(n) => {
+                    sent.fetch_add(n, Ordering::Relaxed);
+                    remaining -= n;
+                  }
+                  Err(_) => break,
+                }
+              }
             }
           }));
         }
@@ -182,8 +259,14 @@ pub fn run_async(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
 
         let received2 = received.clone();
         let consumer: JoinHandle<()> = tokio::spawn(async move {
-          while rx.recv().await.is_ok() {
-            received2.fetch_add(1, Ordering::Relaxed);
+          if batch_size == 0 {
+            while rx.recv().await.is_ok() {
+              received2.fetch_add(1, Ordering::Relaxed);
+            }
+          } else {
+            while let Ok(batch) = rx.recv_batch(batch_size).await {
+              received2.fetch_add(batch.len(), Ordering::Relaxed);
+            }
           }
         });
 
@@ -200,11 +283,12 @@ pub fn run_async(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
   }
 
   done.store(true, Ordering::Relaxed);
-  let _ = wd.join();
+  let watchdog_ticks = wd.join().unwrap_or_default();
 
   RunResult {
     sent: sent.load(Ordering::Relaxed),
     received: received.load(Ordering::Relaxed),
     duration: start.elapsed(),
+    watchdog_ticks,
   }
 }

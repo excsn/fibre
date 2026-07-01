@@ -178,57 +178,49 @@ impl<T: Send> BoundedSyncSender<T> {
   }
 
   pub fn send_batch(&self, items: Vec<T>) -> Result<usize, SendBatchError<T>> {
+    let total = items.len();
     let mut iter = items.into_iter();
     let mut sent = 0;
     let mut is_registered = false;
 
-    while let Some(mut item) = iter.next() {
-      loop {
-        if self.shared.consumer_dropped.load(Ordering::Acquire) {
-          if is_registered {
-            self.shared.unregister(Role::Send);
-          }
-          let mut unsent = Vec::with_capacity(iter.len() + 1);
-          unsent.push(item);
-          unsent.extend(iter);
-          return Err(SendBatchError { sent, unsent });
+    loop {
+      if self.shared.consumer_dropped.load(Ordering::Acquire) {
+        if is_registered {
+          self.shared.unregister(Role::Send);
         }
-        match self.shared.ring.push(item) {
-          Ok(()) => {
-            sent += 1;
-            self.shared.notify_receivers();
-            break;
-          }
-          Err(returned) => item = returned,
-        }
-
-        self.shared.register(
-          Role::Send,
-          WakeRef::Thread(thread::current()),
-          std::ptr::null(),
-        );
-        is_registered = true;
-        self.shared.pre_park_fence();
-
-        match self.shared.ring.push(item) {
-          Ok(()) => {
-            sent += 1;
-            self.shared.notify_receivers();
-            break;
-          }
-          Err(returned) => item = returned,
-        }
-        if self.shared.consumer_dropped.load(Ordering::Acquire) {
-          continue;
-        }
-        sync_util::park_thread();
+        return Err(SendBatchError {
+          sent,
+          unsent: iter.collect(),
+        });
       }
-    }
 
-    if is_registered {
-      self.shared.unregister(Role::Send);
+      sent += self.shared.write_batch(&mut iter, total - sent);
+      if sent == total {
+        if is_registered {
+          self.shared.unregister(Role::Send);
+        }
+        return Ok(sent);
+      }
+
+      self.shared.register(
+        Role::Send,
+        WakeRef::Thread(thread::current()),
+        std::ptr::null(),
+      );
+      is_registered = true;
+      self.shared.pre_park_fence();
+
+      sent += self.shared.write_batch(&mut iter, total - sent);
+      if sent == total {
+        self.shared.unregister(Role::Send);
+        return Ok(sent);
+      }
+
+      if self.shared.consumer_dropped.load(Ordering::Acquire) {
+        continue;
+      }
+      sync_util::park_thread();
     }
-    Ok(sent)
   }
 
   pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
@@ -467,19 +459,9 @@ impl<T: Send> BoundedSyncReceiver<T> {
       return Err(RecvError::Disconnected);
     }
     let first = self.recv()?;
+    let _ = out.try_reserve_exact(max);
     out.push(first);
-    let mut got = 1;
-    while got < max {
-      match self.shared.ring.pop() {
-        Some(item) => {
-          out.push(item);
-          got += 1;
-          self.shared.notify_senders();
-        }
-        None => break,
-      }
-    }
-    Ok(got)
+    Ok(1 + self.shared.read_batch(out, max - 1))
   }
 
   pub fn recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvErrorTimeout> {

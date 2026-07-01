@@ -1,6 +1,6 @@
 [package]
 name = "fibre"
-version = "0.5.13"
+version = "0.5.14"
 
 description = "High-performance, safe, memory-efficient sync/async channels built for real-time, low-overhead communication in concurrent Rust applications."
 readme = "README.md"
@@ -78,11 +78,7 @@ name = "spmc_sync"
 harness = false
 
 [[bench]]
-name = "spsc_async"
-harness = false
-
-[[bench]]
-name = "spsc_sync"
+name = "spsc_bounded"
 harness = false
 
 [[bench]]

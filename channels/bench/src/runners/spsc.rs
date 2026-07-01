@@ -32,19 +32,40 @@ pub fn run_sync(cfg: &BenchConfig) -> RunResult {
 
   let start = Instant::now();
   let items = cfg.items;
+  let batch_size = cfg.batch_size;
 
   let sent2 = sent.clone();
   let producer = thread::spawn(move || {
-    for i in 0..items {
-      let _ = tx.send(i);
-      sent2.fetch_add(1, Ordering::Relaxed);
+    if batch_size == 0 {
+      for i in 0..items {
+        let _ = tx.send(i);
+        sent2.fetch_add(1, Ordering::Relaxed);
+      }
+    } else {
+      let mut remaining = items;
+      while remaining > 0 {
+        let chunk_size = remaining.min(batch_size);
+        match tx.send_batch(vec![0usize; chunk_size]) {
+          Ok(n) => {
+            sent2.fetch_add(n, Ordering::Relaxed);
+            remaining -= n;
+          }
+          Err(_) => break,
+        }
+      }
     }
   });
 
   let received2 = received.clone();
   let consumer = thread::spawn(move || {
-    while rx.recv().is_ok() {
-      received2.fetch_add(1, Ordering::Relaxed);
+    if batch_size == 0 {
+      while rx.recv().is_ok() {
+        received2.fetch_add(1, Ordering::Relaxed);
+      }
+    } else {
+      while let Ok(batch) = rx.recv_batch(batch_size) {
+        received2.fetch_add(batch.len(), Ordering::Relaxed);
+      }
     }
   });
 
@@ -52,12 +73,13 @@ pub fn run_sync(cfg: &BenchConfig) -> RunResult {
   consumer.join().unwrap();
 
   done.store(true, Ordering::Relaxed);
-  let _ = wd.join();
+  let watchdog_ticks = wd.join().unwrap_or_default();
 
   RunResult {
     sent: sent.load(Ordering::Relaxed),
     received: received.load(Ordering::Relaxed),
     duration: start.elapsed(),
+    watchdog_ticks,
   }
 }
 
@@ -86,21 +108,42 @@ pub fn run_async(cfg: &BenchConfig) -> RunResult {
   let start = Instant::now();
 
   rt.block_on(async {
-    let (tx, rx) = spsc::bounded_async::<usize>(cfg.capacity);
+    let (mut tx, mut rx) = spsc::bounded_async::<usize>(cfg.capacity);
     let items = cfg.items;
+    let batch_size = cfg.batch_size;
 
     let sent2 = sent.clone();
     let producer = tokio::spawn(async move {
-      for i in 0..items {
-        let _ = tx.send(i).await;
-        sent2.fetch_add(1, Ordering::Relaxed);
+      if batch_size == 0 {
+        for i in 0..items {
+          let _ = tx.send(i).await;
+          sent2.fetch_add(1, Ordering::Relaxed);
+        }
+      } else {
+        let mut remaining = items;
+        while remaining > 0 {
+          let chunk_size = remaining.min(batch_size);
+          match tx.send_batch(vec![0usize; chunk_size]).await {
+            Ok(n) => {
+              sent2.fetch_add(n, Ordering::Relaxed);
+              remaining -= n;
+            }
+            Err(_) => break,
+          }
+        }
       }
     });
 
     let received2 = received.clone();
     let consumer = tokio::spawn(async move {
-      while rx.recv().await.is_ok() {
-        received2.fetch_add(1, Ordering::Relaxed);
+      if batch_size == 0 {
+        while rx.recv().await.is_ok() {
+          received2.fetch_add(1, Ordering::Relaxed);
+        }
+      } else {
+        while let Ok(batch) = rx.recv_batch(batch_size).await {
+          received2.fetch_add(batch.len(), Ordering::Relaxed);
+        }
       }
     });
 
@@ -109,11 +152,12 @@ pub fn run_async(cfg: &BenchConfig) -> RunResult {
   });
 
   done.store(true, Ordering::Relaxed);
-  let _ = wd.join();
+  let watchdog_ticks = wd.join().unwrap_or_default();
 
   RunResult {
     sent: sent.load(Ordering::Relaxed),
     received: received.load(Ordering::Relaxed),
     duration: start.elapsed(),
+    watchdog_ticks,
   }
 }

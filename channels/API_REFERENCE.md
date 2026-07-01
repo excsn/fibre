@@ -181,25 +181,31 @@ The synchronous, non-cloneable receiving handle.
 
 ### Struct `BoundedAsyncSender<T>`
 
-The asynchronous, non-cloneable sending handle.
+The asynchronous, non-cloneable sending handle. All send methods take `&mut self`, enforcing the single-producer contract at compile time; the returned futures remain `Send`.
 
 *   **Methods**:
     *   `pub fn to_sync(self) -> BoundedSyncSender<T>`
-    *   `pub fn send(&self, item: T) -> SendFuture<'_, T>`
-    *   `pub fn send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T>`: Resolves with `Result<usize, SendBatchError<T>>`.
-    *   `pub fn send_batch_mut<'a>(&'a self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T>`: Cancel-safe; resolves with `Result<usize, SendError>`.
-    *   `try_send`, `try_send_batch`, `try_send_batch_mut`, `close`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`
+    *   `pub fn send(&mut self, item: T) -> SendFuture<'_, T>`
+    *   `pub fn try_send(&mut self, item: T) -> Result<(), TrySendError<T>>`
+    *   `pub fn send_batch(&mut self, items: Vec<T>) -> SendBatchFuture<'_, T>`: Resolves with `Result<usize, SendBatchError<T>>`.
+    *   `pub fn send_batch_mut<'a>(&'a mut self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T>`: Cancel-safe; resolves with `Result<usize, SendError>`.
+    *   `pub fn try_send_batch(&mut self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`
+    *   `pub fn try_send_batch_mut(&mut self, items: &mut Vec<T>) -> Result<usize, SendError>`
+    *   `close`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full` (all `&self`)
 
 ### Struct `BoundedAsyncReceiver<T>`
 
-The asynchronous, non-cloneable receiving handle. Implements `futures::Stream`.
+The asynchronous, non-cloneable receiving handle. Implements `futures::Stream`. All receive methods take `&mut self`, enforcing the single-consumer contract at compile time; the returned futures remain `Send`.
 
 *   **Methods**:
     *   `pub fn to_sync(self) -> BoundedSyncReceiver<T>`
-    *   `pub fn recv(&self) -> ReceiveFuture<'_, T>`
-    *   `pub fn recv_batch(&self, max: usize) -> RecvBatchFuture<'_, T>`: Resolves with `Result<Vec<T>, RecvError>`.
-    *   `pub fn recv_batch_mut<'a>(&'a self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T>`: Resolves with `Result<usize, RecvError>`.
-    *   `try_recv`, `try_recv_batch`, `try_recv_batch_mut`, `close`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`
+    *   `pub fn recv(&mut self) -> ReceiveFuture<'_, T>`
+    *   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
+    *   `pub fn recv_batch(&mut self, max: usize) -> RecvBatchFuture<'_, T>`: Resolves with `Result<Vec<T>, RecvError>`.
+    *   `pub fn recv_batch_mut<'a>(&'a mut self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T>`: Resolves with `Result<usize, RecvError>`.
+    *   `pub fn try_recv_batch(&mut self, max: usize) -> Result<Vec<T>, TryRecvError>`
+    *   `pub fn try_recv_batch_mut(&mut self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError>`
+    *   `close`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full` (all `&self`)
 
 ## 5. Module `fibre::mpsc`
 

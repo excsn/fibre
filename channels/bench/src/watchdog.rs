@@ -9,6 +9,19 @@ pub struct WatchdogConfig {
   pub expected: usize,
 }
 
+/// One periodic watchdog observation, kept so a full run's progress-over-time can be
+/// recorded (see `main.rs`'s `results.jsonl` output), not just the final tally.
+#[derive(Debug, Clone, Default)]
+pub struct WatchdogTick {
+  pub elapsed_ms: u64,
+  pub sent: usize,
+  pub received: usize,
+  pub in_flight: usize,
+  pub ring_len: Option<usize>,
+  pub send_waiters: Option<usize>,
+  pub recv_waiters: Option<usize>,
+}
+
 /// Spawns the stall-watchdog thread.
 ///
 /// `detail` — if provided, called each tick to get `(ring_len, send_waiters, recv_waiters)`.
@@ -19,26 +32,40 @@ pub fn spawn(
   done: Arc<AtomicBool>,
   detail: Option<Box<dyn Fn() -> (usize, usize, usize) + Send>>,
   cfg: WatchdogConfig,
-) -> thread::JoinHandle<()> {
+) -> thread::JoinHandle<Vec<WatchdogTick>> {
   thread::spawn(move || {
     let mut last = (0usize, 0usize);
     let mut stalls = 0usize;
+    let mut elapsed_ms = 0u64;
+    let mut ticks = Vec::new();
     loop {
       thread::sleep(Duration::from_millis(cfg.stall_ms));
+      elapsed_ms += cfg.stall_ms;
       if done.load(Ordering::Relaxed) {
         break;
       }
       let s = sent.load(Ordering::Relaxed);
       let r = received.load(Ordering::Relaxed);
       let inflight = s.saturating_sub(r);
-      if let Some(ref f) = detail {
+      let (ring_len, send_waiters, recv_waiters) = if let Some(ref f) = detail {
         let (len, sw, rw) = f();
         eprintln!(
           "[watchdog] sent={s} recv={r} in_flight={inflight} ring_len={len} send_waiters={sw} recv_waiters={rw}"
         );
+        (Some(len), Some(sw), Some(rw))
       } else {
         eprintln!("[watchdog] sent={s} recv={r} in_flight={inflight}");
-      }
+        (None, None, None)
+      };
+      ticks.push(WatchdogTick {
+        elapsed_ms,
+        sent: s,
+        received: r,
+        in_flight: inflight,
+        ring_len,
+        send_waiters,
+        recv_waiters,
+      });
 
       if (s, r) == last {
         stalls += 1;
@@ -75,5 +102,6 @@ pub fn spawn(
         last = (s, r);
       }
     }
+    ticks
   })
 }
