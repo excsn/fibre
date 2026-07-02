@@ -7,8 +7,8 @@
 //! pending send can never ghost-deliver its payload.
 //!
 //! Senders and receivers can both be cloned. Both blocking and async ends are
-//! provided and interoperate (a sync `Sender` can hand off to an
-//! `AsyncReceiver`, etc.). See the module-level docs of
+//! provided and interoperate (a sync `RendezvousSyncSender` can hand off to an
+//! `RendezvousAsyncReceiver`, etc.). See the module-level docs of
 //! [`crate::internal::rendezvous`] for the transfer model and its safety
 //! argument.
 
@@ -29,14 +29,14 @@ use crate::internal::rendezvous::WAITING;
 // --- Constructors ---------------------------------------------------------
 
 /// Creates a synchronous MPMC rendezvous channel.
-pub fn rendezvous<T: Send>() -> (Sender<T>, Receiver<T>) {
+pub fn rendezvous<T: Send>() -> (RendezvousSyncSender<T>, RendezvousSyncReceiver<T>) {
   let shared = Arc::new(MpmcRvShared::new());
   (
-    Sender {
+    RendezvousSyncSender {
       shared: Arc::clone(&shared),
       closed: AtomicBool::new(false),
     },
-    Receiver {
+    RendezvousSyncReceiver {
       shared,
       closed: AtomicBool::new(false),
     },
@@ -44,14 +44,14 @@ pub fn rendezvous<T: Send>() -> (Sender<T>, Receiver<T>) {
 }
 
 /// Creates an asynchronous MPMC rendezvous channel.
-pub fn rendezvous_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
+pub fn rendezvous_async<T: Send>() -> (RendezvousAsyncSender<T>, RendezvousAsyncReceiver<T>) {
   let shared = Arc::new(MpmcRvShared::new());
   (
-    AsyncSender {
+    RendezvousAsyncSender {
       shared: Arc::clone(&shared),
       closed: AtomicBool::new(false),
     },
-    AsyncReceiver {
+    RendezvousAsyncReceiver {
       shared,
       closed: AtomicBool::new(false),
     },
@@ -62,14 +62,14 @@ pub fn rendezvous_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
 
 /// The synchronous sending half of an MPMC rendezvous channel.
 #[derive(Debug)]
-pub struct Sender<T: Send> {
+pub struct RendezvousSyncSender<T: Send> {
   shared: Arc<MpmcRvShared<T>>,
   closed: AtomicBool,
 }
 
 /// The synchronous receiving half of an MPMC rendezvous channel.
 #[derive(Debug)]
-pub struct Receiver<T: Send> {
+pub struct RendezvousSyncReceiver<T: Send> {
   shared: Arc<MpmcRvShared<T>>,
   closed: AtomicBool,
 }
@@ -78,21 +78,21 @@ pub struct Receiver<T: Send> {
 
 /// The asynchronous sending half of an MPMC rendezvous channel.
 #[derive(Debug)]
-pub struct AsyncSender<T: Send> {
+pub struct RendezvousAsyncSender<T: Send> {
   shared: Arc<MpmcRvShared<T>>,
   closed: AtomicBool,
 }
 
 /// The asynchronous receiving half of an MPMC rendezvous channel.
 #[derive(Debug)]
-pub struct AsyncReceiver<T: Send> {
+pub struct RendezvousAsyncReceiver<T: Send> {
   shared: Arc<MpmcRvShared<T>>,
   closed: AtomicBool,
 }
 
-// --- Sender (sync) --------------------------------------------------------
+// --- RendezvousSyncSender (sync) --------------------------------------------------------
 
-impl<T: Send> Sender<T> {
+impl<T: Send> RendezvousSyncSender<T> {
   /// Sends a value, blocking until a receiver takes it or the channel closes.
   pub fn send(&self, item: T) -> Result<(), SendError> {
     if self.closed.load(Ordering::Relaxed) {
@@ -154,37 +154,37 @@ impl<T: Send> Sender<T> {
     Some(0)
   }
 
-  /// Converts this handle into an asynchronous [`AsyncSender`]. Zero-cost; the
+  /// Converts this handle into an asynchronous [`RendezvousAsyncSender`]. Zero-cost; the
   /// original handle's `Drop` does not run.
-  pub fn to_async(self) -> AsyncSender<T> {
+  pub fn to_async(self) -> RendezvousAsyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
-    AsyncSender {
+    RendezvousAsyncSender {
       shared,
       closed: AtomicBool::new(false),
     }
   }
 }
 
-impl<T: Send> Clone for Sender<T> {
+impl<T: Send> Clone for RendezvousSyncSender<T> {
   fn clone(&self) -> Self {
     self.shared.add_sender();
-    Sender {
+    RendezvousSyncSender {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
     }
   }
 }
 
-impl<T: Send> Drop for Sender<T> {
+impl<T: Send> Drop for RendezvousSyncSender<T> {
   fn drop(&mut self) {
     let _ = self.close();
   }
 }
 
-// --- Receiver (sync) ------------------------------------------------------
+// --- RendezvousSyncReceiver (sync) ------------------------------------------------------
 
-impl<T: Send> Receiver<T> {
+impl<T: Send> RendezvousSyncReceiver<T> {
   /// Receives a value, blocking until a sender hands one off or the channel
   /// disconnects.
   pub fn recv(&self) -> Result<T, RecvError> {
@@ -254,36 +254,36 @@ impl<T: Send> Receiver<T> {
     Some(0)
   }
 
-  /// Converts this handle into an asynchronous [`AsyncReceiver`]. Zero-cost.
-  pub fn to_async(self) -> AsyncReceiver<T> {
+  /// Converts this handle into an asynchronous [`RendezvousAsyncReceiver`]. Zero-cost.
+  pub fn to_async(self) -> RendezvousAsyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
-    AsyncReceiver {
+    RendezvousAsyncReceiver {
       shared,
       closed: AtomicBool::new(false),
     }
   }
 }
 
-impl<T: Send> Clone for Receiver<T> {
+impl<T: Send> Clone for RendezvousSyncReceiver<T> {
   fn clone(&self) -> Self {
     self.shared.add_receiver();
-    Receiver {
+    RendezvousSyncReceiver {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
     }
   }
 }
 
-impl<T: Send> Drop for Receiver<T> {
+impl<T: Send> Drop for RendezvousSyncReceiver<T> {
   fn drop(&mut self) {
     let _ = self.close();
   }
 }
 
-// --- AsyncSender ----------------------------------------------------------
+// --- RendezvousAsyncSender ----------------------------------------------------------
 
-impl<T: Send> AsyncSender<T> {
+impl<T: Send> RendezvousAsyncSender<T> {
   /// Sends a value, resolving once a receiver takes it or the channel closes.
   pub fn send(&self, item: T) -> SendFuture<'_, T> {
     SendFuture::new(&self.shared, item)
@@ -297,7 +297,7 @@ impl<T: Send> AsyncSender<T> {
     self.shared.try_send(item)
   }
 
-  /// See [`Sender::close`].
+  /// See [`RendezvousSyncSender::close`].
   pub fn close(&self) -> Result<(), CloseError> {
     if self
       .closed
@@ -337,36 +337,36 @@ impl<T: Send> AsyncSender<T> {
     Some(0)
   }
 
-  /// Converts this handle into a synchronous [`Sender`]. Zero-cost.
-  pub fn to_sync(self) -> Sender<T> {
+  /// Converts this handle into a synchronous [`RendezvousSyncSender`]. Zero-cost.
+  pub fn to_sync(self) -> RendezvousSyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
-    Sender {
+    RendezvousSyncSender {
       shared,
       closed: AtomicBool::new(false),
     }
   }
 }
 
-impl<T: Send> Clone for AsyncSender<T> {
+impl<T: Send> Clone for RendezvousAsyncSender<T> {
   fn clone(&self) -> Self {
     self.shared.add_sender();
-    AsyncSender {
+    RendezvousAsyncSender {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
     }
   }
 }
 
-impl<T: Send> Drop for AsyncSender<T> {
+impl<T: Send> Drop for RendezvousAsyncSender<T> {
   fn drop(&mut self) {
     let _ = self.close();
   }
 }
 
-// --- AsyncReceiver --------------------------------------------------------
+// --- RendezvousAsyncReceiver --------------------------------------------------------
 
-impl<T: Send> AsyncReceiver<T> {
+impl<T: Send> RendezvousAsyncReceiver<T> {
   /// Receives a value, resolving once a sender hands one off or the channel
   /// disconnects.
   pub fn recv(&self) -> RecvFuture<'_, T> {
@@ -381,7 +381,7 @@ impl<T: Send> AsyncReceiver<T> {
     self.shared.try_recv()
   }
 
-  /// See [`Receiver::close`].
+  /// See [`RendezvousSyncReceiver::close`].
   pub fn close(&self) -> Result<(), CloseError> {
     if self
       .closed
@@ -421,28 +421,28 @@ impl<T: Send> AsyncReceiver<T> {
     Some(0)
   }
 
-  /// Converts this handle into a synchronous [`Receiver`]. Zero-cost.
-  pub fn to_sync(self) -> Receiver<T> {
+  /// Converts this handle into a synchronous [`RendezvousSyncReceiver`]. Zero-cost.
+  pub fn to_sync(self) -> RendezvousSyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
-    Receiver {
+    RendezvousSyncReceiver {
       shared,
       closed: AtomicBool::new(false),
     }
   }
 }
 
-impl<T: Send> Clone for AsyncReceiver<T> {
+impl<T: Send> Clone for RendezvousAsyncReceiver<T> {
   fn clone(&self) -> Self {
     self.shared.add_receiver();
-    AsyncReceiver {
+    RendezvousAsyncReceiver {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
     }
   }
 }
 
-impl<T: Send> Drop for AsyncReceiver<T> {
+impl<T: Send> Drop for RendezvousAsyncReceiver<T> {
   fn drop(&mut self) {
     let _ = self.close();
   }
@@ -455,7 +455,7 @@ impl<T: Send> Drop for AsyncReceiver<T> {
 // raw pointers to the inline `state`/`slot`, so the future must not move while
 // registered.
 
-/// Future returned by [`AsyncSender::send`].
+/// Future returned by [`RendezvousAsyncSender::send`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T: Send> {
   shared: &'a Arc<MpmcRvShared<T>>,
@@ -504,7 +504,7 @@ impl<'a, T: Send> Drop for SendFuture<'a, T> {
   }
 }
 
-/// Future returned by [`AsyncReceiver::recv`].
+/// Future returned by [`RendezvousAsyncReceiver::recv`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct RecvFuture<'a, T: Send> {
   shared: &'a Arc<MpmcRvShared<T>>,

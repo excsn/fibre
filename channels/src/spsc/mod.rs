@@ -131,6 +131,10 @@ pub use bounded_async::{
   SendFuture,               // Future returned by async send
 };
 
+pub use rendezvous::{
+  RendezvousAsyncReceiver, RendezvousAsyncSender, RendezvousSyncReceiver, RendezvousSyncSender,
+};
+
 // Re-export common error types used by SPSC channels.
 pub use crate::error::{
   BatchSendErrorReason, RecvError, RecvErrorTimeout, SendBatchError, SendError, TryRecvError,

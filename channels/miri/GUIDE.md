@@ -57,7 +57,7 @@ One file per channel family, mirroring `fibre`'s module structure:
 | :-- | :-- |
 | `tests/spsc.rs` | owned-index ring (wraparound, non-pow2 caps), waiter protocol, sync<->async conversion |
 | `tests/mpsc_bounded.rs` | Vyukov publish, node pool + chunk recycling, capacity park/wake |
-| `tests/mpsc_unbounded.rs` | v3 slab lifecycle (seal, refcount, partial slabs), v1 smoke |
+| `tests/mpsc_unbounded.rs` | v3 slab lifecycle (seal, refcount, partial slabs) |
 | `tests/mpmc.rs` | mpmc_v2 bounded/unbounded under producer+consumer races |
 | `tests/spmc.rs` | broadcast ring with per-consumer cursors |
 | `tests/oneshot.rs` | single-shot ownership transfer, competing senders |

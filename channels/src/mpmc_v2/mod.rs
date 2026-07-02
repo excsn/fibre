@@ -40,6 +40,18 @@ mod core;
 pub mod rendezvous;
 mod sync_impl;
 
+// Standardized handle names. MPMC's bounded and unbounded constructors share
+// the same handle types, so both flavor-prefixed names alias one struct.
+pub use self::{
+  AsyncReceiver as BoundedAsyncReceiver, AsyncReceiver as UnboundedAsyncReceiver,
+  AsyncSender as BoundedAsyncSender, AsyncSender as UnboundedAsyncSender,
+  Receiver as BoundedSyncReceiver, Receiver as UnboundedSyncReceiver,
+  Sender as BoundedSyncSender, Sender as UnboundedSyncSender,
+};
+pub use rendezvous::{
+  RendezvousAsyncReceiver, RendezvousAsyncSender, RendezvousSyncReceiver, RendezvousSyncSender,
+};
+
 use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};

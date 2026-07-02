@@ -8,14 +8,14 @@
 //!
 //! - **Guaranteed Delivery**: This implementation guarantees that a message sent by the
 //!   producer will be delivered to all active consumers. It does not drop messages.
-//! - **Blocking Sender**: If any consumer is slow and the channel's buffer fills up
+//! - **Blocking BoundedSyncSender**: If any consumer is slow and the channel's buffer fills up
 //!   from that consumer's perspective, the producer will block until the slow
 //!   consumer catches up. This backpressure mechanism ensures no messages are lost.
 //! - **`T: Clone` Requirement**: Since every message is delivered to every consumer, the
 //!   message type `T` must implement the `Clone` trait.
 //! - **Mixed Paradigms**: The channel supports full interoperability between synchronous
-//!   and asynchronous code. You can have a synchronous `Sender` sending to an
-//!   `AsyncReceiver`, or any other combination, by using the provided `to_sync()` and
+//!   and asynchronous code. You can have a synchronous `BoundedSyncSender` sending to an
+//!   `BoundedAsyncReceiver`, or any other combination, by using the provided `to_sync()` and
 //!   `to_async()` conversion methods.
 //!
 //! ## When to use SPMC
@@ -84,8 +84,8 @@ pub use crate::error::{
   TrySendBatchError, TrySendError,
 };
 pub use ring_buffer::{
-  AsyncReceiver, AsyncSender, Receiver, RecvBatchFuture, RecvBatchMutFuture, RecvFuture,
-  SendBatchFuture, SendBatchMutFuture, SendFuture, Sender,
+  BoundedAsyncReceiver, BoundedAsyncSender, BoundedSyncReceiver, RecvBatchFuture, RecvBatchMutFuture, RecvFuture,
+  SendBatchFuture, SendBatchMutFuture, SendFuture, BoundedSyncSender,
 };
 
 // --- Constructors ---
@@ -97,7 +97,7 @@ pub use ring_buffer::{
 /// # Panics
 ///
 /// Panics if `capacity` is 0.
-pub fn bounded<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+pub fn bounded<T: Send + Clone>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>) {
   let (p, r) = ring_buffer::new_channel(capacity);
   (p, r)
 }
@@ -109,55 +109,55 @@ pub fn bounded<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>) {
 /// # Panics
 ///
 /// Panics if `capacity` is 0.
-pub fn bounded_async<T: Send + Clone>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>) {
+pub fn bounded_async<T: Send + Clone>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>) {
   let (p, r) = ring_buffer::new_channel(capacity);
   (p.to_async(), r.to_async())
 }
 
 // --- Conversion Methods ---
 
-impl<T: Send + Clone> Sender<T> {
-  /// Converts this synchronous `Sender` into an asynchronous `AsyncSender`.
+impl<T: Send + Clone> BoundedSyncSender<T> {
+  /// Converts this synchronous `BoundedSyncSender` into an asynchronous `BoundedAsyncSender`.
   ///
   /// This is a zero-cost conversion that facilitates interoperability between
   /// synchronous and asynchronous code. The `Drop` implementation of the
-  /// original `Sender` is not called.
-  pub fn to_async(self) -> AsyncSender<T> {
+  /// original `BoundedSyncSender` is not called.
+  pub fn to_async(self) -> BoundedAsyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
-    AsyncSender {
+    BoundedAsyncSender {
       shared,
       closed: AtomicBool::new(false),
     }
   }
 }
 
-impl<T: Send + Clone> AsyncSender<T> {
-  /// Converts this asynchronous `AsyncSender` into a synchronous `Sender`.
+impl<T: Send + Clone> BoundedAsyncSender<T> {
+  /// Converts this asynchronous `BoundedAsyncSender` into a synchronous `BoundedSyncSender`.
   ///
   /// This is a zero-cost conversion that facilitates interoperability between
   /// synchronous and asynchronous code. The `Drop` implementation of the
-  /// original `AsyncSender` is not called.
-  pub fn to_sync(self) -> Sender<T> {
+  /// original `BoundedAsyncSender` is not called.
+  pub fn to_sync(self) -> BoundedSyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     mem::forget(self);
-    Sender {
+    BoundedSyncSender {
       shared,
       closed: AtomicBool::new(false),
     }
   }
 }
 
-impl<T: Send + Clone> Receiver<T> {
-  /// Converts this synchronous `Receiver` into an asynchronous `AsyncReceiver`.
+impl<T: Send + Clone> BoundedSyncReceiver<T> {
+  /// Converts this synchronous `BoundedSyncReceiver` into an asynchronous `BoundedAsyncReceiver`.
   ///
-  /// This is a zero-cost conversion. The original `Receiver`'s `Drop`
+  /// This is a zero-cost conversion. The original `BoundedSyncReceiver`'s `Drop`
   /// implementation is not called.
-  pub fn to_async(self) -> AsyncReceiver<T> {
+  pub fn to_async(self) -> BoundedAsyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     let tail = unsafe { std::ptr::read(&self.tail) };
     mem::forget(self);
-    AsyncReceiver {
+    BoundedAsyncReceiver {
       shared,
       tail,
       closed: AtomicBool::new(false),
@@ -165,16 +165,16 @@ impl<T: Send + Clone> Receiver<T> {
   }
 }
 
-impl<T: Send + Clone> AsyncReceiver<T> {
-  /// Converts this asynchronous `AsyncReceiver` into a synchronous `Receiver`.
+impl<T: Send + Clone> BoundedAsyncReceiver<T> {
+  /// Converts this asynchronous `BoundedAsyncReceiver` into a synchronous `BoundedSyncReceiver`.
   ///
-  /// This is a zero-cost conversion. The original `AsyncReceiver`'s `Drop`
+  /// This is a zero-cost conversion. The original `BoundedAsyncReceiver`'s `Drop`
   /// implementation is not called.
-  pub fn to_sync(self) -> Receiver<T> {
+  pub fn to_sync(self) -> BoundedSyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     let tail = unsafe { std::ptr::read(&self.tail) };
     mem::forget(self);
-    Receiver {
+    BoundedSyncReceiver {
       shared,
       tail,
       closed: AtomicBool::new(false),
@@ -346,7 +346,7 @@ mod tests {
     });
 
     thread::sleep(SHORT_TIMEOUT);
-    assert!(!send_handle.is_finished(), "Sender should have blocked");
+    assert!(!send_handle.is_finished(), "BoundedSyncSender should have blocked");
 
     assert_eq!(rx_slow.recv().unwrap(), 1);
     // After rx_slow reads, tx.len() becomes 0 relative to current head (if head was 1).
@@ -356,7 +356,7 @@ mod tests {
 
     send_handle
       .join()
-      .expect("Sender panicked or was not unblocked");
+      .expect("BoundedSyncSender panicked or was not unblocked");
 
     assert_eq!(rx_fast.len(), 1); // Item 2 is available for rx_fast
     assert_eq!(rx_slow.len(), 1); // Item 2 is available for rx_slow

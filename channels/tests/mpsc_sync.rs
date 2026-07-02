@@ -1,21 +1,23 @@
+//! Integration tests for the default MPSC channels, synchronous half.
+
 mod common;
 use common::*;
 
 use fibre::mpsc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 
 #[test]
 fn mpsc_sync_spsc_smoke() {
-  let (tx, rx) = mpsc::unbounded_v1();
+  let (tx, rx) = mpsc::unbounded();
   tx.send(10).unwrap();
   assert_eq!(rx.recv().unwrap(), 10);
 }
 
 #[test]
 fn mpsc_sync_try_send() {
-  let (tx, rx) = mpsc::unbounded_v1::<i32>();
+  let (tx, rx) = mpsc::unbounded::<i32>();
 
   // Successful try_send
   assert_eq!(tx.try_send(10), Ok(()));
@@ -31,7 +33,7 @@ fn mpsc_sync_try_send() {
   }
 
   // Also check async sender
-  let (tx_async, rx_async) = mpsc::unbounded_v1_async::<i32>();
+  let (tx_async, rx_async) = mpsc::unbounded_async::<i32>();
   assert_eq!(tx_async.try_send(30), Ok(()));
   let rx_async_recv = rx_async.to_sync(); // use sync recv for simplicity
   assert_eq!(rx_async_recv.recv().unwrap(), 30);
@@ -45,7 +47,7 @@ fn mpsc_sync_try_send() {
 
 #[test]
 fn mpsc_sync_try_recv() {
-  let (tx, rx) = mpsc::unbounded_v1::<i32>();
+  let (tx, rx) = mpsc::unbounded::<i32>();
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));
   tx.send(1).unwrap();
   assert_eq!(rx.try_recv(), Ok(1));
@@ -54,7 +56,7 @@ fn mpsc_sync_try_recv() {
 
 #[test]
 fn mpsc_sync_recv_blocks() {
-  let (tx, rx) = mpsc::unbounded_v1();
+  let (tx, rx) = mpsc::unbounded();
   let handle = thread::spawn(move || {
     thread::sleep(SHORT_TIMEOUT);
     tx.send("hello").unwrap();
@@ -66,7 +68,7 @@ fn mpsc_sync_recv_blocks() {
 
 #[test]
 fn mpsc_sync_all_producers_drop_signals_disconnect() {
-  let (tx, rx) = mpsc::unbounded_v1::<()>();
+  let (tx, rx) = mpsc::unbounded::<()>();
   let tx2 = tx.clone();
   drop(tx);
   drop(tx2);
@@ -83,7 +85,7 @@ fn mpsc_sync_consumer_drop_cleans_up() {
     }
   }
 
-  let (tx, rx) = mpsc::unbounded_v1();
+  let (tx, rx) = mpsc::unbounded();
   tx.send(DropCounter(drop_count.clone())).unwrap();
   tx.send(DropCounter(drop_count.clone())).unwrap();
 
@@ -96,7 +98,7 @@ fn mpsc_sync_consumer_drop_cleans_up() {
 
 #[test]
 fn mpsc_sync_multi_producer_stress() {
-  let (tx, rx) = mpsc::unbounded_v1();
+  let (tx, rx) = mpsc::unbounded();
   let num_producers = 8;
   let items_per_producer = ITEMS_HIGH;
   let total_items = num_producers * items_per_producer;
@@ -115,7 +117,6 @@ fn mpsc_sync_multi_producer_stress() {
 
   let sum_clone = Arc::clone(&sum);
   let consumer_handle = thread::spawn(move || {
-    // The closure now moves `sum_clone`, not `sum`.
     for _ in 0..total_items {
       sum_clone.fetch_add(rx.recv().unwrap(), Ordering::Relaxed);
     }
@@ -132,7 +133,7 @@ fn mpsc_sync_multi_producer_stress() {
 
 #[test]
 fn mpsc_async_producer_to_sync_consumer() {
-  let (tx_async, rx_async) = mpsc::unbounded_v1_async();
+  let (tx_async, rx_async) = mpsc::unbounded_async();
   let rx_sync = rx_async.to_sync();
 
   // Spawn a new OS thread to host the Tokio runtime.
@@ -161,9 +162,6 @@ fn mpsc_async_producer_to_sync_consumer() {
 
 #[test]
 fn repro_mpsc_bounded_chunk_hoarding_starvation() {
-  use fibre::error::TrySendError;
-  use fibre::mpsc;
-
   // Capacity 100. Chunk size becomes 50. Total chunks = 2.
   let (tx1, rx) = mpsc::bounded::<i32>(100);
   let tx2 = tx1.clone();
@@ -183,7 +181,10 @@ fn repro_mpsc_bounded_chunk_hoarding_starvation() {
 
   // tx3 tries to send. The global chunk stack is empty, but work-stealing
   // should rescue it by taking half of tx1's or tx2's cached nodes.
-  tx3.try_send(3).expect("work-stealing should have found nodes in a peer cache");
+  tx3
+    .try_send(3)
+    .expect("work-stealing should have found nodes in a peer cache");
 
   assert_eq!(tx1.len(), 3);
+  drop(rx);
 }

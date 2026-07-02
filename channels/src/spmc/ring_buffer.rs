@@ -29,9 +29,9 @@ pub(crate) const PARK_PARKED: u8 = 1; // Producer has written its thread handle 
 pub(crate) const PARK_CONSUMING: u8 = 2; // A consumer has claimed the thread handle and will unpark.
 
 // --- Telemetry Constants ---
-const LOC_P_SEND: &str = "Sender::send";
-const LOC_P_TRY_SEND: &str = "Sender::try_send";
-const LOC_C_RECV: &str = "Receiver::recv";
+const LOC_P_SEND: &str = "BoundedSyncSender::send";
+const LOC_P_TRY_SEND: &str = "BoundedSyncSender::try_send";
+const LOC_C_RECV: &str = "BoundedSyncReceiver::recv";
 const LOC_C_TRY_RECV: &str = "try_recv_internal";
 const LOC_WAKEP: &str = "SpmcShared::wake_producer";
 const LOC_SYNCWAKER: &str = "sync_waker";
@@ -287,7 +287,7 @@ impl<T: Send + Clone> SpmcShared<T> {
         .iter()
         .map(|t_arc| t_arc.load(Ordering::Acquire))
         .min()
-        .expect("Receiver list checked for non-empty");
+        .expect("BoundedSyncReceiver list checked for non-empty");
     }
 
     if current_head_idx - min_tail_idx >= self.capacity {
@@ -378,7 +378,7 @@ impl<T: Send + Clone> SpmcShared<T> {
       .iter()
       .map(|t_arc| t_arc.load(Ordering::Acquire))
       .min()
-      .expect("Receiver list checked for non-empty");
+      .expect("BoundedSyncReceiver list checked for non-empty");
     Ok(self.capacity - (current_head_idx - min_tail_idx).min(self.capacity))
   }
 
@@ -473,34 +473,34 @@ impl<T: Send + Clone> SpmcShared<T> {
 }
 
 #[derive(Debug)]
-pub struct Sender<T: Send + Clone> {
+pub struct BoundedSyncSender<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
   pub(crate) closed: AtomicBool,
 }
-unsafe impl<T: Send + Clone> Send for Sender<T> {}
+unsafe impl<T: Send + Clone> Send for BoundedSyncSender<T> {}
 
 #[derive(Debug)]
-pub struct AsyncSender<T: Send + Clone> {
+pub struct BoundedAsyncSender<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
   pub(crate) closed: AtomicBool,
 }
-unsafe impl<T: Send + Clone> Send for AsyncSender<T> {}
+unsafe impl<T: Send + Clone> Send for BoundedAsyncSender<T> {}
 
 #[derive(Debug)]
-pub struct Receiver<T: Send + Clone> {
+pub struct BoundedSyncReceiver<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
   pub(crate) tail: Arc<AtomicUsize>,
   pub(crate) closed: AtomicBool,
 }
 
 #[derive(Debug)]
-pub struct AsyncReceiver<T: Send + Clone> {
+pub struct BoundedAsyncReceiver<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
   pub(crate) tail: Arc<AtomicUsize>,
   pub(crate) closed: AtomicBool,
 }
 
-pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>) {
   assert!(capacity > 0, "SPMC channel capacity must be > 0");
   let shared = Arc::new(SpmcShared::new(capacity));
   let initial_tail = Arc::new(AtomicUsize::new(0));
@@ -508,11 +508,11 @@ pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (Sender<T>, Recei
     .tails_writer
     .modify(|list| list.push(Arc::clone(&initial_tail)));
   (
-    Sender {
+    BoundedSyncSender {
       shared: Arc::clone(&shared),
       closed: AtomicBool::new(false),
     },
-    Receiver {
+    BoundedSyncReceiver {
       shared,
       tail: initial_tail,
       closed: AtomicBool::new(false),
@@ -701,7 +701,7 @@ fn poll_recv_internal<T: Send + Clone>(
   }
 }
 
-impl<T: Send + Clone> Receiver<T> {
+impl<T: Send + Clone> BoundedSyncReceiver<T> {
   pub fn try_recv(&self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
@@ -940,7 +940,7 @@ impl<T: Send + Clone> Receiver<T> {
   }
 }
 
-impl<T: Send + Clone> AsyncReceiver<T> {
+impl<T: Send + Clone> BoundedAsyncReceiver<T> {
   pub fn try_recv(&self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
@@ -976,7 +976,7 @@ impl<T: Send + Clone> AsyncReceiver<T> {
   }
 
   /// Attempts to receive up to `max` items without blocking. Same semantics
-  /// as [`Receiver::try_recv_batch`].
+  /// as [`BoundedSyncReceiver::try_recv_batch`].
   pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError> {
     let mut out = Vec::new();
     self.try_recv_batch_mut(&mut out, max)?;
@@ -1040,7 +1040,7 @@ impl<T: Send + Clone> AsyncReceiver<T> {
   }
 }
 
-impl<T: Send + Clone> Clone for Receiver<T> {
+impl<T: Send + Clone> Clone for BoundedSyncReceiver<T> {
   fn clone(&self) -> Self {
     let new_tail_val = self.tail.load(Ordering::Acquire);
     let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
@@ -1056,7 +1056,7 @@ impl<T: Send + Clone> Clone for Receiver<T> {
     }
   }
 }
-impl<T: Send + Clone> Clone for AsyncReceiver<T> {
+impl<T: Send + Clone> Clone for BoundedAsyncReceiver<T> {
   fn clone(&self) -> Self {
     let new_tail_val = self.tail.load(Ordering::Acquire);
     let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
@@ -1082,14 +1082,14 @@ fn drop_receiver_internal<T: Send + Clone>(shared: &SpmcShared<T>, tail_arc: &Ar
   shared.wake_producer();
 }
 
-impl<T: Send + Clone> Drop for Receiver<T> {
+impl<T: Send + Clone> Drop for BoundedSyncReceiver<T> {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
       self.close_internal();
     }
   }
 }
-impl<T: Send + Clone> Drop for AsyncReceiver<T> {
+impl<T: Send + Clone> Drop for BoundedAsyncReceiver<T> {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
       self.close_internal();
@@ -1097,7 +1097,7 @@ impl<T: Send + Clone> Drop for AsyncReceiver<T> {
   }
 }
 
-impl<T: Send + Clone> Sender<T> {
+impl<T: Send + Clone> BoundedSyncSender<T> {
   pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TrySendError::Closed(value));
@@ -1183,7 +1183,7 @@ impl<T: Send + Clone> Sender<T> {
           .iter()
           .map(|t_arc| t_arc.load(Ordering::Acquire))
           .min()
-          .expect("Receiver list still not empty");
+          .expect("BoundedSyncReceiver list still not empty");
         buffer_still_full =
           self.shared.head.load(Ordering::Relaxed) - min_tail_recheck >= self.shared.capacity;
       }
@@ -1392,7 +1392,7 @@ impl<T: Send + Clone> Sender<T> {
   /// Arms the producer parking state machine and parks until space frees up
   /// for the slowest consumer or all consumers drop. Returns `Err(())` if all
   /// consumers are gone. Follows the same arm / re-check / park / resolve
-  /// protocol as `Sender::send`.
+  /// protocol as `BoundedSyncSender::send`.
   fn park_until_not_full(&self) -> Result<(), ()> {
     // Arm: write our thread handle and publish PARK_PARKED.
     unsafe {
@@ -1414,7 +1414,7 @@ impl<T: Send + Clone> Sender<T> {
           .iter()
           .map(|t_arc| t_arc.load(Ordering::Acquire))
           .min()
-          .expect("Receiver list still not empty");
+          .expect("BoundedSyncReceiver list still not empty");
         (
           false,
           self.shared.head.load(Ordering::Relaxed) - min_tail >= self.shared.capacity,
@@ -1528,7 +1528,7 @@ impl<T: Send + Clone> Sender<T> {
   }
 }
 
-impl<T: Send + Clone> AsyncSender<T> {
+impl<T: Send + Clone> BoundedAsyncSender<T> {
   pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TrySendError::Closed(value));
@@ -1572,7 +1572,7 @@ impl<T: Send + Clone> AsyncSender<T> {
   }
 
   /// Attempts to broadcast a batch without blocking. Same semantics as
-  /// [`Sender::try_send_batch`].
+  /// [`BoundedSyncSender::try_send_batch`].
   pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
     let total = items.len();
     if total == 0 {
@@ -1603,7 +1603,7 @@ impl<T: Send + Clone> AsyncSender<T> {
 
   /// Attempts to broadcast a batch in place without blocking, draining sent
   /// items from the front of `items`. Same semantics as
-  /// [`Sender::try_send_batch_mut`].
+  /// [`BoundedSyncSender::try_send_batch_mut`].
   pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
     if items.is_empty() {
       return Ok(0);
@@ -1669,7 +1669,7 @@ impl<T: Send + Clone> AsyncSender<T> {
   }
 }
 
-impl<T: Send + Clone> Drop for Sender<T> {
+impl<T: Send + Clone> Drop for BoundedSyncSender<T> {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
       self.close_internal();
@@ -1677,7 +1677,7 @@ impl<T: Send + Clone> Drop for Sender<T> {
   }
 }
 
-impl<T: Send + Clone> Drop for AsyncSender<T> {
+impl<T: Send + Clone> Drop for BoundedAsyncSender<T> {
   fn drop(&mut self) {
     if !self.closed.swap(true, Ordering::AcqRel) {
       self.close_internal();
@@ -1687,7 +1687,7 @@ impl<T: Send + Clone> Drop for AsyncSender<T> {
 
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T: Send + Clone> {
-  producer: &'a AsyncSender<T>,
+  producer: &'a BoundedAsyncSender<T>,
   value: Option<T>,
   _phantom: PhantomPinned,
 }
@@ -1741,7 +1741,7 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
           .iter()
           .map(|t_arc| t_arc.load(Ordering::Acquire))
           .min()
-          .expect("Receiver list still not empty");
+          .expect("BoundedSyncReceiver list still not empty");
       }
       crate::log_event!(
         Some(current_head_idx),
@@ -1760,12 +1760,12 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
   }
 }
 
-/// Future returned by [`AsyncSender::send_batch`].
+/// Future returned by [`BoundedAsyncSender::send_batch`].
 ///
 /// If dropped before completion, the unsent remainder is dropped.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchFuture<'a, T: Send + Clone> {
-  producer: &'a AsyncSender<T>,
+  producer: &'a BoundedAsyncSender<T>,
   iter: std::vec::IntoIter<T>,
   total: usize,
   sent: usize,
@@ -1821,7 +1821,7 @@ impl<'a, T: Send + Clone> Future for SendBatchFuture<'a, T> {
           .iter()
           .map(|t_arc| t_arc.load(Ordering::Acquire))
           .min()
-          .expect("Receiver list still not empty");
+          .expect("BoundedSyncReceiver list still not empty");
       }
 
       if shared.head.load(Ordering::Relaxed) - min_tail_recheck < shared.capacity {
@@ -1832,12 +1832,12 @@ impl<'a, T: Send + Clone> Future for SendBatchFuture<'a, T> {
   }
 }
 
-/// Future returned by [`AsyncSender::send_batch_mut`].
+/// Future returned by [`BoundedAsyncSender::send_batch_mut`].
 ///
 /// Cancel-safe: unsent items remain in the caller's vector.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchMutFuture<'a, T: Send + Clone> {
-  producer: &'a AsyncSender<T>,
+  producer: &'a BoundedAsyncSender<T>,
   items: &'a mut Vec<T>,
   sent: usize,
   _phantom: PhantomPinned,
@@ -1879,7 +1879,7 @@ impl<'a, T: Send + Clone> Future for SendBatchMutFuture<'a, T> {
           .iter()
           .map(|t_arc| t_arc.load(Ordering::Acquire))
           .min()
-          .expect("Receiver list still not empty");
+          .expect("BoundedSyncReceiver list still not empty");
       }
 
       if shared.head.load(Ordering::Relaxed) - min_tail_recheck < shared.capacity {
@@ -1890,13 +1890,13 @@ impl<'a, T: Send + Clone> Future for SendBatchMutFuture<'a, T> {
   }
 }
 
-/// Future returned by [`AsyncReceiver::recv_batch`].
+/// Future returned by [`BoundedAsyncReceiver::recv_batch`].
 ///
 /// Cancel-safe: items are only consumed in the poll that resolves the future.
 #[must_use = "futures do nothing unless you .await or poll them"]
 #[derive(Debug)]
 pub struct RecvBatchFuture<'a, T: Send + Clone> {
-  receiver: &'a AsyncReceiver<T>,
+  receiver: &'a BoundedAsyncReceiver<T>,
   max: usize,
 }
 
@@ -1922,13 +1922,13 @@ impl<'a, T: Send + Clone> Future for RecvBatchFuture<'a, T> {
   }
 }
 
-/// Future returned by [`AsyncReceiver::recv_batch_mut`].
+/// Future returned by [`BoundedAsyncReceiver::recv_batch_mut`].
 ///
 /// Cancel-safe: items are only consumed in the poll that resolves the future.
 #[must_use = "futures do nothing unless you .await or poll them"]
 #[derive(Debug)]
 pub struct RecvBatchMutFuture<'a, T: Send + Clone> {
-  receiver: &'a AsyncReceiver<T>,
+  receiver: &'a BoundedAsyncReceiver<T>,
   out: &'a mut Vec<T>,
   max: usize,
 }
@@ -1955,7 +1955,7 @@ impl<'a, T: Send + Clone> Future for RecvBatchMutFuture<'a, T> {
 #[must_use = "futures do nothing unless you .await or poll them"]
 #[derive(Debug)]
 pub struct RecvFuture<'a, T: Send + Clone> {
-  receiver: &'a AsyncReceiver<T>,
+  receiver: &'a BoundedAsyncReceiver<T>,
 }
 
 impl<'a, T: Send + Clone> Future for RecvFuture<'a, T> {
@@ -1968,7 +1968,7 @@ impl<'a, T: Send + Clone> Future for RecvFuture<'a, T> {
   }
 }
 
-impl<T: Send + Clone> Stream for AsyncReceiver<T> {
+impl<T: Send + Clone> Stream for BoundedAsyncReceiver<T> {
   type Item = T;
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {

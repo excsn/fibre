@@ -1,7 +1,6 @@
-//! Miri suite for the unbounded MPSC channels. The default (`unbounded()`) is
-//! v3 — Vyukov chain with per-handle bump slabs — whose slab seal/refcount
-//! lifecycle is the newest unsafe core in the crate; v1 gets smoke and
-//! ownership coverage through its explicit constructor.
+//! Miri suite for the unbounded MPSC channel (v3): Vyukov chain with
+//! per-handle bump slabs, whose slab seal/refcount lifecycle is the newest
+//! unsafe core in the crate.
 
 use fibre::error::{RecvError, TryRecvError};
 use fibre::mpsc;
@@ -216,16 +215,3 @@ fn v3_async_producers_cross_thread_per_producer_order() {
   p2.join().unwrap();
 }
 
-// --- v1 (explicit constructor) ----------------------------------------------------
-
-#[test]
-fn v1_smoke_and_ownership() {
-  let counter = drop_counter();
-  let (tx, rx) = mpsc::unbounded_v1();
-  tx.send(DropCounter::new(&counter)).unwrap();
-  tx.send(DropCounter::new(&counter)).unwrap();
-  drop(rx.recv().unwrap());
-  drop(tx);
-  drop(rx);
-  assert_eq!(drops(&counter), 2);
-}

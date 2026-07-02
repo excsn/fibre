@@ -141,8 +141,8 @@ A high-performance, lock-free, bounded channel for one producer and one consumer
 
 *   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (panics if `capacity == 0`)
 *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (panics if `capacity == 0`)
-*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff; both ends `!Clone`. Handles expose `send`/`recv`/`try_send`/`try_recv`/`recv_timeout` (receiver)/`close`/`is_closed`/`len`/`is_empty`/`is_full`/`capacity`/`to_async`/`to_sync`. No batch API.
-*   `pub fn rendezvous::rendezvous_async<T: Send>() -> (rendezvous::AsyncSender<T>, rendezvous::AsyncReceiver<T>)`
+*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff; both ends `!Clone`. Handles expose `send`/`recv`/`try_send`/`try_recv`/`recv_timeout` (receiver)/`close`/`is_closed`/`len`/`is_empty`/`is_full`/`capacity`/`to_async`/`to_sync`. No batch API.
+*   `pub fn rendezvous::rendezvous_async<T: Send>() -> (rendezvous::RendezvousAsyncSender<T>, rendezvous::RendezvousAsyncReceiver<T>)`
 
 ### Struct `BoundedSyncSender<T>`
 
@@ -211,25 +211,25 @@ The asynchronous, non-cloneable receiving handle. Implements `futures::Stream`. 
 
 An optimized channel for multiple producers and one consumer.
 
-*Note: The `mpsc` module provides both bounded and unbounded channels. The types are prefixed accordingly (e.g., `UnboundedSender`, `BoundedSender`) and are all exported directly from the `mpsc` module.*
+*Note: The `mpsc` module provides both bounded and unbounded channels. The types are prefixed accordingly (e.g., `UnboundedSyncSender`, `BoundedSyncSender`) and are all exported directly from the `mpsc` module.*
 
 ### Functions
 
-*   `pub fn unbounded<T: Send>() -> (UnboundedSender<T>, UnboundedReceiver<T>)`
+*   `pub fn unbounded<T: Send>() -> (UnboundedSyncSender<T>, UnboundedSyncReceiver<T>)`
 *   `pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>)`
-*   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
+*   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
 *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
-*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff; senders `Clone`, single receiver `!Clone`. No batch API. `_async` variant available.
+*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff; senders `Clone`, single receiver `!Clone`. No batch API. `_async` variant available.
 
 ### Unbounded MPSC Types
 
-*   **Struct `UnboundedSender<T: Send>`**: A cloneable, sync handle for the unbounded channel.
+*   **Struct `UnboundedSyncSender<T: Send>`**: A cloneable, sync handle for the unbounded channel.
     *   `send(&self, value: T) -> Result<(), SendError>`: Non-blocking send.
     *   `send_batch(&self, items: Vec<T>) -> Result<usize, SendBatchError<T>>`: Never blocks (unbounded); one length update + one wake per batch.
     *   `try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`
     *   `send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError>` / `try_send_batch_mut(...)`: In-place variants.
     *   Methods: `try_send`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `to_async`.
-*   **Struct `UnboundedReceiver<T: Send>`**: A non-cloneable, sync handle.
+*   **Struct `UnboundedSyncReceiver<T: Send>`**: A non-cloneable, sync handle.
     *   `recv(&self) -> Result<T, RecvError>`: Blocks if empty.
     *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
     *   `recv_batch(&self, max: usize) -> Result<Vec<T>, RecvError>` / `try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError>`
@@ -246,13 +246,13 @@ An optimized channel for multiple producers and one consumer.
 
 ### Bounded MPSC Types
 
-*   **Struct `BoundedSender<T: Send>`**: A cloneable, sync handle for the bounded channel.
+*   **Struct `BoundedSyncSender<T: Send>`**: A cloneable, sync handle for the bounded channel.
     *   `send(&self, value: T) -> Result<(), SendError>`: Blocks if full.
     *   `send_batch(&self, items: Vec<T>) -> Result<usize, SendBatchError<T>>`: Acquires capacity permits in bulk; blocks for the remainder.
     *   `try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`: Sends as many items as permits are available.
     *   `send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError>` / `try_send_batch_mut(...)`: In-place variants.
     *   Methods: `try_send`, `clone`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `capacity`, `is_full`, `to_async`.
-*   **Struct `BoundedReceiver<T: Send>`**: A non-cloneable, sync handle.
+*   **Struct `BoundedSyncReceiver<T: Send>`**: A non-cloneable, sync handle.
     *   `recv(&self) -> Result<T, RecvError>`: Blocks if empty.
     *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
     *   `recv_batch(&self, max: usize) -> Result<Vec<T>, RecvError>` / `try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError>`: Capacity permits are returned in one bulk release per batch.
@@ -273,10 +273,10 @@ A broadcast-style channel for one producer and multiple consumers. `T` must be `
 
 ### Functions
 
-*   `pub fn bounded<T: Send + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>)`
-*   `pub fn bounded_async<T: Send + Clone>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`
+*   `pub fn bounded<T: Send + Clone>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)`
+*   `pub fn bounded_async<T: Send + Clone>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)`
 
-### Struct `Sender<T: Send + Clone>`
+### Struct `BoundedSyncSender<T: Send + Clone>`
 
 The synchronous, non-cloneable sending handle.
 
@@ -289,7 +289,7 @@ The synchronous, non-cloneable sending handle.
     *   `close(&mut self) -> Result<(), CloseError>`
     *   `to_async`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
 
-### Struct `Receiver<T: Send + Clone>`
+### Struct `BoundedSyncReceiver<T: Send + Clone>`
 
 The synchronous, cloneable receiving handle.
 
@@ -302,7 +302,7 @@ The synchronous, cloneable receiving handle.
     *   `close(&self) -> Result<(), CloseError>`
     *   `to_async`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
 
-### Struct `AsyncSender<T: Send + Clone>`
+### Struct `BoundedAsyncSender<T: Send + Clone>`
 
 The asynchronous, non-cloneable sending handle.
 
@@ -311,7 +311,7 @@ The asynchronous, non-cloneable sending handle.
     *   `send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T>` / `send_batch_mut(...) -> SendBatchMutFuture<'_, T>`
     *   `try_send`, `try_send_batch`, `try_send_batch_mut`, `close(&mut self)`, `to_sync`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
 
-### Struct `AsyncReceiver<T: Send + Clone>`
+### Struct `BoundedAsyncReceiver<T: Send + Clone>`
 
 The asynchronous, cloneable receiving handle. Implements `futures::Stream`.
 
@@ -330,7 +330,7 @@ A flexible, lock-based channel for many producers and many consumers.
 *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
 *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`
 *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`
-*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::Sender<T>, rendezvous::Receiver<T>)` — zero-capacity direct handoff; senders and receivers `Clone`. No batch API. `_async` variant available.
+*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff; senders and receivers `Clone`. No batch API. `_async` variant available.
 
 ### Struct `Sender<T: Send>`
 

@@ -7,11 +7,7 @@
 
 pub(crate) mod bounded_queue;
 pub mod rendezvous;
-mod unbounded;
 mod unbounded_v3;
-
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 
 // --- Public re-exports ---
 pub use crate::error::{
@@ -21,10 +17,14 @@ pub use crate::error::{
 
 pub use unbounded_v3::{
   AsyncReceiver as UnboundedAsyncReceiver, AsyncSender as UnboundedAsyncSender,
-  Receiver as UnboundedReceiver, RecvBatchFuture as UnboundedRecvBatchFuture,
+  Receiver as UnboundedSyncReceiver, RecvBatchFuture as UnboundedRecvBatchFuture,
   RecvBatchMutFuture as UnboundedRecvBatchMutFuture, RecvFuture as UnboundedRecvFuture,
   SendBatchFuture as UnboundedSendBatchFuture, SendBatchMutFuture as UnboundedSendBatchMutFuture,
-  SendFuture as UnboundedSendFuture, Sender as UnboundedSender,
+  SendFuture as UnboundedSendFuture, Sender as UnboundedSyncSender,
+};
+
+pub use rendezvous::{
+  RendezvousAsyncReceiver, RendezvousAsyncSender, RendezvousSyncReceiver, RendezvousSyncSender,
 };
 
 pub use bounded_queue::{
@@ -32,47 +32,18 @@ pub use bounded_queue::{
   BoundedRecvBatchFuture, BoundedRecvBatchMutFuture,
   BoundedSendBatchFuture, BoundedSendBatchMutFuture,
   RecvFuture as BoundedRecvFuture, SendFuture as BoundedSendFuture,
-  Receiver as BoundedReceiver, Sender as BoundedSender,
+  Receiver as BoundedSyncReceiver, Sender as BoundedSyncSender,
 };
 
 // --- Unbounded V3 (Vyukov Chain + Per-Handle Bump Slabs) Constructors ---
 /// Creates a new unbounded synchronous MPSC channel.
-pub fn unbounded<T: Send>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
+pub fn unbounded<T: Send>() -> (UnboundedSyncSender<T>, UnboundedSyncReceiver<T>) {
   unbounded_v3::channel()
 }
 
 /// Creates a new unbounded asynchronous MPSC channel.
 pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>) {
   unbounded_v3::channel_async()
-}
-
-// --- Unbounded V1 (Lock Free Linked List Approach) Constructors ---
-/// Creates a new unbounded synchronous MPSC channel.
-pub fn unbounded_v1<T: Send>() -> (unbounded::Sender<T>, unbounded::Receiver<T>) {
-  let shared = Arc::new(unbounded::MpscShared::new());
-  let producer = unbounded::Sender {
-    shared: Arc::clone(&shared),
-    closed: AtomicBool::new(false),
-  };
-  let consumer = unbounded::Receiver {
-    shared,
-    closed: AtomicBool::new(false),
-  };
-  (producer, consumer)
-}
-
-/// Creates a new unbounded asynchronous MPSC channel.
-pub fn unbounded_v1_async<T: Send>() -> (unbounded::AsyncSender<T>, unbounded::AsyncReceiver<T>) {
-  let shared = Arc::new(unbounded::MpscShared::new());
-  let producer = unbounded::AsyncSender {
-    shared: Arc::clone(&shared),
-    closed: AtomicBool::new(false),
-  };
-  let consumer = unbounded::AsyncReceiver {
-    shared,
-    closed: AtomicBool::new(false),
-  };
-  (producer, consumer)
 }
 
 // --- Bounded Constructors ---
@@ -83,7 +54,7 @@ pub fn unbounded_v1_async<T: Send>() -> (unbounded::AsyncSender<T>, unbounded::A
 ///
 /// Panics if `capacity == 0`. Use [`mpsc::rendezvous`](rendezvous::rendezvous)
 /// for a zero-capacity rendezvous channel.
-pub fn bounded<T: Send>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
+pub fn bounded<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>) {
   assert!(
     capacity != 0,
     "mpsc::bounded(0) is not a rendezvous channel; use mpsc::rendezvous::rendezvous() instead"
@@ -114,7 +85,7 @@ mod tests {
 
   #[test]
   fn sync_to_sync_blocking() {
-    let (tx, rx) = unbounded_v1::<i32>();
+    let (tx, rx) = unbounded::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
     let handle = thread::spawn(move || {
@@ -133,7 +104,7 @@ mod tests {
 
   #[tokio::test]
   async fn async_to_async() {
-    let (tx, rx) = unbounded_v1_async::<i32>();
+    let (tx, mut rx) = unbounded_async::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
     let handle = tokio::spawn(async move {
@@ -152,7 +123,7 @@ mod tests {
 
   #[tokio::test]
   async fn sync_to_async_conversion() {
-    let (tx_async, rx_async) = unbounded_v1_async::<i32>();
+    let (tx_async, mut rx_async) = unbounded_async::<i32>();
     assert_eq!(tx_async.len(), 0);
     assert!(rx_async.is_empty());
     let tx_sync = tx_async.to_sync();
@@ -171,7 +142,7 @@ mod tests {
 
   #[test]
   fn async_to_sync_conversion() {
-    let (tx_async, rx_sync_orig) = unbounded_v1_async::<i32>();
+    let (tx_async, rx_sync_orig) = unbounded_async::<i32>();
     assert_eq!(tx_async.len(), 0);
     let rx_sync = rx_sync_orig.to_sync();
     assert!(rx_sync.is_empty());
@@ -191,7 +162,7 @@ mod tests {
 
   #[test]
   fn len_and_is_empty_sync() {
-    let (tx, rx) = unbounded_v1::<i32>();
+    let (tx, rx) = unbounded::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
 
@@ -222,7 +193,7 @@ mod tests {
 
   #[tokio::test]
   async fn len_and_is_empty_async() {
-    let (tx, rx) = unbounded_v1_async::<i32>();
+    let (tx, mut rx) = unbounded_async::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
 
@@ -254,7 +225,7 @@ mod tests {
   #[test]
   fn close_and_is_closed() {
     // Test sender close
-    let (tx, rx) = unbounded_v1::<i32>();
+    let (tx, rx) = unbounded::<i32>();
     let tx2 = tx.clone();
 
     assert!(!tx.is_closed());
@@ -273,7 +244,7 @@ mod tests {
     assert_eq!(rx.recv(), Err(RecvError::Disconnected));
 
     // Test receiver close
-    let (tx, rx) = unbounded_v1::<i32>();
+    let (tx, rx) = unbounded::<i32>();
     assert!(!tx.is_closed());
     rx.close().unwrap();
     assert!(tx.is_closed()); // Sender sees receiver is gone
