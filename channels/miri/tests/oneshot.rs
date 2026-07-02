@@ -34,7 +34,10 @@ fn only_first_of_competing_clones_wins() {
   tx.send(DropCounter::new(&counter)).unwrap();
   let second = tx2.send(DropCounter::new(&counter));
   assert!(second.is_err());
-  assert_eq!(drops(&counter), 1); // the losing value came back and dropped
+  // The losing value rides back inside the TrySendError; it only drops once
+  // the error itself is dropped.
+  drop(second);
+  assert_eq!(drops(&counter), 1);
   drop(block_on(rx.recv()).unwrap());
   assert_eq!(drops(&counter), 2);
 }
