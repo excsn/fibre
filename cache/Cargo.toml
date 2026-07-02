@@ -25,7 +25,7 @@ tokio = ["dep:tokio"]
 rapidhash = ["dep:rapidhash"]
 
 [dependencies]
-fibre = { version = "^0.5", path = "../channels" }
+fibre = { version = "^0.6", path = "../channels" }
 
 ahash = "^0.8"
 equivalent = "^1"
