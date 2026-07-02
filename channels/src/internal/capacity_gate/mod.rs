@@ -20,7 +20,6 @@ mod tests {
   /// Under the current buggy codebase, this test will FAIL because the thread
   /// deadlocks on `acquire_sync()`, causing `is_blocked` to be true.
   #[test]
-  #[cfg(not(miri))] // Gate this timing-dependent non-blocking assertion under Miri
   fn test_capacity_gate_sync_regression() {
     let gate = Arc::new(CapacityGate::new(1));
 
@@ -61,7 +60,6 @@ mod tests {
   ///
   /// Under the current buggy codebase, this test will FAIL because `acquire_async()`
   /// times out, causing `result.is_ok()` to be false.
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn test_capacity_gate_async_regression() {
     let gate = Arc::new(CapacityGate::new(1));

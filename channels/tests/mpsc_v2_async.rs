@@ -5,15 +5,13 @@ use fibre::mpsc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_async_smoke() {
-  let (tx, rx) = mpsc::unbounded_async();
+  let (tx, mut rx) = mpsc::unbounded_async();
   tx.send(10).await.unwrap();
   assert_eq!(rx.recv().await.unwrap(), 10);
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_async_try_recv() {
   let (tx, mut rx) = mpsc::unbounded_async::<i32>();
@@ -24,10 +22,9 @@ async fn mpsc_async_try_recv() {
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_async_recv_blocks() {
-  let (tx, rx) = mpsc::unbounded_async();
+  let (tx, mut rx) = mpsc::unbounded_async();
   let handle = tokio::spawn(async move {
     tokio::time::sleep(SHORT_TIMEOUT).await;
     tx.send("hello").await.unwrap();
@@ -36,17 +33,15 @@ async fn mpsc_async_recv_blocks() {
   handle.await.unwrap();
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_async_all_producers_drop_signals_disconnect() {
-  let (tx, rx) = mpsc::unbounded_async::<()>();
+  let (tx, mut rx) = mpsc::unbounded_async::<()>();
   let tx2 = tx.clone();
   drop(tx);
   drop(tx2);
   assert_eq!(rx.recv().await, Err(fibre::error::RecvError::Disconnected));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_async_consumer_drop_cleans_up() {
   let drop_count = Arc::new(AtomicUsize::new(0));
@@ -69,10 +64,9 @@ async fn mpsc_async_consumer_drop_cleans_up() {
   assert_eq!(drop_count.load(Ordering::SeqCst), 2);
 }
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mpsc_async_multi_producer_stress() {
-  let (tx, rx) = mpsc::unbounded_async();
+  let (tx, mut rx) = mpsc::unbounded_async();
   let num_producers = 8;
   let items_per_producer = ITEMS_HIGH;
   let total_items = num_producers * items_per_producer;
@@ -105,10 +99,9 @@ async fn mpsc_async_multi_producer_stress() {
   assert_eq!(sum.load(Ordering::Relaxed), expected_sum);
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_sync_producer_to_async_consumer() {
-  let (tx_async, rx_async) = mpsc::unbounded_async();
+  let (tx_async, mut rx_async) = mpsc::unbounded_async();
   let tx_sync = tx_async.to_sync();
 
   // Use tokio's blocking thread pool for the sync operation

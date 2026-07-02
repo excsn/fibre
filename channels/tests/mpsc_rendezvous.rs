@@ -107,7 +107,6 @@ fn sync_many_producers_one_consumer_totals() {
 
 // --- Asynchronous ---------------------------------------------------------
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_basic_handoff() {
   let (tx, rx) = rendezvous_async::<u32>();
@@ -124,7 +123,6 @@ async fn async_basic_handoff() {
   assert_eq!(got, vec![0, 1, 2, 3, 4]);
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_cancelled_send_does_not_ghost_deliver() {
   use tokio::time::timeout;
@@ -136,7 +134,6 @@ async fn async_cancelled_send_does_not_ghost_deliver() {
   assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_cancelled_send_reclaims_payload() {
   use tokio::time::timeout;
@@ -151,7 +148,6 @@ async fn async_cancelled_send_reclaims_payload() {
   assert!(weak.upgrade().is_none(), "payload leaked on cancel");
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_many_producers_one_consumer() {
   let (tx, rx) = rendezvous_async::<usize>();

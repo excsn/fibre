@@ -110,7 +110,6 @@ impl<T> Drop for UnsynchronizedRingBuffer<T> {
 // --- Unit Tests ---
 
 #[cfg(test)]
-#[cfg(not(miri))]
 mod tests {
   use super::*;
   use std::collections::VecDeque;

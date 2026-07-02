@@ -131,7 +131,6 @@ fn mpsc_sync_multi_producer_stress() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn mpsc_async_producer_to_sync_consumer() {
   let (tx_async, rx_async) = mpsc::unbounded_v1_async();
   let rx_sync = rx_async.to_sync();

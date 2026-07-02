@@ -186,7 +186,6 @@ fn sync_batch_empty_and_zero_max() {
 
 // --- Async tests ---
 
-#[cfg(not(miri))]
 mod async_tests {
   use super::*;
   use tokio::time::timeout;

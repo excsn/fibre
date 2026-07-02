@@ -11,7 +11,6 @@ const TEST_TIMEOUT: Duration = Duration::from_millis(1000);
 // ===========================================================================
 // Test 1: Asynchronous Blocked Senders Unblocking on Receiver Drop
 // ===========================================================================
-#[cfg(not(miri))]
 #[tokio::test]
 async fn test_mpmc_async_receiver_drop_unblocks_blocked_senders() {
   // Create a bounded MPMC async channel with capacity 1

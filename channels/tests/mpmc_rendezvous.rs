@@ -173,7 +173,6 @@ fn sync_multi_producer_multi_consumer_totals() {
 
 // --- Asynchronous ---------------------------------------------------------
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_basic_handoff() {
   let (tx, rx) = rendezvous_async::<u32>();
@@ -191,7 +190,6 @@ async fn async_basic_handoff() {
   assert_eq!(got, vec![0, 1, 2, 3, 4]);
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_sender_drop_disconnects_receiver() {
   let (tx, rx) = rendezvous_async::<u32>();
@@ -199,7 +197,6 @@ async fn async_sender_drop_disconnects_receiver() {
   assert_eq!(rx.recv().await, Err(RecvError::Disconnected));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_receiver_drop_disconnects_sender() {
   let (tx, rx) = rendezvous_async::<u32>();
@@ -207,7 +204,6 @@ async fn async_receiver_drop_disconnects_sender() {
   assert_eq!(tx.send(1).await, Err(SendError::Closed));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_cancelled_send_does_not_ghost_deliver() {
   use tokio::time::timeout;
@@ -221,7 +217,6 @@ async fn async_cancelled_send_does_not_ghost_deliver() {
   assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_cancelled_send_reclaims_payload() {
   use tokio::time::timeout;
@@ -237,7 +232,6 @@ async fn async_cancelled_send_reclaims_payload() {
   assert!(weak.upgrade().is_none(), "payload leaked on cancel");
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_cancelled_recv_is_clean() {
   use tokio::time::timeout;
@@ -254,7 +248,6 @@ async fn async_cancelled_recv_is_clean() {
 
 // --- Hybrid sync/async ----------------------------------------------------
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn hybrid_sync_sender_async_receiver() {
   let (tx, rx) = rendezvous_async::<u32>();

@@ -1,5 +1,3 @@
-#![cfg(not(miri))]
-
 //! Total Test Plan: Interleaved API Fuzzing for MPMC v2.
 //!
 //! This suite runs highly chaotic, randomized workflows where every thread/task

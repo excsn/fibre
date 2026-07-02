@@ -794,7 +794,6 @@ mod tests {
     SpscShared::new_internal(capacity).into()
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn create_async_channel() {
     let (p, c) = bounded_async::<i32>(5);
@@ -810,7 +809,6 @@ mod tests {
     drop(c);
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_send_recv_single_item() {
     let (mut p, mut c) = bounded_async(1);
@@ -828,7 +826,6 @@ mod tests {
     assert!(c.is_empty());
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_try_send_full_try_recv_empty() {
     let (mut p, mut c) = bounded_async::<i32>(1);
@@ -855,7 +852,6 @@ mod tests {
     assert!(c.is_empty());
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_send_blocks_then_completes() {
     let (mut p, mut c) = bounded_async::<i32>(1);
@@ -890,7 +886,6 @@ mod tests {
     assert_eq!(c.len(), 0);
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_recv_blocks_then_completes() {
     let (mut p, mut c) = bounded_async::<i32>(1);
@@ -918,7 +913,6 @@ mod tests {
     }
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_producer_drop_signals_consumer() {
     let (mut p, mut c) = bounded_async::<i32>(1);
@@ -934,7 +928,6 @@ mod tests {
     }
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_producer_drop_empty_signals_consumer() {
     let (p, mut c) = bounded_async::<i32>(1);
@@ -946,7 +939,6 @@ mod tests {
     }
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_consumer_drop_signals_producer() {
     let (mut p, c) = bounded_async::<i32>(1);
@@ -958,7 +950,6 @@ mod tests {
     }
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_select_recv_preference() {
     let (mut p1, mut c1) = bounded_async::<i32>(1);
@@ -981,7 +972,6 @@ mod tests {
     assert!(c1.is_empty());
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_select_send_blocks_other_completes() {
     let (mut p_full, _c_full) = bounded_async::<i32>(1);
@@ -1010,7 +1000,6 @@ mod tests {
   }
 
   // --- Mixed Sync/Async Tests ---
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn sync_producer_async_consumer() {
     const CAPACITY: usize = 2;
@@ -1049,7 +1038,6 @@ mod tests {
   }
 
   #[test] // This test uses std::thread for consumer, tokio runtime for producer
-  #[cfg(not(miri))]
   fn async_producer_sync_consumer() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1123,7 +1111,6 @@ mod tests {
     assert!(sync_c.is_empty(), "Channel should be empty after all recvs");
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_try_recv_disconnected() {
     let (mut p, mut c) = bounded_async::<i32>(1);
@@ -1136,7 +1123,6 @@ mod tests {
     assert_eq!(c.try_recv(), Err(TryRecvError::Disconnected));
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_recv_future_disconnected_after_item() {
     let (mut p, mut c) = bounded_async::<i32>(1);
@@ -1149,7 +1135,6 @@ mod tests {
     assert_eq!(c.recv().await, Err(RecvError::Disconnected));
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn new_spsc_apis_close_is_closed() {
     let (mut p, mut c) = bounded_async::<i32>(5);
@@ -1176,7 +1161,6 @@ mod tests {
     assert_eq!(p.send(1).await, Err(SendError::Closed));
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_sender_unblocks_on_consumer_drop() {
     let (mut p, c) = bounded_async(1);

@@ -2,6 +2,7 @@
 members = [
   "channels",
   "channels/bench",
+  "channels/miri",
   "cache",
   "ioc",
   "logging",

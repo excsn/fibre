@@ -743,10 +743,7 @@ mod tests {
 
   #[test]
   fn stress_send_recv() {
-    #[cfg(not(miri))]
     const ITEMS: usize = 100_000;
-    #[cfg(miri)]
-    const ITEMS: usize = 10000;
     const CAPACITY: usize = 128;
     let (p, c) = bounded_sync(CAPACITY);
 
@@ -861,7 +858,6 @@ mod tests {
   }
 
   #[test]
-  #[cfg(not(miri))]
   fn recv_timeout_empty_times_out() {
     let (_p, mut c) = bounded_sync::<i32>(1);
     let res = c.recv_timeout(Duration::from_millis(50));
@@ -869,7 +865,6 @@ mod tests {
   }
 
   #[test]
-  #[cfg(not(miri))]
   fn recv_timeout_item_arrives() {
     let (p, mut c) = bounded_sync::<i32>(1);
     let val_to_send = 123;
@@ -891,7 +886,6 @@ mod tests {
   }
 
   #[test]
-  #[cfg(not(miri))]
   fn recv_timeout_producer_drops_with_item() {
     let (p, mut c) = bounded_sync::<i32>(1);
     p.send(99).unwrap();
@@ -904,7 +898,6 @@ mod tests {
   }
 
   #[test]
-  #[cfg(not(miri))]
   fn new_spsc_apis_capacity_close_is_closed() {
     let (p, c) = bounded_sync::<i32>(5);
     assert_eq!(p.capacity(), 5);

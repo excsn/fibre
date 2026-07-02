@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_async_smoke() {
   let (tx, rx) = mpsc::unbounded_v1_async();
@@ -15,7 +14,6 @@ async fn mpsc_async_smoke() {
   assert_eq!(rx.recv().await.unwrap(), 10);
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_async_try_recv() {
   let (tx, mut rx) = mpsc::unbounded_v1_async::<i32>();
@@ -26,7 +24,6 @@ async fn mpsc_async_try_recv() {
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_async_recv_blocks() {
   let (tx, rx) = mpsc::unbounded_v1_async();
@@ -38,7 +35,6 @@ async fn mpsc_async_recv_blocks() {
   handle.await.unwrap();
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_async_all_producers_drop_signals_disconnect() {
   let (tx, rx) = mpsc::unbounded_v1_async::<()>();
@@ -48,7 +44,6 @@ async fn mpsc_async_all_producers_drop_signals_disconnect() {
   assert_eq!(rx.recv().await, Err(fibre::error::RecvError::Disconnected));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_async_consumer_drop_cleans_up() {
   let drop_count = Arc::new(AtomicUsize::new(0));
@@ -71,7 +66,6 @@ async fn mpsc_async_consumer_drop_cleans_up() {
   assert_eq!(drop_count.load(Ordering::SeqCst), 2);
 }
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mpsc_async_multi_producer_stress() {
   let (tx, rx) = mpsc::unbounded_v1_async();
@@ -107,7 +101,6 @@ async fn mpsc_async_multi_producer_stress() {
   assert_eq!(sum.load(Ordering::Relaxed), expected_sum);
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn mpsc_sync_producer_to_async_consumer() {
   let (tx_async, rx_async) = mpsc::unbounded_v1_async();
@@ -229,7 +222,7 @@ async fn test_mpsc_bounded_batch_send_mut_retains_items() {
 
 #[tokio::test]
 async fn test_mpsc_unbounded_recv_cancel_safe() {
-  let (tx, rx) = mpsc::unbounded_async::<i32>();
+  let (tx, mut rx) = mpsc::unbounded_async::<i32>();
 
   // 1. Park a recv future, then cancel it
   {

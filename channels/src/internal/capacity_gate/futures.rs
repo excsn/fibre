@@ -77,7 +77,6 @@ mod tests {
   use super::*;
   use std::{sync::Arc, time::Duration};
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn new_gate_has_correct_initial_permits() {
     let gate = CapacityGate::new(5);
@@ -85,7 +84,6 @@ mod tests {
     assert_eq!(gate.get_permits(), 5);
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn acquire_and_release_on_drop() {
     let gate = CapacityGate::new(2);
@@ -98,7 +96,6 @@ mod tests {
     assert_eq!(gate.get_permits(), 2);
   }
 
-  #[cfg(not(miri))]
   #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
   async fn concurrent_acquire() {
     const CAPACITY: usize = 4;

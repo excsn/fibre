@@ -5,11 +5,10 @@
 //! mixed sync/async operations, allowing, for example, a synchronous `Sender` to
 //! send to an asynchronous `AsyncReceiver`.
 
-mod block_queue;
 pub(crate) mod bounded_queue;
 pub mod rendezvous;
 mod unbounded;
-mod unbounded_v2;
+mod unbounded_v3;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -20,7 +19,7 @@ pub use crate::error::{
   TrySendBatchError, TrySendError,
 };
 
-pub use unbounded_v2::{
+pub use unbounded_v3::{
   AsyncReceiver as UnboundedAsyncReceiver, AsyncSender as UnboundedAsyncSender,
   Receiver as UnboundedReceiver, RecvBatchFuture as UnboundedRecvBatchFuture,
   RecvBatchMutFuture as UnboundedRecvBatchMutFuture, RecvFuture as UnboundedRecvFuture,
@@ -36,35 +35,15 @@ pub use bounded_queue::{
   Receiver as BoundedReceiver, Sender as BoundedSender,
 };
 
-// --- Unbounded V2 (Segmented Linked List) Constructors ---
+// --- Unbounded V3 (Vyukov Chain + Per-Handle Bump Slabs) Constructors ---
 /// Creates a new unbounded synchronous MPSC channel.
 pub fn unbounded<T: Send>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
-  let shared = Arc::new(unbounded_v2::MpscShared::new());
-  let producer = UnboundedSender {
-    shared: Arc::clone(&shared),
-    closed: AtomicBool::new(false),
-    cache: parking_lot::Mutex::new(None),
-  };
-  let consumer = UnboundedReceiver {
-    shared,
-    closed: AtomicBool::new(false),
-  };
-  (producer, consumer)
+  unbounded_v3::channel()
 }
 
 /// Creates a new unbounded asynchronous MPSC channel.
 pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>) {
-  let shared = Arc::new(unbounded_v2::MpscShared::new());
-  let producer = UnboundedAsyncSender {
-    shared: Arc::clone(&shared),
-    closed: AtomicBool::new(false),
-    cache: parking_lot::Mutex::new(None),
-  };
-  let consumer = UnboundedAsyncReceiver {
-    shared,
-    closed: AtomicBool::new(false),
-  };
-  (producer, consumer)
+  unbounded_v3::channel_async()
 }
 
 // --- Unbounded V1 (Lock Free Linked List Approach) Constructors ---
@@ -152,7 +131,6 @@ mod tests {
     // rx is consumed by the thread, cannot access its len() here
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_to_async() {
     let (tx, rx) = unbounded_v1_async::<i32>();
@@ -172,7 +150,6 @@ mod tests {
     // rx is consumed by the task
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn sync_to_async_conversion() {
     let (tx_async, rx_async) = unbounded_v1_async::<i32>();
@@ -193,7 +170,6 @@ mod tests {
   }
 
   #[test]
-  #[cfg(not(miri))]
   fn async_to_sync_conversion() {
     let (tx_async, rx_sync_orig) = unbounded_v1_async::<i32>();
     assert_eq!(tx_async.len(), 0);
@@ -244,7 +220,6 @@ mod tests {
     assert_eq!(rx.recv(), Err(RecvError::Disconnected));
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn len_and_is_empty_async() {
     let (tx, rx) = unbounded_v1_async::<i32>();

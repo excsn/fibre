@@ -116,8 +116,8 @@ fn benchmark_logic_mpsc_async(
 ) -> Pin<Box<dyn Future<Output = (BenchContext, MpscUnboundedBenchState, Duration)> + Send>> {
   let cfg_clone = cfg.clone();
   Box::pin(async move {
-    // Create a fresh asynchronous unbounded channel (using the optimized v2 implementation)
-    let (tx, rx) = mpsc::unbounded_async();
+    // Create a fresh asynchronous unbounded channel
+    let (tx, mut rx) = mpsc::unbounded_async();
 
     let start_time = Instant::now();
 
@@ -175,6 +175,7 @@ fn mpsc_unbounded_sync_benches(c: &mut Criterion) {
       // Axis 1: Total Items
       MatrixCellValue::Unsigned(100_000),
       MatrixCellValue::Unsigned(1_000_000),
+      MatrixCellValue::Unsigned(10_000_000),
     ],
   ];
   let parameter_names = vec!["Prod".to_string(), "Items".to_string()];
@@ -207,6 +208,7 @@ fn mpsc_unbounded_async_benches(c: &mut Criterion) {
       // Axis 1: Total Items
       MatrixCellValue::Unsigned(100_000),
       MatrixCellValue::Unsigned(1_000_000),
+      MatrixCellValue::Unsigned(10_000_000),
     ],
   ];
   let parameter_names = vec!["Prod".to_string(), "Items".to_string()];

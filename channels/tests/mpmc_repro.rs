@@ -9,10 +9,7 @@ use tokio::time::sleep;
 #[test]
 fn sync_v2_spsc_contention_hang_repro() {
   let (tx, rx) = mpmc::bounded(4);
-  #[cfg(not(miri))]
   let total_items = 100_000;
-  #[cfg(miri)]
-  let total_items = 100;
 
   // A flag to signal the main thread that the test is done, to avoid a race
   // where the main thread exits before the assertion in the consumer fails.
@@ -67,7 +64,6 @@ fn sync_v2_spsc_contention_hang_repro() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn repro_sync_timeout_capacity_bypass() {
   let (tx, rx) = fibre::mpmc::bounded::<i32>(1); // Strict capacity of 1
 
@@ -98,7 +94,6 @@ fn repro_sync_timeout_capacity_bypass() {
   assert_eq!(tx.len(), 1, "Queue length must equal capacity");
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn repro_async_rendezvous_payload_leak() {
   let (tx, _rx) = fibre::mpmc::rendezvous::rendezvous_async::<std::sync::Arc<()>>(); // Rendezvous
@@ -126,7 +121,6 @@ async fn repro_async_rendezvous_payload_leak() {
   );
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn reproduce_fibre_silent_drop() {
   const HWM: usize = 1000;
@@ -210,7 +204,6 @@ fn pseudo_random(seed: &mut u64) -> u64 {
   *seed
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn stress_test_mpmc_contention() {
   const CAPACITY: usize = 1000;
@@ -358,7 +351,6 @@ async fn stress_test_mpmc_contention() {
 // ===========================================================================
 // Test 3: Lost Wakeup on Exact-Capacity Batch Receive (Async)
 // ===========================================================================
-#[cfg(not(miri))]
 #[tokio::test]
 async fn test_mpmc_async_batch_recv_lost_wakeup() {
   use tokio::time::timeout;
@@ -404,7 +396,6 @@ async fn test_mpmc_async_batch_recv_lost_wakeup() {
 // Test 4: Lost Wakeup on Exact-Capacity Batch Receive (Sync)
 // ===========================================================================
 #[test]
-#[cfg(not(miri))]
 fn test_mpmc_sync_batch_recv_lost_wakeup() {
   let cap = 4;
   let (tx, rx) = mpmc::bounded::<i32>(cap);
@@ -444,7 +435,6 @@ fn test_mpmc_sync_batch_recv_lost_wakeup() {
   }
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn repro_mpmc_cancel_safety_delivery_leak() {
   use fibre::mpmc;
@@ -509,7 +499,6 @@ async fn repro_mpmc_cancel_safety_delivery_leak() {
   );
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn repro_mpmc_early_deposit_before_future_resolves() {
   use fibre::mpmc;
@@ -565,7 +554,6 @@ async fn repro_mpmc_early_deposit_before_future_resolves() {
 // Test 5: Lost Wakeup on MPMC Batch Send
 // ===========================================================================
 #[test]
-#[cfg(not(miri))]
 fn test_mpmc_batch_send_lost_wakeup() {
   use fibre::mpmc;
   use std::thread;

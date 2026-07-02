@@ -344,7 +344,6 @@ mod tests {
     assert_eq!(result.unwrap(), 99);
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn recv_async_waits_and_completes() {
     let (producer, consumer) = channel(1);
@@ -367,7 +366,6 @@ mod tests {
     assert_eq!(result.unwrap(), 123);
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_recv_wakes_on_disconnect() {
     let (producer, consumer) = channel::<()>(1);

@@ -139,7 +139,6 @@ mod spmc_deadlock_tests {
     }
   }
 
-  #[cfg(not(miri))]
   #[test]
   fn looped_repro_spmc_sync_hang_4c_1cap() {
     let num_loops = 100;
@@ -164,7 +163,6 @@ mod spmc_deadlock_tests {
     }
   }
 
-  #[cfg(not(miri))]
   #[test]
   fn looped_repro_spmc_sync_hang_14c_1cap() {
     let num_loops = 20;

@@ -205,10 +205,7 @@ fn sync_batch_wrap_around() {
 
 #[test]
 fn sync_batch_stress_interleaved() {
-  #[cfg(not(miri))]
   const ITEMS: usize = 100_000;
-  #[cfg(miri)]
-  const ITEMS: usize = 2_000;
   const CAPACITY: usize = 64;
 
   let (p, c) = spsc::bounded_sync::<usize>(CAPACITY);
@@ -263,7 +260,6 @@ fn sync_batch_drop_correctness() {
 
 // --- Async tests ---
 
-#[cfg(not(miri))]
 mod async_tests {
   use super::*;
   use tokio::time::timeout;

@@ -82,10 +82,7 @@ fn unbounded_sync_recv_batch_disconnected() {
 
 #[test]
 fn unbounded_sync_multi_producer_batches() {
-  #[cfg(not(miri))]
   const BATCHES: usize = 100;
-  #[cfg(miri)]
-  const BATCHES: usize = 5;
   const BATCH_SIZE: usize = 17;
   const PRODUCERS: usize = 4;
 
@@ -199,10 +196,7 @@ fn bounded_sync_permit_conservation() {
   // after repeated full-capacity batch send + batch recv cycles, the gate
   // must still allow a full-capacity batch.
   const CAPACITY: usize = 8;
-  #[cfg(not(miri))]
   const CYCLES: usize = 100;
-  #[cfg(miri)]
-  const CYCLES: usize = 5;
 
   let (tx, rx) = mpsc::bounded::<usize>(CAPACITY);
   for cycle in 0..CYCLES {
@@ -242,7 +236,6 @@ fn bounded_sync_recv_batch_disconnected() {
 
 // --- Bounded async tests ---
 
-#[cfg(not(miri))]
 mod bounded_async_tests {
   use super::*;
   use tokio::time::timeout;
@@ -311,21 +304,20 @@ mod bounded_async_tests {
 
 // --- Unbounded async tests ---
 
-#[cfg(not(miri))]
 mod unbounded_async_tests {
   use super::*;
   use tokio::time::timeout;
 
   #[tokio::test]
   async fn async_send_batch_completes_immediately() {
-    let (tx, rx) = mpsc::unbounded_async::<u32>();
+    let (tx, mut rx) = mpsc::unbounded_async::<u32>();
     assert_eq!(tx.send_batch(vec![1, 2, 3]).await.unwrap(), 3);
     assert_eq!(rx.recv_batch(10).await.unwrap(), vec![1, 2, 3]);
   }
 
   #[tokio::test]
   async fn async_send_batch_mut_drains() {
-    let (tx, rx) = mpsc::unbounded_async::<u32>();
+    let (tx, mut rx) = mpsc::unbounded_async::<u32>();
     let mut items = vec![5, 6, 7];
     assert_eq!(tx.send_batch_mut(&mut items).await.unwrap(), 3);
     assert!(items.is_empty());
@@ -336,7 +328,7 @@ mod unbounded_async_tests {
 
   #[tokio::test]
   async fn async_recv_batch_waits_for_items() {
-    let (tx, rx) = mpsc::unbounded_async::<u32>();
+    let (tx, mut rx) = mpsc::unbounded_async::<u32>();
     let recv_task = tokio::spawn(async move { rx.recv_batch(8).await.unwrap() });
     tokio::time::sleep(Duration::from_millis(50)).await;
     tx.try_send_batch(vec![9, 10]).unwrap();
@@ -347,7 +339,7 @@ mod unbounded_async_tests {
 
   #[tokio::test]
   async fn async_recv_batch_disconnected() {
-    let (tx, rx) = mpsc::unbounded_async::<u32>();
+    let (tx, mut rx) = mpsc::unbounded_async::<u32>();
     tx.try_send_batch(vec![1]).unwrap();
     drop(tx);
     assert_eq!(rx.recv_batch(4).await.unwrap(), vec![1]);
@@ -356,7 +348,7 @@ mod unbounded_async_tests {
 
   #[tokio::test]
   async fn async_recv_batch_cancel_safe() {
-    let (tx, rx) = mpsc::unbounded_async::<u32>();
+    let (tx, mut rx) = mpsc::unbounded_async::<u32>();
     {
       let fut = rx.recv_batch(4);
       let res = timeout(Duration::from_millis(50), fut).await;

@@ -69,41 +69,26 @@ async fn run_async_mpmc_test(
 
 // --- Async MPMC Test Cases ---
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn async_v2_1p_1c_basic() {
   run_async_mpmc_test(1, 1, ITEMS_HIGH, 16).await;
 }
 
-#[cfg(miri)]
-#[test]
-fn async_v2_mp_1c_basic() {
-  let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-
-  rt.block_on(async {
-    run_async_mpmc_test(4, 1, ITEMS_MEDIUM, 16).await;
-  });
-}
-
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn async_v2_mp_1c_basic() {
   run_async_mpmc_test(4, 1, ITEMS_MEDIUM, 16).await;
 }
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn async_v2_1p_mc_basic() {
   run_async_mpmc_test(1, 4, ITEMS_HIGH, 16).await;
 }
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn async_v2_mp_mc_contention() {
   run_async_mpmc_test(4, 4, ITEMS_HIGH, 4).await; // High contention
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_v2_unbounded_channel() {
   let (tx, rx) = mpmc::unbounded_async();
@@ -125,7 +110,6 @@ async fn async_v2_unbounded_channel() {
   consumer.await.unwrap();
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_v2_drop_producer_signals_disconnect() {
   let (tx, rx) = mpmc::bounded_async::<i32>(5);
@@ -142,7 +126,6 @@ async fn async_v2_drop_producer_signals_disconnect() {
   assert_eq!(rx.recv().await, Err(RecvError::Disconnected));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_v2_drop_receiver_signals_closed() {
   let (tx, rx) = mpmc::bounded_async::<i32>(5);
@@ -154,7 +137,6 @@ async fn async_v2_drop_receiver_signals_closed() {
   assert_eq!(tx.send(1).await, Err(SendError::Closed));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_v2_select_compatibility() {
   let (tx1, rx1) = mpmc::bounded_async(1);
@@ -181,7 +163,6 @@ async fn async_v2_select_compatibility() {
   assert_eq!(rx1.recv().await.unwrap(), 200);
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_v2_try_send_recv_various_capacities() {
   // TrySend and TryRecv are synchronous non-blocking calls, so we test
@@ -237,7 +218,6 @@ async fn async_v2_try_send_recv_various_capacities() {
   }
 }
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn async_v2_concurrent_try_send_full_spam() {
   use fibre::error::{TryRecvError, TrySendError};
@@ -310,7 +290,6 @@ async fn async_v2_concurrent_try_send_full_spam() {
   }
 }
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn async_v2_interleaved_try_send_and_send() {
   use fibre::error::TrySendError;
@@ -413,7 +392,6 @@ async fn async_v2_interleaved_try_send_and_send() {
   }
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_v2_interleaved_send_try_send_strict_bounds_deterministic() {
   let cap = 2;
@@ -466,7 +444,6 @@ async fn async_v2_interleaved_send_try_send_strict_bounds_deterministic() {
   h2.await.unwrap().unwrap();
 }
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn async_v2_concurrent_mixed_send_strictly_bounded_chaos() {
   use std::sync::atomic::AtomicBool;

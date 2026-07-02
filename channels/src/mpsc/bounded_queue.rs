@@ -1,14 +1,27 @@
 //! A screamingly high-performance Bounded MPSC Queue inspired by higher performing C++ MPSC Queues
 //!
-//! Employs a CAS-free, single-instruction `atomic::swap` write path based on
-//! the intrusive Vyukov MPSC linked list. Allocations are eliminated by
-//! pre-allocating all nodes in a flat heap array, and atomic overhead is
-//! amortized by using method-local chunk pools coordinated via a
-//! 64-bit packed generational index stack.
+//! The publish path is CAS-free: producers enqueue onto an intrusive Vyukov
+//! MPSC linked list with a single always-succeeding `atomic::swap`, so
+//! throughput stays flat as producers are added. All nodes are pre-allocated
+//! up front in one flat heap array; the send path never allocates.
+//!
+//! Capacity is enforced by node exhaustion rather than a semaphore: a send
+//! first acquires a free node from the shared pool (the `Mutex<LocalCache>`
+//! all senders share), and "full" simply means no free node is available.
+//! The receiver recycles consumed nodes through its own single-threaded cache
+//! and flushes them back in chunks (up to `CACHE_FLUSH_CHUNK`) onto a
+//! lock-free, generation-tagged index stack (`ChunkStack`), so the shared
+//! free list is touched once per chunk instead of once per item. That flush
+//! is also the wake point for senders blocked on capacity.
+//!
+//! Sync and async waiters live in entirely separate queues so OS threads and
+//! tasks never contend on each other's mutex; sync senders are woken in
+//! batches sized by how many nodes a flush released, async senders one at a
+//! time (see `SyncSendWaiters` and `notify_sync_senders`).
 
-use std::fmt;
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::VecDeque;
+use std::fmt;
 use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -20,7 +33,6 @@ use std::time::{Duration, Instant};
 use futures_core::Stream;
 use parking_lot::Mutex;
 
-// Imports from the fibre crate
 use crate::error::{
   BatchSendErrorReason, CloseError, RecvError, RecvErrorTimeout, SendBatchError, SendError,
   TryRecvError, TrySendBatchError, TrySendError,
@@ -29,26 +41,31 @@ use crate::internal::cache_padded::CachePadded;
 use crate::sync_util;
 
 const SENTINEL_IDX: u32 = u32::MAX;
-const SYNC_SPIN_LIMIT: usize = 100;
+
+// Upper bound on how many recycled nodes a receiver hoards before flushing
+// them back to the shared chunk stack. Without this cap the threshold
+// scaled with the full queue capacity, so on large-capacity queues senders
+// would starve waiting for the receiver to accumulate hundreds of freed
+// nodes before releasing any of them back.
+const CACHE_FLUSH_CHUNK: usize = 64;
 
 // --- Private Waiter Coordination ---
-pub enum Waiter {
-  Sync(Thread),
-  Async(Waker),
+//
+// Sync and async waiters live in entirely separate queues/slots (mirroring
+// mpmc_v2's SyncWaiter/AsyncWaiter split) rather than one shared queue
+// holding a Sync/Async enum. This means sync's OS threads and async's tasks
+// never contend on the same mutex at all: sync senders only ever lock
+// `sync_send_waiters`, async senders only ever lock `async_send_waiters`,
+// and likewise on the receive side. Each side is free to pick its own wake
+// policy later without any risk of it affecting the other.
+
+struct SyncSendWaiters {
+  queue: VecDeque<(u64, Thread, *const AtomicBool)>,
+  next_id: u64,
 }
 
-impl Waiter {
-  #[inline]
-  fn wake(self) {
-    match self {
-      Waiter::Sync(t) => t.unpark(),
-      Waiter::Async(w) => w.wake(),
-    }
-  }
-}
-
-struct SendWaiters {
-  queue: VecDeque<(u64, Waiter, *const AtomicBool)>,
+struct AsyncSendWaiters {
+  queue: VecDeque<(u64, Waker, *const AtomicBool)>,
   next_id: u64,
 }
 
@@ -138,7 +155,6 @@ pub struct BoundedQueue<T: Send> {
   buf: Box<[Node<T>]>,
   buf_start: *mut Node<T>,
   cap: usize,
-  pub(crate) chunk_size: usize,
 
   // Intrusive MPSC cursors
   head: CachePadded<AtomicPtr<Node<T>>>,
@@ -147,15 +163,24 @@ pub struct BoundedQueue<T: Send> {
   // Tagged Chunk Recycling Stack
   chunk_stack: ChunkStack,
 
-  // Handle coordination
+  // Handle coordination. Sync and async waiters are kept in entirely
+  // separate queues/slots (see the comment above `SyncSendWaiters`) so
+  // neither kind ever contends on the other's mutex.
   sender_count: CachePadded<AtomicUsize>,
   receiver_dropped: CachePadded<AtomicBool>,
-  send_waiters: Mutex<SendWaiters>,
-  recv_waiter: Mutex<Option<(Waiter, *const AtomicBool)>>,
-  park_gate: Mutex<()>,
-  recv_waiter_count: CachePadded<AtomicUsize>,
-  send_waiter_count: CachePadded<AtomicUsize>,
+  sync_send_waiters: Mutex<SyncSendWaiters>,
+  async_send_waiters: Mutex<AsyncSendWaiters>,
+  sync_send_waiter_count: CachePadded<AtomicUsize>,
+  async_send_waiter_count: CachePadded<AtomicUsize>,
+  sync_recv_waiter: Mutex<Option<(Thread, *const AtomicBool)>>,
+  async_recv_waiter: Mutex<Option<(Waker, *const AtomicBool)>>,
+  sync_recv_waiter_count: CachePadded<AtomicUsize>,
+  async_recv_waiter_count: CachePadded<AtomicUsize>,
   current_len: CachePadded<AtomicUsize>,
+
+  // Shared sender cache. Capacity is a single chunk, so every Sender/
+  // AsyncSender clone locks this directly instead of being assigned a bucket.
+  cache: CachePadded<Mutex<LocalCache<T>>>,
 }
 
 unsafe impl<T: Send> Send for BoundedQueue<T> {}
@@ -164,14 +189,7 @@ unsafe impl<T: Send> Sync for BoundedQueue<T> {}
 impl<T: Send> BoundedQueue<T> {
   pub fn new(capacity: usize) -> Self {
     assert!(capacity > 0, "Queue capacity must be greater than 0");
-    let chunk_size = if capacity < 8 {
-      capacity
-    } else {
-      (capacity / 2).min(64)
-    };
-    let num_chunks = capacity / chunk_size;
-    let actual_capacity = num_chunks * chunk_size;
-    let total_nodes = actual_capacity + 1; // +1 for the Vyukov stub node
+    let total_nodes = capacity + 1; // +1 for the Vyukov stub node
 
     let mut nodes = Vec::with_capacity(total_nodes);
     for _ in 0..total_nodes {
@@ -189,45 +207,46 @@ impl<T: Send> BoundedQueue<T> {
     let stub_ptr = buf_start;
     let chunk_stack = ChunkStack::new();
 
-    // Divide the remaining nodes into chunks and push to the stack
-    for chunk_idx in 0..num_chunks {
-      let start_idx = (chunk_idx * chunk_size + 1) as u32;
-      let end_idx = (start_idx + chunk_size as u32 - 1) as u32;
-
-      // Link nodes within this chunk via `next`
-      for i in start_idx..end_idx {
-        unsafe {
-          (*buf_start.add(i as usize))
-            .next
-            .store(buf_start.add(i as usize + 1), Ordering::Relaxed);
-        }
-      }
-
+    // The whole capacity is a single chunk, starting right after the stub node.
+    let start_idx = 1u32;
+    let end_idx = capacity as u32;
+    for i in start_idx..end_idx {
       unsafe {
-        (*buf_start.add(start_idx as usize)).chunk_len = chunk_size as u32;
+        (*buf_start.add(i as usize))
+          .next
+          .store(buf_start.add(i as usize + 1), Ordering::Relaxed);
       }
-      chunk_stack.push(buf_start, start_idx);
     }
+    unsafe {
+      (*buf_start.add(start_idx as usize)).chunk_len = capacity as u32;
+    }
+    chunk_stack.push(buf_start, start_idx);
 
     BoundedQueue {
       buf,
       buf_start,
-      cap: actual_capacity,
-      chunk_size,
+      cap: capacity,
       head: CachePadded::new(AtomicPtr::new(stub_ptr)),
       tail: CachePadded::new(UnsafeCell::new(stub_ptr)),
       chunk_stack,
       sender_count: CachePadded::new(AtomicUsize::new(1)),
       receiver_dropped: CachePadded::new(AtomicBool::new(false)),
-      send_waiters: Mutex::new(SendWaiters {
+      sync_send_waiters: Mutex::new(SyncSendWaiters {
         queue: VecDeque::new(),
         next_id: 0,
       }),
-      recv_waiter: Mutex::new(None),
-      park_gate: Mutex::new(()),
-      recv_waiter_count: CachePadded::new(AtomicUsize::new(0)),
-      send_waiter_count: CachePadded::new(AtomicUsize::new(0)),
+      async_send_waiters: Mutex::new(AsyncSendWaiters {
+        queue: VecDeque::new(),
+        next_id: 0,
+      }),
+      sync_send_waiter_count: CachePadded::new(AtomicUsize::new(0)),
+      async_send_waiter_count: CachePadded::new(AtomicUsize::new(0)),
+      sync_recv_waiter: Mutex::new(None),
+      async_recv_waiter: Mutex::new(None),
+      sync_recv_waiter_count: CachePadded::new(AtomicUsize::new(0)),
+      async_recv_waiter_count: CachePadded::new(AtomicUsize::new(0)),
       current_len: CachePadded::new(AtomicUsize::new(0)),
+      cache: CachePadded::new(Mutex::new(LocalCache::default())),
     }
   }
 
@@ -246,9 +265,23 @@ impl<T: Send> BoundedQueue<T> {
   }
 
   fn release_chunk(&self, chunk_head: *mut Node<T>) {
+    // Read chunk_len before pushing: once it's on chunk_stack another
+    // thread can pop (and even re-split, via take_nodes) it immediately.
+    let released = unsafe { (*chunk_head).chunk_len } as usize;
     let head_idx = self.ptr_to_idx(chunk_head);
     self.chunk_stack.push(self.buf_start, head_idx);
-    self.notify_senders();
+    // One fence covers both checks below; each is otherwise just a Relaxed
+    // load that returns immediately if that kind's queue is empty (the
+    // common case when only one kind is in use on this queue). Sync gets a
+    // batch wake bounded by how many nodes actually came back (real OS
+    // threads parking means waking only one per release leaves the rest
+    // sitting parked until further releases trickle through to reach them
+    // individually); async is untouched and keeps waking exactly one, since
+    // its wake is cheap in-process rescheduling and over-waking would just
+    // cost extra poll/reschedule cycles for tasks that can't proceed.
+    fence(Ordering::SeqCst);
+    self.notify_sync_senders(released);
+    self.notify_async_senders();
   }
 
   pub fn add_sender(&self) {
@@ -276,97 +309,197 @@ impl<T: Send> BoundedQueue<T> {
     !self.receiver_dropped.load(Ordering::Acquire)
   }
 
-  fn register_send(&self, prev_id: Option<u64>, wake: Waiter, notified: *const AtomicBool) -> u64 {
-    let mut g = self.send_waiters.lock();
+  fn register_sync_send(&self, prev_id: Option<u64>, thread: Thread, notified: *const AtomicBool) -> u64 {
+    let mut g = self.sync_send_waiters.lock();
     if let Some(id) = prev_id {
       g.queue.retain(|(sid, _, _)| *sid != id);
     }
     let id = g.next_id;
     g.next_id = g.next_id.wrapping_add(1);
-    g.queue.push_back((id, wake, notified));
+    g.queue.push_back((id, thread, notified));
     self
-      .send_waiter_count
+      .sync_send_waiter_count
       .store(g.queue.len(), Ordering::Release);
     id
   }
 
-  fn unregister_send(&self, id: u64) {
-    let mut g = self.send_waiters.lock();
+  fn unregister_sync_send(&self, id: u64) {
+    let mut g = self.sync_send_waiters.lock();
     let prev = g.queue.len();
     g.queue.retain(|(sid, _, _)| *sid != id);
     if g.queue.len() != prev {
       self
-        .send_waiter_count
+        .sync_send_waiter_count
         .store(g.queue.len(), Ordering::Release);
     }
   }
 
-  fn register_recv(&self, wake: Waiter, notified: *const AtomicBool) {
-    *self.recv_waiter.lock() = Some((wake, notified));
-    self.recv_waiter_count.store(1, Ordering::Release);
+  fn register_async_send(&self, prev_id: Option<u64>, waker: Waker, notified: *const AtomicBool) -> u64 {
+    let mut g = self.async_send_waiters.lock();
+    if let Some(id) = prev_id {
+      g.queue.retain(|(sid, _, _)| *sid != id);
+    }
+    let id = g.next_id;
+    g.next_id = g.next_id.wrapping_add(1);
+    g.queue.push_back((id, waker, notified));
+    self
+      .async_send_waiter_count
+      .store(g.queue.len(), Ordering::Release);
+    id
   }
 
-  fn unregister_recv(&self) {
-    *self.recv_waiter.lock() = None;
-    self.recv_waiter_count.store(0, Ordering::Release);
+  fn unregister_async_send(&self, id: u64) {
+    let mut g = self.async_send_waiters.lock();
+    let prev = g.queue.len();
+    g.queue.retain(|(sid, _, _)| *sid != id);
+    if g.queue.len() != prev {
+      self
+        .async_send_waiter_count
+        .store(g.queue.len(), Ordering::Release);
+    }
   }
 
+  fn register_sync_recv(&self, thread: Thread, notified: *const AtomicBool) {
+    *self.sync_recv_waiter.lock() = Some((thread, notified));
+    self.sync_recv_waiter_count.store(1, Ordering::Release);
+  }
+
+  fn unregister_sync_recv(&self) {
+    *self.sync_recv_waiter.lock() = None;
+    self.sync_recv_waiter_count.store(0, Ordering::Release);
+  }
+
+  fn register_async_recv(&self, waker: Waker, notified: *const AtomicBool) {
+    *self.async_recv_waiter.lock() = Some((waker, notified));
+    self.async_recv_waiter_count.store(1, Ordering::Release);
+  }
+
+  fn unregister_async_recv(&self) {
+    *self.async_recv_waiter.lock() = None;
+    self.async_recv_waiter_count.store(0, Ordering::Release);
+  }
+
+  // Called by every sender regardless of kind, since a sender doesn't know
+  // whether the current receiver handle is sync or async. Only one of the
+  // two slots is ever actually populated at a time (there's only ever one
+  // receiver), so the other check is a cheap Relaxed-load no-op.
   fn notify_receiver(&self) {
     fence(Ordering::SeqCst);
-    if self.recv_waiter_count.load(Ordering::Relaxed) != 0 {
-      let mut g = self.recv_waiter.lock();
-      if let Some((waiter, notified)) = g.take() {
-        self.recv_waiter_count.store(0, Ordering::Release);
+    if self.sync_recv_waiter_count.load(Ordering::Relaxed) != 0 {
+      let mut g = self.sync_recv_waiter.lock();
+      if let Some((thread, notified)) = g.take() {
+        self.sync_recv_waiter_count.store(0, Ordering::Release);
         if !notified.is_null() {
           unsafe { (*notified).store(true, Ordering::Release) };
         }
         drop(g);
-        waiter.wake();
+        thread.unpark();
+      }
+    }
+    if self.async_recv_waiter_count.load(Ordering::Relaxed) != 0 {
+      let mut g = self.async_recv_waiter.lock();
+      if let Some((waker, notified)) = g.take() {
+        self.async_recv_waiter_count.store(0, Ordering::Release);
+        if !notified.is_null() {
+          unsafe { (*notified).store(true, Ordering::Release) };
+        }
+        drop(g);
+        waker.wake();
       }
     }
   }
 
-  fn notify_senders(&self) {
-    fence(Ordering::SeqCst);
-    if self.send_waiter_count.load(Ordering::Relaxed) != 0 {
-      let mut g = self.send_waiters.lock();
-      if let Some((_id, waiter, notified)) = g.queue.pop_front() {
+  // Wakes up to `released` parked sync senders instead of just one: real OS
+  // threads pay a full park/unpark round trip, so waking only one per
+  // release regardless of how many nodes came back left the rest sitting
+  // parked until enough further releases trickled through to reach them
+  // individually. Uses `pop_front` (oldest first) rather than rebuilding the
+  // VecDeque, so `sync_send_waiters` keeps its accumulated capacity instead
+  // of forcing the next burst of registrations to reallocate from scratch.
+  fn notify_sync_senders(&self, released: usize) {
+    if self.sync_send_waiter_count.load(Ordering::Relaxed) == 0 {
+      return;
+    }
+    let mut g = self.sync_send_waiters.lock();
+    let mut to_wake = Vec::with_capacity(g.queue.len().min(released));
+    while to_wake.len() < released {
+      let Some((_id, thread, notified)) = g.queue.pop_front() else {
+        break;
+      };
+      if !notified.is_null() {
+        unsafe { (*notified).store(true, Ordering::Release) };
+      }
+      to_wake.push(thread);
+    }
+    self
+      .sync_send_waiter_count
+      .store(g.queue.len(), Ordering::Release);
+    drop(g);
+    for thread in to_wake {
+      thread.unpark();
+    }
+  }
+
+  fn notify_async_senders(&self) {
+    if self.async_send_waiter_count.load(Ordering::Relaxed) != 0 {
+      let mut g = self.async_send_waiters.lock();
+      if let Some((_id, waker, notified)) = g.queue.pop_front() {
         self
-          .send_waiter_count
+          .async_send_waiter_count
           .store(g.queue.len(), Ordering::Release);
         if !notified.is_null() {
           unsafe { (*notified).store(true, Ordering::Release) };
         }
         drop(g);
-        waiter.wake();
+        waker.wake();
       }
     }
   }
 
   fn wake_all_receivers(&self) {
-    let waiter = self.recv_waiter.lock().take();
-    if let Some((waiter, notified)) = waiter {
-      self.recv_waiter_count.store(0, Ordering::Release);
+    if let Some((thread, notified)) = self.sync_recv_waiter.lock().take() {
+      self.sync_recv_waiter_count.store(0, Ordering::Release);
       if !notified.is_null() {
         unsafe { (*notified).store(true, Ordering::Release) };
       }
-      waiter.wake();
+      thread.unpark();
+    }
+    if let Some((waker, notified)) = self.async_recv_waiter.lock().take() {
+      self.async_recv_waiter_count.store(0, Ordering::Release);
+      if !notified.is_null() {
+        unsafe { (*notified).store(true, Ordering::Release) };
+      }
+      waker.wake();
     }
   }
 
   fn wake_all_senders(&self) {
-    let mut to_wake = Vec::new();
+    let mut sync_to_wake = Vec::new();
     {
-      let mut g = self.send_waiters.lock();
-      while let Some((_id, waiter, notified)) = g.queue.pop_front() {
+      let mut g = self.sync_send_waiters.lock();
+      while let Some((_id, thread, notified)) = g.queue.pop_front() {
         if !notified.is_null() {
           unsafe { (*notified).store(true, Ordering::Release) };
         }
-        to_wake.push(waiter);
+        sync_to_wake.push(thread);
       }
-      self.send_waiter_count.store(0, Ordering::Release);
+      self.sync_send_waiter_count.store(0, Ordering::Release);
     }
-    for w in to_wake {
+    let mut async_to_wake = Vec::new();
+    {
+      let mut g = self.async_send_waiters.lock();
+      while let Some((_id, waker, notified)) = g.queue.pop_front() {
+        if !notified.is_null() {
+          unsafe { (*notified).store(true, Ordering::Release) };
+        }
+        async_to_wake.push(waker);
+      }
+      self.async_send_waiter_count.store(0, Ordering::Release);
+    }
+    for t in sync_to_wake {
+      t.unpark();
+    }
+    for w in async_to_wake {
       w.wake();
     }
   }
@@ -382,9 +515,13 @@ impl<T: Send> BoundedQueue<T> {
 
       if !next.is_null() {
         if *is_registered {
-          self.unregister_recv();
+          self.unregister_async_recv();
           *is_registered = false;
         }
+        // Option::take, not ptr::read: must leave the slot as None. A node
+        // popped here can sit unused in the chunk free-list until the queue
+        // itself drops; Node has no custom Drop, so the auto-derived drop glue
+        // for `buf` would double-drop a stale Some(T) left by a bare ptr::read.
         let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
         unsafe {
           *self.tail.get() = next;
@@ -399,13 +536,13 @@ impl<T: Send> BoundedQueue<T> {
           continue;
         }
         if *is_registered {
-          self.unregister_recv();
+          self.unregister_async_recv();
           *is_registered = false;
         }
         return Poll::Ready(Err(RecvError::Disconnected));
       }
 
-      self.register_recv(Waiter::Async(cx.waker().clone()), std::ptr::null());
+      self.register_async_recv(cx.waker().clone(), std::ptr::null());
       *is_registered = true;
       self.pre_park_fence();
 
@@ -527,19 +664,21 @@ impl<T: Send> LocalCache<T> {
 pub struct Sender<T: Send> {
   shared: Arc<BoundedQueue<T>>,
   closed: AtomicBool,
-  pub(crate) cache: Mutex<LocalCache<T>>,
 }
 
+// Deliberately `RefCell`, not `Mutex`: Receiver is intentionally restricted to
+// single-thread access (see the `Send`-only impl below, no `Sync`). Sharing a
+// `Receiver` across threads is a compile error now (RefCell is never Sync),
+// rather than a silent footgun protected only by a lock nothing contends.
 pub struct Receiver<T: Send> {
   shared: Arc<BoundedQueue<T>>,
   closed: AtomicBool,
-  pub(crate) cache: Mutex<LocalCache<T>>,
+  pub(crate) cache: RefCell<LocalCache<T>>,
 }
 
 pub struct AsyncSender<T: Send> {
   shared: Arc<BoundedQueue<T>>,
   closed: AtomicBool,
-  pub(crate) cache: Mutex<LocalCache<T>>,
 }
 
 pub struct AsyncReceiver<T: Send> {
@@ -609,12 +748,12 @@ impl<T: Send> Sender<T> {
     self.shared.notify_receiver();
   }
 
+  /// Blocks until a node is available. Never holds the shared bucket's lock
+  /// while parked: each iteration locks just long enough to check, then drops
+  /// it before potentially parking, so other senders sharing this bucket
+  /// aren't frozen out for the duration of our wait.
   #[inline]
-  fn allocate_node(&self, pool: &mut LocalCache<T>) -> Result<*mut Node<T>, SendError> {
-    if let Some(node) = pool.pop_node(&self.shared) {
-      return Ok(node);
-    }
-
+  fn allocate_node(&self) -> Result<*mut Node<T>, SendError> {
     let mut is_registered = false;
     let mut my_id = None;
     let notified = AtomicBool::new(false);
@@ -623,16 +762,19 @@ impl<T: Send> Sender<T> {
     loop {
       if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
         if let Some(id) = my_id {
-          self.shared.unregister_send(id);
+          self.shared.unregister_sync_send(id);
         }
         return Err(SendError::Closed);
       }
 
-      if let Some(node) = pool.pop_node(&self.shared) {
-        if let Some(id) = my_id {
-          self.shared.unregister_send(id);
+      {
+        let mut pool = self.shared.cache.lock();
+        if let Some(node) = pool.pop_node(&self.shared) {
+          if let Some(id) = my_id {
+            self.shared.unregister_sync_send(id);
+          }
+          return Ok(node);
         }
-        return Ok(node);
       }
 
       if is_registered {
@@ -646,7 +788,7 @@ impl<T: Send> Sender<T> {
 
       let id = self
         .shared
-        .register_send(None, Waiter::Sync(thread::current()), notified_ptr);
+        .register_sync_send(None, thread::current(), notified_ptr);
       is_registered = true;
       my_id = Some(id);
       fence(Ordering::SeqCst);
@@ -657,40 +799,21 @@ impl<T: Send> Sender<T> {
     if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
       return Err(SendError::Closed);
     }
-    let mut pool = self.cache.lock();
 
-    // 1. Try to get a node from local cache or chunk stack.
-    if let Some(node) = pool.pop_node(&self.shared) {
+    // 1. Try to get a node from local cache or chunk stack. The lock is
+    // held only long enough to pop the pointer; the Vyukov swap and the
+    // receiver wake happen after it's released.
+    let node_ptr = {
+      let mut pool = self.shared.cache.lock();
+      pool.pop_node(&self.shared)
+    };
+    if let Some(node) = node_ptr {
       unsafe { self.enqueue_node(node, item) };
       return Ok(());
     }
 
-    // 2. Adaptive Spinning: Only spin-yield if the chunk size is very small.
-    // For larger chunk sizes, space is recycled in coarse blocks,
-    // so spinning is highly likely to waste CPU.
-    if self.shared.chunk_size <= 4 {
-      for _ in 0..SYNC_SPIN_LIMIT {
-        if let Some(node) = pool.pop_node(&self.shared) {
-          unsafe { self.enqueue_node(node, item) };
-          return Ok(());
-        }
-        std::thread::yield_now();
-      }
-    }
-
-    // 3. Blocking Path: Skip spinning for larger chunk sizes and park immediately.
-    drop(pool); // Unlock cache before locking the park gate
-
-    let _gate = self.shared.park_gate.lock();
-    let mut pool = self.cache.lock();
-
-    // Re-check one last time under the lock
-    if let Some(node) = pool.pop_node(&self.shared) {
-      unsafe { self.enqueue_node(node, item) };
-      return Ok(());
-    }
-
-    let node_ptr = self.allocate_node(&mut *pool)?;
+    // 2. Blocking Path: park immediately rather than spinning.
+    let node_ptr = self.allocate_node()?;
     unsafe { self.enqueue_node(node_ptr, item) };
     Ok(())
   }
@@ -699,24 +822,16 @@ impl<T: Send> Sender<T> {
     if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
       return Err(TrySendError::Closed(item));
     }
-    let mut pool = self.cache.lock();
-    let curr = match pool.pop_node(&self.shared) {
+    let node_ptr = {
+      let mut pool = self.shared.cache.lock();
+      pool.pop_node(&self.shared)
+    };
+    let curr = match node_ptr {
       Some(n) => n,
       None => return Err(TrySendError::Full(item)),
     };
 
-    unsafe {
-      (*curr).val.get().write(Some(item));
-      (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-    }
-
-    let old_head = self.shared.head.swap(curr, Ordering::AcqRel);
-    unsafe {
-      (*old_head).next.store(curr, Ordering::Release);
-    }
-
-    self.shared.current_len.fetch_add(1, Ordering::Relaxed);
-    self.shared.notify_receiver();
+    unsafe { self.enqueue_node(curr, item) };
     Ok(())
   }
 
@@ -734,24 +849,46 @@ impl<T: Send> Sender<T> {
 
     let mut iter = items.into_iter();
     let mut sent = 0;
-    let mut pool = self.cache.lock();
 
     while sent < total {
-      if pool.count == 0 {
-        match self.allocate_node(&mut *pool) {
-          Ok(ptr) => pool.push_node(ptr),
-          Err(_) => {
-            return Err(SendBatchError {
-              sent,
-              unsent: iter.collect(),
-            });
+      // Detach a run of nodes from the pool under the lock (pure pointer
+      // bookkeeping); the lock is released before writing items or
+      // publishing, so it's never held across the Vyukov swap or wake.
+      let (first_node, k) = loop {
+        let mut pool = self.shared.cache.lock();
+        if pool.count == 0 {
+          // Drop the lock before calling allocate_node, which may park: see
+          // the comment on allocate_node for why it must never be held while
+          // blocked.
+          drop(pool);
+          match self.allocate_node() {
+            Ok(ptr) => {
+              self.shared.cache.lock().push_node(ptr);
+            }
+            Err(_) => {
+              return Err(SendBatchError {
+                sent,
+                unsent: iter.collect(),
+              });
+            }
           }
+          continue;
         }
-      }
 
-      let k = (total - sent).min(pool.count);
-      unsafe {
+        let k = (total - sent).min(pool.count);
         let first_node = pool.head;
+        let mut curr = first_node;
+        unsafe {
+          for _ in 0..(k - 1) {
+            curr = (*curr).next.load(Ordering::Relaxed);
+          }
+          pool.head = (*curr).next.load(Ordering::Relaxed);
+        }
+        pool.count -= k;
+        break (first_node, k);
+      };
+
+      unsafe {
         let mut curr = first_node;
         for _ in 0..(k - 1) {
           let next = (*curr).next.load(Ordering::Relaxed);
@@ -759,13 +896,9 @@ impl<T: Send> Sender<T> {
           (*curr).val.get().write(Some(item_val));
           curr = next;
         }
-        let next_free = (*curr).next.load(Ordering::Relaxed);
         let item_val = iter.next().unwrap();
         (*curr).val.get().write(Some(item_val));
         (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-
-        pool.head = next_free;
-        pool.count -= k;
 
         let old_head = self.shared.head.swap(curr, Ordering::AcqRel);
         (*old_head).next.store(first_node, Ordering::Release);
@@ -794,16 +927,36 @@ impl<T: Send> Sender<T> {
 
     let mut iter = items.into_iter();
     let mut sent = 0;
-    let mut pool = self.cache.lock();
 
     while sent < total {
-      if !pool.fill_pool(&self.shared) {
-        break;
-      }
+      // Detach a run of nodes from the pool under the lock (pure pointer
+      // bookkeeping); the lock is released before writing items or
+      // publishing, so it's never held across the Vyukov swap or wake.
+      let detached = {
+        let mut pool = self.shared.cache.lock();
+        if !pool.fill_pool(&self.shared) {
+          None
+        } else {
+          let k = (total - sent).min(pool.count);
+          let first_node = pool.head;
+          let mut curr = first_node;
+          unsafe {
+            for _ in 0..(k - 1) {
+              curr = (*curr).next.load(Ordering::Relaxed);
+            }
+            pool.head = (*curr).next.load(Ordering::Relaxed);
+          }
+          pool.count -= k;
+          Some((first_node, k))
+        }
+      };
 
-      let k = (total - sent).min(pool.count);
+      let (first_node, k) = match detached {
+        Some(v) => v,
+        None => break,
+      };
+
       unsafe {
-        let first_node = pool.head;
         let mut curr = first_node;
         for _ in 0..(k - 1) {
           let next = (*curr).next.load(Ordering::Relaxed);
@@ -811,13 +964,9 @@ impl<T: Send> Sender<T> {
           (*curr).val.get().write(Some(item_val));
           curr = next;
         }
-        let next_free = (*curr).next.load(Ordering::Relaxed);
         let item_val = iter.next().unwrap();
         (*curr).val.get().write(Some(item_val));
         (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-
-        pool.head = next_free;
-        pool.count -= k;
 
         let old_head = self.shared.head.swap(curr, Ordering::AcqRel);
         (*old_head).next.store(first_node, Ordering::Release);
@@ -911,15 +1060,13 @@ impl<T: Send> Sender<T> {
     self.shared.is_full()
   }
 
-  pub fn to_async(mut self) -> AsyncSender<T> {
+  pub fn to_async(self) -> AsyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     let closed = self.closed.load(Ordering::Relaxed);
-    let cache_val = std::mem::take(self.cache.get_mut());
     std::mem::forget(self);
     AsyncSender {
       shared,
       closed: AtomicBool::new(closed),
-      cache: Mutex::new(cache_val),
     }
   }
 }
@@ -930,14 +1077,12 @@ impl<T: Send> Clone for Sender<T> {
     Sender {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
-      cache: Mutex::new(LocalCache::default()),
     }
   }
 }
 
 impl<T: Send> Drop for Sender<T> {
   fn drop(&mut self) {
-    self.cache.get_mut().flush(&self.shared);
     let _ = self.close();
   }
 }
@@ -946,7 +1091,7 @@ impl<T: Send> Receiver<T> {
   #[inline]
   fn recycle_node(&self, node_ptr: *mut Node<T>, pool: &mut LocalCache<T>) {
     pool.push_node(node_ptr);
-    if pool.count >= self.shared.chunk_size {
+    if pool.count >= self.shared.capacity().min(CACHE_FLUSH_CHUNK) {
       pool.flush(&self.shared);
     }
   }
@@ -960,7 +1105,7 @@ impl<T: Send> Receiver<T> {
       return Err(RecvError::Disconnected);
     }
 
-    let mut pool = self.cache.lock();
+    let mut pool = self.cache.borrow_mut();
 
     loop {
       let tail = unsafe { *self.shared.tail.get() };
@@ -968,8 +1113,10 @@ impl<T: Send> Receiver<T> {
 
       if !next.is_null() {
         if is_registered {
-          self.shared.unregister_recv();
+          self.shared.unregister_sync_recv();
         }
+        // see poll_pop: must leave the slot None, or the queue's drop glue
+        // double-drops a stale value left in a never-resent free-list node
         let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
         unsafe {
           *self.shared.tail.get() = next;
@@ -987,7 +1134,7 @@ impl<T: Send> Receiver<T> {
           continue;
         }
         if is_registered {
-          self.shared.unregister_recv();
+          self.shared.unregister_sync_recv();
         }
         return Err(RecvError::Disconnected);
       }
@@ -1000,21 +1147,9 @@ impl<T: Send> Receiver<T> {
         continue;
       }
 
-      let mut saw_item = false;
-      for _ in 0..SYNC_SPIN_LIMIT {
-        if !unsafe { (*tail).next.load(Ordering::Acquire) }.is_null() {
-          saw_item = true;
-          break;
-        }
-        std::thread::yield_now();
-      }
-      if saw_item {
-        continue;
-      }
-
       self
         .shared
-        .register_recv(Waiter::Sync(thread::current()), notified_ptr);
+        .register_sync_recv(thread::current(), notified_ptr);
       is_registered = true;
       fence(Ordering::SeqCst);
     }
@@ -1026,7 +1161,7 @@ impl<T: Send> Receiver<T> {
     let notified = AtomicBool::new(false);
     let notified_ptr = &notified as *const AtomicBool;
 
-    let mut pool = self.cache.lock();
+    let mut pool = self.cache.borrow_mut();
 
     loop {
       let tail = unsafe { *self.shared.tail.get() };
@@ -1034,8 +1169,10 @@ impl<T: Send> Receiver<T> {
 
       if !next.is_null() {
         if is_registered {
-          self.shared.unregister_recv();
+          self.shared.unregister_sync_recv();
         }
+        // see poll_pop: must leave the slot None, or the queue's drop glue
+        // double-drops a stale value left in a never-resent free-list node
         let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
         unsafe {
           *self.shared.tail.get() = next;
@@ -1053,7 +1190,7 @@ impl<T: Send> Receiver<T> {
           continue;
         }
         if is_registered {
-          self.shared.unregister_recv();
+          self.shared.unregister_sync_recv();
         }
         return Err(RecvErrorTimeout::Disconnected);
       }
@@ -1063,7 +1200,7 @@ impl<T: Send> Receiver<T> {
         Some(d) if d > now => d - now,
         _ => {
           if is_registered {
-            self.shared.unregister_recv();
+            self.shared.unregister_sync_recv();
           }
           return Err(RecvErrorTimeout::Timeout);
         }
@@ -1079,7 +1216,7 @@ impl<T: Send> Receiver<T> {
 
       self
         .shared
-        .register_recv(Waiter::Sync(thread::current()), notified_ptr);
+        .register_sync_recv(thread::current(), notified_ptr);
       is_registered = true;
       fence(Ordering::SeqCst);
     }
@@ -1090,11 +1227,13 @@ impl<T: Send> Receiver<T> {
       return Err(TryRecvError::Disconnected);
     }
 
-    let mut pool = self.cache.lock();
+    let mut pool = self.cache.borrow_mut();
     let tail = unsafe { *self.shared.tail.get() };
     let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
     if !next.is_null() {
+      // see poll_pop: must leave the slot None, or the queue's drop glue
+      // double-drops a stale value left in a never-resent free-list node
       let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
       unsafe {
         *self.shared.tail.get() = next;
@@ -1121,6 +1260,8 @@ impl<T: Send> Receiver<T> {
         if next.is_null() {
           break;
         }
+        // see poll_pop: must leave the slot None, or the queue's drop glue
+        // double-drops a stale value left in a never-resent free-list node
         let value = (&mut *(*next).val.get()).take().unwrap();
         *self.shared.tail.get() = next;
         self.recycle_node(tail, pool);
@@ -1152,13 +1293,13 @@ impl<T: Send> Receiver<T> {
     let mut is_registered = false;
     let notified = AtomicBool::new(false);
     let notified_ptr = &notified as *const AtomicBool;
-    let mut pool = self.cache.lock();
+    let mut pool = self.cache.borrow_mut();
 
     loop {
       let k = self.pop_batch_lock_free(out, max, &mut *pool);
       if k > 0 {
         if is_registered {
-          self.shared.unregister_recv();
+          self.shared.unregister_sync_recv();
         }
         pool.flush(&self.shared);
         return Ok(k);
@@ -1170,13 +1311,13 @@ impl<T: Send> Receiver<T> {
         let k_end = self.pop_batch_lock_free(out, max, &mut pool);
         if k_end > 0 {
           if is_registered {
-            self.shared.unregister_recv();
+            self.shared.unregister_sync_recv();
           }
           pool.flush(&self.shared);
           return Ok(k_end);
         }
         if is_registered {
-          self.shared.unregister_recv();
+          self.shared.unregister_sync_recv();
         }
         return Err(RecvError::Disconnected);
       }
@@ -1191,7 +1332,7 @@ impl<T: Send> Receiver<T> {
 
       self
         .shared
-        .register_recv(Waiter::Sync(thread::current()), notified_ptr);
+        .register_sync_recv(thread::current(), notified_ptr);
       is_registered = true;
       fence(Ordering::SeqCst);
     }
@@ -1211,7 +1352,7 @@ impl<T: Send> Receiver<T> {
       return Err(TryRecvError::Disconnected);
     }
 
-    let mut pool = self.cache.lock();
+    let mut pool = self.cache.borrow_mut();
     let k = self.pop_batch_lock_free(out, max, &mut *pool);
     if k > 0 {
       pool.flush(&self.shared);
@@ -1294,7 +1435,7 @@ impl<T: Send> AsyncSender<T> {
       return Err(TrySendError::Closed(item));
     }
 
-    let mut pool = self.cache.lock();
+    let mut pool = self.shared.cache.lock();
     let curr = match pool.pop_node(&self.shared) {
       Some(node) => node,
       None => return Err(TrySendError::Full(item)),
@@ -1348,15 +1489,13 @@ impl<T: Send> AsyncSender<T> {
     self.shared.is_full()
   }
 
-  pub fn to_sync(mut self) -> Sender<T> {
+  pub fn to_sync(self) -> Sender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     let closed = self.closed.load(Ordering::Relaxed);
-    let cache_val = std::mem::take(self.cache.get_mut());
     std::mem::forget(self);
     Sender {
       shared,
       closed: AtomicBool::new(closed),
-      cache: Mutex::new(cache_val),
     }
   }
 
@@ -1375,7 +1514,7 @@ impl<T: Send> AsyncSender<T> {
 
     let mut iter = items.into_iter();
     let mut sent = 0;
-    let mut pool = self.cache.lock();
+    let mut pool = self.shared.cache.lock();
 
     while sent < total {
       if !pool.fill_pool(&self.shared) {
@@ -1449,14 +1588,12 @@ impl<T: Send> Clone for AsyncSender<T> {
     AsyncSender {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
-      cache: Mutex::new(LocalCache::default()),
     }
   }
 }
 
 impl<T: Send> Drop for AsyncSender<T> {
   fn drop(&mut self) {
-    self.cache.get_mut().flush(&self.shared);
     let _ = self.close();
   }
 }
@@ -1465,7 +1602,7 @@ impl<T: Send> AsyncReceiver<T> {
   #[inline]
   fn recycle_node(&self, node_ptr: *mut Node<T>, pool: &mut LocalCache<T>) {
     pool.push_node(node_ptr);
-    if pool.count >= self.shared.chunk_size {
+    if pool.count >= self.shared.capacity() {
       pool.flush(&self.shared);
     }
   }
@@ -1484,6 +1621,8 @@ impl<T: Send> AsyncReceiver<T> {
     let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
     if !next.is_null() {
+      // see poll_pop: must leave the slot None, or the queue's drop glue
+      // double-drops a stale value left in a never-resent free-list node
       let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
       unsafe {
         *self.shared.tail.get() = next;
@@ -1536,7 +1675,7 @@ impl<T: Send> AsyncReceiver<T> {
 
   pub fn to_sync(mut self) -> Receiver<T> {
     if self.is_registered {
-      self.shared.unregister_recv();
+      self.shared.unregister_async_recv();
     }
     let shared = unsafe { std::ptr::read(&self.shared) };
     let closed = self.closed.load(Ordering::Relaxed);
@@ -1545,7 +1684,7 @@ impl<T: Send> AsyncReceiver<T> {
     Receiver {
       shared,
       closed: AtomicBool::new(closed),
-      cache: Mutex::new(cache_val),
+      cache: RefCell::new(cache_val),
     }
   }
 
@@ -1589,6 +1728,8 @@ impl<T: Send> AsyncReceiver<T> {
         if next.is_null() {
           break;
         }
+        // see poll_pop: must leave the slot None, or the queue's drop glue
+        // double-drops a stale value left in a never-resent free-list node
         let value = (&mut *(*next).val.get()).take().unwrap();
         *self.shared.tail.get() = next;
         self.recycle_node(tail, pool);
@@ -1607,7 +1748,7 @@ impl<T: Send> AsyncReceiver<T> {
 impl<T: Send> Drop for AsyncReceiver<T> {
   fn drop(&mut self) {
     if self.is_registered {
-      self.shared.unregister_recv();
+      self.shared.unregister_async_recv();
     }
     self.cache.get_mut().flush(&self.shared);
     let _ = self.close();
@@ -1636,7 +1777,7 @@ impl<'a, T: Send> SendFuture<'a, T> {
 
   fn unregister(&mut self) {
     if let Some(id) = self.my_id.take() {
-      self.sender.shared.unregister_send(id);
+      self.sender.shared.unregister_async_send(id);
     }
   }
 }
@@ -1648,7 +1789,7 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
     let shared = &this.sender.shared;
 
-    let mut pool = this.sender.cache.lock();
+    let mut pool = this.sender.shared.cache.lock();
 
     loop {
       let item_val = match this.item.take() {
@@ -1662,16 +1803,16 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
       }
 
       if !pool.fill_pool(shared) {
-        let id = shared.register_send(
+        let id = shared.register_async_send(
           this.my_id,
-          Waiter::Async(cx.waker().clone()),
+          cx.waker().clone(),
           std::ptr::null(),
         );
         this.my_id = Some(id);
         shared.pre_park_fence();
 
         if this.sender.closed.load(Ordering::Relaxed) || !shared.receivers_alive() {
-          shared.unregister_send(id);
+          shared.unregister_async_send(id);
           this.my_id = None;
           this.item = Some(item_val);
           return Poll::Ready(Err(SendError::Closed));
@@ -1696,7 +1837,7 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
       shared.notify_receiver();
 
       if let Some(id) = this.my_id.take() {
-        shared.unregister_send(id);
+        shared.unregister_async_send(id);
       }
       return Poll::Ready(Ok(()));
     }
@@ -1736,6 +1877,7 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
     }
 
     loop {
+      let was_registered = this.is_registered;
       match shared.poll_pop(cx, &mut this.is_registered) {
         Poll::Ready(Ok((tail, value))) => {
           let mut pool = this.receiver.cache.lock();
@@ -1743,7 +1885,12 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
           return Poll::Ready(Ok(value));
         }
         Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-        Poll::Pending => return Poll::Pending,
+        Poll::Pending => {
+          if !was_registered {
+            this.receiver.cache.lock().flush(shared);
+          }
+          return Poll::Pending;
+        }
       }
     }
   }
@@ -1752,7 +1899,7 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
 impl<'a, T: Send> Drop for RecvFuture<'a, T> {
   fn drop(&mut self) {
     if self.is_registered {
-      self.receiver.shared.unregister_recv();
+      self.receiver.shared.unregister_async_recv();
     }
   }
 }
@@ -1769,6 +1916,7 @@ impl<T: Send> Stream for AsyncReceiver<T> {
     }
 
     loop {
+      let was_registered = this.is_registered;
       match shared.poll_pop(cx, &mut this.is_registered) {
         Poll::Ready(Ok((tail, value))) => {
           let mut pool = this.cache.lock();
@@ -1776,7 +1924,12 @@ impl<T: Send> Stream for AsyncReceiver<T> {
           return Poll::Ready(Some(value));
         }
         Poll::Ready(Err(_)) => return Poll::Ready(None),
-        Poll::Pending => return Poll::Pending,
+        Poll::Pending => {
+          if !was_registered {
+            this.cache.lock().flush(shared);
+          }
+          return Poll::Pending;
+        }
       }
     }
   }
@@ -1800,19 +1953,19 @@ impl<'a, T: Send> Future for BoundedSendBatchFuture<'a, T> {
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
     let shared = &this.sender.shared;
-    let mut pool = this.sender.cache.lock();
+    let mut pool = this.sender.shared.cache.lock();
 
     loop {
       if this.sent == this.total {
         if let Some(id) = this.my_id.take() {
-          shared.unregister_send(id);
+          shared.unregister_async_send(id);
         }
         return Poll::Ready(Ok(this.total));
       }
 
       if this.sender.closed.load(Ordering::Relaxed) || !shared.receivers_alive() {
         if let Some(id) = this.my_id.take() {
-          shared.unregister_send(id);
+          shared.unregister_async_send(id);
         }
         return Poll::Ready(Err(SendBatchError {
           sent: this.sent,
@@ -1821,16 +1974,16 @@ impl<'a, T: Send> Future for BoundedSendBatchFuture<'a, T> {
       }
 
       if !pool.fill_pool(shared) {
-        let id = shared.register_send(
+        let id = shared.register_async_send(
           this.my_id,
-          Waiter::Async(cx.waker().clone()),
+          cx.waker().clone(),
           std::ptr::null(),
         );
         this.my_id = Some(id);
         shared.pre_park_fence();
 
         if this.sender.closed.load(Ordering::Relaxed) || !shared.receivers_alive() {
-          shared.unregister_send(id);
+          shared.unregister_async_send(id);
           this.my_id = None;
           return Poll::Ready(Err(SendBatchError {
             sent: this.sent,
@@ -1878,7 +2031,7 @@ impl<'a, T: Send> Future for BoundedSendBatchFuture<'a, T> {
 impl<'a, T: Send> Drop for BoundedSendBatchFuture<'a, T> {
   fn drop(&mut self) {
     if let Some(id) = self.my_id.take() {
-      self.sender.shared.unregister_send(id);
+      self.sender.shared.unregister_async_send(id);
     }
   }
 }
@@ -1898,35 +2051,35 @@ impl<'a, T: Send> Future for BoundedSendBatchMutFuture<'a, T> {
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
     let shared = &this.sender.shared;
-    let mut pool = this.sender.cache.lock();
+    let mut pool = this.sender.shared.cache.lock();
 
     loop {
       let remaining = this.items.len();
       if remaining == 0 {
         if let Some(id) = this.my_id.take() {
-          shared.unregister_send(id);
+          shared.unregister_async_send(id);
         }
         return Poll::Ready(Ok(this.sent));
       }
 
       if this.sender.closed.load(Ordering::Relaxed) || !shared.receivers_alive() {
         if let Some(id) = this.my_id.take() {
-          shared.unregister_send(id);
+          shared.unregister_async_send(id);
         }
         return Poll::Ready(Err(SendError::Closed));
       }
 
       if !pool.fill_pool(shared) {
-        let id = shared.register_send(
+        let id = shared.register_async_send(
           this.my_id,
-          Waiter::Async(cx.waker().clone()),
+          cx.waker().clone(),
           std::ptr::null(),
         );
         this.my_id = Some(id);
         shared.pre_park_fence();
 
         if this.sender.closed.load(Ordering::Relaxed) || !shared.receivers_alive() {
-          shared.unregister_send(id);
+          shared.unregister_async_send(id);
           this.my_id = None;
           return Poll::Ready(Err(SendError::Closed));
         }
@@ -1972,7 +2125,7 @@ impl<'a, T: Send> Future for BoundedSendBatchMutFuture<'a, T> {
 impl<'a, T: Send> Drop for BoundedSendBatchMutFuture<'a, T> {
   fn drop(&mut self) {
     if let Some(id) = self.my_id.take() {
-      self.sender.shared.unregister_send(id);
+      self.sender.shared.unregister_async_send(id);
     }
   }
 }
@@ -2010,7 +2163,7 @@ impl<'a, T: Send> Future for BoundedRecvBatchFuture<'a, T> {
 impl<'a, T: Send> Drop for BoundedRecvBatchFuture<'a, T> {
   fn drop(&mut self) {
     if self.is_registered {
-      self.receiver.shared.unregister_recv();
+      self.receiver.shared.unregister_async_recv();
     }
   }
 }
@@ -2039,7 +2192,7 @@ impl<'a, T: Send> Future for BoundedRecvBatchMutFuture<'a, T> {
 impl<'a, T: Send> Drop for BoundedRecvBatchMutFuture<'a, T> {
   fn drop(&mut self) {
     if self.is_registered {
-      self.receiver.shared.unregister_recv();
+      self.receiver.shared.unregister_async_recv();
     }
   }
 }
@@ -2062,7 +2215,7 @@ fn poll_recv_batch_async_impl<T: Send>(
     let k = receiver.pop_batch_lock_free(out, max, &mut *pool);
     if k > 0 {
       if *is_registered {
-        shared.unregister_recv();
+        shared.unregister_async_recv();
         *is_registered = false;
       }
       pool.flush(shared);
@@ -2075,26 +2228,26 @@ fn poll_recv_batch_async_impl<T: Send>(
       let k_end = receiver.pop_batch_lock_free(out, max, &mut *pool);
       if k_end > 0 {
         if *is_registered {
-          shared.unregister_recv();
+          shared.unregister_async_recv();
           *is_registered = false;
         }
         pool.flush(shared);
         return Poll::Ready(Ok(k_end));
       }
       if *is_registered {
-        shared.unregister_recv();
+        shared.unregister_async_recv();
         *is_registered = false;
       }
       return Poll::Ready(Err(RecvError::Disconnected));
     }
 
-    shared.register_recv(Waiter::Async(cx.waker().clone()), std::ptr::null());
+    shared.register_async_recv(cx.waker().clone(), std::ptr::null());
     *is_registered = true;
     shared.pre_park_fence();
 
     let k_after = receiver.pop_batch_lock_free(out, max, &mut pool);
     if k_after > 0 {
-      shared.unregister_recv();
+      shared.unregister_async_recv();
       *is_registered = false;
       pool.flush(shared);
       return Poll::Ready(Ok(k_after));
@@ -2159,7 +2312,6 @@ pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver
   let sender = AsyncSender {
     shared: Arc::clone(&shared),
     closed: AtomicBool::new(false),
-    cache: Mutex::new(LocalCache::default()),
   };
   let receiver = AsyncReceiver {
     shared,
@@ -2175,12 +2327,11 @@ pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
   let sender = Sender {
     shared: Arc::clone(&shared),
     closed: AtomicBool::new(false),
-    cache: Mutex::new(LocalCache::default()),
   };
   let receiver = Receiver {
     shared,
     closed: AtomicBool::new(false),
-    cache: Mutex::new(LocalCache::default()),
+    cache: RefCell::new(LocalCache::default()),
   };
   (sender, receiver)
 }
@@ -2444,7 +2595,6 @@ mod tests {
   // --- Concurrent Stress Fuzzing ---
 
   #[test]
-  #[cfg(not(miri))]
   fn test_concurrent_differential_fuzz() {
     const TOTAL_ITEMS: usize = 50_000;
     const CAPACITY: usize = 128;
@@ -2542,7 +2692,6 @@ mod tests {
   // --- Discrete Synchronous & Asynchronous Performance Benchmarks ---
 
   #[test]
-  #[cfg(not(miri))]
   fn test_mpsc_sync_performance_profile() {
     let profiles = [
       (1, "1 to 1 (SPSC)"),
@@ -2567,7 +2716,6 @@ mod tests {
   }
 
   #[tokio::test]
-  #[cfg(not(miri))]
   async fn test_mpsc_async_performance_profile() {
     let profiles = [
       (1, "1 to 1 (SPSC)"),
@@ -2622,7 +2770,6 @@ mod sync_batch_tests {
   }
 
   #[test]
-  #[cfg(not(miri))]
   fn test_sync_batch_partial_completions() {
     let (tx, rx) = bounded::<i32>(16);
 
@@ -2649,7 +2796,6 @@ mod sync_batch_tests {
 mod batch_tests {
   use super::*;
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn test_async_send_batch_recv_batch() {
     let (tx, rx) = bounded_async::<i32>(32);
@@ -2661,7 +2807,6 @@ mod batch_tests {
     assert_eq!(values, vec![10, 20, 30, 40, 50]);
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn test_async_send_batch_mut_recv_batch_mut() {
     let (tx, rx) = bounded_async::<i32>(32);
@@ -2676,7 +2821,6 @@ mod batch_tests {
     assert_eq!(out, vec![100, 200, 300]);
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn test_async_batch_partial_completions() {
     let (tx, rx) = bounded_async::<i32>(16);

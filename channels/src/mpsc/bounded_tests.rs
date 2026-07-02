@@ -54,7 +54,6 @@ fn sync_receiver_drop() {
   assert_eq!(tx.send(2), Err(SendError::Closed));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_send_recv() {
   let (tx, rx) = bounded_async(2);
@@ -67,7 +66,6 @@ async fn async_send_recv() {
   assert!(rx.is_empty());
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_send_waits() {
   let (tx, rx) = bounded_async(1);
@@ -85,7 +83,6 @@ async fn async_send_waits() {
   assert_eq!(rx.recv().await.unwrap(), 2);
 }
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_sync_send_async_recv() {
   // `bounded` returns a sync pair.
@@ -127,7 +124,6 @@ fn mixed_async_send_sync_recv() {
 
 // --- New Intensity and Correctness Tests ---
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn high_contention_async_mpsc() {
   const NUM_SENDERS: usize = 100;
@@ -180,7 +176,6 @@ async fn high_contention_async_mpsc() {
   );
 }
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn high_contention_mixed_sync_async() {
   const NUM_ASYNC_SENDERS: usize = 50;
@@ -241,7 +236,6 @@ async fn high_contention_mixed_sync_async() {
   assert!(rx.is_closed());
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn sender_unblocks_when_receiver_dropped() {
   let (tx, rx) = bounded_async(1);
@@ -270,7 +264,6 @@ async fn sender_unblocks_when_receiver_dropped() {
   waiter_handle.await.unwrap();
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn test_bounded_async_receiver_drop_unblocks_all_senders() {
   use std::time::Duration;

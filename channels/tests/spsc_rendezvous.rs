@@ -86,7 +86,6 @@ fn sync_recv_timeout_elapses_then_receives() {
 
 // --- Asynchronous ---------------------------------------------------------
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_basic_handoff() {
   let (tx, rx) = rendezvous_async::<u32>();
@@ -101,7 +100,6 @@ async fn async_basic_handoff() {
   producer.await.unwrap();
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_sender_drop_disconnects_receiver() {
   let (tx, rx) = rendezvous_async::<u32>();
@@ -109,7 +107,6 @@ async fn async_sender_drop_disconnects_receiver() {
   assert_eq!(rx.recv().await, Err(RecvError::Disconnected));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_cancelled_send_does_not_ghost_deliver() {
   use tokio::time::timeout;
@@ -121,7 +118,6 @@ async fn async_cancelled_send_does_not_ghost_deliver() {
   assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn async_cancelled_send_reclaims_payload() {
   use tokio::time::timeout;
@@ -138,7 +134,6 @@ async fn async_cancelled_send_reclaims_payload() {
 
 // --- Hybrid sync/async ----------------------------------------------------
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn hybrid_async_sender_sync_receiver() {
   let (tx, rx) = rendezvous_async::<u32>();

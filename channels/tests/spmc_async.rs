@@ -5,7 +5,6 @@ use fibre::spmc;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn spmc_async_spsc_smoke() {
   let (tx, rx) = spmc::bounded_async(2);
@@ -13,7 +12,6 @@ async fn spmc_async_spsc_smoke() {
   assert_eq!(rx.recv().await.unwrap(), 10);
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn spmc_async_try_recv() {
   let (tx, rx) = spmc::bounded_async::<i32>(2);
@@ -23,7 +21,6 @@ async fn spmc_async_try_recv() {
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));
 }
 
-#[cfg(not(miri))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn spmc_async_multi_consumer() {
   let (tx, rx1) = spmc::bounded_async(ITEMS_LOW);
@@ -70,7 +67,6 @@ async fn spmc_async_multi_consumer() {
   h3.await.unwrap();
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn spmc_async_slow_consumer_blocks_producer() {
   let (tx, rx_fast) = spmc::bounded_async(1);
@@ -103,7 +99,6 @@ async fn spmc_async_slow_consumer_blocks_producer() {
   assert_eq!(rx_slow.recv().await.unwrap(), 2);
 }
 
-#[cfg(not(miri))]
 #[tokio::test]
 async fn spmc_async_sender_unblocks_when_all_receivers_dropped() {
   let (tx, rx1) = spmc::bounded_async(1);

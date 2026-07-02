@@ -227,7 +227,7 @@ pub fn run_async(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
     }
     Flavor::Unbounded => {
       rt.block_on(async {
-        let (tx, rx) = mpsc::unbounded_async::<usize>();
+        let (tx, mut rx) = mpsc::unbounded_async::<usize>();
         let items_per_prod = cfg.items / cfg.producers;
 
         let mut producer_handles: Vec<JoinHandle<()>> = Vec::new();

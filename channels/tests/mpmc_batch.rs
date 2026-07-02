@@ -115,10 +115,7 @@ fn sync_recv_batch_disconnected() {
 
 #[test]
 fn sync_mp_mc_batch_totals() {
-  #[cfg(not(miri))]
   const BATCHES: usize = 50;
-  #[cfg(miri)]
-  const BATCHES: usize = 3;
   const BATCH_SIZE: usize = 9;
   const PRODUCERS: usize = 3;
   const CONSUMERS: usize = 3;
@@ -166,7 +163,6 @@ fn sync_mp_mc_batch_totals() {
 
 // --- Async tests ---
 
-#[cfg(not(miri))]
 mod async_tests {
   use super::*;
   use tokio::time::timeout;

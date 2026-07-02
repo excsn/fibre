@@ -656,7 +656,6 @@ mod tests {
     handle.join().expect("Thread panicked");
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn acquire_async_waits_and_completes() {
     use tokio::time::timeout;
@@ -677,7 +676,6 @@ mod tests {
       .expect("Future did not complete after release");
   }
 
-  #[cfg(not(miri))]
   #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
   async fn mixed_waiters_contention() {
     let gate = Arc::new(CapacityGate::new(2));
@@ -829,7 +827,6 @@ mod tests {
     assert_eq!(total, 3);
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn acquire_many_async_waits_and_completes() {
     use tokio::time::timeout;
@@ -855,7 +852,6 @@ mod tests {
   }
 
   #[test]
-  #[cfg(not(miri))]
   fn release_does_not_steal_inflight_handoff_permit_cap0() {
     let gate = Arc::new(CapacityGate::new(0));
 
@@ -877,7 +873,6 @@ mod tests {
   }
 
   #[test]
-  #[cfg(not(miri))]
   fn release_does_not_steal_inflight_handoff_permit_cap0_many() {
     let gate = Arc::new(CapacityGate::new(0));
 
@@ -899,7 +894,6 @@ mod tests {
     assert!(acquired >= 1);
   }
 
-  #[cfg(not(miri))]
   #[tokio::test]
   async fn async_wake_consumes_permit_no_pool_inflation() {
     let gate = Arc::new(CapacityGate::new(1));

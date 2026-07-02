@@ -16,8 +16,6 @@
 //! done
 //! ```
 
-#![cfg(not(miri))]
-
 use fibre::{mpmc, mpsc};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
