@@ -34,7 +34,7 @@ async fn weak_iter_visits_all_items_multiple_batches() {
 #[tokio::test]
 async fn weak_iter_misses_insert_after_shard_scan() {
   let cache = Arc::new(build_test_async_cache(4));
-  let (go_tx, go_rx) = spsc::bounded_async(1);
+  let (mut go_tx, mut go_rx) = spsc::bounded_async(1);
 
   for i in (0..10).filter(|x| x % 4 == 0) {
     cache.insert(i, i.to_string(), 1).await;
