@@ -77,7 +77,7 @@ fn benchmark_logic_mpsc_sync(
     for p_idx in 0..num_producers {
       let items_this_producer = base_items + if p_idx < remainder { 1 } else { 0 };
       if items_this_producer > 0 {
-        let tx_clone = tx.clone();
+        let mut tx_clone = tx.clone();
         s.spawn(move || {
           for _ in 0..items_this_producer {
             tx_clone.send(ITEM_VALUE).unwrap();
@@ -136,7 +136,7 @@ fn benchmark_logic_mpsc_async(
     for p_idx in 0..num_producers {
       let items_this_producer = base_items + if p_idx < remainder { 1 } else { 0 };
       if items_this_producer > 0 {
-        let tx_clone = tx.clone();
+        let mut tx_clone = tx.clone();
         producer_handles.push(tokio::spawn(async move {
           for _ in 0..items_this_producer {
             tx_clone.send(ITEM_VALUE).await.unwrap();

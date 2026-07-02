@@ -19,7 +19,7 @@ fn main() {
     let received_count = Arc::new(AtomicUsize::new(0));
 
     for i in 0..num_producers {
-      let tx_clone = tx.clone();
+      let mut tx_clone = tx.clone();
       thread::spawn(move || {
         for j in 0..messages_per_producer {
           let msg = format!("SyncMPSC-P{}-M{}", i, j);
@@ -62,7 +62,7 @@ fn main() {
     let received_count = Arc::new(AtomicUsize::new(0));
 
     for i in 0..num_producers {
-      let tx_clone = tx.clone();
+      let mut tx_clone = tx.clone();
       tokio::spawn(async move {
         for j in 0..messages_per_producer {
           let msg = format!("AsyncMPSC-P{}-M{}", i, j);
@@ -99,7 +99,7 @@ fn main() {
     let num_producers = 2;
 
     for i in 0..num_producers {
-      let tx_sync_converted = tx_async.clone().to_sync(); // Convert for each thread
+      let mut tx_sync_converted = tx_async.clone().to_sync(); // Convert for each thread
       thread::spawn(move || {
         let msg = format!("SyncToAsyncMPSC-P{}", i);
         println!("[Sync Sender {}] Sending: {}", i, msg);
@@ -124,7 +124,7 @@ fn main() {
     let num_producers = 2;
 
     for i in 0..num_producers {
-      let tx_clone = tx_async.clone();
+      let mut tx_clone = tx_async.clone();
       // Need to run these async senders in a runtime if the main thread is sync
       common_async::block_on_tokio_task(async move {
         let msg = format!("AsyncToSyncMPSC-P{}", i);

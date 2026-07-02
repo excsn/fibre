@@ -4,10 +4,9 @@
 //! Producers pay exactly one shared atomic RMW per send — the always-succeeding
 //! `swap` that linearizes the global FIFO order (the provable floor for any
 //! strictly ordered multi-producer queue). Everything else is handle-local:
-//! nodes come from private 256-node slabs (one allocation per 256 sends per
-//! handle, freed by the consumer once fully retired), `len()` uses sharded
-//! monotonic counters, and sends never block so no send-waiter machinery
-//! exists at all.
+//! nodes come from private `SLAB_NODES`-node slabs (recycled through a small
+//! per-channel pool once fully retired), `len()` uses sharded monotonic
+//! counters, and sends never block so no send-waiter machinery exists at all.
 
 mod consumer;
 mod producer;
@@ -52,7 +51,7 @@ mod tests {
 
   #[test]
   fn smoke() {
-    let (tx, rx) = channel();
+    let (mut tx, rx) = channel();
     tx.send(7u32).unwrap();
     assert_eq!(rx.recv().unwrap(), 7);
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
@@ -60,7 +59,7 @@ mod tests {
 
   #[test]
   fn fifo_across_slab_boundaries() {
-    let (tx, rx) = channel();
+    let (mut tx, rx) = channel();
     let total = SLAB_NODES * 3 + 17;
     for i in 0..total {
       tx.send(i).unwrap();
@@ -72,11 +71,24 @@ mod tests {
   }
 
   #[test]
+  fn slab_recycling_preserves_fifo() {
+    // Interleaved send/recv fully retires each slab shortly after its
+    // boundary, so from the third slab on every acquisition reuses a pooled
+    // one (re-armed nodes, no allocator round trip).
+    let (mut tx, rx) = channel();
+    for i in 0..SLAB_NODES * 3 + 7 {
+      tx.send(i).unwrap();
+      assert_eq!(rx.recv().unwrap(), i);
+    }
+    assert!(rx.is_empty());
+  }
+
+  #[test]
   fn drop_with_in_flight_items_spanning_slabs() {
     let drops = Arc::new(AtomicUsize::new(0));
     let total = SLAB_NODES * 2 + 100;
     {
-      let (tx, rx) = channel();
+      let (mut tx, rx) = channel();
       for _ in 0..total {
         tx.send(DropCounter(drops.clone())).unwrap();
       }
@@ -92,7 +104,7 @@ mod tests {
 
   #[test]
   fn handle_drop_seals_partial_slab() {
-    let (tx, rx) = channel();
+    let (mut tx, rx) = channel();
     for i in 0..10u32 {
       tx.send(i).unwrap();
     }
@@ -110,7 +122,7 @@ mod tests {
     let senders = 50usize;
     let mut handles = Vec::new();
     for s in 0..senders {
-      let txc = tx.clone();
+      let mut txc = tx.clone();
       handles.push(thread::spawn(move || {
         for i in 0..per_sender {
           txc.send(s * per_sender + i).unwrap();
@@ -142,7 +154,7 @@ mod tests {
     let per = 5_000usize;
     let mut handles = Vec::new();
     for p in 0..producers {
-      let txc = tx.clone();
+      let mut txc = tx.clone();
       handles.push(thread::spawn(move || {
         for i in 0..per {
           txc.send((p, i)).unwrap();
@@ -163,10 +175,10 @@ mod tests {
 
   #[test]
   fn len_tracks_across_many_handles() {
-    let (tx, rx) = channel::<usize>();
+    let (mut tx, rx) = channel::<usize>();
     // More clones than LEN_SHARDS so shard assignment wraps.
-    let clones: Vec<_> = (0..40).map(|_| tx.clone()).collect();
-    for (i, c) in clones.iter().enumerate() {
+    let mut clones: Vec<_> = (0..40).map(|_| tx.clone()).collect();
+    for (i, c) in clones.iter_mut().enumerate() {
       c.send(i).unwrap();
     }
     tx.send(usize::MAX).unwrap();
@@ -181,7 +193,7 @@ mod tests {
 
   #[test]
   fn batch_send_and_batch_recv() {
-    let (tx, rx) = channel();
+    let (mut tx, rx) = channel();
     let total = SLAB_NODES + 50;
     assert_eq!(tx.send_batch((0..total).collect()).unwrap(), total);
     let mut out = Vec::new();
@@ -194,7 +206,7 @@ mod tests {
 
   #[test]
   fn send_batch_mut_drains_and_close_semantics() {
-    let (tx, rx) = channel::<u32>();
+    let (mut tx, rx) = channel::<u32>();
     let mut items = vec![1, 2, 3];
     assert_eq!(tx.send_batch_mut(&mut items).unwrap(), 3);
     assert!(items.is_empty());
@@ -207,7 +219,7 @@ mod tests {
   #[test]
   fn receiver_close_drains_promptly() {
     let drops = Arc::new(AtomicUsize::new(0));
-    let (tx, rx) = channel();
+    let (mut tx, rx) = channel();
     for _ in 0..5 {
       tx.send(DropCounter(drops.clone())).unwrap();
     }
@@ -219,7 +231,7 @@ mod tests {
 
   #[tokio::test]
   async fn async_smoke_and_mut_receiver() {
-    let (tx, mut rx) = channel_async();
+    let (mut tx, mut rx) = channel_async();
     tx.send(11u32).await.unwrap();
     assert_eq!(rx.recv().await.unwrap(), 11);
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
@@ -229,7 +241,7 @@ mod tests {
 
   #[tokio::test]
   async fn async_recv_wakes_on_send() {
-    let (tx, mut rx) = channel_async();
+    let (mut tx, mut rx) = channel_async();
     let handle = tokio::spawn(async move {
       tokio::time::sleep(std::time::Duration::from_millis(50)).await;
       tx.send("hi").await.unwrap();
@@ -240,7 +252,7 @@ mod tests {
 
   #[tokio::test]
   async fn async_recv_future_cancel_safe() {
-    let (tx, mut rx) = channel_async::<u32>();
+    let (mut tx, mut rx) = channel_async::<u32>();
     {
       let fut = rx.recv();
       let res = tokio::time::timeout(std::time::Duration::from_millis(50), fut).await;

@@ -39,17 +39,23 @@ mod backoff;
 mod core;
 pub mod rendezvous;
 mod sync_impl;
+mod unbounded;
 
-// Standardized handle names. MPMC's bounded and unbounded constructors share
-// the same handle types, so both flavor-prefixed names alias one struct.
+// Standardized handle names. The bounded constructors' handle types keep
+// their canonical `Sender`/`Receiver` names with Bounded* aliases; the
+// unbounded channel has its own dedicated implementation and real types.
 pub use self::{
-  AsyncReceiver as BoundedAsyncReceiver, AsyncReceiver as UnboundedAsyncReceiver,
-  AsyncSender as BoundedAsyncSender, AsyncSender as UnboundedAsyncSender,
-  Receiver as BoundedSyncReceiver, Receiver as UnboundedSyncReceiver,
-  Sender as BoundedSyncSender, Sender as UnboundedSyncSender,
+  AsyncReceiver as BoundedAsyncReceiver, AsyncSender as BoundedAsyncSender,
+  Receiver as BoundedSyncReceiver, Sender as BoundedSyncSender,
 };
 pub use rendezvous::{
   RendezvousAsyncReceiver, RendezvousAsyncSender, RendezvousSyncReceiver, RendezvousSyncSender,
+};
+pub use unbounded::{
+  RecvBatchFuture as UnboundedRecvBatchFuture, RecvBatchMutFuture as UnboundedRecvBatchMutFuture,
+  RecvFuture as UnboundedRecvFuture, SendBatchFuture as UnboundedSendBatchFuture,
+  SendBatchMutFuture as UnboundedSendBatchMutFuture, SendFuture as UnboundedSendFuture,
+  UnboundedAsyncReceiver, UnboundedAsyncSender, UnboundedSyncReceiver, UnboundedSyncSender,
 };
 
 use std::mem;
@@ -132,11 +138,18 @@ pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
   )
 }
 
-/// Creates a new synchronous "unbounded" MPMC channel.
+/// Creates a new synchronous unbounded MPMC channel.
 ///
-/// In reality, the channel is bounded by available memory.
-pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>) {
-  bounded(usize::MAX)
+/// In reality, the channel is bounded by available memory. Sends never block;
+/// this is a dedicated implementation (lock-free slab-chain producers, a
+/// mutex-serialized consumer side with eager handoff), not the bounded
+/// channel with an infinite capacity.
+///
+/// Sending and (blocking) receiving take `&mut self` so each handle keeps its
+/// bump slab / waiter cell without locks: clone a handle per thread instead
+/// of sharing one.
+pub fn unbounded<T: Send>() -> (UnboundedSyncSender<T>, UnboundedSyncReceiver<T>) {
+  unbounded::channel()
 }
 
 /// Creates a new asynchronous bounded MPMC channel.
@@ -166,11 +179,13 @@ pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver
   )
 }
 
-/// Creates a new asynchronous "unbounded" MPMC channel.
+/// Creates a new asynchronous unbounded MPMC channel.
 ///
-/// In reality, the channel is bounded by available memory.
-pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
-  bounded_async(usize::MAX)
+/// In reality, the channel is bounded by available memory. Sends never block;
+/// see [`unbounded`] for the implementation notes, including the `&mut self`
+/// handle semantics (clone a handle per task instead of sharing one).
+pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>) {
+  unbounded::channel_async()
 }
 
 // --- Trait Implementations for Public Structs ---
@@ -1129,7 +1144,6 @@ impl<T: Send> Drop for AsyncReceiver<T> {
 mod tests {
   use super::*;
   use std::future::Future;
-  use std::pin::pin;
   use std::sync::Arc;
   use std::task::{Context, RawWaker, RawWakerVTable, Waker};
   use std::thread;
@@ -1252,7 +1266,6 @@ mod tests {
   async fn test_recv_batch_drop_unlinks_waiter_after_data_ready() {
     println!("\n--- STARTING DETERMINISTIC UAF REPRODUCTION ---");
     use std::future::Future;
-    use std::pin::Pin;
     use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 
     fn dummy_waker() -> Waker {

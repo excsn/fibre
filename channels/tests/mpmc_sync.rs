@@ -100,7 +100,7 @@ fn sync_v2_mp_mc_contention() {
 
 #[test]
 fn sync_v2_unbounded_channel() {
-  let (tx, rx) = mpmc::unbounded();
+  let (mut tx, mut rx) = mpmc::unbounded();
   let num_items = 5000;
 
   let producer = thread::spawn(move || {

@@ -31,13 +31,10 @@ pub(crate) const PARK_CONSUMING: u8 = 2; // A consumer has claimed the thread ha
 // --- Telemetry Constants ---
 const LOC_P_SEND: &str = "BoundedSyncSender::send";
 const LOC_P_TRY_SEND: &str = "BoundedSyncSender::try_send";
-const LOC_C_RECV: &str = "BoundedSyncReceiver::recv";
 const LOC_C_TRY_RECV: &str = "try_recv_internal";
 const LOC_WAKEP: &str = "SpmcShared::wake_producer";
 const LOC_SYNCWAKER: &str = "sync_waker";
 
-const EVT_P_ENTER_LOOP: &str = "P:EnterLoop";
-const EVT_P_GOT_MIN_TAIL: &str = "P:GotMinTail";
 const EVT_P_BUFFER_FULL: &str = "P:BufferFull";
 const EVT_P_TRY_SEND_FULL: &str = "P:TrySendFull";
 const EVT_P_ARM_PARK: &str = "P:ArmPark";

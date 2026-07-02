@@ -11,14 +11,14 @@ use tokio::time::timeout;
 
 #[tokio::test]
 async fn mpsc_async_smoke() {
-  let (tx, mut rx) = mpsc::unbounded_async();
+  let (mut tx, mut rx) = mpsc::unbounded_async();
   tx.send(10).await.unwrap();
   assert_eq!(rx.recv().await.unwrap(), 10);
 }
 
 #[tokio::test]
 async fn mpsc_async_try_recv() {
-  let (tx, mut rx) = mpsc::unbounded_async::<i32>();
+  let (mut tx, mut rx) = mpsc::unbounded_async::<i32>();
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));
   tx.send(1).await.unwrap();
   // After an await, the item will be in the queue.
@@ -28,7 +28,7 @@ async fn mpsc_async_try_recv() {
 
 #[tokio::test]
 async fn mpsc_async_recv_blocks() {
-  let (tx, mut rx) = mpsc::unbounded_async();
+  let (mut tx, mut rx) = mpsc::unbounded_async();
   let handle = tokio::spawn(async move {
     tokio::time::sleep(SHORT_TIMEOUT).await;
     tx.send("hello").await.unwrap();
@@ -56,7 +56,7 @@ async fn mpsc_async_consumer_drop_cleans_up() {
     }
   }
 
-  let (tx, rx) = mpsc::unbounded_async();
+  let (mut tx, rx) = mpsc::unbounded_async();
   tx.send(DropCounter(drop_count.clone())).await.unwrap();
   tx.send(DropCounter(drop_count.clone())).await.unwrap();
 
@@ -78,7 +78,7 @@ async fn mpsc_async_multi_producer_stress() {
 
   let mut handles = Vec::new();
   for _ in 0..num_producers {
-    let tx_clone = tx.clone();
+    let mut tx_clone = tx.clone();
     handles.push(tokio::spawn(async move {
       for i in 1..=items_per_producer {
         tx_clone.send(i).await.unwrap();
@@ -106,7 +106,7 @@ async fn mpsc_async_multi_producer_stress() {
 #[tokio::test]
 async fn mpsc_sync_producer_to_async_consumer() {
   let (tx_async, mut rx_async) = mpsc::unbounded_async();
-  let tx_sync = tx_async.to_sync();
+  let mut tx_sync = tx_async.to_sync();
 
   // Use tokio's blocking thread pool for the sync operation
   let producer_handle = tokio::task::spawn_blocking(move || {
@@ -119,7 +119,7 @@ async fn mpsc_sync_producer_to_async_consumer() {
 
 #[tokio::test]
 async fn test_mpsc_unbounded_recv_cancel_safe() {
-  let (tx, mut rx) = mpsc::unbounded_async::<i32>();
+  let (mut tx, mut rx) = mpsc::unbounded_async::<i32>();
 
   // 1. Park a recv future, then cancel it
   {

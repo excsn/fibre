@@ -16,22 +16,3 @@ pub(crate) fn park_thread() {
 pub(crate) fn park_thread_timeout(duration: Duration) {
   thread::park_timeout(duration);
 }
-
-/// Unparks the given thread.
-#[inline]
-pub(crate) fn unpark_thread(thread: &thread::Thread) {
-  thread.unpark();
-}
-
-pub fn park_thread_timeout_cond<F>(timeout: Option<Duration>, stop_condition: F)
-where
-  F: Fn() -> bool,
-{
-  if stop_condition() {
-    return;
-  }
-  match timeout {
-    Some(t) => thread::park_timeout(t),
-    None => thread::park(),
-  }
-}

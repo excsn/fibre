@@ -13,7 +13,7 @@ use std::thread;
 
 #[test]
 fn v3_fifo_across_slab_boundaries() {
-  let (tx, rx) = mpsc::unbounded();
+  let (mut tx, rx) = mpsc::unbounded();
   for i in 0..ITEMS_CROSSING {
     tx.send(i).unwrap();
   }
@@ -28,7 +28,7 @@ fn v3_multi_producer_race_per_producer_order() {
   let (tx, rx) = mpsc::unbounded();
   let mut handles = Vec::new();
   for p in 0..3usize {
-    let txc = tx.clone();
+    let mut txc = tx.clone();
     handles.push(thread::spawn(move || {
       for i in 0..100usize {
         txc.send((p, i)).unwrap();
@@ -52,7 +52,7 @@ fn v3_multi_producer_race_per_producer_order() {
 fn v3_drop_with_in_flight_items_spanning_slabs() {
   let counter = drop_counter();
   {
-    let (tx, rx) = mpsc::unbounded();
+    let (mut tx, rx) = mpsc::unbounded();
     for _ in 0..ITEMS_CROSSING {
       tx.send(DropCounter::new(&counter)).unwrap();
     }
@@ -69,7 +69,7 @@ fn v3_drop_with_in_flight_items_spanning_slabs() {
 #[test]
 fn v3_handle_drop_seals_partial_slab() {
   let counter = drop_counter();
-  let (tx, rx) = mpsc::unbounded();
+  let (mut tx, rx) = mpsc::unbounded();
   for _ in 0..5 {
     tx.send(DropCounter::new(&counter)).unwrap();
   }
@@ -86,7 +86,7 @@ fn v3_clone_storm_and_receiver_close() {
   let counter = drop_counter();
   let (tx, rx) = mpsc::unbounded();
   for _ in 0..8 {
-    let txc = tx.clone();
+    let mut txc = tx.clone();
     txc.send(DropCounter::new(&counter)).unwrap();
     // txc drops here, sealing its slab with 1 of SLAB_NODES used
   }
@@ -98,7 +98,7 @@ fn v3_clone_storm_and_receiver_close() {
 
 #[test]
 fn v3_batch_send_batch_recv() {
-  let (tx, rx) = mpsc::unbounded();
+  let (mut tx, rx) = mpsc::unbounded();
   assert_eq!(
     tx.send_batch((0..ITEMS_CROSSING).collect()).unwrap(),
     ITEMS_CROSSING
@@ -113,7 +113,7 @@ fn v3_batch_send_batch_recv() {
 
 #[test]
 fn v3_async_recv_registers_then_cancels() {
-  let (tx, mut rx) = mpsc::unbounded_async::<u32>();
+  let (mut tx, mut rx) = mpsc::unbounded_async::<u32>();
   {
     let mut fut = pin!(rx.recv());
     assert!(poll_once(fut.as_mut()).is_pending());
@@ -126,7 +126,7 @@ fn v3_async_recv_registers_then_cancels() {
 #[test]
 fn v3_sync_producer_async_consumer_cross_thread() {
   let (tx, rx) = mpsc::unbounded_async::<usize>();
-  let stx = tx.to_sync();
+  let mut stx = tx.to_sync();
   let producer = thread::spawn(move || {
     for i in 0..ITEMS_CROSSING {
       stx.send(i).unwrap();
@@ -142,10 +142,10 @@ fn v3_sync_producer_async_consumer_cross_thread() {
 
 #[test]
 fn v3_sender_to_async_carries_partial_slab() {
-  let (tx, rx) = mpsc::unbounded::<u32>();
+  let (mut tx, rx) = mpsc::unbounded::<u32>();
   tx.send(1).unwrap();
   tx.send(2).unwrap();
-  let atx = tx.to_async(); // partial slab moves with the handle
+  let mut atx = tx.to_async(); // partial slab moves with the handle
   block_on(atx.send(3)).unwrap();
   for expected in 1..=3 {
     assert_eq!(rx.recv().unwrap(), expected);
@@ -156,7 +156,7 @@ fn v3_sender_to_async_carries_partial_slab() {
 
 #[test]
 fn v3_send_batch_mut_and_try_recv_batch() {
-  let (tx, rx) = mpsc::unbounded::<usize>();
+  let (mut tx, rx) = mpsc::unbounded::<usize>();
   let mut pending: Vec<usize> = (0..ITEMS_CROSSING).collect();
   assert_eq!(tx.send_batch_mut(&mut pending).unwrap(), ITEMS_CROSSING);
   assert!(pending.is_empty());
@@ -170,7 +170,7 @@ fn v3_send_batch_mut_and_try_recv_batch() {
 #[test]
 fn v3_stream_yields_then_ends_on_disconnect() {
   use futures::StreamExt;
-  let (tx, mut rx) = mpsc::unbounded_async::<u32>();
+  let (mut tx, mut rx) = mpsc::unbounded_async::<u32>();
   block_on(tx.send(1)).unwrap();
   block_on(tx.send(2)).unwrap();
   assert_eq!(block_on(rx.next()), Some(1));
@@ -181,7 +181,7 @@ fn v3_stream_yields_then_ends_on_disconnect() {
 
 #[test]
 fn v3_recv_timeout_zero_and_success() {
-  let (tx, rx) = mpsc::unbounded::<u32>();
+  let (mut tx, rx) = mpsc::unbounded::<u32>();
   assert!(matches!(
     rx.recv_timeout(std::time::Duration::ZERO),
     Err(fibre::error::RecvErrorTimeout::Timeout)
@@ -192,8 +192,8 @@ fn v3_recv_timeout_zero_and_success() {
 
 #[test]
 fn v3_async_producers_cross_thread_per_producer_order() {
-  let (tx, rx) = mpsc::unbounded_async::<(usize, usize)>();
-  let tx2 = tx.clone();
+  let (mut tx, rx) = mpsc::unbounded_async::<(usize, usize)>();
+  let mut tx2 = tx.clone();
   let p1 = thread::spawn(move || {
     for i in 0..50 {
       block_on(tx.send((0, i))).unwrap();

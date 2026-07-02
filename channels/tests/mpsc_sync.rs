@@ -10,14 +10,14 @@ use std::thread;
 
 #[test]
 fn mpsc_sync_spsc_smoke() {
-  let (tx, rx) = mpsc::unbounded();
+  let (mut tx, rx) = mpsc::unbounded();
   tx.send(10).unwrap();
   assert_eq!(rx.recv().unwrap(), 10);
 }
 
 #[test]
 fn mpsc_sync_try_send() {
-  let (tx, rx) = mpsc::unbounded::<i32>();
+  let (mut tx, rx) = mpsc::unbounded::<i32>();
 
   // Successful try_send
   assert_eq!(tx.try_send(10), Ok(()));
@@ -33,7 +33,7 @@ fn mpsc_sync_try_send() {
   }
 
   // Also check async sender
-  let (tx_async, rx_async) = mpsc::unbounded_async::<i32>();
+  let (mut tx_async, rx_async) = mpsc::unbounded_async::<i32>();
   assert_eq!(tx_async.try_send(30), Ok(()));
   let rx_async_recv = rx_async.to_sync(); // use sync recv for simplicity
   assert_eq!(rx_async_recv.recv().unwrap(), 30);
@@ -47,7 +47,7 @@ fn mpsc_sync_try_send() {
 
 #[test]
 fn mpsc_sync_try_recv() {
-  let (tx, rx) = mpsc::unbounded::<i32>();
+  let (mut tx, rx) = mpsc::unbounded::<i32>();
   assert_eq!(rx.try_recv(), Err(fibre::error::TryRecvError::Empty));
   tx.send(1).unwrap();
   assert_eq!(rx.try_recv(), Ok(1));
@@ -56,7 +56,7 @@ fn mpsc_sync_try_recv() {
 
 #[test]
 fn mpsc_sync_recv_blocks() {
-  let (tx, rx) = mpsc::unbounded();
+  let (mut tx, rx) = mpsc::unbounded();
   let handle = thread::spawn(move || {
     thread::sleep(SHORT_TIMEOUT);
     tx.send("hello").unwrap();
@@ -85,7 +85,7 @@ fn mpsc_sync_consumer_drop_cleans_up() {
     }
   }
 
-  let (tx, rx) = mpsc::unbounded();
+  let (mut tx, rx) = mpsc::unbounded();
   tx.send(DropCounter(drop_count.clone())).unwrap();
   tx.send(DropCounter(drop_count.clone())).unwrap();
 
@@ -106,7 +106,7 @@ fn mpsc_sync_multi_producer_stress() {
 
   let mut handles = Vec::new();
   for _ in 0..num_producers {
-    let tx_clone = tx.clone();
+    let mut tx_clone = tx.clone();
     handles.push(thread::spawn(move || {
       for i in 1..=items_per_producer {
         tx_clone.send(i).unwrap();
@@ -133,7 +133,7 @@ fn mpsc_sync_multi_producer_stress() {
 
 #[test]
 fn mpsc_async_producer_to_sync_consumer() {
-  let (tx_async, rx_async) = mpsc::unbounded_async();
+  let (mut tx_async, rx_async) = mpsc::unbounded_async();
   let rx_sync = rx_async.to_sync();
 
   // Spawn a new OS thread to host the Tokio runtime.

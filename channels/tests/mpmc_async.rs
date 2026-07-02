@@ -91,7 +91,7 @@ async fn async_v2_mp_mc_contention() {
 
 #[tokio::test]
 async fn async_v2_unbounded_channel() {
-  let (tx, rx) = mpmc::unbounded_async();
+  let (mut tx, mut rx) = mpmc::unbounded_async();
   let num_items = 5000;
 
   let producer = tokio::spawn(async move {

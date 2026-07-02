@@ -13,13 +13,8 @@ struct AlignedInner64<T> {
   value: T,
 }
 
-#[repr(C)]
-#[repr(align(128))]
-#[derive(Clone, Copy, Default, Hash, PartialEq, Eq)]
-struct AlignedInner128<T> {
-  value: T,
-}
-
+// Add AlignedInner128 back (repr(align(128))) if an aarch64 target is ever
+// tuned for 128-byte lines — see the arch_details comment below.
 // Add AlignedInner32 if you ever expect such small cache lines or need that specific alignment.
 // #[repr(C)]
 // #[repr(align(32))]

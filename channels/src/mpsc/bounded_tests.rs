@@ -1,7 +1,6 @@
 use super::*;
 use crate::mpsc::{bounded, bounded_async};
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 

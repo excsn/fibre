@@ -86,7 +86,7 @@ pub fn run_sync(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
 
       let mut producers = Vec::new();
       for _ in 0..cfg.producers {
-        let tx = tx.clone();
+        let mut tx = tx.clone();
         let sent = sent.clone();
         producers.push(thread::spawn(move || {
           if batch_size == 0 {
@@ -232,7 +232,7 @@ pub fn run_async(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
 
         let mut producer_handles: Vec<JoinHandle<()>> = Vec::new();
         for _ in 0..cfg.producers {
-          let tx = tx.clone();
+          let mut tx = tx.clone();
           let sent = sent.clone();
           producer_handles.push(tokio::spawn(async move {
             if batch_size == 0 {

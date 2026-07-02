@@ -197,7 +197,7 @@ mod tests {
 
   #[test]
   fn spmc_single_recv() {
-    let (mut tx, rx) = bounded(2);
+    let (tx, rx) = bounded(2);
     assert_eq!(tx.len(), 0);
     assert!(tx.is_empty());
     assert!(!tx.is_full());
@@ -220,7 +220,7 @@ mod tests {
 
   #[test]
   fn spmc_multiple_receivers_len_checks() {
-    let (mut tx, rx1) = bounded(4);
+    let (tx, rx1) = bounded(4);
     let rx2 = rx1.clone();
 
     assert_eq!(tx.len(), 0);
@@ -266,7 +266,7 @@ mod tests {
 
   #[test]
   fn spmc_sync_try_send() {
-    let (mut tx, rx1) = bounded(1);
+    let (tx, rx1) = bounded(1);
     let rx2 = rx1.clone(); // Keep another receiver
 
     assert!(tx.try_send(10).is_ok()); // head = 1. min_tail(rx1,rx2) = 0. tx.len = 1.
@@ -295,7 +295,7 @@ mod tests {
 
   #[test]
   fn spmc_multiple_receivers() {
-    let (mut tx, rx1) = bounded(ITEMS_LOW);
+    let (tx, rx1) = bounded(ITEMS_LOW);
     let rx2 = rx1.clone();
     let rx3 = rx1.clone();
 
@@ -328,7 +328,7 @@ mod tests {
 
   #[test]
   fn spmc_sync_slow_consumer_blocks_producer() {
-    let (mut tx, rx_fast) = bounded(1); // Capacity of 1
+    let (tx, rx_fast) = bounded(1); // Capacity of 1
     let rx_slow = rx_fast.clone();
 
     tx.send(1).unwrap();
@@ -370,7 +370,7 @@ mod tests {
 
   #[test]
   fn spmc_sync_all_receivers_drop_closes_channel() {
-    let (mut tx, rx) = bounded(2);
+    let (tx, rx) = bounded(2);
     let rx2 = rx.clone();
     assert_eq!(tx.capacity(), 2);
     assert_eq!(rx.capacity(), 2);
@@ -407,7 +407,7 @@ mod tests {
 
     // --- Test receiver closing ---
     // (This part of the test would have run if the first part didn't panic)
-    let (mut tx, rx1) = bounded(2);
+    let (tx, rx1) = bounded(2);
     let rx2 = rx1.clone();
     tx.send(1).unwrap();
 
@@ -430,7 +430,6 @@ mod tests {
   #[test]
   fn test_spmc_ring_buffer_wrap_around_leak() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
 
     static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 

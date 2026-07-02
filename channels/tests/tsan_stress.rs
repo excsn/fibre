@@ -8,7 +8,7 @@ fn mpsc_tsan_stress_test() {
   let mut handles = vec![];
 
   for i in 0..num_threads {
-    let tx_clone = tx.clone();
+    let mut tx_clone = tx.clone();
     handles.push(std::thread::spawn(move || {
       for j in 0..items_per_thread {
         // The send itself is the path we want to exercise.

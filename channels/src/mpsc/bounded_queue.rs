@@ -151,8 +151,12 @@ impl ChunkStack {
 
 // --- BoundedQueue Shared Core ---
 pub struct BoundedQueue<T: Send> {
-  // Flat up-front heap allocation
-  buf: Box<[Node<T>]>,
+  // Flat up-front heap allocation, held raw (`Box::into_raw`) and freed in
+  // `Drop`. Storing the owning `Box` here would be UB under Stacked Borrows:
+  // every move of a `Box` (into this struct, then into the `Arc`) is a fresh
+  // Unique retag that invalidates `buf_start` and every node pointer derived
+  // from it.
+  buf: *mut [Node<T>],
   buf_start: *mut Node<T>,
   cap: usize,
 
@@ -201,8 +205,8 @@ impl<T: Send> BoundedQueue<T> {
       });
     }
 
-    let mut buf = nodes.into_boxed_slice();
-    let buf_start = buf.as_mut_ptr();
+    let buf = Box::into_raw(nodes.into_boxed_slice());
+    let buf_start = buf as *mut Node<T>;
 
     let stub_ptr = buf_start;
     let chunk_stack = ChunkStack::new();
@@ -588,6 +592,9 @@ impl<T: Send> Drop for BoundedQueue<T> {
   fn drop(&mut self) {
     self.wake_all_senders();
     self.wake_all_receivers();
+    // Reconstitute the node allocation; its drop glue drops any values still
+    // buffered in the nodes (`val: Option<T>`).
+    unsafe { drop(Box::from_raw(self.buf)) };
   }
 }
 

@@ -138,9 +138,9 @@ async fn main() {
     let num_producers = 3;
     let items_per_producer = 5;
 
-    // Spawn async producers
+    // Spawn async producers (send takes `&mut self`: one clone per task)
     for i in 0..num_producers {
-        let tx_clone = tx.clone();
+        let mut tx_clone = tx.clone();
         task::spawn(async move {
             for j in 0..items_per_producer {
                 if tx_clone.send((i, j)).await.is_err() {
@@ -257,13 +257,14 @@ A flexible channel for many-to-many communication.
 *   **Constructors:**
     *   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)` (Panics if capacity is 0 — use `mpmc::rendezvous`).
     *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (Panics if capacity is 0 — use `mpmc::rendezvous`).
-    *   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`
-    *   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`
+    *   `pub fn unbounded<T: Send>() -> (UnboundedSyncSender<T>, UnboundedSyncReceiver<T>)`
+    *   `pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>)`
     *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff.
     *   `pub fn rendezvous::rendezvous_async<T: Send>() -> (rendezvous::RendezvousAsyncSender<T>, rendezvous::RendezvousAsyncReceiver<T>)`
 *   **Handles:**
-    *   `Sender<T: Send>` (`Clone`) and `Receiver<T: Send>` (`Clone`).
-    *   `AsyncSender<T: Send>` (`Clone`) and `AsyncReceiver<T: Send>` (`Clone`). `AsyncReceiver` implements `futures::Stream`.
+    *   Bounded: `Sender<T: Send>` (`Clone`) and `Receiver<T: Send>` (`Clone`).
+    *   Bounded async: `AsyncSender<T: Send>` (`Clone`) and `AsyncReceiver<T: Send>` (`Clone`). `AsyncReceiver` implements `futures::Stream`.
+    *   Unbounded: `Unbounded{Sync,Async}{Sender,Receiver}<T: Send>` (all `Clone`; `UnboundedAsyncReceiver` implements `futures::Stream`). Sends and waiting receives take `&mut self` — clone a handle per thread or task.
     *   Rendezvous handles `rendezvous::{Sender, Receiver, AsyncSender, AsyncReceiver}` (all `Clone`) expose `send`/`recv`/`try_*`/`recv_timeout`/`close`/conversions but no batch API.
 *   **Key Methods:**
     *   `send(...)`: Sync sends block, async sends return a `Future`.
@@ -285,7 +286,7 @@ An optimized lock-free channel for many-to-one communication.
     *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (Panics if capacity is 0 — use `mpsc::rendezvous`).
     *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff (senders `Clone`; single receiver, `!Clone`). `_async` variant available. No batch API.
 *   **Handles (Unbounded):**
-    *   `UnboundedSyncSender<T: Send>` (sync, `Clone`) and `UnboundedSyncReceiver<T: Send>` (sync, `!Clone`).
+    *   `UnboundedSyncSender<T: Send>` (sync, `Clone`) and `UnboundedSyncReceiver<T: Send>` (sync, `!Clone`). Sends take `&mut self` — clone a sender per thread or task.
     *   `UnboundedAsyncSender<T: Send>` (async, `Clone`) and `UnboundedAsyncReceiver<T: Send>` (async, `!Clone`). `UnboundedAsyncReceiver` implements `futures::Stream`.
 *   **Handles (Bounded):**
     *   `BoundedSyncSender<T: Send>` (sync, `Clone`) and `BoundedSyncReceiver<T: Send>` (sync, `!Clone`).

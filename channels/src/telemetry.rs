@@ -336,9 +336,13 @@ pub mod disabled {
 
 // log_stall! — zero-barrier flight recorder. Arguments are all integers
 // (no format!, no String) so no allocator call ever reaches the macro body.
+// The `not(diagnostics)` arms evaluate-and-discard their arguments (zero
+// codegen after optimization) so call sites keep their constants and locals
+// "used" in default builds; the format-args variant still skips `format!`
+// entirely when disabled so no allocation can reach a release build.
 #[macro_export]
 macro_rules! log_stall {
-  ($location:expr, $event_type:expr, $state:expr, $head:expr, $tail:expr) => {
+  ($location:expr, $event_type:expr, $state:expr, $head:expr, $tail:expr) => {{
     #[cfg(feature = "diagnostics")]
     $crate::telemetry::log_stall_event(
       $location,
@@ -347,16 +351,21 @@ macro_rules! log_stall {
       $head as usize,
       $tail as usize,
     );
-  };
+    #[cfg(not(feature = "diagnostics"))]
+    let _ = (&$location, &$event_type, &$state, &$head, &$tail);
+  }};
 }
 
 #[macro_export]
 macro_rules! log_event {
-  ($item_id:expr, $location:expr, $event_type:expr) => {
+  ($item_id:expr, $location:expr, $event_type:expr) => {{
     #[cfg(feature = "diagnostics")]
     $crate::telemetry::log_event($item_id, $location, $event_type, None);
-  };
-  ($item_id:expr, $location:expr, $event_type:expr, $($arg:tt)+) => {
+    // Typed like the enabled call so bare `None` item_ids still infer.
+    #[cfg(not(feature = "diagnostics"))]
+    let _: (::core::option::Option<usize>, &str, &str) = ($item_id, $location, $event_type);
+  }};
+  ($item_id:expr, $location:expr, $event_type:expr, $($arg:tt)+) => {{
     #[cfg(feature = "diagnostics")]
     $crate::telemetry::log_event(
       $item_id,
@@ -364,15 +373,20 @@ macro_rules! log_event {
       $event_type,
       Some(format!($($arg)+)),
     );
-  };
+    // Typed like the enabled call so bare `None` item_ids still infer.
+    #[cfg(not(feature = "diagnostics"))]
+    let _: (::core::option::Option<usize>, &str, &str) = ($item_id, $location, $event_type);
+  }};
 }
 
 #[macro_export]
 macro_rules! increment_counter {
-  ($location:expr, $counter_name:expr) => {
+  ($location:expr, $counter_name:expr) => {{
     #[cfg(feature = "diagnostics")]
     $crate::telemetry::increment_counter($location, $counter_name);
-  };
+    #[cfg(not(feature = "diagnostics"))]
+    let _ = (&$location, &$counter_name);
+  }};
 }
 
 // Re-export the correct set of functions based on the feature flag

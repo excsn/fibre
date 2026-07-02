@@ -37,11 +37,17 @@ pub use bounded_queue::{
 
 // --- Unbounded V3 (Vyukov Chain + Per-Handle Bump Slabs) Constructors ---
 /// Creates a new unbounded synchronous MPSC channel.
+///
+/// Sending takes `&mut self` so each sender keeps its bump slab without a
+/// lock: clone a sender per thread instead of sharing one.
 pub fn unbounded<T: Send>() -> (UnboundedSyncSender<T>, UnboundedSyncReceiver<T>) {
   unbounded_v3::channel()
 }
 
 /// Creates a new unbounded asynchronous MPSC channel.
+///
+/// Sending takes `&mut self` so each sender keeps its bump slab without a
+/// lock: clone a sender per task instead of sharing one.
 pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>) {
   unbounded_v3::channel_async()
 }
@@ -85,7 +91,7 @@ mod tests {
 
   #[test]
   fn sync_to_sync_blocking() {
-    let (tx, rx) = unbounded::<i32>();
+    let (mut tx, rx) = unbounded::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
     let handle = thread::spawn(move || {
@@ -104,7 +110,7 @@ mod tests {
 
   #[tokio::test]
   async fn async_to_async() {
-    let (tx, mut rx) = unbounded_async::<i32>();
+    let (mut tx, mut rx) = unbounded_async::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
     let handle = tokio::spawn(async move {
@@ -126,7 +132,7 @@ mod tests {
     let (tx_async, mut rx_async) = unbounded_async::<i32>();
     assert_eq!(tx_async.len(), 0);
     assert!(rx_async.is_empty());
-    let tx_sync = tx_async.to_sync();
+    let mut tx_sync = tx_async.to_sync();
 
     let producer_handle = thread::spawn(move || {
       thread::sleep(Duration::from_millis(50));
@@ -142,7 +148,7 @@ mod tests {
 
   #[test]
   fn async_to_sync_conversion() {
-    let (tx_async, rx_sync_orig) = unbounded_async::<i32>();
+    let (mut tx_async, rx_sync_orig) = unbounded_async::<i32>();
     assert_eq!(tx_async.len(), 0);
     let rx_sync = rx_sync_orig.to_sync();
     assert!(rx_sync.is_empty());
@@ -162,7 +168,7 @@ mod tests {
 
   #[test]
   fn len_and_is_empty_sync() {
-    let (tx, rx) = unbounded::<i32>();
+    let (mut tx, rx) = unbounded::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
 
@@ -193,7 +199,7 @@ mod tests {
 
   #[tokio::test]
   async fn len_and_is_empty_async() {
-    let (tx, mut rx) = unbounded_async::<i32>();
+    let (mut tx, mut rx) = unbounded_async::<i32>();
     assert_eq!(tx.len(), 0);
     assert!(rx.is_empty());
 
@@ -225,8 +231,8 @@ mod tests {
   #[test]
   fn close_and_is_closed() {
     // Test sender close
-    let (tx, rx) = unbounded::<i32>();
-    let tx2 = tx.clone();
+    let (mut tx, rx) = unbounded::<i32>();
+    let mut tx2 = tx.clone();
 
     assert!(!tx.is_closed());
     assert!(!rx.is_closed());
@@ -244,7 +250,7 @@ mod tests {
     assert_eq!(rx.recv(), Err(RecvError::Disconnected));
 
     // Test receiver close
-    let (tx, rx) = unbounded::<i32>();
+    let (mut tx, rx) = unbounded::<i32>();
     assert!(!tx.is_closed());
     rx.close().unwrap();
     assert!(tx.is_closed()); // Sender sees receiver is gone

@@ -43,7 +43,7 @@ fn sync_try_send_batch_closed() {
 
 #[test]
 fn sync_unbounded_send_batch_never_full() {
-  let (tx, rx) = mpmc::unbounded::<usize>();
+  let (mut tx, mut rx) = mpmc::unbounded::<usize>();
   assert_eq!(tx.try_send_batch((0..1000).collect()).unwrap(), 1000);
   let mut all = Vec::new();
   while all.len() < 1000 {
@@ -239,7 +239,7 @@ mod async_tests {
 
   #[tokio::test]
   async fn async_unbounded_batch_roundtrip() {
-    let (tx, rx) = mpmc::unbounded_async::<usize>();
+    let (mut tx, mut rx) = mpmc::unbounded_async::<usize>();
     assert_eq!(tx.send_batch((0..100).collect()).await.unwrap(), 100);
     let mut all = Vec::new();
     while all.len() < 100 {

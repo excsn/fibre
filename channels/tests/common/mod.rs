@@ -1,3 +1,7 @@
+// Shared by every integration-test binary; each one compiles this module
+// separately and uses only a subset of the constants.
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 pub const SHORT_TIMEOUT: Duration = Duration::from_millis(500);

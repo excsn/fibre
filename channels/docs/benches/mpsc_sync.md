@@ -4,32 +4,44 @@
 ## Unbounded Baseline Results (`MpscUnboundedSync`)
 
 ### `MpscUnboundedSync/Prod-1_Items-100000`
-- **Time:** 745.47 µs – 776.02 µs – 818.32 µs  
-- **Throughput:** 122.20 Melem/s – 128.86 Melem/s – 134.14 Melem/s
+- **Time:** 480.52 µs – 496.84 µs – 509.60 µs  
+- **Throughput:** 196.23 Melem/s – 201.27 Melem/s – 208.11 Melem/s
 
 ### `MpscUnboundedSync/Prod-1_Items-1000000`
-- **Time:** 7.6837 ms – 8.3459 ms – 9.0102 ms  
-- **Throughput:** 110.98 Melem/s – 119.82 Melem/s – 130.15 Melem/s
+- **Time:** 4.6009 ms – 4.7551 ms – 5.0657 ms  
+- **Throughput:** 197.41 Melem/s – 210.30 Melem/s – 217.35 Melem/s
+
+### `MpscUnboundedSync/Prod-1_Items-10000000`
+- **Time:** 46.309 ms – 47.393 ms – 48.601 ms  
+- **Throughput:** 205.76 Melem/s – 211.00 Melem/s – 215.94 Melem/s
 
 ---
 
 ### `MpscUnboundedSync/Prod-4_Items-100000`
-- **Time:** 4.2979 ms – 4.7536 ms – 5.3513 ms  
-- **Throughput:** 18.687 Melem/s – 21.037 Melem/s – 23.267 Melem/s
+- **Time:** 4.3888 ms – 4.6043 ms – 4.7374 ms  
+- **Throughput:** 21.109 Melem/s – 21.719 Melem/s – 22.785 Melem/s
 
 ### `MpscUnboundedSync/Prod-4_Items-1000000`
-- **Time:** 38.567 ms – 40.514 ms – 44.842 ms  
-- **Throughput:** 22.300 Melem/s – 24.683 Melem/s – 25.929 Melem/s
+- **Time:** 46.203 ms – 47.668 ms – 50.004 ms  
+- **Throughput:** 19.999 Melem/s – 20.978 Melem/s – 21.644 Melem/s
+
+### `MpscUnboundedSync/Prod-4_Items-10000000`
+- **Time:** 485.68 ms – 501.40 ms – 520.14 ms  
+- **Throughput:** 19.226 Melem/s – 19.944 Melem/s – 20.590 Melem/s
 
 ---
 
 ### `MpscUnboundedSync/Prod-14_Items-100000`
-- **Time:** 7.5227 ms – 7.5460 ms – 7.5677 ms  
-- **Throughput:** 13.214 Melem/s – 13.252 Melem/s – 13.293 Melem/s
+- **Time:** 7.1674 ms – 7.1761 ms – 7.1907 ms  
+- **Throughput:** 13.907 Melem/s – 13.935 Melem/s – 13.952 Melem/s
 
 ### `MpscUnboundedSync/Prod-14_Items-1000000`
-- **Time:** 76.780 ms – 77.793 ms – 78.497 ms  
-- **Throughput:** 12.739 Melem/s – 12.855 Melem/s – 13.024 Melem/s
+- **Time:** 75.669 ms – 75.862 ms – 76.079 ms  
+- **Throughput:** 13.144 Melem/s – 13.182 Melem/s – 13.215 Melem/s
+
+### `MpscUnboundedSync/Prod-14_Items-10000000`
+- **Time:** 755.37 ms – 764.96 ms – 771.95 ms  
+- **Throughput:** 12.954 Melem/s – 13.073 Melem/s – 13.239 Melem/s
 
 
 ## Bounded Results (`MpscBoundedSync`)

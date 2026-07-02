@@ -14,7 +14,6 @@ use std::thread::Thread;
 // --- State Machine Constants ---
 pub(crate) const STATE_WAITING: u8 = 0;
 pub(crate) const STATE_SUCCESS_SPACE: u8 = 3;
-pub(crate) const STATE_SUCCESS_HANDOFF: u8 = 7;
 pub(crate) const STATE_CLOSED_BUFFERED: u8 = 1;
 pub(crate) const STATE_CLOSED_RENDEZVOUS: u8 = 5;
 pub(crate) const STATE_CANCELLED: u8 = 8;
@@ -90,13 +89,6 @@ impl<T> Storage<T> {
     }
   }
 
-  #[inline]
-  pub(crate) fn is_full(&self) -> bool {
-    match self {
-      Self::Bounded(ring) => ring.is_full(),
-      Self::Unbounded(_) => false, // Unbounded queue is never full
-    }
-  }
 }
 
 // --- Waiter Structs ---
@@ -220,12 +212,6 @@ impl<T> MpmcChannelInternal<T> {
   pub(crate) fn drain_into(&mut self, out: &mut Vec<T>, count: usize) {
     self.queue.drain_into(out, count);
     self.queue_len -= count;
-  }
-
-  #[inline]
-  pub(crate) fn clear(&mut self) {
-    self.queue.clear();
-    self.queue_len = 0;
   }
 }
 

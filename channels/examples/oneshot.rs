@@ -141,7 +141,6 @@ fn main() {
         println!("Receiver correctly saw disconnected (sender dropped).")
       }
       Ok(v) => panic!("Should not receive value: {}", v),
-      Err(e) => panic!("Unexpected error: {:?}", e),
     }
   });
 

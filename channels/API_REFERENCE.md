@@ -223,26 +223,26 @@ An optimized channel for multiple producers and one consumer.
 
 ### Unbounded MPSC Types
 
-*   **Struct `UnboundedSyncSender<T: Send>`**: A cloneable, sync handle for the unbounded channel.
-    *   `send(&self, value: T) -> Result<(), SendError>`: Non-blocking send.
-    *   `send_batch(&self, items: Vec<T>) -> Result<usize, SendBatchError<T>>`: Never blocks (unbounded); one length update + one wake per batch.
-    *   `try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`
-    *   `send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError>` / `try_send_batch_mut(...)`: In-place variants.
-    *   Methods: `try_send`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `to_async`.
+*   **Struct `UnboundedSyncSender<T: Send>`**: A cloneable, sync handle for the unbounded channel. Sends take `&mut self` (the handle owns its bump slab); clone a sender per thread.
+    *   `send(&mut self, value: T) -> Result<(), SendError>`: Non-blocking send.
+    *   `send_batch(&mut self, items: Vec<T>) -> Result<usize, SendBatchError<T>>`: Never blocks (unbounded); one length update + one wake per batch.
+    *   `try_send_batch(&mut self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`
+    *   `send_batch_mut(&mut self, items: &mut Vec<T>) -> Result<usize, SendError>` / `try_send_batch_mut(...)`: In-place variants.
+    *   Methods: `try_send` (`&mut self`), `close` (`&mut self`), `is_closed`, `sender_count`, `len`, `is_empty`, `to_async`.
 *   **Struct `UnboundedSyncReceiver<T: Send>`**: A non-cloneable, sync handle.
     *   `recv(&self) -> Result<T, RecvError>`: Blocks if empty.
     *   `recv_timeout(&self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
     *   `recv_batch(&self, max: usize) -> Result<Vec<T>, RecvError>` / `try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError>`
     *   `recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError>` / `try_recv_batch_mut(...)`: Append to `out`.
     *   Methods: `try_recv`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `to_async`.
-*   **Struct `UnboundedAsyncSender<T: Send>`**: A cloneable, async handle.
-    *   `send(&self, value: T) -> UnboundedSendFuture<'_, T>`: Non-blocking future.
-    *   `send_batch(&self, items: Vec<T>) -> UnboundedSendBatchFuture<'_, T>` / `send_batch_mut(...) -> UnboundedSendBatchMutFuture<'_, T>`: Complete on first poll (unbounded).
-    *   Methods: `try_send`, `try_send_batch`, `try_send_batch_mut`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `to_sync`.
+*   **Struct `UnboundedAsyncSender<T: Send>`**: A cloneable, async handle. Sends take `&mut self`; clone a sender per task.
+    *   `send(&mut self, value: T) -> UnboundedSendFuture<'_, T>`: Non-blocking future.
+    *   `send_batch(&mut self, items: Vec<T>) -> UnboundedSendBatchFuture<'_, T>` / `send_batch_mut(...) -> UnboundedSendBatchMutFuture<'_, T>`: Complete on first poll (unbounded).
+    *   Methods: `try_send` (`&mut self`), `try_send_batch` (`&mut self`), `try_send_batch_mut` (`&mut self`), `close` (`&mut self`), `is_closed`, `sender_count`, `len`, `is_empty`, `to_sync`.
 *   **Struct `UnboundedAsyncReceiver<T: Send>`**: A non-cloneable, async handle. Implements `futures::Stream`.
-    *   `recv(&self) -> UnboundedRecvFuture<'_, T>`: Returns a future that waits for an item.
-    *   `recv_batch(&self, max: usize) -> UnboundedRecvBatchFuture<'_, T>` / `recv_batch_mut(...) -> UnboundedRecvBatchMutFuture<'_, T>`: Cancel-safe batch receives.
-    *   Methods: `try_recv`, `try_recv_batch`, `try_recv_batch_mut`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `to_sync`.
+    *   `recv(&mut self) -> UnboundedRecvFuture<'_, T>`: Returns a future that waits for an item.
+    *   `recv_batch(&mut self, max: usize) -> UnboundedRecvBatchFuture<'_, T>` / `recv_batch_mut(...) -> UnboundedRecvBatchMutFuture<'_, T>`: Cancel-safe batch receives.
+    *   Methods: `try_recv` (`&mut self`), `try_recv_batch` (`&mut self`), `try_recv_batch_mut` (`&mut self`), `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `to_sync`.
 
 ### Bounded MPSC Types
 
@@ -328,13 +328,13 @@ A flexible, lock-based channel for many producers and many consumers.
 
 *   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
 *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
-*   `pub fn unbounded<T: Send>() -> (Sender<T>, Receiver<T>)`
-*   `pub fn unbounded_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>)`
+*   `pub fn unbounded<T: Send>() -> (UnboundedSyncSender<T>, UnboundedSyncReceiver<T>)`
+*   `pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>)`
 *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff; senders and receivers `Clone`. No batch API. `_async` variant available.
 
 ### Struct `Sender<T: Send>`
 
-The synchronous, cloneable sending handle.
+The synchronous, cloneable sending handle of the bounded channel.
 
 *   **Methods**:
     *   `send(&self, item: T) -> Result<(), SendError>`: Blocks if the channel is full.
@@ -347,7 +347,7 @@ The synchronous, cloneable sending handle.
 
 ### Struct `Receiver<T: Send>`
 
-The synchronous, cloneable receiving handle.
+The synchronous, cloneable receiving handle of the bounded channel.
 
 *   **Methods**:
     *   `recv(&self) -> Result<T, RecvError>`: Blocks if the channel is empty.
@@ -360,7 +360,7 @@ The synchronous, cloneable receiving handle.
 
 ### Struct `AsyncSender<T: Send>`
 
-The asynchronous, cloneable sending handle.
+The asynchronous, cloneable sending handle of the bounded channel.
 
 *   **Methods**:
     *   `send(&self, item: T) -> SendFuture<'_, T>`
@@ -369,12 +369,34 @@ The asynchronous, cloneable sending handle.
 
 ### Struct `AsyncReceiver<T: Send>`
 
-The asynchronous, cloneable receiving handle. Implements `futures::Stream`.
+The asynchronous, cloneable receiving handle of the bounded channel. Implements `futures::Stream`.
 
 *   **Methods**:
     *   `recv(&self) -> RecvFuture<'_, T>`
     *   `recv_batch(&self, max: usize) -> RecvBatchFuture<'_, T>` / `recv_batch_mut(...) -> RecvBatchMutFuture<'_, T>`
     *   `try_recv`, `try_recv_batch`, `try_recv_batch_mut`, `close`, `to_sync`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
+
+### Unbounded MPMC Types
+
+The unbounded channel is a dedicated implementation (lock-free slab-chain producers, mutex-serialized consumer side), not the bounded channel with infinite capacity. All four handles are `Clone`. Sends and waiting receives take `&mut self` — each handle owns its bump slab (senders) or cached waiter cell (receivers), so the hot paths never lock or allocate; clone a handle per thread or task.
+
+*   **Struct `UnboundedSyncSender<T: Send>`**:
+    *   `send(&mut self, value: T) -> Result<(), SendError>`: Never blocks.
+    *   `send_batch(&mut self, items: Vec<T>) -> Result<usize, SendBatchError<T>>` / `try_send_batch(...)` / `send_batch_mut(...)` / `try_send_batch_mut(...)`: One publish + one wake per batch.
+    *   Methods: `try_send` (`&mut self`), `close` (`&mut self`), `is_closed`, `sender_count`, `capacity`, `len`, `is_empty`, `is_full`, `to_async`.
+*   **Struct `UnboundedSyncReceiver<T: Send>`**:
+    *   `recv(&mut self) -> Result<T, RecvError>`: Blocks if empty.
+    *   `recv_timeout(&mut self, timeout: std::time::Duration) -> Result<T, RecvErrorTimeout>`
+    *   `recv_batch(&mut self, max: usize) -> Result<Vec<T>, RecvError>` / `recv_batch_mut(...)`: Block until at least one item.
+    *   Methods: `try_recv`, `try_recv_batch`, `try_recv_batch_mut`, `close`, `is_closed`, `sender_count`, `capacity`, `len`, `is_empty`, `is_full`, `to_async` (non-waiting methods stay `&self`).
+*   **Struct `UnboundedAsyncSender<T: Send>`**:
+    *   `send(&mut self, value: T) -> UnboundedSendFuture<'_, T>`: Resolves on first poll.
+    *   `send_batch(&mut self, items: Vec<T>) -> UnboundedSendBatchFuture<'_, T>` / `send_batch_mut(...) -> UnboundedSendBatchMutFuture<'_, T>`
+    *   Methods: `try_send` (`&mut self`), `try_send_batch` (`&mut self`), `try_send_batch_mut` (`&mut self`), `close` (`&mut self`), `is_closed`, `sender_count`, `capacity`, `len`, `is_empty`, `is_full`, `to_sync`.
+*   **Struct `UnboundedAsyncReceiver<T: Send>`**: Implements `futures::Stream`.
+    *   `recv(&mut self) -> UnboundedRecvFuture<'_, T>`
+    *   `recv_batch(&mut self, max: usize) -> UnboundedRecvBatchFuture<'_, T>` / `recv_batch_mut(...) -> UnboundedRecvBatchMutFuture<'_, T>`: Cancel-safe; a fulfilled-then-cancelled receive reinserts its item.
+    *   Methods: `try_recv`, `try_recv_batch`, `try_recv_batch_mut`, `close`, `is_closed`, `sender_count`, `capacity`, `len`, `is_empty`, `is_full`, `to_sync` (non-waiting methods stay `&self`).
 
 ## 8. Module `fibre::spmc::topic`
 

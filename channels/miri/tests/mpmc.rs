@@ -49,7 +49,7 @@ fn bounded_2p_2c_race() {
 fn unbounded_smoke_and_ownership() {
   let counter = drop_counter();
   {
-    let (tx, rx) = mpmc::unbounded();
+    let (mut tx, mut rx) = mpmc::unbounded();
     for _ in 0..ITEMS_SMALL {
       tx.send(DropCounter::new(&counter)).unwrap();
     }
@@ -60,6 +60,67 @@ fn unbounded_smoke_and_ownership() {
     drop(rx);
   }
   assert_eq!(drops(&counter), ITEMS_SMALL);
+}
+
+#[test]
+fn unbounded_2p_2c_race() {
+  let (tx, rx) = mpmc::unbounded::<usize>();
+  let sum = Arc::new(AtomicUsize::new(0));
+  let mut handles = Vec::new();
+  for _ in 0..2 {
+    let mut txc = tx.clone();
+    handles.push(thread::spawn(move || {
+      for i in 1..=ITEMS_SMALL {
+        txc.send(i).unwrap();
+      }
+    }));
+  }
+  drop(tx);
+  for _ in 0..2 {
+    let mut rxc = rx.clone();
+    let sumc = sum.clone();
+    handles.push(thread::spawn(move || {
+      while let Ok(v) = rxc.recv() {
+        sumc.fetch_add(v, Ordering::Relaxed);
+      }
+    }));
+  }
+  drop(rx);
+  for h in handles {
+    h.join().unwrap();
+  }
+  assert_eq!(
+    sum.load(Ordering::Relaxed),
+    2 * (ITEMS_SMALL * (ITEMS_SMALL + 1) / 2)
+  );
+}
+
+#[test]
+fn unbounded_fulfilled_then_dropped_future_reclaims_item() {
+  let counter = drop_counter();
+  let (mut tx, mut rx) = mpmc::unbounded_async();
+  {
+    let mut fut = pin!(rx.recv());
+    assert!(poll_once(fut.as_mut()).is_pending()); // registered as a waiter
+    tx.try_send(DropCounter::new(&counter)).unwrap(); // handoff fulfills it
+    // Dropped without being polled again: the delivered value must be
+    // reclaimed, not leaked or double-dropped.
+  }
+  assert_eq!(drops(&counter), 0);
+  drop(rx.try_recv().unwrap());
+  assert_eq!(drops(&counter), 1);
+  drop(tx);
+}
+
+#[test]
+fn unbounded_disconnect_wakes_parked_consumers() {
+  let (tx, mut rx) = mpmc::unbounded::<u32>();
+  let mut rx2 = rx.clone();
+  let c1 = thread::spawn(move || rx.recv());
+  let c2 = thread::spawn(move || rx2.recv());
+  drop(tx);
+  assert!(c1.join().unwrap().is_err());
+  assert!(c2.join().unwrap().is_err());
 }
 
 #[test]

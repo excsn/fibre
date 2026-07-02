@@ -1,120 +1,39 @@
 //! Shared core of the unbounded v3 MPSC channel.
 //!
-//! Strict-FIFO Vyukov intrusive chain: producers publish with one
-//! always-succeeding `swap` of `head` — the single shared atomic RMW per send,
-//! which is the floor any linearizable multi-producer order requires. Every
-//! other cost is handle-local: nodes are bump-allocated from per-handle slabs
-//! (see `producer.rs`), `len()` is tracked with sharded monotonic counters,
-//! and there is no send-waiter machinery at all because sends never block.
+//! Strict-FIFO Vyukov intrusive chain (see `internal::slab_chain` for the
+//! producer machinery): producers publish with one always-succeeding `swap` —
+//! the single shared atomic RMW per send, which is the floor any linearizable
+//! multi-producer order requires. Every other cost is handle-local: nodes are
+//! bump-allocated from per-handle slabs, `len()` is tracked with sharded
+//! monotonic counters, and there is no send-waiter machinery at all because
+//! sends never block.
 
 use crate::error::{RecvError, TryRecvError};
 use crate::internal::cache_padded::CachePadded;
+use crate::internal::slab_chain::{alloc_stub, retire_node, ChainHead, Node, SlabPool};
 
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::ptr;
-use std::sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 use std::thread::Thread;
 
 use parking_lot::Mutex;
 
-/// Nodes per slab: one heap allocation per this many sends per handle.
-pub(crate) const SLAB_NODES: usize = 128;
+pub(crate) use crate::internal::slab_chain::SLAB_NODES;
 
 /// Fixed number of `sent` counter shards backing `len()`. Handles take a shard
 /// round-robin at creation, so with up to this many live handles each producer
 /// counts on a private cache line.
 const LEN_SHARDS: usize = 16;
 
-// --- Node & Slab ------------------------------------------------------------
-
-pub(crate) struct Node<T> {
-  pub(crate) next: AtomicPtr<Node<T>>,
-  /// Owning slab, for retirement accounting; null for the stub node (a plain
-  /// `Box` owned by the chain).
-  slab: *mut Slab<T>,
-  /// `Option` so the slab's drop glue can never double-drop a consumed value:
-  /// the consumer `take()`s it out, leaving `None` behind.
-  pub(crate) val: UnsafeCell<Option<T>>,
-}
-
-/// A flat run of nodes handed to exactly one producer handle for bump
-/// allocation, freed once every node in it has been retired.
-pub(crate) struct Slab<T> {
-  /// Starts at `SLAB_NODES + 1`: one count per node plus one hold for the
-  /// producer. The consumer releases one count per node it retires; the
-  /// producer releases the hold — plus one count per never-used node — when it
-  /// seals the slab (on exhaustion or handle close/drop). Whoever reaches zero
-  /// frees the slab. Arc-style ordering: `fetch_sub(Release)` with an
-  /// `Acquire` fence before the free.
-  remaining: AtomicU32,
-  nodes: Box<[Node<T>]>,
-}
-
-/// Allocates a fresh slab and returns it with the base pointer of its node
-/// array (captured once, like `bounded_queue`'s `buf_start`).
-pub(crate) fn alloc_slab<T>() -> (*mut Slab<T>, *mut Node<T>) {
-  let slab = Box::into_raw(Box::new(Slab {
-    remaining: AtomicU32::new(SLAB_NODES as u32 + 1),
-    nodes: Box::default(),
-  }));
-  let mut nodes = Vec::with_capacity(SLAB_NODES);
-  for _ in 0..SLAB_NODES {
-    nodes.push(Node {
-      next: AtomicPtr::new(ptr::null_mut()),
-      slab,
-      val: UnsafeCell::new(None),
-    });
-  }
-  unsafe {
-    (*slab).nodes = nodes.into_boxed_slice();
-    let base = (*slab).nodes.as_mut_ptr();
-    (slab, base)
-  }
-}
-
-/// Retires a node the consumer has advanced past. The stub is a plain `Box`;
-/// slab nodes release one slab count, freeing the slab on zero.
-///
-/// # Safety
-/// `node` must be a chain node the caller exclusively owns the retirement of
-/// (each node is retired exactly once, by the single consumer or by
-/// `MpscShared::drop`).
-pub(crate) unsafe fn retire_node<T>(node: *mut Node<T>) {
-  unsafe {
-    let slab = (*node).slab;
-    if slab.is_null() {
-      drop(Box::from_raw(node));
-    } else if (*slab).remaining.fetch_sub(1, Ordering::Release) == 1 {
-      fence(Ordering::Acquire);
-      drop(Box::from_raw(slab));
-    }
-  }
-}
-
-/// Producer-side seal: releases the producer hold plus one count per
-/// never-used node. Must be called exactly once per slab.
-///
-/// # Safety
-/// `slab` must have been produced by `alloc_slab`, `used` must be the number
-/// of nodes actually handed out from it, and no further nodes may be bumped
-/// from it after sealing.
-pub(crate) unsafe fn seal_slab<T>(slab: *mut Slab<T>, used: usize) {
-  let release = (SLAB_NODES - used) as u32 + 1;
-  unsafe {
-    if (*slab).remaining.fetch_sub(release, Ordering::Release) == release {
-      fence(Ordering::Acquire);
-      drop(Box::from_raw(slab));
-    }
-  }
-}
-
-// --- Shared State -----------------------------------------------------------
-
 pub(crate) struct MpscShared<T> {
   /// Producers swap here — the single shared RMW per send.
-  head: CachePadded<AtomicPtr<Node<T>>>,
+  head: ChainHead<T>,
+  /// Recycles retired slabs; its own `Arc` so sender handles (and the slabs
+  /// themselves) can outlive-independently reference it.
+  slab_pool: std::sync::Arc<SlabPool<T>>,
   /// Consumer-only cursor. Exclusivity is guaranteed by the receiver handle
   /// rules: `Receiver` is `!Sync`, `AsyncReceiver` takes `&mut self` on every
   /// receive method, and both are `!Clone`.
@@ -154,13 +73,10 @@ impl<T> fmt::Debug for MpscShared<T> {
 
 impl<T: Send> MpscShared<T> {
   pub(crate) fn new() -> Self {
-    let stub = Box::into_raw(Box::new(Node {
-      next: AtomicPtr::new(ptr::null_mut()),
-      slab: ptr::null_mut(),
-      val: UnsafeCell::new(None),
-    }));
+    let stub = alloc_stub::<T>();
     MpscShared {
-      head: CachePadded::new(AtomicPtr::new(stub)),
+      head: ChainHead::new(stub),
+      slab_pool: std::sync::Arc::new(SlabPool::new()),
       tail: CachePadded::new(UnsafeCell::new(stub)),
       receiver_dropped: AtomicBool::new(false),
       sender_count: AtomicUsize::new(1),
@@ -180,9 +96,18 @@ impl<T: Send> MpscShared<T> {
     self.shard_cursor.fetch_add(1, Ordering::Relaxed) % LEN_SHARDS
   }
 
+  pub(crate) fn slab_pool(&self) -> std::sync::Arc<SlabPool<T>> {
+    std::sync::Arc::clone(&self.slab_pool)
+  }
+
   #[inline]
   pub(crate) fn record_sent(&self, shard: usize, n: usize) {
     self.sent_shards[shard].fetch_add(n, Ordering::Relaxed);
+  }
+
+  #[inline]
+  pub(crate) fn publish(&self, first: *mut Node<T>, last: *mut Node<T>) {
+    self.head.publish(first, last);
   }
 
   #[inline]
@@ -230,17 +155,6 @@ impl<T: Send> MpscShared<T> {
       let tail = *self.tail.get();
       (*tail).next.load(Ordering::Acquire).is_null()
     }
-  }
-
-  // --- Publish (producer side) ----------------------------------------------
-
-  /// Publishes a pre-linked run of nodes `first..=last` (a single node passes
-  /// itself as both). This is v1/bounded's exact Vyukov pair: the
-  /// always-succeeding swap orders the run into the global FIFO, then the old
-  /// head is linked to it.
-  pub(crate) fn publish(&self, first: *mut Node<T>, last: *mut Node<T>) {
-    let old = self.head.swap(last, Ordering::AcqRel);
-    unsafe { (*old).next.store(first, Ordering::Release) };
   }
 
   // --- Consume (consumer-exclusive) ------------------------------------------

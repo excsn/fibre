@@ -30,66 +30,84 @@ pub fn run_sync(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
     },
   );
 
-  let (tx, rx) = match flavor {
-    Flavor::Bounded => mpmc::bounded::<usize>(cfg.capacity),
-    Flavor::Unbounded => mpmc::unbounded::<usize>(),
-    Flavor::Rendezvous => unreachable!(),
-  };
-
   let start = Instant::now();
   let items_per_prod = cfg.items / cfg.producers;
   let batch_size = cfg.batch_size;
 
-  let mut producers = Vec::new();
-  for _ in 0..cfg.producers {
-    let tx = tx.clone();
-    let sent = sent.clone();
-    producers.push(thread::spawn(move || {
-      if batch_size == 0 {
-        for i in 0..items_per_prod {
-          let _ = tx.send(i);
-          sent.fetch_add(1, Ordering::Relaxed);
-        }
-      } else {
-        let mut remaining = items_per_prod;
-        while remaining > 0 {
-          let chunk_size = remaining.min(batch_size);
-          match tx.send_batch(vec![0usize; chunk_size]) {
-            Ok(n) => {
-              sent.fetch_add(n, Ordering::Relaxed);
-              remaining -= n;
+  // Bounded and unbounded now have distinct handle types (same API surface),
+  // so the run body is expanded per flavor.
+  macro_rules! run_sync_pair {
+    ($tx:ident, $rx:ident) => {{
+      let mut producers = Vec::new();
+      for _ in 0..cfg.producers {
+        let tx = $tx.clone();
+        let sent = sent.clone();
+        producers.push(thread::spawn(move || {
+          // Unbounded handles send via `&mut self`; bounded ones via `&self`.
+          #[allow(unused_mut)]
+          let mut tx = tx;
+          if batch_size == 0 {
+            for i in 0..items_per_prod {
+              let _ = tx.send(i);
+              sent.fetch_add(1, Ordering::Relaxed);
             }
-            Err(_) => break,
+          } else {
+            let mut remaining = items_per_prod;
+            while remaining > 0 {
+              let chunk_size = remaining.min(batch_size);
+              match tx.send_batch(vec![0usize; chunk_size]) {
+                Ok(n) => {
+                  sent.fetch_add(n, Ordering::Relaxed);
+                  remaining -= n;
+                }
+                Err(_) => break,
+              }
+            }
           }
-        }
+        }));
       }
-    }));
-  }
-  drop(tx);
+      drop($tx);
 
-  let mut consumers = Vec::new();
-  for _ in 0..cfg.consumers {
-    let rx = rx.clone();
-    let received = received.clone();
-    consumers.push(thread::spawn(move || {
-      if batch_size == 0 {
-        while rx.recv().is_ok() {
-          received.fetch_add(1, Ordering::Relaxed);
-        }
-      } else {
-        while let Ok(batch) = rx.recv_batch(batch_size) {
-          received.fetch_add(batch.len(), Ordering::Relaxed);
-        }
+      let mut consumers = Vec::new();
+      for _ in 0..cfg.consumers {
+        let rx = $rx.clone();
+        let received = received.clone();
+        consumers.push(thread::spawn(move || {
+          // Unbounded handles recv via `&mut self`; bounded ones via `&self`.
+          #[allow(unused_mut)]
+          let mut rx = rx;
+          if batch_size == 0 {
+            while rx.recv().is_ok() {
+              received.fetch_add(1, Ordering::Relaxed);
+            }
+          } else {
+            while let Ok(batch) = rx.recv_batch(batch_size) {
+              received.fetch_add(batch.len(), Ordering::Relaxed);
+            }
+          }
+        }));
       }
-    }));
-  }
-  drop(rx);
+      drop($rx);
 
-  for p in producers {
-    p.join().unwrap();
+      for p in producers {
+        p.join().unwrap();
+      }
+      for c in consumers {
+        c.join().unwrap();
+      }
+    }};
   }
-  for c in consumers {
-    c.join().unwrap();
+
+  match flavor {
+    Flavor::Bounded => {
+      let (tx, rx) = mpmc::bounded::<usize>(cfg.capacity);
+      run_sync_pair!(tx, rx);
+    }
+    Flavor::Unbounded => {
+      let (tx, rx) = mpmc::unbounded::<usize>();
+      run_sync_pair!(tx, rx);
+    }
+    Flavor::Rendezvous => unreachable!(),
   }
 
   done.store(true, Ordering::Relaxed);
@@ -199,64 +217,83 @@ pub fn run_async(cfg: &BenchConfig, flavor: &Flavor) -> RunResult {
   let start = Instant::now();
 
   rt.block_on(async {
-    let (tx, rx) = match flavor {
-      Flavor::Bounded => mpmc::bounded_async::<usize>(cfg.capacity),
-      Flavor::Unbounded => mpmc::unbounded_async::<usize>(),
-      Flavor::Rendezvous => unreachable!(),
-    };
-
     let items_per_prod = cfg.items / cfg.producers;
     let batch_size = cfg.batch_size;
-    let mut producer_handles: Vec<JoinHandle<()>> = Vec::new();
-    for _ in 0..cfg.producers {
-      let tx = tx.clone();
-      let sent = sent.clone();
-      producer_handles.push(tokio::spawn(async move {
-        if batch_size == 0 {
-          for i in 0..items_per_prod {
-            let _ = tx.send(i).await;
-            sent.fetch_add(1, Ordering::Relaxed);
-          }
-        } else {
-          let mut remaining = items_per_prod;
-          while remaining > 0 {
-            let chunk_size = remaining.min(batch_size);
-            match tx.send_batch(vec![0usize; chunk_size]).await {
-              Ok(n) => {
-                sent.fetch_add(n, Ordering::Relaxed);
-                remaining -= n;
+
+    // Bounded and unbounded now have distinct handle types (same API
+    // surface), so the run body is expanded per flavor.
+    macro_rules! run_async_pair {
+      ($tx:ident, $rx:ident) => {{
+        let mut producer_handles: Vec<JoinHandle<()>> = Vec::new();
+        for _ in 0..cfg.producers {
+          let tx = $tx.clone();
+          let sent = sent.clone();
+          producer_handles.push(tokio::spawn(async move {
+            // Unbounded handles send via `&mut self`; bounded ones via `&self`.
+            #[allow(unused_mut)]
+            let mut tx = tx;
+            if batch_size == 0 {
+              for i in 0..items_per_prod {
+                let _ = tx.send(i).await;
+                sent.fetch_add(1, Ordering::Relaxed);
               }
-              Err(_) => break,
+            } else {
+              let mut remaining = items_per_prod;
+              while remaining > 0 {
+                let chunk_size = remaining.min(batch_size);
+                match tx.send_batch(vec![0usize; chunk_size]).await {
+                  Ok(n) => {
+                    sent.fetch_add(n, Ordering::Relaxed);
+                    remaining -= n;
+                  }
+                  Err(_) => break,
+                }
+              }
             }
-          }
+          }));
         }
-      }));
-    }
-    drop(tx);
+        drop($tx);
 
-    let mut consumer_handles: Vec<JoinHandle<()>> = Vec::new();
-    for _ in 0..cfg.consumers {
-      let rx = rx.clone();
-      let received = received.clone();
-      consumer_handles.push(tokio::spawn(async move {
-        if batch_size == 0 {
-          while rx.recv().await.is_ok() {
-            received.fetch_add(1, Ordering::Relaxed);
-          }
-        } else {
-          while let Ok(batch) = rx.recv_batch(batch_size).await {
-            received.fetch_add(batch.len(), Ordering::Relaxed);
-          }
+        let mut consumer_handles: Vec<JoinHandle<()>> = Vec::new();
+        for _ in 0..cfg.consumers {
+          let rx = $rx.clone();
+          let received = received.clone();
+          consumer_handles.push(tokio::spawn(async move {
+            // Unbounded handles recv via `&mut self`; bounded ones via `&self`.
+            #[allow(unused_mut)]
+            let mut rx = rx;
+            if batch_size == 0 {
+              while rx.recv().await.is_ok() {
+                received.fetch_add(1, Ordering::Relaxed);
+              }
+            } else {
+              while let Ok(batch) = rx.recv_batch(batch_size).await {
+                received.fetch_add(batch.len(), Ordering::Relaxed);
+              }
+            }
+          }));
         }
-      }));
-    }
-    drop(rx);
+        drop($rx);
 
-    for p in producer_handles {
-      p.await.unwrap();
+        for p in producer_handles {
+          p.await.unwrap();
+        }
+        for c in consumer_handles {
+          c.await.unwrap();
+        }
+      }};
     }
-    for c in consumer_handles {
-      c.await.unwrap();
+
+    match flavor {
+      Flavor::Bounded => {
+        let (tx, rx) = mpmc::bounded_async::<usize>(cfg.capacity);
+        run_async_pair!(tx, rx);
+      }
+      Flavor::Unbounded => {
+        let (tx, rx) = mpmc::unbounded_async::<usize>();
+        run_async_pair!(tx, rx);
+      }
+      Flavor::Rendezvous => unreachable!(),
     }
   });
 

@@ -83,7 +83,7 @@ fn benchmark_logic_mpmc_unbounded_sync(
   let start_time = Instant::now();
 
   for p_idx in 0..cfg.num_producers {
-    let producer_clone = main_producer.clone();
+    let mut producer_clone = main_producer.clone();
     let items_this_producer = {
       let base = total / cfg.num_producers;
       let remainder = total % cfg.num_producers;
@@ -103,7 +103,7 @@ fn benchmark_logic_mpmc_unbounded_sync(
 
   let mut consumer_handles = Vec::with_capacity(cfg.num_consumers);
   for _ in 0..cfg.num_consumers {
-    let consumer_clone = main_consumer.clone();
+    let mut consumer_clone = main_consumer.clone();
     let handle = thread::spawn(move || {
       while let Ok(_) = consumer_clone.recv() {}
     });
@@ -154,7 +154,7 @@ fn benchmark_logic_mpmc_unbounded_async(
     let start_time = Instant::now();
 
     for p_idx in 0..cfg_clone.num_producers {
-      let producer_clone = main_producer.clone();
+      let mut producer_clone = main_producer.clone();
       let items_this_producer = {
         let base = total / cfg_clone.num_producers;
         let remainder = total % cfg_clone.num_producers;
@@ -174,7 +174,7 @@ fn benchmark_logic_mpmc_unbounded_async(
 
     let mut consumer_handles: Vec<JoinHandle<()>> = Vec::with_capacity(cfg_clone.num_consumers);
     for _ in 0..cfg_clone.num_consumers {
-      let consumer_clone = main_consumer.clone();
+      let mut consumer_clone = main_consumer.clone();
       let handle = tokio::spawn(async move {
         while let Ok(_) = consumer_clone.recv().await {}
       });
