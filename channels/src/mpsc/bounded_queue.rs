@@ -71,10 +71,37 @@ struct AsyncSendWaiters {
 
 // --- Intrusive Node ---
 pub struct Node<T> {
-  next: AtomicPtr<Node<T>>,
+  /// Packed link: `(nonce: u32) << 32 | (node index: u32)`. Serves both as
+  /// the free-list link (nonce 0) and the live-chain link (nonce = the
+  /// publishing run's fresh nonce). The nonce exists because recycling nodes
+  /// makes raw pointers repeat across generations: an Acquire load is only a
+  /// synchronizes-with edge if it reads THIS generation's Release store, and
+  /// a repeated pointer value lets the consumer legally read a stale
+  /// identical link and walk into a batch with no happens-before ("ghost
+  /// pointer"). A nonce unique within any recycling window makes a fresh
+  /// link value proof of synchronization.
+  next: AtomicU64,
   next_chunk: AtomicPtr<Node<T>>,
   chunk_len: u32,
   val: UnsafeCell<Option<T>>,
+}
+
+/// "No link": nonce 0 (free/terminator marker) + sentinel index.
+const LINK_NONE: u64 = SENTINEL_IDX as u64;
+
+#[inline(always)]
+fn pack_link(nonce: u32, idx: u32) -> u64 {
+  ((nonce as u64) << 32) | idx as u64
+}
+
+#[inline(always)]
+fn link_nonce(raw: u64) -> u32 {
+  (raw >> 32) as u32
+}
+
+#[inline(always)]
+fn link_idx(raw: u64) -> u32 {
+  raw as u32
 }
 
 // --- Generational Tagged Index Stack (Safe ABA Mitigation) ---
@@ -164,6 +191,14 @@ pub struct BoundedQueue<T: Send> {
   head: CachePadded<AtomicPtr<Node<T>>>,
   tail: CachePadded<UnsafeCell<*mut Node<T>>>,
 
+  /// Fresh-nonce source for publish runs (one Relaxed bump per run; the
+  /// truncated-to-u32 value skips 0, which marks free links). See `Node::next`.
+  link_nonce: AtomicU64,
+  /// Consumer-owned, like `tail`: the last link nonce followed out of each
+  /// node. A link whose nonce matches is a stale ghost and reads as "nothing
+  /// published"; the register/fence retry protocol handles the rest.
+  link_seen: UnsafeCell<Box<[u32]>>,
+
   // Tagged Chunk Recycling Stack
   chunk_stack: ChunkStack,
 
@@ -198,7 +233,7 @@ impl<T: Send> BoundedQueue<T> {
     let mut nodes = Vec::with_capacity(total_nodes);
     for _ in 0..total_nodes {
       nodes.push(Node {
-        next: AtomicPtr::new(std::ptr::null_mut()),
+        next: AtomicU64::new(LINK_NONE),
         next_chunk: AtomicPtr::new(std::ptr::null_mut()),
         chunk_len: 0,
         val: UnsafeCell::new(None),
@@ -218,7 +253,7 @@ impl<T: Send> BoundedQueue<T> {
       unsafe {
         (*buf_start.add(i as usize))
           .next
-          .store(buf_start.add(i as usize + 1), Ordering::Relaxed);
+          .store(pack_link(0, i + 1), Ordering::Relaxed);
       }
     }
     unsafe {
@@ -230,6 +265,8 @@ impl<T: Send> BoundedQueue<T> {
       buf,
       buf_start,
       cap: capacity,
+      link_nonce: AtomicU64::new(1),
+      link_seen: UnsafeCell::new(vec![0u32; total_nodes].into_boxed_slice()),
       head: CachePadded::new(AtomicPtr::new(stub_ptr)),
       tail: CachePadded::new(UnsafeCell::new(stub_ptr)),
       chunk_stack,
@@ -266,6 +303,51 @@ impl<T: Send> BoundedQueue<T> {
     } else {
       unsafe { self.buf_start.add(idx as usize) }
     }
+  }
+
+  /// Producer-side free-chain hop; the nonce part is a don't-care here.
+  #[inline]
+  unsafe fn next_of(&self, node: *mut Node<T>) -> *mut Node<T> {
+    self.idx_to_ptr(link_idx(unsafe { (*node).next.load(Ordering::Relaxed) }))
+  }
+
+  /// One fresh nonce per publish run. Truncation to u32 skips 0 (the free
+  /// marker); the mapped collision (0 -> 1) is 2^32 runs apart, far outside
+  /// any recycling window, which is all uniqueness needs to cover.
+  #[inline]
+  fn fresh_nonce(&self) -> u32 {
+    let raw = self.link_nonce.fetch_add(1, Ordering::Relaxed) as u32;
+    if raw == 0 { 1 } else { raw }
+  }
+
+  /// Consumer-only. Follows `tail`'s link iff it is a fresh publish link:
+  /// nonzero nonce differing from the last nonce followed out of this node.
+  /// Freshness proves the Acquire load read THIS generation's Release store
+  /// (nonces are unique within any recycling window), which is the
+  /// happens-before edge licensing the plain `val` read behind the link.
+  #[inline]
+  unsafe fn follow_link(&self, tail: *mut Node<T>) -> Option<*mut Node<T>> {
+    let raw = unsafe { (*tail).next.load(Ordering::Acquire) };
+    let nonce = link_nonce(raw);
+    if nonce == 0 {
+      return None;
+    }
+    let seen = unsafe { &mut (*self.link_seen.get())[self.ptr_to_idx(tail) as usize] };
+    if *seen == nonce {
+      return None;
+    }
+    *seen = nonce;
+    Some(self.idx_to_ptr(link_idx(raw)))
+  }
+
+  /// Consumer-only peek for the re-check paths; deliberately does NOT update
+  /// `link_seen`, so the consuming `follow_link` on the retry still fires.
+  #[inline]
+  unsafe fn link_is_fresh(&self, tail: *mut Node<T>) -> bool {
+    let raw = unsafe { (*tail).next.load(Ordering::Acquire) };
+    let nonce = link_nonce(raw);
+    nonce != 0
+      && unsafe { (*self.link_seen.get())[self.ptr_to_idx(tail) as usize] } != nonce
   }
 
   fn release_chunk(&self, chunk_head: *mut Node<T>) {
@@ -515,9 +597,8 @@ impl<T: Send> BoundedQueue<T> {
   ) -> Poll<Result<(*mut Node<T>, T), RecvError>> {
     loop {
       let tail = unsafe { *self.tail.get() };
-      let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
-      if !next.is_null() {
+      if let Some(next) = unsafe { self.follow_link(tail) } {
         if *is_registered {
           self.unregister_async_recv();
           *is_registered = false;
@@ -535,8 +616,7 @@ impl<T: Send> BoundedQueue<T> {
       }
 
       if !self.senders_alive() {
-        let next_check = unsafe { (*tail).next.load(Ordering::Acquire) };
-        if !next_check.is_null() {
+        if unsafe { self.link_is_fresh(tail) } {
           continue;
         }
         if *is_registered {
@@ -550,8 +630,7 @@ impl<T: Send> BoundedQueue<T> {
       *is_registered = true;
       self.pre_park_fence();
 
-      let next_after_register = unsafe { (*tail).next.load(Ordering::Acquire) };
-      if !next_after_register.is_null() {
+      if unsafe { self.link_is_fresh(tail) } {
         continue;
       }
       if !self.senders_alive() {
@@ -638,19 +717,25 @@ impl<T: Send> LocalCache<T> {
     }
     let curr = self.head;
     unsafe {
-      self.head = (*curr).next.load(Ordering::Relaxed);
+      self.head = shared.next_of(curr);
     }
     self.count -= 1;
     Some(curr)
   }
 
   #[inline]
-  fn push_node(&mut self, node: *mut Node<T>) {
+  fn push_node(&mut self, shared: &BoundedQueue<T>, node: *mut Node<T>) {
+    let head_idx = if self.head.is_null() {
+      SENTINEL_IDX
+    } else {
+      shared.ptr_to_idx(self.head)
+    };
     unsafe {
-      (*node).next.store(self.head, Ordering::Relaxed);
-      self.head = node;
-      self.count += 1;
+      // Free links carry nonce 0: never followable by the consumer.
+      (*node).next.store(pack_link(0, head_idx), Ordering::Relaxed);
     }
+    self.head = node;
+    self.count += 1;
   }
 
   #[inline]
@@ -664,6 +749,42 @@ impl<T: Send> LocalCache<T> {
       self.count = 0;
     }
   }
+}
+
+/// Publishes a detached free-chain run of `k >= 1` nodes starting at `first`:
+/// writes the values, re-stamps every link with one fresh nonce (same
+/// targets, new generation — see `Node::next`), terminates the run, and
+/// splices it in with the Release junction store. The caller must already
+/// have advanced its pool cursor past the run and must feed an iterator with
+/// at least `k` items.
+unsafe fn publish_run<T: Send>(
+  shared: &BoundedQueue<T>,
+  first: *mut Node<T>,
+  k: usize,
+  fill: &mut impl Iterator<Item = T>,
+) {
+  debug_assert!(k >= 1);
+  let nonce = shared.fresh_nonce();
+  unsafe {
+    let mut curr = first;
+    for _ in 0..(k - 1) {
+      let next_raw = (*curr).next.load(Ordering::Relaxed);
+      (*curr).val.get().write(Some(fill.next().unwrap()));
+      (*curr)
+        .next
+        .store(pack_link(nonce, link_idx(next_raw)), Ordering::Relaxed);
+      curr = shared.idx_to_ptr(link_idx(next_raw));
+    }
+    (*curr).val.get().write(Some(fill.next().unwrap()));
+    (*curr).next.store(LINK_NONE, Ordering::Relaxed);
+
+    let old_head = shared.head.swap(curr, Ordering::AcqRel);
+    (*old_head)
+      .next
+      .store(pack_link(nonce, shared.ptr_to_idx(first)), Ordering::Release);
+  }
+  shared.current_len.fetch_add(k, Ordering::Relaxed);
+  shared.notify_receiver();
 }
 
 // --- Handles ---
@@ -745,14 +866,7 @@ unsafe impl<T: Send> Sync for AsyncReceiver<T> {}
 impl<T: Send> Sender<T> {
   #[inline]
   unsafe fn enqueue_node(&self, node: *mut Node<T>, item: T) {
-    unsafe {
-      (*node).val.get().write(Some(item));
-      (*node).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-      let old_head = self.shared.head.swap(node, Ordering::AcqRel);
-      (*old_head).next.store(node, Ordering::Release);
-    }
-    self.shared.current_len.fetch_add(1, Ordering::Relaxed);
-    self.shared.notify_receiver();
+    unsafe { publish_run(&self.shared, node, 1, &mut std::iter::once(item)) }
   }
 
   /// Blocks until a node is available. Never holds the shared bucket's lock
@@ -870,7 +984,7 @@ impl<T: Send> Sender<T> {
           drop(pool);
           match self.allocate_node() {
             Ok(ptr) => {
-              self.shared.cache.lock().push_node(ptr);
+              self.shared.cache.lock().push_node(&self.shared, ptr);
             }
             Err(_) => {
               return Err(SendBatchError {
@@ -887,32 +1001,15 @@ impl<T: Send> Sender<T> {
         let mut curr = first_node;
         unsafe {
           for _ in 0..(k - 1) {
-            curr = (*curr).next.load(Ordering::Relaxed);
+            curr = self.shared.next_of(curr);
           }
-          pool.head = (*curr).next.load(Ordering::Relaxed);
+          pool.head = self.shared.next_of(curr);
         }
         pool.count -= k;
         break (first_node, k);
       };
 
-      unsafe {
-        let mut curr = first_node;
-        for _ in 0..(k - 1) {
-          let next = (*curr).next.load(Ordering::Relaxed);
-          let item_val = iter.next().unwrap();
-          (*curr).val.get().write(Some(item_val));
-          curr = next;
-        }
-        let item_val = iter.next().unwrap();
-        (*curr).val.get().write(Some(item_val));
-        (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-
-        let old_head = self.shared.head.swap(curr, Ordering::AcqRel);
-        (*old_head).next.store(first_node, Ordering::Release);
-      }
-
-      self.shared.current_len.fetch_add(k, Ordering::Relaxed);
-      self.shared.notify_receiver();
+      unsafe { publish_run(&self.shared, first_node, k, &mut iter) };
       sent += k;
     }
 
@@ -949,9 +1046,9 @@ impl<T: Send> Sender<T> {
           let mut curr = first_node;
           unsafe {
             for _ in 0..(k - 1) {
-              curr = (*curr).next.load(Ordering::Relaxed);
+              curr = self.shared.next_of(curr);
             }
-            pool.head = (*curr).next.load(Ordering::Relaxed);
+            pool.head = self.shared.next_of(curr);
           }
           pool.count -= k;
           Some((first_node, k))
@@ -963,24 +1060,7 @@ impl<T: Send> Sender<T> {
         None => break,
       };
 
-      unsafe {
-        let mut curr = first_node;
-        for _ in 0..(k - 1) {
-          let next = (*curr).next.load(Ordering::Relaxed);
-          let item_val = iter.next().unwrap();
-          (*curr).val.get().write(Some(item_val));
-          curr = next;
-        }
-        let item_val = iter.next().unwrap();
-        (*curr).val.get().write(Some(item_val));
-        (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-
-        let old_head = self.shared.head.swap(curr, Ordering::AcqRel);
-        (*old_head).next.store(first_node, Ordering::Release);
-      }
-
-      self.shared.current_len.fetch_add(k, Ordering::Relaxed);
-      self.shared.notify_receiver();
+      unsafe { publish_run(&self.shared, first_node, k, &mut iter) };
       sent += k;
     }
 
@@ -1097,7 +1177,7 @@ impl<T: Send> Drop for Sender<T> {
 impl<T: Send> Receiver<T> {
   #[inline]
   fn recycle_node(&self, node_ptr: *mut Node<T>, pool: &mut LocalCache<T>) {
-    pool.push_node(node_ptr);
+    pool.push_node(&self.shared, node_ptr);
     if pool.count >= self.shared.capacity().min(CACHE_FLUSH_CHUNK) {
       pool.flush(&self.shared);
     }
@@ -1116,9 +1196,8 @@ impl<T: Send> Receiver<T> {
 
     loop {
       let tail = unsafe { *self.shared.tail.get() };
-      let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
-      if !next.is_null() {
+      if let Some(next) = unsafe { self.shared.follow_link(tail) } {
         if is_registered {
           self.shared.unregister_sync_recv();
         }
@@ -1136,8 +1215,7 @@ impl<T: Send> Receiver<T> {
       pool.flush(&self.shared);
 
       if !self.shared.senders_alive() {
-        let next_check = unsafe { (*tail).next.load(Ordering::Acquire) };
-        if !next_check.is_null() {
+        if unsafe { self.shared.link_is_fresh(tail) } {
           continue;
         }
         if is_registered {
@@ -1172,9 +1250,8 @@ impl<T: Send> Receiver<T> {
 
     loop {
       let tail = unsafe { *self.shared.tail.get() };
-      let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
-      if !next.is_null() {
+      if let Some(next) = unsafe { self.shared.follow_link(tail) } {
         if is_registered {
           self.shared.unregister_sync_recv();
         }
@@ -1192,8 +1269,7 @@ impl<T: Send> Receiver<T> {
       pool.flush(&self.shared);
 
       if !self.shared.senders_alive() {
-        let next_check = unsafe { (*tail).next.load(Ordering::Acquire) };
-        if !next_check.is_null() {
+        if unsafe { self.shared.link_is_fresh(tail) } {
           continue;
         }
         if is_registered {
@@ -1236,9 +1312,8 @@ impl<T: Send> Receiver<T> {
 
     let mut pool = self.cache.borrow_mut();
     let tail = unsafe { *self.shared.tail.get() };
-    let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
-    if !next.is_null() {
+    if let Some(next) = unsafe { self.shared.follow_link(tail) } {
       // see poll_pop: must leave the slot None, or the queue's drop glue
       // double-drops a stale value left in a never-resent free-list node
       let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
@@ -1263,10 +1338,9 @@ impl<T: Send> Receiver<T> {
     unsafe {
       let mut tail = *self.shared.tail.get();
       while popped < max {
-        let next = (*tail).next.load(Ordering::Acquire);
-        if next.is_null() {
+        let Some(next) = self.shared.follow_link(tail) else {
           break;
-        }
+        };
         // see poll_pop: must leave the slot None, or the queue's drop glue
         // double-drops a stale value left in a never-resent free-list node
         let value = (&mut *(*next).val.get()).take().unwrap();
@@ -1448,18 +1522,7 @@ impl<T: Send> AsyncSender<T> {
       None => return Err(TrySendError::Full(item)),
     };
 
-    unsafe {
-      (*curr).val.get().write(Some(item));
-      (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-    }
-
-    let old_head = self.shared.head.swap(curr, Ordering::AcqRel);
-    unsafe {
-      (*old_head).next.store(curr, Ordering::Release);
-    }
-
-    self.shared.current_len.fetch_add(1, Ordering::Relaxed);
-    self.shared.notify_receiver();
+    unsafe { publish_run(&self.shared, curr, 1, &mut std::iter::once(item)) };
     Ok(())
   }
 
@@ -1533,25 +1596,13 @@ impl<T: Send> AsyncSender<T> {
         let first_node = pool.head;
         let mut curr = first_node;
         for _ in 0..(k - 1) {
-          let next = (*curr).next.load(Ordering::Relaxed);
-          let item_val = iter.next().unwrap();
-          (*curr).val.get().write(Some(item_val));
-          curr = next;
+          curr = self.shared.next_of(curr);
         }
-        let next_free = (*curr).next.load(Ordering::Relaxed);
-        let item_val = iter.next().unwrap();
-        (*curr).val.get().write(Some(item_val));
-        (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-
-        pool.head = next_free;
+        pool.head = self.shared.next_of(curr);
         pool.count -= k;
 
-        let old_head = self.shared.head.swap(curr, Ordering::AcqRel);
-        (*old_head).next.store(first_node, Ordering::Release);
+        publish_run(&self.shared, first_node, k, &mut iter);
       }
-
-      self.shared.current_len.fetch_add(k, Ordering::Relaxed);
-      self.shared.notify_receiver();
       sent += k;
     }
 
@@ -1608,7 +1659,7 @@ impl<T: Send> Drop for AsyncSender<T> {
 impl<T: Send> AsyncReceiver<T> {
   #[inline]
   fn recycle_node(&self, node_ptr: *mut Node<T>, pool: &mut LocalCache<T>) {
-    pool.push_node(node_ptr);
+    pool.push_node(&self.shared, node_ptr);
     if pool.count >= self.shared.capacity() {
       pool.flush(&self.shared);
     }
@@ -1625,9 +1676,8 @@ impl<T: Send> AsyncReceiver<T> {
 
     let mut pool = self.cache.lock();
     let tail = unsafe { *self.shared.tail.get() };
-    let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
-    if !next.is_null() {
+    if let Some(next) = unsafe { self.shared.follow_link(tail) } {
       // see poll_pop: must leave the slot None, or the queue's drop glue
       // double-drops a stale value left in a never-resent free-list node
       let value = unsafe { (&mut *(*next).val.get()).take().unwrap() };
@@ -1731,10 +1781,9 @@ impl<T: Send> AsyncReceiver<T> {
     unsafe {
       let mut tail = *self.shared.tail.get();
       while popped < max {
-        let next = (*tail).next.load(Ordering::Acquire);
-        if next.is_null() {
+        let Some(next) = self.shared.follow_link(tail) else {
           break;
-        }
+        };
         // see poll_pop: must leave the slot None, or the queue's drop glue
         // double-drops a stale value left in a never-resent free-list node
         let value = (&mut *(*next).val.get()).take().unwrap();
@@ -1833,15 +1882,8 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
 
       unsafe {
         let curr = pool.pop_node(shared).unwrap();
-        (*curr).val.get().write(Some(item_val));
-        (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-
-        let old_head = shared.head.swap(curr, Ordering::AcqRel);
-        (*old_head).next.store(curr, Ordering::Release);
+        publish_run(shared, curr, 1, &mut std::iter::once(item_val));
       }
-
-      shared.current_len.fetch_add(1, Ordering::Relaxed);
-      shared.notify_receiver();
 
       if let Some(id) = this.my_id.take() {
         shared.unregister_async_send(id);
@@ -2011,25 +2053,13 @@ impl<'a, T: Send> Future for BoundedSendBatchFuture<'a, T> {
         let first_node = pool.head;
         let mut curr = first_node;
         for _ in 0..(k - 1) {
-          let next = (*curr).next.load(Ordering::Relaxed);
-          let item_val = this.iter.next().unwrap();
-          (*curr).val.get().write(Some(item_val));
-          curr = next;
+          curr = shared.next_of(curr);
         }
-        let next_free = (*curr).next.load(Ordering::Relaxed);
-        let item_val = this.iter.next().unwrap();
-        (*curr).val.get().write(Some(item_val));
-        (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-
-        pool.head = next_free;
+        pool.head = shared.next_of(curr);
         pool.count -= k;
 
-        let old_head = shared.head.swap(curr, Ordering::AcqRel);
-        (*old_head).next.store(first_node, Ordering::Release);
+        publish_run(shared, first_node, k, &mut this.iter);
       }
-
-      shared.current_len.fetch_add(k, Ordering::Relaxed);
-      shared.notify_receiver();
       this.sent += k;
     }
   }
@@ -2102,28 +2132,16 @@ impl<'a, T: Send> Future for BoundedSendBatchMutFuture<'a, T> {
       unsafe {
         let first_node = pool.head;
         let mut curr = first_node;
-        let mut drain = this.items.drain(..k);
         for _ in 0..(k - 1) {
-          let next = (*curr).next.load(Ordering::Relaxed);
-          let item_val = drain.next().unwrap();
-          (*curr).val.get().write(Some(item_val));
-          curr = next;
+          curr = shared.next_of(curr);
         }
-        let next_free = (*curr).next.load(Ordering::Relaxed);
-        let item_val = drain.next().unwrap();
-        (*curr).val.get().write(Some(item_val));
-        (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
-        drop(drain);
-
-        pool.head = next_free;
+        pool.head = shared.next_of(curr);
         pool.count -= k;
 
-        let old_head = shared.head.swap(curr, Ordering::AcqRel);
-        (*old_head).next.store(first_node, Ordering::Release);
+        let mut drain = this.items.drain(..k);
+        publish_run(shared, first_node, k, &mut drain);
+        drop(drain);
       }
-
-      shared.current_len.fetch_add(k, Ordering::Relaxed);
-      shared.notify_receiver();
       this.sent += k;
     }
   }
