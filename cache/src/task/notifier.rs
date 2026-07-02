@@ -11,14 +11,14 @@ pub(crate) type Notification<K, V> = (K, Arc<V>, EvictionReason);
 /// The background task responsible for calling user-provided eviction listeners.
 pub(crate) struct Notifier<K: Send, V: Send + Sync> {
   handle: JoinHandle<()>,
-  _sender: mpsc::BoundedSender<(K, Arc<V>, EvictionReason)>,
+  _sender: mpsc::BoundedSyncSender<(K, Arc<V>, EvictionReason)>,
 }
 
 impl<K: Send, V: Send + Sync> Notifier<K, V> {
   /// Spawns a new notifier thread.
   pub(crate) fn spawn(
     listener: Arc<dyn EvictionListener<K, V>>,
-  ) -> (Self, mpsc::BoundedSender<Notification<K, V>>)
+  ) -> (Self, mpsc::BoundedSyncSender<Notification<K, V>>)
   where
     K: Send + 'static,
     V: Send + 'static,
@@ -26,8 +26,8 @@ impl<K: Send, V: Send + Sync> Notifier<K, V> {
     // A simple, bounded MPSC channel for notifications.
     const NOTIFICATION_CHANNEL_CAPACITY: usize = 128;
     let (tx, rx): (
-      mpsc::BoundedSender<Notification<K, V>>,
-      mpsc::BoundedReceiver<Notification<K, V>>,
+      mpsc::BoundedSyncSender<Notification<K, V>>,
+      mpsc::BoundedSyncReceiver<Notification<K, V>>,
     ) = mpsc::bounded(NOTIFICATION_CHANNEL_CAPACITY);
 
     let handle = thread::spawn(move || {

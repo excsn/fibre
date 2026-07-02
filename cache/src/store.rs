@@ -26,8 +26,8 @@ pub(crate) fn hash_key<K: Hash + ?Sized, H: BuildHasher>(hasher: &H, key: &K) ->
 }
 
 const ACCESS_EVENT_CHANNEL_BUFFER: usize = 512;
-pub type AccessEventSender<K> = fibre::mpsc::BoundedSender<AccessEvent<K>>;
-pub type AccessEventReceiver<K> = fibre::mpsc::BoundedReceiver<AccessEvent<K>>;
+pub type AccessEventSender<K> = fibre::mpsc::BoundedSyncSender<AccessEvent<K>>;
+pub type AccessEventReceiver<K> = fibre::mpsc::BoundedSyncReceiver<AccessEvent<K>>;
 
 /// A single, independently locked partition of the cache.
 /// It contains both the data HashMap and a buffer for access events.

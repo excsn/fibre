@@ -1,7 +1,7 @@
 // Defines the simple, non-tracing-aware components for an appender.
 
 use crate::{encoders::EventFormatter, LogEvent};
-use fibre::mpsc::BoundedSender;
+use fibre::mpsc::BoundedSyncSender;
 use std::collections::HashMap;
 use tracing_core::{metadata::LevelFilter, Metadata};
 
@@ -56,14 +56,13 @@ impl PerAppenderFilter {
   }
 }
 
-// REVISED: ActorAction is now simplified. It only holds a sender for raw bytes.
 // The distinction between a "console" or "file" appender now lives entirely
 // in the background task that is spawned during initialization.
 pub(crate) enum ActorAction {
   /// Send formatted bytes to a dedicated appender task.
-  SendBytes(BoundedSender<Vec<u8>>),
+  SendBytes(BoundedSyncSender<Vec<u8>>),
   /// Send a structured LogEvent to a custom application stream.
-  SendEvent(BoundedSender<LogEvent>),
+  SendEvent(BoundedSyncSender<LogEvent>),
 }
 
 /// A self-contained "actor" that represents a single configured appender.

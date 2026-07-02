@@ -24,7 +24,7 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) metrics: Arc<Metrics>,
   pub(crate) cache_policy: Box<[Arc<dyn CachePolicy<K, V>>]>,
   pub(crate) janitor: Option<Janitor>,
-  pub(crate) notification_sender: Option<mpsc::BoundedSender<Notification<K, V>>>,
+  pub(crate) notification_sender: Option<mpsc::BoundedSyncSender<Notification<K, V>>>,
   pub(crate) notifier: Option<Notifier<K, V>>,
   pub(crate) capacity: u64,
   pub(crate) time_to_live: Option<Duration>,

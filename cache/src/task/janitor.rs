@@ -36,7 +36,7 @@ pub(crate) struct JanitorContext<K: Send, V: Send + Sync, H> {
   pub(crate) cache_policy: Box<[Arc<dyn CachePolicy<K, V>>]>,
   pub(crate) capacity: u64,
   pub(crate) time_to_idle: Option<Duration>,
-  pub(crate) notification_sender: Option<mpsc::BoundedSender<Notification<K, V>>>,
+  pub(crate) notification_sender: Option<mpsc::BoundedSyncSender<Notification<K, V>>>,
 }
 
 /// The background task responsible for periodic cleanup and maintenance of the cache.

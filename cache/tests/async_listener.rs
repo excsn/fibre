@@ -5,7 +5,7 @@ use fibre_cache::{builder::CacheBuilder, policy::lru::LruPolicy, EvictionReason}
 
 struct TestListener {
   // The sender must be non-async, as on_evict is not async.
-  sender: mpsc::BoundedSender<(i32, Arc<String>, EvictionReason)>,
+  sender: mpsc::BoundedSyncSender<(i32, Arc<String>, EvictionReason)>,
 }
 
 impl fibre_cache::EvictionListener<i32, String> for TestListener {

@@ -40,7 +40,7 @@ use std::{
   thread::JoinHandle,
 };
 
-pub type CustomEventReceiver = fibre::mpsc::BoundedReceiver<LogEvent>;
+pub type CustomEventReceiver = fibre::mpsc::BoundedSyncReceiver<LogEvent>;
 
 /// A handle to a spawned appender background task.
 /// The task will terminate when the sender half of its channel is dropped.
@@ -55,7 +55,7 @@ pub struct InitResult {
   pub appender_task_handles: Vec<AppenderTaskHandle>,
   pub(crate) shutdown_signal: Arc<AtomicBool>,
   // If error reporting is enabled, this receiver can be used to get internal error reports.
-  pub internal_error_rx: Option<fibre::mpsc::BoundedReceiver<InternalErrorReport>>,
+  pub internal_error_rx: Option<fibre::mpsc::BoundedSyncReceiver<InternalErrorReport>>,
   pub custom_streams: HashMap<String, CustomEventReceiver>,
 }
 

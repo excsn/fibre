@@ -4,7 +4,7 @@ use crate::{
   subscriber::actor::{ActorAction, AppenderActor},
 };
 use fibre::{
-  error::TrySendError as FibreTrySendError, mpsc::BoundedSender as FibreMpscBoundedSender,
+  error::TrySendError as FibreTrySendError, mpsc::BoundedSyncSender as FibreMpscBoundedSender,
 };
 use tracing_core::Metadata;
 

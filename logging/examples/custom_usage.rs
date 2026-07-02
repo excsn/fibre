@@ -56,8 +56,6 @@ fn main() {
   if let Some(error_rx) = init_result.internal_error_rx.take() {
     println!("Internal error channel is active. Spawning error consumer thread.");
     thread::spawn(move || {
-      // CORRECTED: Use the documented `recv()` method, which blocks until an item is available
-      // or the channel is disconnected.
       match error_rx.recv() {
         Ok(report) => {
           println!("\n!!! [Error Consumer] Received Internal Error Report !!!");
@@ -84,7 +82,6 @@ fn main() {
   if let Some(metrics_rx) = init_result.custom_streams.remove("metrics_stream") {
     println!("Custom 'metrics_stream' channel is active. Spawning metrics consumer thread.");
     thread::spawn(move || {
-      // CORRECTED: Use the documented `recv()` method.
       match metrics_rx.recv() {
         Ok(event) => {
           println!("\n>>> [Metrics Consumer] Received LogEvent >>>");
