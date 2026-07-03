@@ -123,6 +123,23 @@ const OWNER_PRODUCER: u8 = 1;
 #[cfg(miri)]
 const OWNER_LIVE: u8 = 2;
 
+// Miri-only global per-node ownership state machine (the `shadow` table). A
+// node moves FREE -> PRODUCER (grabbed in fill_pool) -> PUBLISHED (publish_run)
+// -> CONSUMED (follow_link) -> FREE (push_node/recycle). Every transition is an
+// atomic `swap` asserting the previous state, so a double-ownership (e.g.
+// fill_pool grabbing a still-LIVE node) or a premature recycle panics AT the
+// boundary instead of racing downstream. Unlike `members` this is one global
+// table (not per-cache); unlike the old Relaxed load+store checks a `swap`
+// reads-and-writes atomically.
+#[cfg(miri)]
+const SH_FREE: u32 = 0;
+#[cfg(miri)]
+const SH_PUBLISHED: u32 = 1;
+#[cfg(miri)]
+const SH_CONSUMED: u32 = 2;
+#[cfg(miri)]
+const SH_PRODUCER: u32 = 3;
+
 // Custody logging for miri ghost hunts: every node ownership transition gets
 // one stderr line, so a data-race report can be joined against the full
 // lifecycle of the offending node index. Caveat: eprintln's stderr lock adds
@@ -214,7 +231,14 @@ impl ChunkStack {
       let new_state = ((generation_count.wrapping_add(1) as u64) << 32) | (next_idx as u64);
       match self
         .state
-        .compare_exchange_weak(state, new_state, Ordering::AcqRel, Ordering::Relaxed)
+        // Failure ordering MUST be Acquire, not Relaxed: on a failed CAS the loop
+        // re-reads `(*head_ptr).next_chunk` for the newly-observed head. Without
+        // an Acquire here that read has no happens-before with the thread that
+        // pushed the new head, so on a weak model it can return a stale
+        // prior-lifetime `next_chunk` — the classic Treiber ABA. The CAS then
+        // reinstalls a garbage stack link and two owners walk the same chunk
+        // (surfaces as CHUNK SHORT / DOUBLE OWNERSHIP / the chunk_len data race).
+        .compare_exchange_weak(state, new_state, Ordering::AcqRel, Ordering::Acquire)
       {
         Ok(_) => return Some(head_idx),
         Err(actual) => state = actual,
@@ -394,15 +418,14 @@ impl<T: Send> BoundedQueue<T> {
     {
       use std::sync::atomic::Ordering::Relaxed;
       let t = self.ptr_to_idx(next) as usize;
-      let st = self.shadow[t].load(Relaxed);
-      if st != 1 {
+      // PUBLISHED -> CONSUMED.
+      let prev = self.shadow[t].swap(SH_CONSUMED, Relaxed);
+      if prev != SH_PUBLISHED {
         panic!(
-          "GHOST: follow out of tail={} into node {} but target shadow state={} (want PUBLISHED=1)",
-          self.ptr_to_idx(tail), t, st
+          "GHOST: follow out of tail={} into node {} but shadow state was {} (want PUBLISHED={}); the tail reached a node that is not a live published node",
+          self.ptr_to_idx(tail), t, prev, SH_PUBLISHED
         );
       }
-      // Target is being consumed right now.
-      self.shadow[t].store(2, Relaxed);
     }
     // No-false-negative ghost probe. This non-atomic read pairs with the
     // producer's non-atomic canary writes (`fill_pool`/`publish_run`). On a
@@ -470,6 +493,30 @@ impl<T: Send> BoundedQueue<T> {
     // Read chunk_len before pushing: once it's on chunk_stack another
     // thread can pop (and even re-split, via take_nodes) it immediately.
     let released = unsafe { (*chunk_head).chunk_len } as usize;
+    // Reachability check (miri): every node about to become producer-grabbable
+    // must be strictly behind the consumer — never the current tail nor the
+    // live `tail.next`. If one is, we are releasing a node the consumer can
+    // still reach, which is the premature-recycle hypothesis; panic naming it
+    // BEFORE it hits the chunk stack. Runs on the (single) consumer thread.
+    #[cfg(miri)]
+    unsafe {
+      let tail = *self.tail.get();
+      let tail_next = (*tail).next.load(Ordering::Relaxed);
+      let mut curr = chunk_head;
+      for i in 0..released {
+        if curr == tail || curr == tail_next {
+          panic!(
+            "PREMATURE RELEASE: releasing node {} (pos {} of {}) that is the current consumer tail={} or its live tail.next={} — the consumer can still reach it",
+            self.ptr_to_idx(curr),
+            i,
+            released,
+            self.ptr_to_idx(tail),
+            if tail_next.is_null() { u32::MAX } else { self.ptr_to_idx(tail_next) }
+          );
+        }
+        curr = self.next_of(curr);
+      }
+    }
     let head_idx = self.ptr_to_idx(chunk_head);
     self.chunk_stack.push(self.buf_start, head_idx);
     // One fence covers both checks below; each is otherwise just a Relaxed
@@ -525,14 +572,32 @@ impl<T: Send> BoundedQueue<T> {
     id
   }
 
-  fn unregister_sync_send(&self, id: u64) {
+  /// Returns true iff this call actually removed our entry. False means a waker
+  /// already dequeued us and is (or is about to be) mid-write to our stack
+  /// `notified` — see `finish_sync_send`.
+  fn unregister_sync_send(&self, id: u64) -> bool {
     let mut g = self.sync_send_waiters.lock();
     let prev = g.queue.len();
     g.queue.retain(|(sid, _, _)| *sid != id);
-    if g.queue.len() != prev {
+    let removed = g.queue.len() != prev;
+    if removed {
       self
         .sync_send_waiter_count
         .store(g.queue.len(), Ordering::Release);
+    }
+    removed
+  }
+
+  /// Leave the send-waiter set on the way out of `allocate_node`. If a waker
+  /// already dequeued us (`unregister` returns false), it holds our raw
+  /// `notified` pointer and will `store(true)` into it; we MUST NOT let this
+  /// frame (and `notified`) die until that write lands, or the waker's store is
+  /// a use-after-free on reclaimed stack. Spin until we observe it.
+  fn finish_sync_send(&self, id: u64, notified: &AtomicBool) {
+    if !self.unregister_sync_send(id) {
+      while !notified.load(Ordering::Acquire) {
+        std::hint::spin_loop();
+      }
     }
   }
 
@@ -566,9 +631,24 @@ impl<T: Send> BoundedQueue<T> {
     self.sync_recv_waiter_count.store(1, Ordering::Release);
   }
 
-  fn unregister_sync_recv(&self) {
-    *self.sync_recv_waiter.lock() = None;
+  /// Returns true iff our waiter slot was still present (we removed it). False
+  /// means a waker (`notify_receiver`/`wake_all_receivers`) already took it and
+  /// is mid-write to our stack `notified` — see `finish_sync_recv`.
+  fn unregister_sync_recv(&self) -> bool {
+    let had = self.sync_recv_waiter.lock().take().is_some();
     self.sync_recv_waiter_count.store(0, Ordering::Release);
+    had
+  }
+
+  /// Symmetric to `finish_sync_send`: if a waker already took our recv slot it
+  /// will `store(true)` into our raw `notified`; don't let this frame die until
+  /// that write lands.
+  fn finish_sync_recv(&self, notified: &AtomicBool) {
+    if !self.unregister_sync_recv() {
+      while !notified.load(Ordering::Acquire) {
+        std::hint::spin_loop();
+      }
+    }
   }
 
   fn register_async_recv(&self, waker: Waker, notified: *const AtomicBool) {
@@ -850,9 +930,21 @@ impl<T: Send> LocalCache<T> {
                 idx, i, head_idx, self.count
               );
             }
-            // A producer now owns this node. The canary write pairs with the
-            // consumer's follow_link read: a ghost walk into this
-            // grabbed-but-unpublished node becomes a reported data race.
+            // A producer now owns this node: FREE -> PRODUCER. If the previous
+            // state is not FREE, this node is simultaneously owned elsewhere
+            // (still LIVE / CONSUMED / already PRODUCER) — the double-ownership
+            // bug, caught HERE at the grab instead of racing in follow_link.
+            {
+              use std::sync::atomic::Ordering::Relaxed;
+              let prev = shared.shadow[idx as usize].swap(SH_PRODUCER, Relaxed);
+              if prev != SH_FREE {
+                panic!(
+                  "DOUBLE OWNERSHIP: fill_pool grabbed node {} (pos {} of chunk head={} len={}) but its shadow state was {} (want FREE={}); it is still owned by producer/consumer",
+                  idx, i, head_idx, self.count, prev, SH_FREE
+                );
+              }
+            }
+            // Canary mirrors the state for the follow_link data-race probe.
             unsafe {
               *(*curr).owner_canary.get() = OWNER_PRODUCER;
             }
@@ -896,12 +988,20 @@ impl<T: Send> LocalCache<T> {
     {
       use std::sync::atomic::Ordering::Relaxed;
       let i = shared.ptr_to_idx(node) as usize;
-      let prev = shared.shadow[i].swap(0, Relaxed);
-      if prev == 1 {
+      // push_node is dual-use: the CONSUMER recycling a CONSUMED node (-> FREE),
+      // and a PRODUCER stashing a freshly-grabbed node back into the shared cache
+      // (the allocate_node path when the pool empties mid-batch) — that node is
+      // still PRODUCER-owned and must stay PRODUCER. FREE is the initial stub.
+      // Only PUBLISHED here is the real bug: recycling a still-live node.
+      let prev = shared.shadow[i].load(Relaxed);
+      if prev == SH_PUBLISHED {
         panic!(
-          "CUSTODY: freeing node {} while shadow says PUBLISHED — recycling a live node",
+          "PREMATURE RECYCLE: freeing node {} whose shadow state is PUBLISHED (still live) — it is being recycled before it was consumed",
           i
         );
+      }
+      if prev == SH_CONSUMED {
+        shared.shadow[i].store(SH_FREE, Relaxed);
       }
     }
     unsafe {
@@ -916,6 +1016,36 @@ impl<T: Send> LocalCache<T> {
     if self.count > 0 {
       unsafe {
         (*self.head).chunk_len = self.count as u32;
+      }
+      // Bisect the recycle-chunk double-ownership: before this chunk becomes
+      // producer-grabbable, every node in the [head, count) free-chain must be
+      // FREE (each was placed here by push_node's CONSUMED->FREE). If any node
+      // is CONSUMED/PUBLISHED/PRODUCER here, the corruption is on the CONSUMER
+      // side (count/chunk_len over-reach or a next-linkage that sweeps in a
+      // node push_node never recycled) — localized to this cache, before the
+      // chunk_stack. If this stays quiet but fill_pool still grabs a CONSUMED
+      // node, the fault is between push and pop instead.
+      #[cfg(miri)]
+      unsafe {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut curr = self.head;
+        for i in 0..self.count {
+          if curr.is_null() {
+            panic!(
+              "FLUSH CHAIN SHORT: chunk head={} count={} but free chain ended after {} nodes",
+              shared.ptr_to_idx(self.head), self.count, i
+            );
+          }
+          let idx = shared.ptr_to_idx(curr);
+          let st = shared.shadow[idx as usize].load(Relaxed);
+          if st != SH_FREE {
+            panic!(
+              "FLUSH NON-FREE: node {} (pos {} of {}) is being flushed with shadow {} (want FREE={}) — the consumer's free-chain includes a node push_node never recycled",
+              idx, i, self.count, st, SH_FREE
+            );
+          }
+          curr = shared.next_of(curr);
+        }
       }
       custody!("flush chunk head={} len={}", shared.ptr_to_idx(self.head), self.count);
       shared.release_chunk(self.head);
@@ -960,11 +1090,12 @@ unsafe fn publish_run<T: Send>(
   fn shadow_publish<T: Send>(shared: &BoundedQueue<T>, node: *mut Node<T>) {
     use std::sync::atomic::Ordering::Relaxed;
     let i = shared.ptr_to_idx(node) as usize;
-    let prev = shared.shadow[i].swap(1, Relaxed);
-    if prev != 0 {
+    // PRODUCER -> PUBLISHED.
+    let prev = shared.shadow[i].swap(SH_PUBLISHED, Relaxed);
+    if prev != SH_PRODUCER {
       panic!(
-        "CUSTODY: publishing node {} but shadow state={} (0=FREE expected; 1=already PUBLISHED, 2=CONSUMED-not-recycled)",
-        i, prev
+        "CUSTODY: publishing node {} but shadow state was {} (want PRODUCER={}; publishing a node this producer never grabbed, or a double publish)",
+        i, prev, SH_PRODUCER
       );
     }
   }
@@ -979,6 +1110,15 @@ unsafe fn publish_run<T: Send>(
         *(*curr).owner_canary.get() = OWNER_LIVE;
       }
       (*curr).val.get().write(Some(fill.next().unwrap()));
+      // Author the in-run edge fresh as part of *this* publication, and publish
+      // it with Release. Relaxed here leaned entirely on the junction's Release
+      // to transitively cover every intra-batch link — but the consumer follows
+      // A.next with an independent Acquire (follow_link), and relying on junction
+      // transitivity let Miri surface a schedule where the consumer reads a stale
+      // link and abandons a node mid-batch, bifurcating the chain. Release makes
+      // *each* edge the consumer Acquire-loads synchronize-with directly, so the
+      // consumer that sees `next` also acquires all of `next`'s initialization.
+      (*curr).next.store(next, Ordering::Release);
       curr = next;
     }
     #[cfg(miri)]
@@ -988,7 +1128,10 @@ unsafe fn publish_run<T: Send>(
       *(*curr).owner_canary.get() = OWNER_LIVE;
     }
     (*curr).val.get().write(Some(fill.next().unwrap()));
-    (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
+    // Terminator, Release for the same reason as the intra-batch links: the
+    // consumer Acquire-loads the last node's next and must not rely on junction
+    // transitivity to see this null (vs. a stale prior-lifetime link).
+    (*curr).next.store(std::ptr::null_mut(), Ordering::Release);
 
     let old_head = shared.head.swap(curr, Ordering::AcqRel);
     (*old_head).next.store(first, Ordering::Release);
@@ -1103,8 +1246,25 @@ impl<T: Send> Sender<T> {
         std::thread::yield_now();
         if let Some(idx) = self.shared.chunk_stack.pop(self.shared.buf_start) {
           let node = self.shared.idx_to_ptr(idx);
-          custody!("direct_pop {}", idx);
           debug_assert_eq!(unsafe { (*node).chunk_len }, 1);
+          // The probe acquires the node directly, bypassing fill_pool — so it
+          // must carry the same `cfg(miri)` ownership mark fill_pool applies
+          // when it grabs a node (FREE -> PRODUCER + owner canary). Without it
+          // publish_run's `shadow_publish` PRODUCER assert false-panics on this
+          // node (it was never marked grabbed), which masquerades as a deadlock.
+          // At cap-1 the chunk is exactly this one node (chunk_len == 1).
+          #[cfg(miri)]
+          unsafe {
+            use std::sync::atomic::Ordering::Relaxed;
+            let prev = self.shared.shadow[idx as usize].swap(SH_PRODUCER, Relaxed);
+            if prev != SH_FREE {
+              panic!(
+                "DOUBLE OWNERSHIP: probe_pop grabbed node {} but shadow state was {} (want FREE={}); it is still owned elsewhere",
+                idx, prev, SH_FREE
+              );
+            }
+            *(*node).owner_canary.get() = OWNER_PRODUCER;
+          }
           return Ok(node);
         }
       }
@@ -1144,7 +1304,7 @@ impl<T: Send> Sender<T> {
     loop {
       if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
         if let Some(id) = my_id {
-          self.shared.unregister_sync_send(id);
+          self.shared.finish_sync_send(id, &notified);
         }
         return Err(SendError::Closed);
       }
@@ -1153,7 +1313,7 @@ impl<T: Send> Sender<T> {
         let mut pool = self.shared.cache.lock();
         if let Some(node) = pool.pop_node(&self.shared) {
           if let Some(id) = my_id {
-            self.shared.unregister_sync_send(id);
+            self.shared.finish_sync_send(id, &notified);
           }
           return Ok(node);
         }
@@ -1467,7 +1627,7 @@ impl<T: Send> Receiver<T> {
 
       if let Some(next) = unsafe { self.shared.follow_link(tail) } {
         if is_registered {
-          self.shared.unregister_sync_recv();
+          self.shared.finish_sync_recv(&notified);
         }
         // see poll_pop: must leave the slot None, or the queue's drop glue
         // double-drops a stale value left in a never-resent free-list node
@@ -1487,7 +1647,7 @@ impl<T: Send> Receiver<T> {
           continue;
         }
         if is_registered {
-          self.shared.unregister_sync_recv();
+          self.shared.finish_sync_recv(&notified);
         }
         return Err(RecvError::Disconnected);
       }
@@ -1531,7 +1691,7 @@ impl<T: Send> Receiver<T> {
 
       if let Some(next) = unsafe { self.shared.follow_link(tail) } {
         if is_registered {
-          self.shared.unregister_sync_recv();
+          self.shared.finish_sync_recv(&notified);
         }
         // see poll_pop: must leave the slot None, or the queue's drop glue
         // double-drops a stale value left in a never-resent free-list node
@@ -1551,7 +1711,7 @@ impl<T: Send> Receiver<T> {
           continue;
         }
         if is_registered {
-          self.shared.unregister_sync_recv();
+          self.shared.finish_sync_recv(&notified);
         }
         return Err(RecvErrorTimeout::Disconnected);
       }
@@ -1561,7 +1721,7 @@ impl<T: Send> Receiver<T> {
         Some(d) if d > now => d - now,
         _ => {
           if is_registered {
-            self.shared.unregister_sync_recv();
+            self.shared.finish_sync_recv(&notified);
           }
           return Err(RecvErrorTimeout::Timeout);
         }
@@ -1661,7 +1821,7 @@ impl<T: Send> Receiver<T> {
       let k = self.pop_batch_lock_free(out, max, &mut *pool);
       if k > 0 {
         if is_registered {
-          self.shared.unregister_sync_recv();
+          self.shared.finish_sync_recv(&notified);
         }
         pool.flush(&self.shared);
         return Ok(k);
@@ -1673,13 +1833,13 @@ impl<T: Send> Receiver<T> {
         let k_end = self.pop_batch_lock_free(out, max, &mut pool);
         if k_end > 0 {
           if is_registered {
-            self.shared.unregister_sync_recv();
+            self.shared.finish_sync_recv(&notified);
           }
           pool.flush(&self.shared);
           return Ok(k_end);
         }
         if is_registered {
-          self.shared.unregister_sync_recv();
+          self.shared.finish_sync_recv(&notified);
         }
         return Err(RecvError::Disconnected);
       }

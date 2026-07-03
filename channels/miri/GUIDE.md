@@ -12,10 +12,33 @@ cargo +nightly miri test -p fibre_miri
 
 # One channel type:
 cargo +nightly miri test -p fibre_miri --test mpsc_unbounded
-
-# Explore more thread interleavings on the concurrency tests (slower):
-MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test -p fibre_miri
 ```
+
+### Seed exploration (not optional for concurrency bugs)
+
+A default miri run explores **one** thread interleaving. Weak-memory bugs —
+ABA on recycled nodes, missing-`Acquire` stale reads, lost wakeups — are
+schedule-dependent and routinely survive a green default run. `-Zmiri-many-seeds`
+re-runs each test under many schedules; **use it for anything touching atomics,
+recycling, or park/wake:**
+
+```sh
+# Sweep 64 schedules across the whole suite:
+MIRIFLAGS="-Zmiri-many-seeds=0..64" cargo +nightly miri test -p fibre_miri
+
+# Sweep one test (faster iteration while chasing a specific bug):
+MIRIFLAGS="-Zmiri-many-seeds=0..64" cargo +nightly miri test -p fibre_miri \
+  --test mpsc_bounded batch_paths_recycle_chunks
+```
+
+Two things learned the hard way (mpsc bounded ghost/deadlock hunt, 2026-07-03):
+
+- **Run BOTH the isolated test and the full suite.** Isolating a test changes the
+  process-global schedule, so a bug can pass in one framing and fail in the other
+  at the *same* seed number. Green on one is not green.
+- **A failure prints `FAILING SEED: N` and is deterministic** — re-run that exact
+  seed (`-Zmiri-many-seeds=N..N+1`) to iterate on a fix. `0..64` is the floor for
+  trusting a fix; bump higher (`0..256`) for a hairy one.
 
 The tests also compile and pass under plain `cargo test -p fibre_miri` — they
 are ordinary fast native tests when not interpreted, which doubles as a cheap
