@@ -18,79 +18,6 @@ pub(crate) const STATE_CLOSED_BUFFERED: u8 = 1;
 pub(crate) const STATE_CLOSED_RENDEZVOUS: u8 = 5;
 pub(crate) const STATE_CANCELLED: u8 = 8;
 
-// --- Storage Strategy Enum ---
-/// Delegates channel storage.
-///
-/// Under unbounded configurations, it falls back to a standard library `VecDeque`
-/// to allow heap growth. Under bounded configurations, it uses the high-performance
-/// unsynchronized ring buffer.
-pub(crate) enum Storage<T> {
-  Bounded(UnsynchronizedRingBuffer<T>),
-  Unbounded(VecDeque<T>),
-}
-
-impl<T> Storage<T> {
-  #[inline]
-  pub(crate) fn len(&self) -> usize {
-    match self {
-      Self::Bounded(ring) => ring.len(),
-      Self::Unbounded(deque) => deque.len(),
-    }
-  }
-
-  #[inline]
-  pub(crate) fn is_empty(&self) -> bool {
-    match self {
-      Self::Bounded(ring) => ring.is_empty(),
-      Self::Unbounded(deque) => deque.is_empty(),
-    }
-  }
-
-  #[inline]
-  pub(crate) fn push_back(&mut self, item: T) -> Result<(), T> {
-    match self {
-      Self::Bounded(ring) => ring.push(item),
-      Self::Unbounded(deque) => {
-        deque.push_back(item);
-        Ok(())
-      }
-    }
-  }
-
-  #[inline]
-  pub(crate) fn pop_front(&mut self) -> Option<T> {
-    match self {
-      Self::Bounded(ring) => ring.pop(),
-      Self::Unbounded(deque) => deque.pop_front(),
-    }
-  }
-
-  #[inline]
-  pub(crate) fn drain_into(&mut self, out: &mut Vec<T>, count: usize) {
-    match self {
-      Self::Bounded(ring) => {
-        for _ in 0..count {
-          if let Some(item) = ring.pop() {
-            out.push(item);
-          }
-        }
-      }
-      Self::Unbounded(deque) => {
-        out.extend(deque.drain(..count));
-      }
-    }
-  }
-
-  #[inline]
-  pub(crate) fn clear(&mut self) {
-    match self {
-      Self::Bounded(ring) => ring.clear(),
-      Self::Unbounded(deque) => deque.clear(),
-    }
-  }
-
-}
-
 // --- Waiter Structs ---
 
 /// Represents a parked synchronous thread waiting for an operation to complete.
@@ -132,8 +59,8 @@ impl WakeRef {
 
 /// The core state of the MPMC channel, protected by a single `Mutex`.
 pub(crate) struct MpmcChannelInternal<T> {
-  /// The circular storage delegate for items in the channel.
-  pub(crate) queue: Storage<T>,
+  /// The circular ring buffer storage for items in the channel.
+  pub(crate) queue: UnsynchronizedRingBuffer<T>,
   /// Cached count of items in the queue (prevents enum branching on invariants).
   pub(crate) queue_len: usize,
   /// Queue of parked synchronous senders.
@@ -189,7 +116,7 @@ impl<T> MpmcChannelInternal<T> {
 
   #[inline]
   pub(crate) fn push_back(&mut self, item: T) -> Result<(), T> {
-    match self.queue.push_back(item) {
+    match self.queue.push(item) {
       Ok(()) => {
         self.queue_len += 1;
         Ok(())
@@ -200,7 +127,7 @@ impl<T> MpmcChannelInternal<T> {
 
   #[inline]
   pub(crate) fn pop_front(&mut self) -> Option<T> {
-    if let Some(item) = self.queue.pop_front() {
+    if let Some(item) = self.queue.pop() {
       self.queue_len -= 1;
       Some(item)
     } else {
@@ -210,7 +137,11 @@ impl<T> MpmcChannelInternal<T> {
 
   #[inline]
   pub(crate) fn drain_into(&mut self, out: &mut Vec<T>, count: usize) {
-    self.queue.drain_into(out, count);
+    for _ in 0..count {
+      if let Some(item) = self.queue.pop() {
+        out.push(item);
+      }
+    }
     self.queue_len -= count;
   }
 }
@@ -228,11 +159,7 @@ unsafe impl<T: Send> Sync for MpmcShared<T> {}
 impl<T: Send> MpmcShared<T> {
   /// Creates a new shared core for the channel with a given capacity.
   pub(crate) fn new(capacity: usize) -> Self {
-    let queue = if capacity == usize::MAX {
-      Storage::Unbounded(VecDeque::new())
-    } else {
-      Storage::Bounded(UnsynchronizedRingBuffer::new(capacity))
-    };
+    let queue = UnsynchronizedRingBuffer::new(capacity);
 
     MpmcShared {
       internal: Mutex::new(MpmcChannelInternal {
@@ -305,7 +232,7 @@ impl<T: Send> MpmcShared<T> {
     if self.capacity == 0 {
       return Err(TrySendError::Full(item));
     }
-    if self.capacity == usize::MAX || guard.len() < self.capacity {
+    if guard.len() < self.capacity {
       guard.push_back(item).ok().expect("MPMC push_back failed");
       return Ok(());
     }
@@ -455,7 +382,7 @@ impl<T: Send> MpmcShared<T> {
       if self.capacity == 0 {
         break;
       }
-      if self.capacity == usize::MAX || guard.len() < self.capacity {
+      if guard.len() < self.capacity {
         let item = iter.next().expect("iterator shorter than limit");
         guard.push_back(item).ok().expect("MPMC push_back failed");
         sent += 1;

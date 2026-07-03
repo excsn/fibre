@@ -81,7 +81,7 @@ fn repro_sync_timeout_capacity_bypass() {
   }
 
   // 3. Prove the capacity constraint is broken
-  println!("Channel Capacity: {}", tx.capacity().unwrap());
+  println!("Channel Capacity: {}", tx.capacity());
   println!("Actual Items in Queue: {}", tx.len());
 
   // 2. After the fix, all timed-out waiters must have been cleaned up.

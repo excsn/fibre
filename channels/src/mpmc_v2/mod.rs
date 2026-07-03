@@ -398,13 +398,9 @@ impl<T: Send> Sender<T> {
   pub fn is_closed(&self) -> bool {
     self.shared.internal.lock().receiver_count == 0
   }
-  /// Returns the capacity of the channel. `None` for unbounded channels.
-  pub fn capacity(&self) -> Option<usize> {
-    if self.shared.capacity == usize::MAX {
-      None
-    } else {
-      Some(self.shared.capacity)
-    }
+  /// Returns the capacity of the channel.
+  pub fn capacity(&self) -> usize {
+    self.shared.capacity
   }
 
   /// Converts this synchronous `Sender` into an asynchronous `AsyncSender`.
@@ -435,15 +431,10 @@ impl<T: Send> Sender<T> {
   }
 
   /// Returns `true` if the channel's buffer is full.
-  /// For "unbounded" channels, this will always be `false`.
   /// For rendezvous channels (capacity 0), this will be `true` if `len()` is 0.
   #[inline]
   pub fn is_full(&self) -> bool {
-    if self.shared.capacity == usize::MAX {
-      false
-    } else {
-      self.len() == self.shared.capacity
-    }
+    self.len() == self.shared.capacity
   }
 }
 
@@ -634,13 +625,9 @@ impl<T: Send> Receiver<T> {
       && guard.waiting_sync_senders.is_empty()
       && guard.waiting_async_senders.is_empty()
   }
-  /// Returns the capacity of the channel. `None` for unbounded channels.
-  pub fn capacity(&self) -> Option<usize> {
-    if self.shared.capacity == usize::MAX {
-      None
-    } else {
-      Some(self.shared.capacity)
-    }
+  /// Returns the capacity of the channel.
+  pub fn capacity(&self) -> usize {
+    self.shared.capacity
   }
 
   /// Converts this synchronous `Receiver` into an asynchronous `AsyncReceiver`.
@@ -673,15 +660,10 @@ impl<T: Send> Receiver<T> {
   }
 
   /// Returns `true` if the channel's buffer is full.
-  /// For "unbounded" channels, this will always be `false`.
   /// For rendezvous channels (capacity 0), this will be `true` if `len()` is 0.
   #[inline]
   pub fn is_full(&self) -> bool {
-    if self.shared.capacity == usize::MAX {
-      false
-    } else {
-      self.len() == self.shared.capacity
-    }
+    self.len() == self.shared.capacity
   }
 }
 
@@ -837,13 +819,9 @@ impl<T: Send> AsyncSender<T> {
     self.shared.internal.lock().receiver_count == 0
   }
 
-  /// Returns the capacity of the channel. `None` for unbounded channels.
-  pub fn capacity(&self) -> Option<usize> {
-    if self.shared.capacity == usize::MAX {
-      None
-    } else {
-      Some(self.shared.capacity)
-    }
+  /// Returns the capacity of the channel.
+  pub fn capacity(&self) -> usize {
+    self.shared.capacity
   }
 
   /// Converts this asynchronous `AsyncSender` into a synchronous `Sender`.
@@ -874,15 +852,10 @@ impl<T: Send> AsyncSender<T> {
   }
 
   /// Returns `true` if the channel's buffer is full.
-  /// For "unbounded" channels, this will always be `false`.
   /// For rendezvous channels (capacity 0), this will be `true` if `len()` is 0.
   #[inline]
   pub fn is_full(&self) -> bool {
-    if self.shared.capacity == usize::MAX {
-      false
-    } else {
-      self.len() == self.shared.capacity
-    }
+    self.len() == self.shared.capacity
   }
 }
 
@@ -1048,13 +1021,9 @@ impl<T: Send> AsyncReceiver<T> {
       && guard.waiting_sync_senders.is_empty()
       && guard.waiting_async_senders.is_empty()
   }
-  /// Returns the capacity of the channel. `None` for unbounded channels.
-  pub fn capacity(&self) -> Option<usize> {
-    if self.shared.capacity == usize::MAX {
-      None
-    } else {
-      Some(self.shared.capacity)
-    }
+  /// Returns the capacity of the channel.
+  pub fn capacity(&self) -> usize {
+    self.shared.capacity
   }
 
   /// Converts this asynchronous `AsyncReceiver` into a synchronous `Receiver`.
@@ -1104,15 +1073,10 @@ impl<T: Send> AsyncReceiver<T> {
   }
 
   /// Returns `true` if the channel's buffer is full.
-  /// For "unbounded" channels, this will always be `false`.
   /// For rendezvous channels (capacity 0), this will be `true` if `len()` is 0.
   #[inline]
   pub fn is_full(&self) -> bool {
-    if self.shared.capacity == usize::MAX {
-      false
-    } else {
-      self.len() == self.shared.capacity
-    }
+    self.len() == self.shared.capacity
   }
 }
 
