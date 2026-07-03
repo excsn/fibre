@@ -332,6 +332,19 @@ impl<T: Send + Clone> SpmcShared<T> {
       );
     }
 
+    // `head` must be published before the waker list is drained: batch
+    // consumers recheck availability via `head` (not the slot sequence) after
+    // registering, so a consumer that registers after the drain must be able
+    // to observe the new head through the waker-mutex happens-before.
+    self.head.store(current_head_idx + 1, Ordering::Release);
+    crate::log_event!(
+      Some(current_head_idx),
+      LOC_P_TRY_SEND,
+      EVT_P_ADVANCE_HEAD,
+      "new_head:{}",
+      current_head_idx + 1
+    );
+
     crate::log_event!(
       Some(current_head_idx),
       LOC_P_TRY_SEND,
@@ -350,14 +363,6 @@ impl<T: Send + Clone> SpmcShared<T> {
       waker.wake();
     }
 
-    self.head.store(current_head_idx + 1, Ordering::Release);
-    crate::log_event!(
-      Some(current_head_idx),
-      LOC_P_TRY_SEND,
-      EVT_P_ADVANCE_HEAD,
-      "new_head:{}",
-      current_head_idx + 1
-    );
     Ok(())
   }
 
@@ -383,13 +388,12 @@ impl<T: Send + Clone> SpmcShared<T> {
   /// must guarantee `k` does not exceed the available space (safe to compute
   /// via `producer_space` because space only grows under a single producer).
   ///
-  /// All slot values and sequence numbers are written first, each written
-  /// slot's waker list is drained into one local pass, then `head` is
-  /// advanced exactly once (Release) and all collected wakers are woken
-  /// outside the slot locks. Returns the number of items written.
+  /// All slot values and sequence numbers are written first, then `head` is
+  /// advanced exactly once (Release), then each written slot's waker list is
+  /// drained and all collected wakers are woken outside the slot locks.
+  /// Returns the number of items written.
   fn write_batch_unchecked(&self, iter: &mut impl Iterator<Item = T>, k: usize) -> usize {
     let current_head_idx = self.head.load(Ordering::Relaxed);
-    let mut wakers_to_wake: Vec<Waker> = Vec::new();
     let mut written = 0;
 
     for i in 0..k {
@@ -410,18 +414,25 @@ impl<T: Send + Clone> SpmcShared<T> {
         (*slot.value.get()).write(value);
       }
       slot.sequence.store(2 * idx + 1, Ordering::Release);
-
-      {
-        let mut guard = slot.wakers.lock();
-        wakers_to_wake.extend(guard.drain(..));
-      }
       written += 1;
     }
 
-    if written > 0 {
-      self
-        .head
-        .store(current_head_idx + written, Ordering::Release);
+    if written == 0 {
+      return 0;
+    }
+    // `head` must be published before any waker list is drained: batch
+    // consumers recheck availability via `head` after registering, so a
+    // consumer that registers after its slot's drain must observe the new
+    // head through the waker-mutex happens-before.
+    self
+      .head
+      .store(current_head_idx + written, Ordering::Release);
+
+    let mut wakers_to_wake: Vec<Waker> = Vec::new();
+    for i in 0..written {
+      let slot = &self.buffer[(current_head_idx + i) % self.capacity];
+      let mut guard = slot.wakers.lock();
+      wakers_to_wake.extend(guard.drain(..));
     }
     // Wake outside all slot locks, in one coalesced pass.
     for waker in wakers_to_wake {

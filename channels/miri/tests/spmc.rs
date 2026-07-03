@@ -3,7 +3,7 @@
 
 use fibre::error::RecvError;
 use fibre::spmc;
-use fibre_miri::{block_on, drop_counter, drops, poll_once, DropCounter, ITEMS_SMALL};
+use fibre_miri::{block_on, drop_counter, drops, poll_once, ITEMS_SMALL};
 
 use std::pin::pin;
 use std::thread;
@@ -103,11 +103,13 @@ fn dropping_slow_consumer_releases_backpressure() {
       tx.send(i).unwrap();
     }
   });
-  for i in 0..4 {
+  // Only `capacity` items can be written while rx2 pins the ring at tail 0;
+  // consuming more than that before the drop would deadlock by design.
+  for i in 0..2 {
     assert_eq!(rx1.recv().unwrap(), i);
   }
   drop(rx2); // sender may be parked on rx2's lagging cursor right now
-  for i in 4..ITEMS_SMALL {
+  for i in 2..ITEMS_SMALL {
     assert_eq!(rx1.recv().unwrap(), i);
   }
   sender.join().unwrap();
