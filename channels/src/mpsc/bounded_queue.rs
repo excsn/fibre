@@ -49,6 +49,32 @@ const SENTINEL_IDX: u32 = u32::MAX;
 // nodes before releasing any of them back.
 const CACHE_FLUSH_CHUNK: usize = 64;
 
+// Bounded spin before a sync park, applied ONLY at capacity 1: cap-1
+// ping-pong hits a full/empty boundary on every item, and the partner's next
+// step lands inside a short spin window almost every time — a real park
+// costs an unpark round trip per item instead (~15x throughput collapse;
+// the original SYNC_SPIN_LIMIT was dropped by accident in f35e867's waiter
+// rework). At larger capacities pre-park spinning measurably hurt contended
+// throughput in past experiments, so it stays cap-1-only.
+const SYNC_SPIN_LIMIT: usize = 200;
+
+/// Cap-1-only bounded spin on the wake flag before a sync park. May observe
+/// the wake early; the caller's usual `notified` handling covers both
+/// outcomes (a skipped park leaves at most one pending park token, which the
+/// retry loops already treat as a spurious wake).
+#[inline]
+fn spin_before_park_cap1(cap: usize, notified: &AtomicBool) {
+  if cap != 1 {
+    return;
+  }
+  for _ in 0..SYNC_SPIN_LIMIT {
+    if notified.load(Ordering::Relaxed) {
+      return;
+    }
+    std::hint::spin_loop();
+  }
+}
+
 // --- Private Waiter Coordination ---
 //
 // Sync and async waiters live in entirely separate queues/slots (mirroring
@@ -71,37 +97,58 @@ struct AsyncSendWaiters {
 
 // --- Intrusive Node ---
 pub struct Node<T> {
-  /// Packed link: `(nonce: u32) << 32 | (node index: u32)`. Serves both as
-  /// the free-list link (nonce 0) and the live-chain link (nonce = the
-  /// publishing run's fresh nonce). The nonce exists because recycling nodes
-  /// makes raw pointers repeat across generations: an Acquire load is only a
-  /// synchronizes-with edge if it reads THIS generation's Release store, and
-  /// a repeated pointer value lets the consumer legally read a stale
-  /// identical link and walk into a batch with no happens-before ("ghost
-  /// pointer"). A nonce unique within any recycling window makes a fresh
-  /// link value proof of synchronization.
-  next: AtomicU64,
+  next: AtomicPtr<Node<T>>,
   next_chunk: AtomicPtr<Node<T>>,
   chunk_len: u32,
   val: UnsafeCell<Option<T>>,
+  /// Miri-only ownership canary, deliberately NON-atomic. The producer writes
+  /// it when it grabs a node (`fill_pool`) and when it publishes one
+  /// (`publish_run`); the consumer reads it in `follow_link`. On a legitimate
+  /// follow the Acquire load of the junction synchronizes-with the producer's
+  /// Release, so this read is happens-before the producer's writes and is
+  /// race-free. On a ghost follow (the consumer's tail walking into
+  /// producer-owned memory via a stale link) there is no such edge, so the
+  /// non-atomic read/write pair is a data race miri reports at the exact
+  /// instruction — no Relaxed-atomic false-negative window like the shadow
+  /// table. Silence here therefore *is* meaningful (unlike the shadow checks).
+  #[cfg(miri)]
+  owner_canary: UnsafeCell<u8>,
 }
 
-/// "No link": nonce 0 (free/terminator marker) + sentinel index.
-const LINK_NONE: u64 = SENTINEL_IDX as u64;
+// Miri-only `Node::owner_canary` states (see the field doc).
+#[cfg(miri)]
+const OWNER_FREE: u8 = 0;
+#[cfg(miri)]
+const OWNER_PRODUCER: u8 = 1;
+#[cfg(miri)]
+const OWNER_LIVE: u8 = 2;
 
-#[inline(always)]
-fn pack_link(nonce: u32, idx: u32) -> u64 {
-  ((nonce as u64) << 32) | idx as u64
+// Custody logging for miri ghost hunts: every node ownership transition gets
+// one stderr line, so a data-race report can be joined against the full
+// lifecycle of the offending node index. Caveat: eprintln's stderr lock adds
+// synchronization edges, which can in principle hide a race — it didn't hide
+// the 0d2dc31 ghost, but if a red test goes green under logging, that itself
+// is the finding.
+#[cfg(miri)]
+macro_rules! custody {
+  ($($arg:tt)*) => {{
+    // CURRENTLY DISABLED (body commented): under miri every eprintln is a
+    // scheduling yield point, and both the two-sided and consumer-only
+    // variants turned the batch_paths_recycle_chunks race green across 32
+    // seeds. Re-enable by uncommenting to resume a custody hunt.
+    //
+    // One-sided when enabled: only the (named) test/consumer thread logs, so
+    // producer-side stderr-lock edges don't manufacture the very
+    // producer->consumer happens-before under investigation.
+    // let t = std::thread::current();
+    // if t.name().is_some() {
+    //   eprintln!("[custody {:?}] {}", t.id(), format_args!($($arg)*));
+    // }
+  }};
 }
-
-#[inline(always)]
-fn link_nonce(raw: u64) -> u32 {
-  (raw >> 32) as u32
-}
-
-#[inline(always)]
-fn link_idx(raw: u64) -> u32 {
-  raw as u32
+#[cfg(not(miri))]
+macro_rules! custody {
+  ($($arg:tt)*) => {};
 }
 
 // --- Generational Tagged Index Stack (Safe ABA Mitigation) ---
@@ -191,13 +238,16 @@ pub struct BoundedQueue<T: Send> {
   head: CachePadded<AtomicPtr<Node<T>>>,
   tail: CachePadded<UnsafeCell<*mut Node<T>>>,
 
-  /// Fresh-nonce source for publish runs (one Relaxed bump per run; the
-  /// truncated-to-u32 value skips 0, which marks free links). See `Node::next`.
-  link_nonce: AtomicU64,
-  /// Consumer-owned, like `tail`: the last link nonce followed out of each
-  /// node. A link whose nonce matches is a stale ghost and reads as "nothing
-  /// published"; the register/fence retry protocol handles the rest.
-  link_seen: UnsafeCell<Box<[u32]>>,
+  /// Shadow custody table (miri only): per-node state, 0=FREE (pool/free
+  /// chain), 1=PUBLISHED, 2=CONSUMED, updated with Relaxed atomics so it adds
+  /// NO happens-before edges. On every legitimate transition the real
+  /// protocol's own Release/Acquire also carries the shadow store, so a stale
+  /// shadow read is only possible when synchronization is absent — the check
+  /// panics at the FIRST custody violation (ghost follow, double publish,
+  /// double free) with the node and its state, instead of the downstream
+  /// symptom (val race / wrong value / truncated free chain).
+  #[cfg(miri)]
+  shadow: Box<[std::sync::atomic::AtomicU32]>,
 
   // Tagged Chunk Recycling Stack
   chunk_stack: ChunkStack,
@@ -209,6 +259,17 @@ pub struct BoundedQueue<T: Send> {
   receiver_dropped: CachePadded<AtomicBool>,
   sync_send_waiters: Mutex<SyncSendWaiters>,
   async_send_waiters: Mutex<AsyncSendWaiters>,
+  /// Serializes sync producers entering the blocking path, at CAP-1 ONLY:
+  /// at most one sync sender is ever registered/parked in
+  /// `sync_send_waiters`; the rest queue here, waiting on each other instead
+  /// of on the consumer. At cap-1 each release frees one node, so this keeps
+  /// the consumer's per-item `notify_sync_senders` at a single relaxed load
+  /// of a 0-or-1 count (250 K/s -> ~1 M/s at Cap-1/Prod-14). At caps >= 2 a
+  /// release frees a whole chunk and the batch wake wants that many
+  /// producers unparked in parallel — gating there serializes the wakes into
+  /// a producer-to-producer cond_signal chain (see `allocate_node`).
+  /// Sync-only: async senders and the consumer never touch it.
+  park_gate: Mutex<()>,
   sync_send_waiter_count: CachePadded<AtomicUsize>,
   async_send_waiter_count: CachePadded<AtomicUsize>,
   sync_recv_waiter: Mutex<Option<(Thread, *const AtomicBool)>>,
@@ -233,10 +294,12 @@ impl<T: Send> BoundedQueue<T> {
     let mut nodes = Vec::with_capacity(total_nodes);
     for _ in 0..total_nodes {
       nodes.push(Node {
-        next: AtomicU64::new(LINK_NONE),
+        next: AtomicPtr::new(std::ptr::null_mut()),
         next_chunk: AtomicPtr::new(std::ptr::null_mut()),
         chunk_len: 0,
         val: UnsafeCell::new(None),
+        #[cfg(miri)]
+        owner_canary: UnsafeCell::new(OWNER_FREE),
       });
     }
 
@@ -253,7 +316,7 @@ impl<T: Send> BoundedQueue<T> {
       unsafe {
         (*buf_start.add(i as usize))
           .next
-          .store(pack_link(0, i + 1), Ordering::Relaxed);
+          .store(buf_start.add(i as usize + 1), Ordering::Relaxed);
       }
     }
     unsafe {
@@ -265,8 +328,10 @@ impl<T: Send> BoundedQueue<T> {
       buf,
       buf_start,
       cap: capacity,
-      link_nonce: AtomicU64::new(1),
-      link_seen: UnsafeCell::new(vec![0u32; total_nodes].into_boxed_slice()),
+      #[cfg(miri)]
+      shadow: (0..total_nodes)
+        .map(|_| std::sync::atomic::AtomicU32::new(0))
+        .collect(),
       head: CachePadded::new(AtomicPtr::new(stub_ptr)),
       tail: CachePadded::new(UnsafeCell::new(stub_ptr)),
       chunk_stack,
@@ -280,6 +345,7 @@ impl<T: Send> BoundedQueue<T> {
         queue: VecDeque::new(),
         next_id: 0,
       }),
+      park_gate: Mutex::new(()),
       sync_send_waiter_count: CachePadded::new(AtomicUsize::new(0)),
       async_send_waiter_count: CachePadded::new(AtomicUsize::new(0)),
       sync_recv_waiter: Mutex::new(None),
@@ -305,49 +371,99 @@ impl<T: Send> BoundedQueue<T> {
     }
   }
 
-  /// Producer-side free-chain hop; the nonce part is a don't-care here.
+  /// Producer-side free-chain hop.
   #[inline]
   unsafe fn next_of(&self, node: *mut Node<T>) -> *mut Node<T> {
-    self.idx_to_ptr(link_idx(unsafe { (*node).next.load(Ordering::Relaxed) }))
+    unsafe { (*node).next.load(Ordering::Relaxed) }
   }
 
-  /// One fresh nonce per publish run. Truncation to u32 skips 0 (the free
-  /// marker); the mapped collision (0 -> 1) is 2^32 runs apart, far outside
-  /// any recycling window, which is all uniqueness needs to cover.
-  #[inline]
-  fn fresh_nonce(&self) -> u32 {
-    let raw = self.link_nonce.fetch_add(1, Ordering::Relaxed) as u32;
-    if raw == 0 { 1 } else { raw }
-  }
-
-  /// Consumer-only. Follows `tail`'s link iff it is a fresh publish link:
-  /// nonzero nonce differing from the last nonce followed out of this node.
-  /// Freshness proves the Acquire load read THIS generation's Release store
-  /// (nonces are unique within any recycling window), which is the
-  /// happens-before edge licensing the plain `val` read behind the link.
+  /// Consumer-only. Returns the next live node if `tail` has been linked
+  /// forward, else None.
   #[inline]
   unsafe fn follow_link(&self, tail: *mut Node<T>) -> Option<*mut Node<T>> {
-    let raw = unsafe { (*tail).next.load(Ordering::Acquire) };
-    let nonce = link_nonce(raw);
-    if nonce == 0 {
+    let next = unsafe { (*tail).next.load(Ordering::Acquire) };
+    if next.is_null() {
       return None;
     }
-    let seen = unsafe { &mut (*self.link_seen.get())[self.ptr_to_idx(tail) as usize] };
-    if *seen == nonce {
-      return None;
+    custody!(
+      "follow tail={} -> next={}",
+      self.ptr_to_idx(tail),
+      self.ptr_to_idx(next)
+    );
+    #[cfg(miri)]
+    {
+      use std::sync::atomic::Ordering::Relaxed;
+      let t = self.ptr_to_idx(next) as usize;
+      let st = self.shadow[t].load(Relaxed);
+      if st != 1 {
+        panic!(
+          "GHOST: follow out of tail={} into node {} but target shadow state={} (want PUBLISHED=1)",
+          self.ptr_to_idx(tail), t, st
+        );
+      }
+      // Target is being consumed right now.
+      self.shadow[t].store(2, Relaxed);
     }
-    *seen = nonce;
-    Some(self.idx_to_ptr(link_idx(raw)))
+    // No-false-negative ghost probe. This non-atomic read pairs with the
+    // producer's non-atomic canary writes (`fill_pool`/`publish_run`). On a
+    // legit follow the Acquire load above synchronized-with the junction
+    // Release, so this read is happens-before those writes and is race-free;
+    // on a ghost follow (stale link, no hb) miri reports the read against the
+    // racing producer write at THIS instruction, with a follow_link <->
+    // fill_pool/publish_run backtrace that names the mechanism. If it somehow
+    // does not race, a non-LIVE value still means the tail walked into non-live
+    // memory.
+    #[cfg(miri)]
+    {
+      let o = unsafe { *(*next).owner_canary.get() };
+      if o != OWNER_LIVE {
+        panic!(
+          "OWNERSHIP: consumer at tail={} followed into node {} whose owner canary = {} (want LIVE=2; 1=producer-grabbed, 0=free) — the tail walked into non-live memory",
+          self.ptr_to_idx(tail), self.ptr_to_idx(next), o
+        );
+      }
+    }
+    Some(next)
   }
 
-  /// Consumer-only peek for the re-check paths; deliberately does NOT update
-  /// `link_seen`, so the consuming `follow_link` on the retry still fires.
+  /// Consumer-only peek for the re-check paths.
   #[inline]
   unsafe fn link_is_fresh(&self, tail: *mut Node<T>) -> bool {
-    let raw = unsafe { (*tail).next.load(Ordering::Acquire) };
-    let nonce = link_nonce(raw);
-    nonce != 0
-      && unsafe { (*self.link_seen.get())[self.ptr_to_idx(tail) as usize] } != nonce
+    !unsafe { (*tail).next.load(Ordering::Acquire) }.is_null()
+  }
+
+  /// Consumer's pre-register probe: watches `tail`'s link for a fresh
+  /// publish for one bounded window; true = something arrived, retry the
+  /// pop instead of registering.
+  ///
+  /// Wait primitive is keyed on CAPACITY alone (producer count benched as a
+  /// misleading proxy): what matters is whether the partner the consumer is
+  /// waiting on is spinning or parked. Small cap (<= 4): producers respond
+  /// in ns (they're in their own spin probes), so busy-spin — the consumer
+  /// stays on-core and reacts instantly; every yield hands its core to a
+  /// producer that can't progress without it (Cap-4/Prod-14: yield arm
+  /// ~590 K/s vs spin ~2 M/s). Large cap: producers PARK between big
+  /// recycle chunks, so the probe must bridge their ~1-3us unpark latency —
+  /// only the yield arm's long window does (Cap-128 1P/4P benched −26-46%
+  /// in the spin arm, 2026-07-02).
+  #[inline]
+  unsafe fn probe_for_publish(&self, tail: *mut Node<T>) -> bool {
+    if self.cap <= 4 {
+      for _ in 0..SYNC_SPIN_LIMIT {
+        if unsafe { self.link_is_fresh(tail) } {
+          return true;
+        }
+        std::hint::spin_loop();
+      }
+    } else {
+      for _ in 0..SYNC_SPIN_LIMIT {
+        if unsafe { self.link_is_fresh(tail) } {
+          return true;
+        }
+        std::thread::yield_now();
+      }
+    }
+    false
   }
 
   fn release_chunk(&self, chunk_head: *mut Node<T>) {
@@ -682,6 +798,13 @@ impl<T: Send> Drop for BoundedQueue<T> {
 pub(crate) struct LocalCache<T> {
   pub(crate) head: *mut Node<T>,
   pub(crate) count: usize,
+  /// Miri-only: exact membership of this cache's free chain. Every access to
+  /// a LocalCache is single-threaded (shared pool under its mutex, receiver
+  /// cache under RefCell), so this set is race-free and has no cross-thread
+  /// visibility caveat — double-free, chunk overlap, and short chunks panic
+  /// deterministically at the violating call.
+  #[cfg(miri)]
+  pub(crate) members: std::collections::HashSet<u32>,
 }
 
 unsafe impl<T: Send> Send for LocalCache<T> {}
@@ -691,6 +814,8 @@ impl<T> Default for LocalCache<T> {
     Self {
       head: std::ptr::null_mut(),
       count: 0,
+      #[cfg(miri)]
+      members: std::collections::HashSet::new(),
     }
   }
 }
@@ -703,6 +828,37 @@ impl<T: Send> LocalCache<T> {
         let ptr = shared.idx_to_ptr(head_idx);
         self.head = ptr;
         self.count = unsafe { (*ptr).chunk_len as usize };
+        custody!("chunk_pop head={} len={}", head_idx, self.count);
+        #[cfg(miri)]
+        {
+          // Single-threaded under this cache's owner (mutex/RefCell), so no
+          // visibility caveat: verify the popped chunk really contains
+          // `chunk_len` distinct nodes and none of them are already members
+          // of this cache.
+          let mut curr = ptr;
+          for i in 0..self.count {
+            if curr.is_null() {
+              panic!(
+                "CHUNK SHORT: chunk head={} declared len={} but free chain ended after {} nodes",
+                head_idx, self.count, i
+              );
+            }
+            let idx = shared.ptr_to_idx(curr);
+            if !self.members.insert(idx) {
+              panic!(
+                "CHUNK OVERLAP: node {} (pos {} of chunk head={} len={}) already in this cache",
+                idx, i, head_idx, self.count
+              );
+            }
+            // A producer now owns this node. The canary write pairs with the
+            // consumer's follow_link read: a ghost walk into this
+            // grabbed-but-unpublished node becomes a reported data race.
+            unsafe {
+              *(*curr).owner_canary.get() = OWNER_PRODUCER;
+            }
+            curr = unsafe { shared.next_of(curr) };
+          }
+        }
         return true;
       }
       return false;
@@ -720,19 +876,36 @@ impl<T: Send> LocalCache<T> {
       self.head = shared.next_of(curr);
     }
     self.count -= 1;
+    custody!("pool_pop {}", shared.ptr_to_idx(curr));
+    #[cfg(miri)]
+    self.members.remove(&shared.ptr_to_idx(curr));
     Some(curr)
   }
 
   #[inline]
   fn push_node(&mut self, shared: &BoundedQueue<T>, node: *mut Node<T>) {
-    let head_idx = if self.head.is_null() {
-      SENTINEL_IDX
-    } else {
-      shared.ptr_to_idx(self.head)
-    };
+    custody!("free {}", shared.ptr_to_idx(node));
+    #[cfg(miri)]
+    if !self.members.insert(shared.ptr_to_idx(node)) {
+      panic!(
+        "DOUBLE FREE: node {} pushed into a cache it is already a member of",
+        shared.ptr_to_idx(node)
+      );
+    }
+    #[cfg(miri)]
+    {
+      use std::sync::atomic::Ordering::Relaxed;
+      let i = shared.ptr_to_idx(node) as usize;
+      let prev = shared.shadow[i].swap(0, Relaxed);
+      if prev == 1 {
+        panic!(
+          "CUSTODY: freeing node {} while shadow says PUBLISHED — recycling a live node",
+          i
+        );
+      }
+    }
     unsafe {
-      // Free links carry nonce 0: never followable by the consumer.
-      (*node).next.store(pack_link(0, head_idx), Ordering::Relaxed);
+      (*node).next.store(self.head, Ordering::Relaxed);
     }
     self.head = node;
     self.count += 1;
@@ -744,19 +917,37 @@ impl<T: Send> LocalCache<T> {
       unsafe {
         (*self.head).chunk_len = self.count as u32;
       }
+      custody!("flush chunk head={} len={}", shared.ptr_to_idx(self.head), self.count);
       shared.release_chunk(self.head);
       self.head = std::ptr::null_mut();
       self.count = 0;
+      #[cfg(miri)]
+      self.members.clear();
+    }
+  }
+
+  /// Miri-only: mirror a manual detach (the batch paths take a run of nodes
+  /// off the chain directly instead of via pop_node).
+  #[cfg(miri)]
+  fn shadow_detach(&mut self, shared: &BoundedQueue<T>, first: *mut Node<T>, k: usize) {
+    let mut curr = first;
+    for i in 0..k {
+      if curr.is_null() {
+        panic!("DETACH walked off chain end at pos {} of k={}", i, k);
+      }
+      let idx = shared.ptr_to_idx(curr);
+      if !self.members.remove(&idx) {
+        panic!("DETACH of non-member node {} (pos {} of k={})", idx, i, k);
+      }
+      curr = unsafe { shared.next_of(curr) };
     }
   }
 }
 
 /// Publishes a detached free-chain run of `k >= 1` nodes starting at `first`:
-/// writes the values, re-stamps every link with one fresh nonce (same
-/// targets, new generation — see `Node::next`), terminates the run, and
-/// splices it in with the Release junction store. The caller must already
-/// have advanced its pool cursor past the run and must feed an iterator with
-/// at least `k` items.
+/// writes the values, terminates the run, and splices it in with the Release
+/// junction store. The caller must already have advanced its pool cursor past
+/// the run and must feed an iterator with at least `k` items.
 unsafe fn publish_run<T: Send>(
   shared: &BoundedQueue<T>,
   first: *mut Node<T>,
@@ -764,24 +955,43 @@ unsafe fn publish_run<T: Send>(
   fill: &mut impl Iterator<Item = T>,
 ) {
   debug_assert!(k >= 1);
-  let nonce = shared.fresh_nonce();
+  custody!("pub_run first={} k={}", shared.ptr_to_idx(first), k);
+  #[cfg(miri)]
+  fn shadow_publish<T: Send>(shared: &BoundedQueue<T>, node: *mut Node<T>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let i = shared.ptr_to_idx(node) as usize;
+    let prev = shared.shadow[i].swap(1, Relaxed);
+    if prev != 0 {
+      panic!(
+        "CUSTODY: publishing node {} but shadow state={} (0=FREE expected; 1=already PUBLISHED, 2=CONSUMED-not-recycled)",
+        i, prev
+      );
+    }
+  }
   unsafe {
     let mut curr = first;
     for _ in 0..(k - 1) {
-      let next_raw = (*curr).next.load(Ordering::Relaxed);
+      let next = (*curr).next.load(Ordering::Relaxed);
+      #[cfg(miri)]
+      shadow_publish(shared, curr);
+      #[cfg(miri)]
+      {
+        *(*curr).owner_canary.get() = OWNER_LIVE;
+      }
       (*curr).val.get().write(Some(fill.next().unwrap()));
-      (*curr)
-        .next
-        .store(pack_link(nonce, link_idx(next_raw)), Ordering::Relaxed);
-      curr = shared.idx_to_ptr(link_idx(next_raw));
+      curr = next;
+    }
+    #[cfg(miri)]
+    shadow_publish(shared, curr);
+    #[cfg(miri)]
+    {
+      *(*curr).owner_canary.get() = OWNER_LIVE;
     }
     (*curr).val.get().write(Some(fill.next().unwrap()));
-    (*curr).next.store(LINK_NONE, Ordering::Relaxed);
+    (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
 
     let old_head = shared.head.swap(curr, Ordering::AcqRel);
-    (*old_head)
-      .next
-      .store(pack_link(nonce, shared.ptr_to_idx(first)), Ordering::Release);
+    (*old_head).next.store(first, Ordering::Release);
   }
   shared.current_len.fetch_add(k, Ordering::Relaxed);
   shared.notify_receiver();
@@ -875,6 +1085,57 @@ impl<T: Send> Sender<T> {
   /// aren't frozen out for the duration of our wait.
   #[inline]
   fn allocate_node(&self) -> Result<*mut Node<T>, SendError> {
+    // Cap-1 ping-pong: spin-probe BEFORE registering — the consumer's
+    // recycle usually lands within the window, and skipping registration
+    // skips the whole waiter round trip (register + fence here,
+    // waiter-lock + flag + unpark on the consumer). This, not the park
+    // itself, is where the pre-f35e867 fast path got its throughput.
+    //
+    // The probe pops the chunk stack DIRECTLY, bypassing the shared pool
+    // mutex: at cap-1 every chunk is exactly one node (flush threshold is
+    // min(cap, CACHE_FLUSH_CHUNK) = 1, initial chunk = capacity = 1), so
+    // a popped chunk head IS the acquired node. N spinning producers race
+    // a lock-free CAS instead of convoying on the mutex; the empty probe
+    // is a single load (`pop` early-returns on the sentinel). Runs before
+    // taking `park_gate` so spinners never serialize behind a parked peer.
+    if self.shared.cap == 1 {
+      for _ in 0..SYNC_SPIN_LIMIT {
+        std::thread::yield_now();
+        if let Some(idx) = self.shared.chunk_stack.pop(self.shared.buf_start) {
+          let node = self.shared.idx_to_ptr(idx);
+          custody!("direct_pop {}", idx);
+          debug_assert_eq!(unsafe { (*node).chunk_len }, 1);
+          return Ok(node);
+        }
+      }
+    }
+
+    // Caps 2-4: same probe economics as cap-1 (recycle chunks are tiny, the
+    // consumer's flush lands within the window), but chunks hold several
+    // nodes so acquisition goes through the pool. `try_lock` so contending
+    // spinners skip and re-probe instead of convoying on the mutex the
+    // winning senders' fast path needs.
+    if self.shared.cap > 1 && self.shared.cap <= 4 {
+      for _ in 0..SYNC_SPIN_LIMIT {
+        if let Some(mut pool) = self.shared.cache.try_lock() {
+          if let Some(node) = pool.pop_node(&self.shared) {
+            return Ok(node);
+          }
+        }
+        std::thread::yield_now();
+      }
+    }
+
+    // Blocking path. The gate serializes parked producers at cap-1 ONLY:
+    // there each release frees exactly one node, so one registered waiter is
+    // ideal and the gate kills the consumer's unpark-per-item storm. At
+    // caps >= 2 a release frees a whole chunk and `notify_sync_senders`
+    // batch-wakes that many producers in parallel — flamegraphs (Cap-4
+    // Prod-14, 2026-07-02) showed a universal gate degrades those parallel
+    // wakes into a serialized pthread_cond_signal chain between producers
+    // (~600 K/s, 72% of producer on-CPU time in gate lock/unlock slow paths).
+    let _gate = (self.shared.cap == 1).then(|| self.shared.park_gate.lock());
+
     let mut is_registered = false;
     let mut my_id = None;
     let notified = AtomicBool::new(false);
@@ -899,7 +1160,10 @@ impl<T: Send> Sender<T> {
       }
 
       if is_registered {
-        sync_util::park_thread();
+        spin_before_park_cap1(self.shared.cap, &notified);
+        if !notified.load(Ordering::Relaxed) {
+          sync_util::park_thread();
+        }
         if notified.swap(false, Ordering::Acquire) {
           is_registered = false;
           my_id = None;
@@ -1006,6 +1270,8 @@ impl<T: Send> Sender<T> {
           pool.head = self.shared.next_of(curr);
         }
         pool.count -= k;
+        #[cfg(miri)]
+        pool.shadow_detach(&self.shared, first_node, k);
         break (first_node, k);
       };
 
@@ -1051,6 +1317,8 @@ impl<T: Send> Sender<T> {
             pool.head = self.shared.next_of(curr);
           }
           pool.count -= k;
+          #[cfg(miri)]
+          pool.shadow_detach(&self.shared, first_node, k);
           Some((first_node, k))
         }
       };
@@ -1225,10 +1493,20 @@ impl<T: Send> Receiver<T> {
       }
 
       if is_registered {
-        sync_util::park_thread();
+        spin_before_park_cap1(self.shared.cap, &notified);
+        if !notified.load(Ordering::Relaxed) {
+          sync_util::park_thread();
+        }
         if notified.swap(false, Ordering::Acquire) {
           is_registered = false;
         }
+        continue;
+      }
+
+      // Probe the link BEFORE registering, at every capacity — the
+      // pre-f35e867 consumer spin was unconditional. Primitive choice is
+      // producer-count-dispatched; see `probe_for_publish`.
+      if unsafe { self.shared.probe_for_publish(tail) } {
         continue;
       }
 
@@ -1290,7 +1568,10 @@ impl<T: Send> Receiver<T> {
       };
 
       if is_registered {
-        sync_util::park_thread_timeout(remaining);
+        spin_before_park_cap1(self.shared.cap, &notified);
+        if !notified.load(Ordering::Relaxed) {
+          sync_util::park_thread_timeout(remaining);
+        }
         if notified.swap(false, Ordering::Acquire) {
           is_registered = false;
         }
@@ -1404,11 +1685,24 @@ impl<T: Send> Receiver<T> {
       }
 
       if is_registered {
-        sync_util::park_thread();
+        spin_before_park_cap1(self.shared.cap, &notified);
+        if !notified.load(Ordering::Relaxed) {
+          sync_util::park_thread();
+        }
         if notified.swap(false, Ordering::Acquire) {
           is_registered = false;
         }
         continue;
+      }
+
+      // Probe the link BEFORE registering, at every capacity — the
+      // pre-f35e867 consumer spin was unconditional. Primitive choice is
+      // producer-count-dispatched; see `probe_for_publish`.
+      {
+        let tail = unsafe { *self.shared.tail.get() };
+        if unsafe { self.shared.probe_for_publish(tail) } {
+          continue;
+        }
       }
 
       self
@@ -1601,6 +1895,8 @@ impl<T: Send> AsyncSender<T> {
         pool.head = self.shared.next_of(curr);
         pool.count -= k;
 
+        #[cfg(miri)]
+        pool.shadow_detach(&self.shared, first_node, k);
         publish_run(&self.shared, first_node, k, &mut iter);
       }
       sent += k;
@@ -2058,6 +2354,8 @@ impl<'a, T: Send> Future for BoundedSendBatchFuture<'a, T> {
         pool.head = shared.next_of(curr);
         pool.count -= k;
 
+        #[cfg(miri)]
+        pool.shadow_detach(shared, first_node, k);
         publish_run(shared, first_node, k, &mut this.iter);
       }
       this.sent += k;
@@ -2138,6 +2436,8 @@ impl<'a, T: Send> Future for BoundedSendBatchMutFuture<'a, T> {
         pool.head = shared.next_of(curr);
         pool.count -= k;
 
+        #[cfg(miri)]
+        pool.shadow_detach(shared, first_node, k);
         let mut drain = this.items.drain(..k);
         publish_run(shared, first_node, k, &mut drain);
         drop(drain);
