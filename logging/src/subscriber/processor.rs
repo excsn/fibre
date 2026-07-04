@@ -45,6 +45,30 @@ impl EventProcessor {
     self.actors.iter().any(|a| a.filter.enabled(metadata))
   }
 
+  /// Closes every appender channel. Called at shutdown so consumers observe
+  /// a disconnect: custom-stream receivers drain buffered events and then see
+  /// `Disconnected` instead of an indistinguishable-from-quiet `Empty`, and
+  /// appender tasks get a wake-up in addition to the shutdown flag. The
+  /// processor itself stays alive in the global subscriber; events processed
+  /// after this are silently discarded.
+  pub(crate) fn close_channels(&self) {
+    for actor in &self.actors {
+      match &actor.action {
+        ActorAction::SendBytes(sender) => {
+          let _ = sender.close();
+        }
+        ActorAction::SendEvent(sender) => {
+          let _ = sender.close();
+        }
+      }
+    }
+    // Writer threads hold their own error_tx clones; closing ours lets the
+    // error receiver disconnect once those threads exit.
+    if let Some(tx) = &self.error_tx {
+      let _ = tx.close();
+    }
+  }
+
   /// The single entry point for processing any log event.
   ///
   /// Filtering semantics: each appender evaluates the event against its own

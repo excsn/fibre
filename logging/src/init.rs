@@ -215,8 +215,19 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
         // The action is to send the full LogEvent to our collector thread.
         ActorAction::SendEvent(tx)
       }
+      // In release builds the debug_report module is stubbed out; the
+      // appender is skipped instead of panicking, so one config can serve
+      // both profiles.
+      #[cfg(not(debug_assertions))]
+      AppenderKindInternal::DebugReport(_) => {
+        vlog!(
+          "[fibre_logging] Appender '{}' (debug_report) is disabled in release builds; skipping.",
+          appender_name
+        );
+        continue;
+      }
       AppenderKindInternal::Custom(_) => {
-        let (tx, rx) = mpsc::bounded(appender_config.channel_capacity);
+        let (tx, rx) = mpsc::bounded::<LogEvent>(appender_config.channel_capacity);
         custom_streams.insert(appender_name.clone(), rx);
         ActorAction::SendEvent(tx)
       }
@@ -309,7 +320,7 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
     .map_err(|e| Error::GlobalSubscriberSet(e.to_string()))?;
   vlog!("[fibre_logging] Global tracing subscriber set.");
 
-  let log_handler = LogHandler::new(processor);
+  let log_handler = LogHandler::new(Arc::clone(&processor));
   log::set_boxed_logger(Box::new(log_handler))
     .map(|()| log::set_max_level(tracing_filter_to_log_filter(max_level)))
     .map_err(|e| Error::LogBridgeInit(e.to_string()))?;
@@ -320,6 +331,7 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
     appender_task_handles,
     appender_task_names,
     shutdown_signal, // Return the signal for the shutdown function
+    processor: Some(processor),
     internal_error_rx: error_rx_channel,
     custom_streams,
   })
@@ -798,6 +810,41 @@ mod tests {
     assert!(rx.try_recv().is_ok(), "first event should be in the channel");
     sender_thread.join().unwrap();
     assert!(rx.try_recv().is_ok(), "second event delivered after drain");
+  }
+
+  #[test]
+  fn close_channels_disconnects_streams_after_draining_buffered_events() {
+    use fibre::TryRecvError;
+
+    let mut loggers = HashMap::new();
+    loggers.insert(
+      "root".to_string(),
+      LoggerInternal {
+        name: "root".to_string(),
+        min_level: LevelFilter::INFO,
+        appender_names: vec!["app1".to_string()],
+        additive: true,
+      },
+    );
+    let (actor, rx) = make_event_actor("app1", &loggers, 16, OverflowPolicy::DropNewest);
+    let processor = EventProcessor::new(vec![actor], None);
+
+    let md = mock_metadata(Level::INFO, "t");
+    processor.process_event(LogEvent::new(Level::INFO, "t", "e1", None), &md);
+    processor.process_event(LogEvent::new(Level::INFO, "t", "e2", None), &md);
+
+    processor.close_channels();
+
+    // Buffered events survive the close and are still deliverable...
+    assert!(rx.try_recv().is_ok());
+    assert!(rx.try_recv().is_ok());
+    // ...after which the receiver sees a real disconnect, not Empty.
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+
+    // Events processed after close are silently discarded, without panicking
+    // and without resurrecting the stream.
+    processor.process_event(LogEvent::new(Level::INFO, "t", "late", None), &md);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
   }
 
   #[test]

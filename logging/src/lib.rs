@@ -83,6 +83,9 @@ pub struct InitResult {
   pub appender_task_handles: Vec<AppenderTaskHandle>,
   pub(crate) appender_task_names: Vec<String>,
   pub(crate) shutdown_signal: Arc<AtomicBool>,
+  // Held so shutdown can close the appender channels; the processor itself
+  // stays alive inside the global subscriber.
+  pub(crate) processor: Option<Arc<subscriber::EventProcessor>>,
   // If error reporting is enabled, this receiver can be used to get internal error reports.
   pub internal_error_rx: Option<fibre::mpsc::BoundedSyncReceiver<InternalErrorReport>>,
   pub custom_streams: HashMap<String, CustomEventReceiver>,
@@ -91,13 +94,16 @@ pub struct InitResult {
 impl InitResult {
   /// Shuts down all appender tasks, waiting at most `timeout` for them to
   /// flush. Tasks that don't finish in time are reported and abandoned
-  /// instead of hanging the process. `Drop` calls this with a 5s default.
+  /// instead of hanging the process. Appender channels are closed, so any
+  /// custom-stream receivers drain their buffered events and then observe
+  /// `Disconnected`. `Drop` calls this with a 5s default.
   pub fn shutdown(mut self, timeout: Duration) {
     self.shutdown_impl(timeout);
   }
 
   fn shutdown_impl(&mut self, timeout: Duration) {
-    if self.appender_task_handles.is_empty() {
+    // Already shut down (or nothing was ever started).
+    if self.processor.is_none() && self.appender_task_handles.is_empty() {
       return;
     }
 
@@ -106,9 +112,21 @@ impl InitResult {
       .shutdown_signal
       .store(true, std::sync::atomic::Ordering::SeqCst);
 
+    // 2. Close the appender channels. This signals custom-stream consumers
+    // (which have no background thread of their own) and wakes writer
+    // threads blocked in recv_timeout.
+    if let Some(processor) = self.processor.take() {
+      processor.close_channels();
+    }
+
+    if self.appender_task_handles.is_empty() {
+      vlog!("[fibre_logging] Shutdown complete.");
+      return;
+    }
+
     vlog!("[fibre_logging] Shutting down. Waiting for appender tasks to flush...");
 
-    // 2. Join with a deadline. A writer stuck in a blocking write (full disk,
+    // 3. Join with a deadline. A writer stuck in a blocking write (full disk,
     // dead pipe) must not hang process exit forever.
     let mut names = std::mem::take(&mut self.appender_task_names).into_iter();
     let mut pending: Vec<(String, AppenderTaskHandle)> = self
@@ -177,6 +195,7 @@ mod tests {
       appender_task_handles: handles,
       appender_task_names: names,
       shutdown_signal: signal,
+      processor: None,
       internal_error_rx: None,
       custom_streams: HashMap::new(),
     }
