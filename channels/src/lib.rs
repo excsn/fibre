@@ -21,6 +21,12 @@ mod internal;
 mod sync_util;
 mod async_util;
 
+// Loom model checks for migrated channels — the single cfg(loom) gate for the
+// whole test tree (see internal/sync.rs for the primitive switch, and
+// channels/scripts/loom.sh to run).
+#[cfg(all(test, loom))]
+mod loom_tests;
+
 pub use error::{
   BatchSendErrorReason, CloseError, RecvError, RecvErrorTimeout, SendBatchError, SendError,
   TryRecvError, TrySendBatchError, TrySendError,

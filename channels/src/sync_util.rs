@@ -1,8 +1,11 @@
 //! Utilities for synchronous blocking and parking.
 //! For now, these are minimal helpers around std::thread::park/unpark.
 //! The channel implementations will manage the state.
+//!
+//! Parking goes through `internal::sync` so loom can model it (under loom,
+//! `park_timeout` is a panicking stub — timeout paths are not modeled).
 
-use std::thread;
+use crate::internal::sync::thread;
 use std::time::Duration;
 
 /// Parks the current thread.
