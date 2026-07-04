@@ -85,15 +85,20 @@ where
     let shard_index = self.shared.get_shard_index_from_hash(hash);
     let shard = &self.shared.store.shards[shard_index];
     let mut result = None;
+    let mut deferred = None;
 
     {
-      let guard = shard.map.read();
+      let guard = shard.map.read_async().await;
       if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
         if !entry_in_guard.is_expired(self.shared.time_to_idle) {
           result = Some(f(entry_in_guard.value().as_ref()));
-          self.on_hit(found_key, hash, entry_in_guard, shard_index);
+          deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
         }
       }
+    }
+
+    if let Some((k, cost)) = deferred {
+      shard.read_access_batcher.record_access_async(k, hash, cost).await;
     }
 
     if result.is_some() {
@@ -120,15 +125,20 @@ where
     let shard_index = self.shared.get_shard_index_from_hash(hash);
     let shard = &self.shared.store.shards[shard_index];
     let mut value = None;
+    let mut deferred = None;
 
     {
-      let guard = shard.map.read();
+      let guard = shard.map.read_async().await;
       if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
         if !entry_in_guard.is_expired(self.shared.time_to_idle) {
-          self.on_hit(found_key, hash, entry_in_guard, shard_index);
+          deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
           value = Some(entry_in_guard.value());
         }
       }
+    }
+
+    if let Some((k, cost)) = deferred {
+      shard.read_access_batcher.record_access_async(k, hash, cost).await;
     }
 
     if value.is_some() {
@@ -154,7 +164,7 @@ where
     Q: Eq + Hash + Equivalent<K> + ?Sized,
   {
     let shard = self.shared.store.get_shard(key);
-    let guard = shard.map.read();
+    let guard = shard.map.read_async().await;
 
     if let Some(entry) = guard.get(key) {
       if entry.is_expired(self.shared.time_to_idle) {
@@ -523,9 +533,18 @@ where
       .store(0, std::sync::atomic::Ordering::Relaxed);
   }
 
-  /// Private helper for cache hits.
+  /// Private helper for cache hits. Called while the shard guard is held,
+  /// so the batcher is only try-locked here; on stripe contention it returns
+  /// the (cloned key, cost) for the caller to record via
+  /// `record_access_async` AFTER releasing the shard guard.
   #[inline]
-  fn on_hit(&self, key: &K, hash: u64, entry: &Arc<CacheEntry<V>>, shard_index: usize)
+  fn on_hit(
+    &self,
+    key: &K,
+    hash: u64,
+    entry: &Arc<CacheEntry<V>>,
+    shard_index: usize,
+  ) -> Option<(K, u64)>
   where
     K: Clone,
   {
@@ -535,8 +554,12 @@ where
 
     if self.shared.track_reads {
       let shard = &self.shared.store.shards[shard_index];
-      shard.read_access_batcher.record_access(key, hash, entry.cost());
+      let cost = entry.cost();
+      if !shard.read_access_batcher.try_record_access(key, hash, cost) {
+        return Some((key.clone(), cost));
+      }
     }
+    None
   }
 
   /// Helper to run maintenance on a shard if the maintenance lock is not contended.
@@ -694,7 +717,7 @@ where
         let shared = Arc::clone(&self.shared);
         async move {
           let shard = &shared.store.shards[i];
-          let guard = shard.map.read();
+          let guard = shard.map.read_async().await;
           let mut found = HashMap::new();
 
           for key in shard_keys {
@@ -916,15 +939,16 @@ where
     let shard_index = self.shared.get_shard_index_from_hash(hash);
     let shard_ref = &self.shared.store.shards[shard_index];
 
+    let mut deferred = None;
     let hit_value = {
-      let guard = shard_ref.map.read();
+      let guard = shard_ref.map.read_async().await;
       if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
         let expires_at_nanos = entry_in_guard.expires_at.load(Ordering::Relaxed);
 
         if expires_at_nanos == 0 {
           // No TTL, fresh if TTI has not expired.
           if !entry_in_guard.is_expired(self.shared.time_to_idle) {
-            self.on_hit(found_key, hash, entry_in_guard, shard_index);
+            deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
             self.shared.metrics.record_hits(shard_index, 1);
             Some(entry_in_guard.value())
           } else {
@@ -935,7 +959,7 @@ where
           if now_nanos < expires_at_nanos {
             // CASE A: Fresh Hit
             if !entry_in_guard.is_expired(self.shared.time_to_idle) {
-              self.on_hit(found_key, hash, entry_in_guard, shard_index);
+              deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
               self.shared.metrics.record_hits(shard_index, 1);
               Some(entry_in_guard.value())
             } else {
@@ -957,6 +981,13 @@ where
         None
       }
     };
+
+    if let Some((k, cost)) = deferred {
+      shard_ref
+        .read_access_batcher
+        .record_access_async(k, hash, cost)
+        .await;
+    }
 
     if let Some(val) = hit_value {
       return val;

@@ -9,6 +9,7 @@ use core::fmt;
 use std::borrow::Borrow;
 use equivalent::Equivalent;
 use fibre::mpsc;
+
 use rand::Rng;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};

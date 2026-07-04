@@ -30,8 +30,9 @@ impl<K: Hash + Eq> AccessBatcher<K> {
     }
   }
 
-  /// Records an access event. Called by producer threads from the `get` hot path.
-  /// Accepts a pre-computed hash and only clones the key if it is not already batched.
+  /// Records an access event, blocking on the stripe lock. Called from the
+  /// sync `get` hot path. Accepts a pre-computed hash and only clones the
+  /// key if it is not already batched.
   #[inline]
   pub(crate) fn record_access(&self, key: &K, hash: u64, cost: u64)
   where
@@ -50,6 +51,45 @@ impl<K: Hash + Eq> AccessBatcher<K> {
     let mut guard = stripes[stripe_idx].lock();
     if !guard.contains_key(key) {
       guard.insert(key.clone(), cost);
+    }
+  }
+
+  /// Non-blocking attempt to record an access event. Returns `false` if the
+  /// stripe lock was contended and the event was NOT recorded — the caller
+  /// must then fall back to [`record_access_async`]. Used from async hit
+  /// paths while the shard guard is held (so no awaiting is possible here).
+  #[inline]
+  pub(crate) fn try_record_access(&self, key: &K, hash: u64, cost: u64) -> bool
+  where
+    K: Clone,
+  {
+    let idx = self.active_idx.load(Ordering::Relaxed);
+    let stripes = &self.instances[idx];
+    let stripe_idx = (hash >> 32) as usize & (BATCH_STRIPES - 1);
+
+    match stripes[stripe_idx].try_lock() {
+      Some(mut guard) => {
+        if !guard.contains_key(key) {
+          guard.insert(key.clone(), cost);
+        }
+        true
+      }
+      None => false,
+    }
+  }
+
+  /// Waker-based recording for async hit paths, used as the fallback when
+  /// [`try_record_access`] hit stripe contention. Takes the key by value:
+  /// the caller clones it before releasing its shard guard, so nothing is
+  /// borrowed across the await.
+  pub(crate) async fn record_access_async(&self, key: K, hash: u64, cost: u64) {
+    let idx = self.active_idx.load(Ordering::Relaxed);
+    let stripes = &self.instances[idx];
+    let stripe_idx = (hash >> 32) as usize & (BATCH_STRIPES - 1);
+
+    let mut guard = stripes[stripe_idx].lock_async().await;
+    if !guard.contains_key(&key) {
+      guard.insert(key, cost);
     }
   }
 
