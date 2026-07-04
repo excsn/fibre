@@ -2,8 +2,30 @@
 //! flat `bounded_queue.rs`. The inner modules reach the public API + 
 //! `BoundedQueue::new` through `use super::*`.
 
+// The inner test modules reach these through their own `use super::*`; this
+// header reproduces the set the former flat `bounded_queue.rs` exposed at its
+// module top (the channel API comes via `use super::*` -> mod.rs).
 #[allow(unused_imports)]
 use super::*;
+#[allow(unused_imports)]
+use std::cell::{RefCell, UnsafeCell};
+#[allow(unused_imports)]
+use std::pin::Pin;
+#[allow(unused_imports)]
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+#[allow(unused_imports)]
+use std::time::{Duration, Instant};
+#[allow(unused_imports)]
+use futures_core::Stream;
+#[allow(unused_imports)]
+use crate::internal::sync::{
+  fence, hint, thread, Arc, AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Mutex, Ordering, Thread,
+};
+#[allow(unused_imports)]
+use crate::error::{
+  BatchSendErrorReason, CloseError, RecvError, RecvErrorTimeout, SendBatchError, SendError,
+  TryRecvError, TrySendError,
+};
 
 #[cfg(test)]
 mod tests {
@@ -30,7 +52,7 @@ mod tests {
       self.state
     }
 
-    fn gen_range(&mut self, min: u32, max: u32) -> u32 {
+    fn random_range(&mut self, min: u32, max: u32) -> u32 {
       assert!(min < max);
       min + (self.next_u32() % (max - min))
     }
@@ -284,7 +306,7 @@ mod tests {
         for seq in 0..items_to_send {
           let msg = (thread_idx << 32) | seq;
 
-          if rng.gen_range(0, 100) < 30 {
+          if rng.random_range(0, 100) < 30 {
             while let Err(e) = tx_clone.try_send(msg) {
               match e {
                 TrySendError::Full(_) => thread::yield_now(),
@@ -298,7 +320,7 @@ mod tests {
             tx_clone.send(msg).unwrap();
           }
 
-          if rng.gen_range(0, 100) < 10 {
+          if rng.random_range(0, 100) < 10 {
             thread::yield_now();
           }
         }
@@ -313,7 +335,7 @@ mod tests {
       let mut rng = SimpleRng::new(9999);
 
       while received_count < (TOTAL_ITEMS / PRODUCER_COUNT) * PRODUCER_COUNT {
-        let pop_res = if rng.gen_range(0, 100) < 20 {
+        let pop_res = if rng.random_range(0, 100) < 20 {
           match rx.try_recv() {
             Ok(msg) => Some(msg),
             Err(TryRecvError::Empty) => {
@@ -322,7 +344,7 @@ mod tests {
             }
             Err(TryRecvError::Disconnected) => panic!("Queue disconnected prematurely"),
           }
-        } else if rng.gen_range(0, 100) < 40 {
+        } else if rng.random_range(0, 100) < 40 {
           match rx.recv_timeout(Duration::from_micros(10)) {
             Ok(msg) => Some(msg),
             Err(RecvErrorTimeout::Timeout) => None,
