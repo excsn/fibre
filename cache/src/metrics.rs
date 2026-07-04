@@ -9,8 +9,11 @@ use crossbeam_utils::CachePadded;
 #[derive(Debug)]
 pub struct Metrics {
   // --- Hit/Miss Ratios ---
-  pub(crate) hits: CachePadded<AtomicU64>,
-  pub(crate) misses: CachePadded<AtomicU64>,
+  // Striped per shard so concurrent reads on different shards do not
+  // contend on a single cache line. Summed in `snapshot()`.
+  hits: Box<[CachePadded<AtomicU64>]>,
+  misses: Box<[CachePadded<AtomicU64>]>,
+  stripe_mask: usize,
 
   // --- Throughput ---
   pub(crate) inserts: CachePadded<AtomicU64>,
@@ -34,12 +37,22 @@ pub struct Metrics {
   created_at: Instant,
 }
 
-// Manual implementation of Default to handle the non-default `Instant`.
-impl Default for Metrics {
-  fn default() -> Self {
+impl Metrics {
+  /// Creates a new `Metrics` instance, capturing the creation time.
+  ///
+  /// `num_stripes` must be a power of two; the cache passes its shard count
+  /// so hit/miss stripes align one-to-one with shards.
+  pub(crate) fn new(num_stripes: usize) -> Self {
+    let num_stripes = num_stripes.max(1).next_power_of_two();
+    let create_stripes = || -> Box<[CachePadded<AtomicU64>]> {
+      (0..num_stripes)
+        .map(|_| CachePadded::new(AtomicU64::new(0)))
+        .collect()
+    };
     Self {
-      hits: CachePadded::new(AtomicU64::new(0)),
-      misses: CachePadded::new(AtomicU64::new(0)),
+      hits: create_stripes(),
+      misses: create_stripes(),
+      stripe_mask: num_stripes - 1,
       inserts: CachePadded::new(AtomicU64::new(0)),
       updates: CachePadded::new(AtomicU64::new(0)),
       invalidations: CachePadded::new(AtomicU64::new(0)),
@@ -53,19 +66,23 @@ impl Default for Metrics {
       created_at: Instant::now(), // Set the creation time here.
     }
   }
-}
 
-impl Metrics {
-  /// Creates a new `Metrics` instance, capturing the creation time.
-  pub(crate) fn new() -> Self {
-    // `default()` now correctly initializes `created_at`.
-    Self::default()
+  /// Records `n` hits against the stripe for `shard_idx`.
+  #[inline]
+  pub(crate) fn record_hits(&self, shard_idx: usize, n: u64) {
+    self.hits[shard_idx & self.stripe_mask].fetch_add(n, Ordering::Relaxed);
+  }
+
+  /// Records `n` misses against the stripe for `shard_idx`.
+  #[inline]
+  pub(crate) fn record_misses(&self, shard_idx: usize, n: u64) {
+    self.misses[shard_idx & self.stripe_mask].fetch_add(n, Ordering::Relaxed);
   }
 
   /// Creates a point-in-time snapshot of the current metrics.
   pub(crate) fn snapshot(&self) -> MetricsSnapshot {
-    let hits = self.hits.load(Ordering::Relaxed);
-    let misses = self.misses.load(Ordering::Relaxed);
+    let hits: u64 = self.hits.iter().map(|s| s.load(Ordering::Relaxed)).sum();
+    let misses: u64 = self.misses.iter().map(|s| s.load(Ordering::Relaxed)).sum();
     let total_lookups = hits + misses;
 
     MetricsSnapshot {

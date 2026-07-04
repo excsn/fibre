@@ -397,7 +397,7 @@ where
       tick_duration,
       has_timer_logic,
     ));
-    let metrics = Arc::new(Metrics::new());
+    let metrics = Arc::new(Metrics::new(self.shards));
 
     // Create the per-shard eviction policies using the factory.
     let factory = self.policy_factory.take().unwrap_or_else(|| {

@@ -6,184 +6,184 @@
 
 ### `SyncBasicOps/Op-GetHit_Cap-10000_Items-10000_Threads-1`
 
-* **Time:** 458.24 µs – 459.69 µs – 461.71 µs
-* **Throughput:** 21.659 Melem/s – 21.754 Melem/s – 21.823 Melem/s
+* **Time:** 460.20 µs – 469.49 µs – 483.41 µs
+* **Throughput:** 20.686 Melem/s – 21.300 Melem/s – 21.730 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-10000_Items-10000_Threads-4`
 
-* **Time:** 397.70 µs – 402.40 µs – 407.84 µs
-* **Throughput:** 24.519 Melem/s – 24.851 Melem/s – 25.144 Melem/s
+* **Time:** 239.57 µs – 241.03 µs – 242.37 µs
+* **Throughput:** 41.260 Melem/s – 41.488 Melem/s – 41.742 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-10000_Items-10000_Threads-8`
 
-* **Time:** 626.03 µs – 628.02 µs – 629.62 µs
-* **Throughput:** 15.883 Melem/s – 15.923 Melem/s – 15.974 Melem/s
+* **Time:** 391.55 µs – 394.23 µs – 396.12 µs
+* **Throughput:** 25.245 Melem/s – 25.366 Melem/s – 25.539 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-10000_Items-100000_Threads-1`
 
-* **Time:** 6.6493 ms – 7.2491 ms – 8.6887 ms
-* **Throughput:** 11.509 Melem/s – 13.795 Melem/s – 15.039 Melem/s
+* **Time:** 6.7851 ms – 6.9608 ms – 7.3897 ms
+* **Throughput:** 13.532 Melem/s – 14.366 Melem/s – 14.738 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-10000_Items-100000_Threads-4`
 
-* **Time:** 3.9540 ms – 4.2240 ms – 4.5373 ms
-* **Throughput:** 22.040 Melem/s – 23.674 Melem/s – 25.291 Melem/s
+* **Time:** 2.4057 ms – 2.8378 ms – 3.5907 ms
+* **Throughput:** 27.850 Melem/s – 35.239 Melem/s – 41.568 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-10000_Items-100000_Threads-8`
 
-* **Time:** 5.3001 ms – 5.3380 ms – 5.3694 ms
-* **Throughput:** 18.624 Melem/s – 18.734 Melem/s – 18.868 Melem/s
+* **Time:** 3.1301 ms – 3.2606 ms – 3.4171 ms
+* **Throughput:** 29.265 Melem/s – 30.669 Melem/s – 31.947 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-100000_Items-10000_Threads-1`
 
-* **Time:** 500.35 µs – 510.62 µs – 520.15 µs
-* **Throughput:** 19.225 Melem/s – 19.584 Melem/s – 19.986 Melem/s
+* **Time:** 503.34 µs – 511.12 µs – 521.46 µs
+* **Throughput:** 19.177 Melem/s – 19.565 Melem/s – 19.867 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-100000_Items-10000_Threads-4`
 
-* **Time:** 448.91 µs – 466.98 µs – 493.80 µs
-* **Throughput:** 20.251 Melem/s – 21.414 Melem/s – 22.276 Melem/s
+* **Time:** 244.82 µs – 261.80 µs – 282.76 µs
+* **Throughput:** 35.366 Melem/s – 38.197 Melem/s – 40.846 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-100000_Items-10000_Threads-8`
 
-* **Time:** 622.86 µs – 626.19 µs – 628.37 µs
-* **Throughput:** 15.914 Melem/s – 15.969 Melem/s – 16.055 Melem/s
+* **Time:** 393.95 µs – 395.66 µs – 396.83 µs
+* **Throughput:** 25.199 Melem/s – 25.274 Melem/s – 25.384 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-100000_Items-100000_Threads-1`
 
-* **Time:** 6.7611 ms – 7.0070 ms – 7.3203 ms
-* **Throughput:** 13.661 Melem/s – 14.271 Melem/s – 14.790 Melem/s
+* **Time:** 6.9295 ms – 8.3860 ms – 9.1352 ms
+* **Throughput:** 10.947 Melem/s – 11.925 Melem/s – 14.431 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-100000_Items-100000_Threads-4`
 
-* **Time:** 3.7772 ms – 4.0498 ms – 4.6107 ms
-* **Throughput:** 21.689 Melem/s – 24.693 Melem/s – 26.475 Melem/s
+* **Time:** 2.1963 ms – 2.2284 ms – 2.2873 ms
+* **Throughput:** 43.719 Melem/s – 44.876 Melem/s – 45.531 Melem/s
 
 ### `SyncBasicOps/Op-GetHit_Cap-100000_Items-100000_Threads-8`
 
-* **Time:** 5.3360 ms – 5.3668 ms – 5.3862 ms
-* **Throughput:** 18.566 Melem/s – 18.633 Melem/s – 18.741 Melem/s
+* **Time:** 3.0023 ms – 3.0096 ms – 3.0199 ms
+* **Throughput:** 33.114 Melem/s – 33.228 Melem/s – 33.308 Melem/s
 
 ---
 
 ### `SyncBasicOps/Op-GetMiss_Cap-10000_Items-10000_Threads-1`
 
-* **Time:** 202.27 µs – 206.58 µs – 213.59 µs
-* **Throughput:** 46.818 Melem/s – 48.407 Melem/s – 49.438 Melem/s
+* **Time:** 203.93 µs – 213.86 µs – 226.48 µs
+* **Throughput:** 44.153 Melem/s – 46.759 Melem/s – 49.036 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-10000_Items-10000_Threads-4`
 
-* **Time:** 333.12 µs – 334.12 µs – 334.98 µs
-* **Throughput:** 29.853 Melem/s – 29.929 Melem/s – 30.019 Melem/s
+* **Time:** 153.75 µs – 161.14 µs – 168.74 µs
+* **Throughput:** 59.262 Melem/s – 62.060 Melem/s – 65.040 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-10000_Items-10000_Threads-8`
 
-* **Time:** 529.45 µs – 537.60 µs – 547.60 µs
-* **Throughput:** 18.261 Melem/s – 18.601 Melem/s – 18.887 Melem/s
+* **Time:** 198.03 µs – 202.07 µs – 205.98 µs
+* **Throughput:** 48.548 Melem/s – 49.489 Melem/s – 50.497 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-10000_Items-100000_Threads-1`
 
-* **Time:** 3.6414 ms – 3.6808 ms – 3.7210 ms
-* **Throughput:** 26.875 Melem/s – 27.168 Melem/s – 27.462 Melem/s
+* **Time:** 3.6883 ms – 3.7110 ms – 3.7509 ms
+* **Throughput:** 26.660 Melem/s – 26.947 Melem/s – 27.113 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-10000_Items-100000_Threads-4`
 
-* **Time:** 3.1473 ms – 3.4690 ms – 3.6966 ms
-* **Throughput:** 27.052 Melem/s – 28.827 Melem/s – 31.773 Melem/s
+* **Time:** 1.3939 ms – 1.4231 ms – 1.4639 ms
+* **Throughput:** 68.310 Melem/s – 70.271 Melem/s – 71.739 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-10000_Items-100000_Threads-8`
 
-* **Time:** 4.7149 ms – 4.7371 ms – 4.7629 ms
-* **Throughput:** 20.996 Melem/s – 21.110 Melem/s – 21.209 Melem/s
+* **Time:** 1.3849 ms – 1.3888 ms – 1.3948 ms
+* **Throughput:** 71.695 Melem/s – 72.003 Melem/s – 72.208 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-100000_Items-10000_Threads-1`
 
-* **Time:** 211.44 µs – 219.50 µs – 227.61 µs
-* **Throughput:** 43.934 Melem/s – 45.558 Melem/s – 47.295 Melem/s
+* **Time:** 221.05 µs – 230.34 µs – 246.14 µs
+* **Throughput:** 40.627 Melem/s – 43.414 Melem/s – 45.239 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-100000_Items-10000_Threads-4`
 
-* **Time:** 332.13 µs – 333.64 µs – 337.03 µs
-* **Throughput:** 29.671 Melem/s – 29.972 Melem/s – 30.109 Melem/s
+* **Time:** 136.46 µs – 137.30 µs – 139.18 µs
+* **Throughput:** 71.847 Melem/s – 72.833 Melem/s – 73.283 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-100000_Items-10000_Threads-8`
 
-* **Time:** 527.38 µs – 537.12 µs – 549.47 µs
-* **Throughput:** 18.199 Melem/s – 18.618 Melem/s – 18.962 Melem/s
+* **Time:** 194.11 µs – 195.20 µs – 196.33 µs
+* **Throughput:** 50.935 Melem/s – 51.229 Melem/s – 51.518 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-100000_Items-100000_Threads-1`
 
-* **Time:** 3.6485 ms – 3.6760 ms – 3.7094 ms
-* **Throughput:** 26.959 Melem/s – 27.203 Melem/s – 27.408 Melem/s
+* **Time:** 3.6948 ms – 3.7280 ms – 3.7646 ms
+* **Throughput:** 26.563 Melem/s – 26.824 Melem/s – 27.065 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-100000_Items-100000_Threads-4`
 
-* **Time:** 3.1326 ms – 3.3052 ms – 3.6446 ms
-* **Throughput:** 27.438 Melem/s – 30.256 Melem/s – 31.923 Melem/s
+* **Time:** 1.1708 ms – 1.2537 ms – 1.3683 ms
+* **Throughput:** 73.082 Melem/s – 79.767 Melem/s – 85.411 Melem/s
 
 ### `SyncBasicOps/Op-GetMiss_Cap-100000_Items-100000_Threads-8`
 
-* **Time:** 4.7160 ms – 4.7359 ms – 4.7599 ms
-* **Throughput:** 21.009 Melem/s – 21.115 Melem/s – 21.205 Melem/s
+* **Time:** 1.3829 ms – 1.3852 ms – 1.3885 ms
+* **Throughput:** 72.018 Melem/s – 72.192 Melem/s – 72.310 Melem/s
 
 ---
 
 ### `SyncBasicOps/Op-Insert_Cap-10000_Items-10000_Threads-1`
 
-* **Time:** 892.21 µs – 894.67 µs – 898.73 µs
-* **Throughput:** 11.127 Melem/s – 11.177 Melem/s – 11.208 Melem/s
+* **Time:** 921.77 µs – 948.15 µs – 976.56 µs
+* **Throughput:** 10.240 Melem/s – 10.547 Melem/s – 10.849 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-10000_Items-10000_Threads-4`
 
-* **Time:** 1.0839 ms – 1.3881 ms – 1.5816 ms
-* **Throughput:** 6.3227 Melem/s – 7.2040 Melem/s – 9.2263 Melem/s
+* **Time:** 893.33 µs – 902.72 µs – 914.07 µs
+* **Throughput:** 10.940 Melem/s – 11.078 Melem/s – 11.194 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-10000_Items-10000_Threads-8`
 
-* **Time:** 1.3809 ms – 1.3973 ms – 1.4154 ms
-* **Throughput:** 7.0649 Melem/s – 7.1568 Melem/s – 7.2415 Melem/s
+* **Time:** 1.3566 ms – 1.3673 ms – 1.3785 ms
+* **Throughput:** 7.2541 Melem/s – 7.3136 Melem/s – 7.3714 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-10000_Items-100000_Threads-1`
 
-* **Time:** 11.123 ms – 11.642 ms – 12.722 ms
-* **Throughput:** 7.8602 Melem/s – 8.5897 Melem/s – 8.9908 Melem/s
+* **Time:** 11.309 ms – 11.825 ms – 12.345 ms
+* **Throughput:** 8.1003 Melem/s – 8.4566 Melem/s – 8.8426 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-10000_Items-100000_Threads-4`
 
-* **Time:** 8.8217 ms – 9.0621 ms – 9.3369 ms
-* **Throughput:** 10.710 Melem/s – 11.035 Melem/s – 11.336 Melem/s
+* **Time:** 8.6568 ms – 8.7996 ms – 8.9389 ms
+* **Throughput:** 11.187 Melem/s – 11.364 Melem/s – 11.552 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-10000_Items-100000_Threads-8`
 
-* **Time:** 12.657 ms – 12.833 ms – 13.040 ms
-* **Throughput:** 7.6687 Melem/s – 7.7923 Melem/s – 7.9006 Melem/s
+* **Time:** 12.710 ms – 12.780 ms – 12.891 ms
+* **Throughput:** 7.7576 Melem/s – 7.8246 Melem/s – 7.8681 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-100000_Items-10000_Threads-1`
 
-* **Time:** 887.72 µs – 895.25 µs – 907.59 µs
-* **Throughput:** 11.018 Melem/s – 11.170 Melem/s – 11.265 Melem/s
+* **Time:** 894.35 µs – 898.63 µs – 905.58 µs
+* **Throughput:** 11.043 Melem/s – 11.128 Melem/s – 11.181 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-100000_Items-10000_Threads-4`
 
-* **Time:** 843.83 µs – 875.70 µs – 912.92 µs
-* **Throughput:** 10.954 Melem/s – 11.419 Melem/s – 11.851 Melem/s
+* **Time:** 844.28 µs – 853.92 µs – 867.94 µs
+* **Throughput:** 11.522 Melem/s – 11.711 Melem/s – 11.844 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-100000_Items-10000_Threads-8`
 
-* **Time:** 1.3442 ms – 1.3645 ms – 1.3989 ms
-* **Throughput:** 7.1486 Melem/s – 7.3289 Melem/s – 7.4391 Melem/s
+* **Time:** 1.3360 ms – 1.3453 ms – 1.3622 ms
+* **Throughput:** 7.3409 Melem/s – 7.4335 Melem/s – 7.4852 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-100000_Items-100000_Threads-1`
 
-* **Time:** 10.719 ms – 10.892 ms – 11.263 ms
-* **Throughput:** 8.8787 Melem/s – 9.1813 Melem/s – 9.3288 Melem/s
+* **Time:** 10.661 ms – 10.735 ms – 10.867 ms
+* **Throughput:** 9.2021 Melem/s – 9.3151 Melem/s – 9.3803 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-100000_Items-100000_Threads-4`
 
-* **Time:** 12.646 ms – 13.311 ms – 14.055 ms
-* **Throughput:** 7.1151 Melem/s – 7.5124 Melem/s – 7.9079 Melem/s
+* **Time:** 8.5579 ms – 8.8142 ms – 9.4319 ms
+* **Throughput:** 10.602 Melem/s – 11.345 Melem/s – 11.685 Melem/s
 
 ### `SyncBasicOps/Op-Insert_Cap-100000_Items-100000_Threads-8`
 
-* **Time:** 12.675 ms – 12.865 ms – 12.994 ms
-* **Throughput:** 7.6959 Melem/s – 7.7733 Melem/s – 7.8895 Melem/s
+* **Time:** 12.623 ms – 12.676 ms – 12.799 ms
+* **Throughput:** 7.8131 Melem/s – 7.8888 Melem/s – 7.9219 Melem/s

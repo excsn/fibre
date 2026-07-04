@@ -99,9 +99,9 @@ where
     }
 
     if result.is_some() {
-      self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+      self.shared.metrics.record_hits(shard_index, 1);
     } else {
-      self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
+      self.shared.metrics.record_misses(shard_index, 1);
     }
 
     result
@@ -135,9 +135,9 @@ where
     }
 
     if value.is_some() {
-      self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+      self.shared.metrics.record_hits(shard_index, 1);
     } else {
-      self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
+      self.shared.metrics.record_misses(shard_index, 1);
     }
 
     value
@@ -692,7 +692,7 @@ where
           // No TTL, fresh hit.
           if !entry.is_expired(self.shared.time_to_idle) {
             self.on_hit(found_key, hash, entry, shard_index);
-            self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+            self.shared.metrics.record_hits(shard_index, 1);
             Some(entry.value())
           } else {
             None
@@ -703,7 +703,7 @@ where
             // CASE A: Fresh Hit
             if !entry.is_expired(self.shared.time_to_idle) {
               self.on_hit(found_key, hash, entry, shard_index);
-              self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+              self.shared.metrics.record_hits(shard_index, 1);
               Some(entry.value())
             } else {
               None
@@ -785,14 +785,14 @@ where
       //    The initial optimistic raw_get in fetch_with handles the "already cached" case.
       if let Some(existing_future) = pending.get(key) {
         // We will get a value, so this counts as a HIT for us.
-        self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+        self.shared.metrics.record_hits(index, 1);
         am_leader = false;
         break existing_future.clone();
       }
 
       // 3. If we reach here, we are the "leader".
       //    This is the only time a MISS is recorded for the entire operation.
-      self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
+      self.shared.metrics.record_misses(index, 1);
       //    Create a new future, insert it as a placeholder.
       let new_future = Arc::new(LoadFuture::new());
       pending.insert(key.clone(), new_future.clone());
@@ -934,15 +934,12 @@ where
         },
       );
 
-    // Update global metrics after all parallel work is done.
+    // Update global metrics after all parallel work is done. This is one
+    // bulk update per multiget call, so a single stripe is fine.
     let hits = final_map.len() as u64;
-    self.shared.metrics.hits.fetch_add(hits, Ordering::Relaxed);
+    self.shared.metrics.record_hits(0, hits);
     if total_reqs > hits {
-      self
-        .shared
-        .metrics
-        .misses
-        .fetch_add(total_reqs - hits, Ordering::Relaxed);
+      self.shared.metrics.record_misses(0, total_reqs - hits);
     }
 
     final_map

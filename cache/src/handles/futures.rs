@@ -97,9 +97,9 @@ where
     }
 
     if result.is_some() {
-      self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+      self.shared.metrics.record_hits(shard_index, 1);
     } else {
-      self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
+      self.shared.metrics.record_misses(shard_index, 1);
     }
 
     result
@@ -132,9 +132,9 @@ where
     }
 
     if value.is_some() {
-      self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+      self.shared.metrics.record_hits(shard_index, 1);
     } else {
-      self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
+      self.shared.metrics.record_misses(shard_index, 1);
     }
 
     value
@@ -719,17 +719,10 @@ where
       final_map.extend(map);
     }
 
+    // One bulk update per multiget call, so a single stripe is fine.
     let hits = final_map.len() as u64;
-    self
-      .shared
-      .metrics
-      .hits
-      .fetch_add(hits, std::sync::atomic::Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .misses
-      .fetch_add(total_reqs - hits, std::sync::atomic::Ordering::Relaxed);
+    self.shared.metrics.record_hits(0, hits);
+    self.shared.metrics.record_misses(0, total_reqs - hits);
 
     final_map
   }
@@ -932,7 +925,7 @@ where
           // No TTL, fresh if TTI has not expired.
           if !entry_in_guard.is_expired(self.shared.time_to_idle) {
             self.on_hit(found_key, hash, entry_in_guard, shard_index);
-            self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+            self.shared.metrics.record_hits(shard_index, 1);
             Some(entry_in_guard.value())
           } else {
             None
@@ -943,7 +936,7 @@ where
             // CASE A: Fresh Hit
             if !entry_in_guard.is_expired(self.shared.time_to_idle) {
               self.on_hit(found_key, hash, entry_in_guard, shard_index);
-              self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+              self.shared.metrics.record_hits(shard_index, 1);
               Some(entry_in_guard.value())
             } else {
               None
@@ -1016,13 +1009,13 @@ where
       //    The initial optimistic raw_get in fetch_with handles the "already cached" case.
       if let Some(existing_future) = pending.get(key) {
         // We will get a value, so this counts as a HIT for us.
-        self.shared.metrics.hits.fetch_add(1, Ordering::Relaxed);
+        self.shared.metrics.record_hits(index, 1);
         am_leader = false;
         break existing_future.clone();
       }
 
       // 3. We are the "leader". This is the ONLY time a MISS is recorded.
-      self.shared.metrics.misses.fetch_add(1, Ordering::Relaxed);
+      self.shared.metrics.record_misses(index, 1);
       // Create a new future, insert it.
       let new_future = Arc::new(LoadFuture::new());
       pending.insert(key.clone(), new_future.clone());
