@@ -2,7 +2,7 @@
 
 use futures_core::Stream;
 
-use super::core::{AsyncWaiter, STATE_CANCELLED, STATE_SUCCESS_SPACE, STATE_WAITING};
+use super::core::{AsyncWaiter, STATE_CANCELLED, STATE_WAITING};
 use super::{AsyncReceiver, AsyncSender};
 use crate::error::{BatchSendErrorReason, SendBatchError, SendError, TrySendError};
 use crate::RecvError;

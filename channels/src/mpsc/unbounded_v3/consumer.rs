@@ -16,7 +16,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-// Sync primitives via the loom facade (see `internal/sync.rs`).
 use crate::internal::sync::{thread, Arc, AtomicBool, Ordering};
 
 use futures_core::Stream;

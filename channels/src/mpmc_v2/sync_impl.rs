@@ -10,7 +10,6 @@ use crate::RecvErrorTimeout;
 
 use std::time::{Duration, Instant};
 
-// Sync primitives via the loom facade (see `internal/sync.rs`).
 use crate::internal::sync::{thread, AtomicU8, Ordering};
 
 /// The synchronous, blocking send operation.

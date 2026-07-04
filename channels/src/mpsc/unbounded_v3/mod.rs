@@ -35,7 +35,7 @@ pub(crate) fn channel_async<T: Send>() -> (AsyncSender<T>, AsyncReceiver<T>) {
 
 #[cfg(test)]
 mod tests {
-  use super::shared::SLAB_NODES;
+  use crate::internal::slab_chain::SLAB_NODES;
   use super::*;
   use crate::error::{RecvError, TryRecvError};
   use std::sync::atomic::{AtomicUsize, Ordering};

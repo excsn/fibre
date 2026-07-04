@@ -17,10 +17,7 @@ use std::fmt;
 use std::ptr;
 use std::task::{Context, Poll, Waker};
 
-// Sync primitives via the loom facade (see `internal/sync.rs`).
 use crate::internal::sync::{fence, Arc, AtomicBool, AtomicUsize, Mutex, Ordering, Thread};
-
-pub(crate) use crate::internal::slab_chain::SLAB_NODES;
 
 /// Fixed number of `sent` counter shards backing `len()`. Handles take a shard
 /// round-robin at creation, so with up to this many live handles each producer

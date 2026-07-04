@@ -61,7 +61,6 @@ use std::fmt;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-// Sync primitives via the loom facade (see `internal/sync.rs`).
 use crate::internal::sync::{thread, AtomicU8, Mutex, Ordering, Thread};
 
 // --- Waiter state machine -------------------------------------------------

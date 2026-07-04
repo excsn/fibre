@@ -19,9 +19,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::time::{Duration, Instant};
 
-// Sync primitives via the loom facade (see `internal/sync.rs`). `hint::spin_loop`
-// routes through the facade so the PARK_CONSUMING waits below are scheduler
-// yield-points loom can explore rather than branch-cap blowups (Gotcha #2).
+// `hint::spin_loop` routes through the facade so the PARK_CONSUMING waits below
+// are scheduler yield-points loom can explore rather than branch-cap blowups.
 use crate::internal::sync::{
   fence, hint, thread, Arc, AtomicBool, AtomicU8, AtomicUsize, Mutex, Ordering, Thread,
 };
@@ -724,7 +723,12 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(RecvError::Disconnected);
     }
+    // Only the telemetry macros read this; keep it off the hot path when the
+    // `diagnostics` feature is disabled (`String::new()` doesn't allocate).
+    #[cfg(feature = "diagnostics")]
     let consumer_name = thread::current().name().unwrap_or("?").to_string();
+    #[cfg(not(feature = "diagnostics"))]
+    let consumer_name = String::new();
     loop {
       match try_recv_internal(&self.shared, &self.tail) {
         Ok(value) => return Ok(value),

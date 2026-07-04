@@ -60,7 +60,6 @@ pub use unbounded::{
 
 use std::mem;
 
-// Sync primitives via the loom facade (see `internal/sync.rs`).
 use crate::internal::sync::{Arc, AtomicBool, AtomicU8, Ordering};
 
 // --- Public Structs (Sync) ---

@@ -9,7 +9,6 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
-// Sync primitives via the loom facade (see `internal/sync.rs`).
 use crate::internal::sync::{hint, thread, Arc, AtomicBool, Ordering};
 
 use super::bounded_async::{BoundedAsyncReceiver, BoundedAsyncSender};

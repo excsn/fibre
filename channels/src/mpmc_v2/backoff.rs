@@ -1,7 +1,6 @@
-// Sync primitives via the loom facade (see `internal/sync.rs`). `hint::spin_loop`
-// MUST route through the facade: under loom it is a scheduler yield-equivalent,
-// whereas a raw `std::hint::spin_loop` is invisible to the model checker and
-// blows the branch cap.
+// `hint::spin_loop` MUST route through the facade: under loom it is a scheduler
+// yield-equivalent, whereas a raw `std::hint::spin_loop` is invisible to the
+// model checker and blows the branch cap.
 use crate::internal::sync::{hint, thread};
 
 /// Emits a CPU instruction that signals the processor that it is in a spin loop.

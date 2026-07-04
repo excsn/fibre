@@ -13,7 +13,7 @@
 //! in-buffer tombstone to resolve and no risk of "ghost delivery".
 
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 

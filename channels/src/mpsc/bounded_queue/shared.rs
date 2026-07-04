@@ -30,8 +30,6 @@ use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::task::{Context, Poll, Waker};
 
-// Sync primitives via the loom facade: std/parking_lot in normal builds,
-// loom's modeled types under `--cfg loom` (see `mod loom_tests` at the bottom).
 use crate::internal::sync::{
   fence, hint, AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Mutex, Ordering, Thread, thread,
 };

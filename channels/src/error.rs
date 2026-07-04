@@ -1,31 +1,5 @@
 use core::fmt;
 
-// Helper macro to avoid boilerplate for into_inner and Display/Error impls
-macro_rules! impl_error_with_inner {
-  ($name:ident, $inner_ty_param:ident, $inner_concrete_ty:ty, $($variant:ident($message:expr)),+ $(,)?) => {
-    impl<$inner_ty_param> $name<$inner_ty_param> {
-      /// Consumes the error, returning the inner value.
-      #[inline]
-      pub fn into_inner(self) -> $inner_ty_param { // Use the generic type parameter here
-        match self {
-          $( $name::$variant(v) => v, )+
-        }
-      }
-    }
-
-    impl<$inner_ty_param> fmt::Display for $name<$inner_ty_param> {
-      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-          $( $name::$variant(_) => f.write_str($message), )+
-        }
-      }
-    }
-
-    // Implement Error for the concrete type (e.g. TrySendError<T>)
-    impl<$inner_ty_param: fmt::Debug> std::error::Error for $name<$inner_ty_param> {}
-  };
-}
-
 /// Error returned by `try_send` operations on a channel when the operation
 /// could not be completed immediately, but the item being sent is returned.
 #[derive(PartialEq, Eq, Clone)]

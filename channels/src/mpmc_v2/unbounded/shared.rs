@@ -28,7 +28,6 @@ use std::fmt;
 use std::task::Waker;
 use std::time::Instant;
 
-// Sync primitives via the loom facade (see `internal/sync.rs`).
 use crate::internal::sync::{
   fence, thread, Arc, AtomicBool, AtomicU8, AtomicUsize, Mutex, Ordering, Thread,
 };

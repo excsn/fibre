@@ -8,7 +8,6 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::task::Waker;
 
-// Sync primitives via the loom facade (see `internal/sync.rs`).
 use crate::internal::sync::{AtomicU8, Mutex, Ordering, Thread};
 
 // --- State Machine Constants ---
