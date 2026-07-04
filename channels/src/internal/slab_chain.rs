@@ -20,10 +20,8 @@ use crate::internal::cache_padded::CachePadded;
 
 use std::cell::UnsafeCell;
 use std::ptr;
-use std::sync::atomic::{fence, AtomicPtr, AtomicU32, Ordering};
-use std::sync::Arc;
 
-use parking_lot::Mutex;
+use crate::internal::sync::{fence, Arc, AtomicPtr, AtomicU32, Mutex, Ordering};
 
 /// Nodes per slab: one slab acquisition per this many sends per handle.
 /// Size sweep (2026-07-02): mpmc is flat across 256-1024 but its 1P/14C

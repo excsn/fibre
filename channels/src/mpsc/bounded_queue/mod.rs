@@ -26,7 +26,7 @@ pub use consumer::{
 pub use producer::{
   AsyncSender, BoundedSendBatchFuture, BoundedSendBatchMutFuture, SendFuture, Sender,
 };
-pub use shared::{BoundedQueue, Node};
+pub use shared::BoundedQueue;
 
 pub(crate) use shared::LocalCache;
 

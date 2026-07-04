@@ -1,5 +1,4 @@
 use futures_core::Stream;
-use parking_lot::Mutex;
 
 use crate::async_util::AtomicWaker;
 use crate::error::{
@@ -17,11 +16,15 @@ use std::fmt;
 use std::future::Future;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
+
+// Sync primitives via the loom facade (see `internal/sync.rs`). `hint::spin_loop`
+// routes through the facade so the PARK_CONSUMING waits below are scheduler
+// yield-points loom can explore rather than branch-cap blowups (Gotcha #2).
+use crate::internal::sync::{
+  fence, hint, thread, Arc, AtomicBool, AtomicU8, AtomicUsize, Mutex, Ordering, Thread,
+};
 
 // --- Producer Parking State Machine ---
 pub(crate) const PARK_IDLE: u8 = 0; // No one is parked or unparking.
@@ -141,7 +144,7 @@ pub(crate) struct Slot<T> {
 
 impl<T> Drop for Slot<T> {
   fn drop(&mut self) {
-    if *self.sequence.get_mut() % 2 == 1 {
+    if self.sequence.load(Ordering::Relaxed) % 2 == 1 {
       unsafe { self.value.get_mut().assume_init_drop() };
     }
   }
@@ -216,7 +219,7 @@ impl<T: Send + Clone> SpmcShared<T> {
     // SeqCst fence pairs with the producer's store(PARK_PARKED, Release) +
     // fence(SeqCst) sequence: guarantees that if the producer set PARK_PARKED
     // before our tail update became visible, we will observe PARK_PARKED here.
-    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+    fence(Ordering::SeqCst);
 
     if self.producer_parked_sync_flag.load(Ordering::Acquire) == PARK_PARKED {
       crate::log_event!(None, LOC_WAKEP, EVT_WAKEP_SYNC_ARMED);
@@ -1149,7 +1152,7 @@ impl<T: Send + Clone> BoundedSyncSender<T> {
         .shared
         .producer_parked_sync_flag
         .store(PARK_PARKED, Ordering::Release);
-      std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+      fence(Ordering::SeqCst);
 
       let min_tail_recheck;
       let buffer_still_full;
@@ -1180,7 +1183,7 @@ impl<T: Send + Clone> BoundedSyncSender<T> {
                 }
                 break;
               }
-              Err(PARK_CONSUMING) => std::hint::spin_loop(),
+              Err(PARK_CONSUMING) => hint::spin_loop(),
               Err(_) => break, // Consumer completed handoff; slot already cleared.
             }
           }
@@ -1229,7 +1232,7 @@ impl<T: Send + Clone> BoundedSyncSender<T> {
                 .load(Ordering::Acquire)
                 != PARK_IDLE
               {
-                std::hint::spin_loop();
+                hint::spin_loop();
               }
               break;
             }
@@ -1272,9 +1275,9 @@ impl<T: Send + Clone> BoundedSyncSender<T> {
               break;
             }
             // CAS failed: consumer just moved to CONSUMING; spin.
-            std::hint::spin_loop();
+            hint::spin_loop();
           }
-          PARK_CONSUMING => std::hint::spin_loop(),
+          PARK_CONSUMING => hint::spin_loop(),
           _ => break,
         }
       }
@@ -1410,7 +1413,7 @@ impl<T: Send + Clone> BoundedSyncSender<T> {
       .shared
       .producer_parked_sync_flag
       .store(PARK_PARKED, Ordering::Release);
-    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+    fence(Ordering::SeqCst);
 
     // Re-check under the tails read handle.
     let (no_consumers, buffer_still_full) = {
@@ -1445,7 +1448,7 @@ impl<T: Send + Clone> BoundedSyncSender<T> {
             }
             break;
           }
-          Err(PARK_CONSUMING) => std::hint::spin_loop(),
+          Err(PARK_CONSUMING) => hint::spin_loop(),
           Err(_) => break, // Consumer completed the handoff (IDLE).
         }
       }
@@ -1475,9 +1478,9 @@ impl<T: Send + Clone> BoundedSyncSender<T> {
             }
             break;
           }
-          std::hint::spin_loop();
+          hint::spin_loop();
         }
-        PARK_CONSUMING => std::hint::spin_loop(),
+        PARK_CONSUMING => hint::spin_loop(),
         _ => break,
       }
     }

@@ -13,11 +13,11 @@ use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::thread;
 use std::time::{Duration, Instant};
+
+// Sync primitives via the loom facade (see `internal/sync.rs`).
+use crate::internal::sync::{thread, Arc, AtomicBool, Ordering};
 
 use futures_core::Stream;
 

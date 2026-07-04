@@ -3,7 +3,7 @@
 //! `real.rs`.
 
 pub(crate) use loom::sync::atomic::{
-  fence, AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering,
+  fence, AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
 
 // loom's `hint::spin_loop()` is a scheduler hint (yield-equivalent), so

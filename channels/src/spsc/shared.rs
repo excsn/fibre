@@ -3,10 +3,9 @@ use crate::internal::cache_padded::CachePadded;
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::task::{Context, Poll, Waker};
-use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
-use std::thread::Thread;
-
-use parking_lot::Mutex;
+// Sync primitives via the loom facade: std/parking_lot in normal builds,
+// loom's modeled types under `--cfg loom` (see `internal/sync.rs`).
+use crate::internal::sync::{fence, AtomicBool, AtomicUsize, Mutex, Ordering, Thread};
 
 // --- Lock-free ring -------------------------------------------------------
 

@@ -8,9 +8,10 @@ use crate::error::{
 use crate::mpmc_v2::backoff;
 use crate::RecvErrorTimeout;
 
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::thread;
 use std::time::{Duration, Instant};
+
+// Sync primitives via the loom facade (see `internal/sync.rs`).
+use crate::internal::sync::{thread, AtomicU8, Ordering};
 
 /// The synchronous, blocking send operation.
 pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), SendError> {

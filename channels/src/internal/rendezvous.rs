@@ -56,13 +56,13 @@
 use crate::error::{RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError};
 use crate::internal::cache_padded::CachePadded;
 
-use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::task::{Context, Poll, Waker};
-use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
+
+// Sync primitives via the loom facade (see `internal/sync.rs`).
+use crate::internal::sync::{thread, AtomicU8, Mutex, Ordering, Thread};
 
 // --- Waiter state machine -------------------------------------------------
 //

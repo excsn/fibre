@@ -34,11 +34,10 @@
 
 use crate::internal::cache_padded::CachePadded;
 use core::fmt;
-use parking_lot::Mutex;
 use std::cell::UnsafeCell;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+
+use crate::internal::sync::{hint, Arc, AtomicUsize, Mutex, Ordering};
 
 /// Shared state: dual buffers, a padded live index, and per-slot padded reader counts.
 struct LeftRightShared<T> {
@@ -207,7 +206,7 @@ impl<T> WriteHandle<T> {
     // the writer from missing a reader that incremented active_readers[live_idx]
     // before observing the new live_idx.
     while self.shared.active_readers[live_idx].load(Ordering::SeqCst) > 0 {
-      std::hint::spin_loop();
+      hint::spin_loop();
     }
 
     // Step 4 — bring the old slot back in sync.

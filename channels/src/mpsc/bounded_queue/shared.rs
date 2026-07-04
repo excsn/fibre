@@ -854,6 +854,7 @@ impl<T: Send> LocalCache<T> {
   }
 
   #[inline]
+  #[cfg_attr(not(miri), allow(unused_variables))]
   pub(crate) fn push_node(&mut self, shared: &BoundedQueue<T>, node: *mut Node<T>) {
     custody!("free {}", shared.ptr_to_idx(node));
     #[cfg(miri)]

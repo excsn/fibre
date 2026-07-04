@@ -9,9 +9,9 @@ use crate::error::{CloseError, RecvError, RecvErrorTimeout, TryRecvError};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::task::{Context, Poll};
+
+use crate::internal::sync::{Arc, AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_core::Stream;

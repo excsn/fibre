@@ -12,6 +12,7 @@
 //! free-standing constants, the custody logging macro, and every check that
 //! doesn't need to live inline at its call site.
 
+#[cfg(miri)]
 use super::shared::{BoundedQueue, LocalCache, Node};
 
 // `Node::owner_canary` states (see the field doc in shared.rs).
@@ -289,10 +290,9 @@ pub(crate) fn check_release_reachability<T: Send>(
   chunk_head: *mut Node<T>,
   released: usize,
 ) {
-  use std::sync::atomic::Ordering::Relaxed;
   unsafe {
     let tail = *shared.tail.get();
-    let tail_next = (*tail).next.load(Relaxed);
+    let tail_next = shared.next_of(tail);
     let mut curr = chunk_head;
     for i in 0..released {
       if curr == tail || curr == tail_next {

@@ -10,7 +10,7 @@ use crate::RecvError;
 use core::marker::PhantomPinned;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, Ordering};
+use crate::internal::sync::{AtomicU8, Ordering};
 use std::task::{Context, Poll};
 
 // --- SendFuture ---

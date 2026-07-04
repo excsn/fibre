@@ -4,12 +4,12 @@ use crate::error::{BatchSendErrorReason, TryRecvError, TrySendError};
 use crate::internal::unsynchronized_ring::UnsynchronizedRingBuffer;
 use crate::RecvError;
 use core::task::{Context, Poll};
-use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::task::Waker;
-use std::thread::Thread;
+
+// Sync primitives via the loom facade (see `internal/sync.rs`).
+use crate::internal::sync::{AtomicU8, Mutex, Ordering, Thread};
 
 // --- State Machine Constants ---
 pub(crate) const STATE_WAITING: u8 = 0;

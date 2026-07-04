@@ -5,7 +5,7 @@ mod consumer;
 mod producer;
 mod shared;
 
-use std::sync::Arc;
+use crate::internal::sync::Arc;
 
 pub use consumer::{
   RecvBatchFuture, RecvBatchMutFuture, RecvFuture, UnboundedAsyncReceiver, UnboundedSyncReceiver,

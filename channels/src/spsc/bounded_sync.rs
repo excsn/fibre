@@ -7,18 +7,21 @@ use crate::sync_util;
 
 use std::cell::Cell;
 use std::marker::PhantomData;
-use std::sync::atomic::{self, AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::{self};
 use std::time::{Duration, Instant};
+
+// Sync primitives via the loom facade (see `internal/sync.rs`).
+use crate::internal::sync::{hint, thread, Arc, AtomicBool, Ordering};
 
 use super::bounded_async::{BoundedAsyncReceiver, BoundedAsyncSender};
 use std::mem;
 
-// Adaptive spin backoff constants.
-const SPIN_INITIAL: u32 = 16;
-const SPIN_MIN: u32 = 2;
-const SPIN_MAX: u32 = 64;
+// Adaptive spin backoff constants. Under loom every spin iteration is a tracked
+// op counting against loom's branch cap, so the whole budget collapses to 1 —
+// parking is the path we want the model checker to explore (see the loom
+// rollout doc's Gotcha #1).
+const SPIN_INITIAL: u32 = if crate::internal::sync::IS_LOOM { 1 } else { 16 };
+const SPIN_MIN: u32 = if crate::internal::sync::IS_LOOM { 1 } else { 2 };
+const SPIN_MAX: u32 = if crate::internal::sync::IS_LOOM { 1 } else { 64 };
 
 thread_local! {
   static THREAD_SPIN_LIMIT: Cell<u32> = Cell::new(SPIN_INITIAL);
@@ -134,7 +137,7 @@ impl<T: Send> BoundedSyncSender<T> {
       }
 
       if backoff < spin_limit {
-        std::hint::spin_loop();
+        hint::spin_loop();
         backoff += 1;
         continue;
       }
@@ -405,7 +408,7 @@ impl<T: Send> BoundedSyncReceiver<T> {
       }
 
       if backoff < spin_limit {
-        std::hint::spin_loop();
+        hint::spin_loop();
         backoff += 1;
         continue;
       }

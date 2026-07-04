@@ -26,9 +26,10 @@ use std::future::Future;
 use std::marker::PhantomPinned;
 use std::mem;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::Arc;
 use std::task::{Context, Poll};
+
+// Sync primitives via the loom facade (see `internal/sync.rs`).
+use crate::internal::sync::{Arc, AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 
 // --- Constructors ---------------------------------------------------------

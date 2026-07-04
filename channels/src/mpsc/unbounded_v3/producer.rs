@@ -18,8 +18,9 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::ptr;
-use std::sync::Arc;
 use std::task::{Context, Poll};
+
+use crate::internal::sync::Arc;
 
 /// Core send: bump + write into the handle-private slab, publish + notify.
 pub(crate) fn send_internal<T: Send>(

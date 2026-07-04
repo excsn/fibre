@@ -16,8 +16,9 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::ptr;
-use std::sync::Arc;
 use std::task::{Context, Poll};
+
+use crate::internal::sync::Arc;
 
 fn send_internal<T: Send>(
   shared: &Arc<UnboundedShared<T>>,

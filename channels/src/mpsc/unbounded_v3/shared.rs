@@ -15,11 +15,10 @@ use crate::internal::slab_chain::{alloc_stub, retire_node, ChainHead, Node, Slab
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::ptr;
-use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
-use std::thread::Thread;
 
-use parking_lot::Mutex;
+// Sync primitives via the loom facade (see `internal/sync.rs`).
+use crate::internal::sync::{fence, Arc, AtomicBool, AtomicUsize, Mutex, Ordering, Thread};
 
 pub(crate) use crate::internal::slab_chain::SLAB_NODES;
 
@@ -33,7 +32,7 @@ pub(crate) struct MpscShared<T> {
   head: ChainHead<T>,
   /// Recycles retired slabs; its own `Arc` so sender handles (and the slabs
   /// themselves) can outlive-independently reference it.
-  slab_pool: std::sync::Arc<SlabPool<T>>,
+  slab_pool: Arc<SlabPool<T>>,
   /// Consumer-only cursor. Exclusivity is guaranteed by the receiver handle
   /// rules: `Receiver` is `!Sync`, `AsyncReceiver` takes `&mut self` on every
   /// receive method, and both are `!Clone`.
@@ -76,7 +75,7 @@ impl<T: Send> MpscShared<T> {
     let stub = alloc_stub::<T>();
     MpscShared {
       head: ChainHead::new(stub),
-      slab_pool: std::sync::Arc::new(SlabPool::new()),
+      slab_pool: Arc::new(SlabPool::new()),
       tail: CachePadded::new(UnsafeCell::new(stub)),
       receiver_dropped: AtomicBool::new(false),
       sender_count: AtomicUsize::new(1),
@@ -96,8 +95,8 @@ impl<T: Send> MpscShared<T> {
     self.shard_cursor.fetch_add(1, Ordering::Relaxed) % LEN_SHARDS
   }
 
-  pub(crate) fn slab_pool(&self) -> std::sync::Arc<SlabPool<T>> {
-    std::sync::Arc::clone(&self.slab_pool)
+  pub(crate) fn slab_pool(&self) -> Arc<SlabPool<T>> {
+    Arc::clone(&self.slab_pool)
   }
 
   #[inline]

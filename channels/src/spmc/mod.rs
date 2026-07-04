@@ -77,7 +77,8 @@ mod ring_buffer;
 pub mod topic;
 
 use std::mem;
-use std::sync::atomic::AtomicBool;
+
+use crate::internal::sync::AtomicBool;
 
 pub use crate::error::{
   BatchSendErrorReason, CloseError, RecvError, SendBatchError, SendError, TryRecvError,

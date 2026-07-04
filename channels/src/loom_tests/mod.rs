@@ -13,4 +13,11 @@
 //! - A lost wakeup shows up as a loom "deadlock" report; a protocol bug as an
 //!   assert/panic with the exact interleaving trace.
 
+mod mpmc_bounded;
+mod mpmc_rendezvous;
+mod mpmc_unbounded;
 mod mpsc_bounded;
+mod mpsc_unbounded;
+mod spmc_bounded;
+mod spsc_bounded;
+mod spsc_rendezvous;

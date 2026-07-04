@@ -12,7 +12,7 @@ mod consumer;
 mod producer;
 mod shared;
 
-use std::sync::Arc;
+use crate::internal::sync::Arc;
 
 pub use consumer::{AsyncReceiver, Receiver, RecvBatchFuture, RecvBatchMutFuture, RecvFuture};
 pub use producer::{AsyncSender, SendBatchFuture, SendBatchMutFuture, SendFuture, Sender};

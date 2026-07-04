@@ -25,13 +25,13 @@ use crate::internal::slab_chain::{alloc_stub, retire_node, ChainHead, Node, Slab
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::atomic::{fence, AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::task::Waker;
-use std::thread::Thread;
 use std::time::Instant;
 
-use parking_lot::Mutex;
+// Sync primitives via the loom facade (see `internal/sync.rs`).
+use crate::internal::sync::{
+  fence, thread, Arc, AtomicBool, AtomicU8, AtomicUsize, Mutex, Ordering, Thread,
+};
 
 /// Compile-time kill-switch for eager handoff (A/B: flip and re-bench).
 pub(crate) const EAGER_HANDOFF: bool = false;
@@ -493,7 +493,7 @@ impl<T: Send> UnboundedShared<T> {
             cell.rearm();
             registered = Some(self.register_waiter(
               &mut c,
-              WakeHandle::Thread(std::thread::current()),
+              WakeHandle::Thread(thread::current()),
               Arc::clone(cell),
             ));
           }
@@ -516,13 +516,13 @@ impl<T: Send> UnboundedShared<T> {
       // Park until a terminal cell state or deadline.
       loop {
         match deadline {
-          None => std::thread::park(),
+          None => thread::park(),
           Some(d) => {
             let now = Instant::now();
             if now >= d {
               return self.timeout_finish(cell, registered.take());
             }
-            std::thread::park_timeout(d - now);
+            thread::park_timeout(d - now);
           }
         }
         match cell.state.load(Ordering::Acquire) {

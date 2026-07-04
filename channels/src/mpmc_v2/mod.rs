@@ -59,8 +59,9 @@ pub use unbounded::{
 };
 
 use std::mem;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+// Sync primitives via the loom facade (see `internal/sync.rs`).
+use crate::internal::sync::{Arc, AtomicBool, AtomicU8, Ordering};
 
 // --- Public Structs (Sync) ---
 
@@ -1108,7 +1109,6 @@ impl<T: Send> Drop for AsyncReceiver<T> {
 mod tests {
   use super::*;
   use std::future::Future;
-  use std::sync::Arc;
   use std::task::{Context, RawWaker, RawWakerVTable, Waker};
   use std::thread;
   use std::time::Duration;
