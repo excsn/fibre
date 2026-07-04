@@ -1110,15 +1110,6 @@ unsafe fn publish_run<T: Send>(
         *(*curr).owner_canary.get() = OWNER_LIVE;
       }
       (*curr).val.get().write(Some(fill.next().unwrap()));
-      // Author the in-run edge fresh as part of *this* publication, and publish
-      // it with Release. Relaxed here leaned entirely on the junction's Release
-      // to transitively cover every intra-batch link — but the consumer follows
-      // A.next with an independent Acquire (follow_link), and relying on junction
-      // transitivity let Miri surface a schedule where the consumer reads a stale
-      // link and abandons a node mid-batch, bifurcating the chain. Release makes
-      // *each* edge the consumer Acquire-loads synchronize-with directly, so the
-      // consumer that sees `next` also acquires all of `next`'s initialization.
-      (*curr).next.store(next, Ordering::Release);
       curr = next;
     }
     #[cfg(miri)]
@@ -1128,10 +1119,7 @@ unsafe fn publish_run<T: Send>(
       *(*curr).owner_canary.get() = OWNER_LIVE;
     }
     (*curr).val.get().write(Some(fill.next().unwrap()));
-    // Terminator, Release for the same reason as the intra-batch links: the
-    // consumer Acquire-loads the last node's next and must not rely on junction
-    // transitivity to see this null (vs. a stale prior-lifetime link).
-    (*curr).next.store(std::ptr::null_mut(), Ordering::Release);
+    (*curr).next.store(std::ptr::null_mut(), Ordering::Relaxed);
 
     let old_head = shared.head.swap(curr, Ordering::AcqRel);
     (*old_head).next.store(first, Ordering::Release);
