@@ -7,16 +7,19 @@ use crate::{
   },
   encoders,
   error::{Error, Result},
+  error_handling::InternalErrorSource,
   roller::CustomRoller,
   subscriber::{
-    actor::{ActorAction, AppenderActor, PerAppenderFilter},
+    actor::{ActorAction, AppenderActor, DropCounter, PerAppenderFilter},
     DispatchLayer, EventProcessor, LogHandler,
   },
-  AppenderTaskHandle, InitResult, InternalErrorReport, LogEvent, LogValue,
+  vlog, AppenderTaskHandle, InitResult, InternalErrorReport, LogEvent,
 };
 
 #[cfg(debug_assertions)]
-use crate::debug_report::{print_report_logic, DebugEvent, DEBUG_REPORT_COLLECTOR};
+use crate::debug_report::{print_report_logic, DebugEvent, DebugReportData, DEBUG_REPORT_COLLECTOR};
+#[cfg(debug_assertions)]
+use crate::LogValue;
 
 use std::{
   collections::HashMap,
@@ -32,14 +35,23 @@ use std::{
   time::{Duration, Instant},
 };
 
-use fibre::{mpsc, TryRecvError};
+use fibre::{mpsc, RecvErrorTimeout};
 use log::LevelFilter as LogLevelFilter;
 use tracing_core::metadata::LevelFilter;
 use tracing_subscriber::prelude::*;
 
 const DEFAULT_CONFIG_BASE_NAME: &str = "fibre_logging";
 const DEFAULT_CONFIG_EXTENSION: &str = "yaml";
-const DEFAULT_CHANNEL_SIZE: usize = 1024;
+
+/// How long appender tasks block waiting for a message before re-checking
+/// the shutdown signal.
+const WRITER_RECV_TIMEOUT: Duration = Duration::from_millis(50);
+/// Under sustained load, flush at least this often so a crash can't lose
+/// more than this window of buffered output.
+const MAX_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
+/// Bound on how many queued messages are drained per wakeup, so a firehose
+/// producer can't starve the periodic flush.
+const WRITER_DRAIN_BATCH_MAX: usize = 256;
 
 /// Finds the configuration file based on common patterns and an optional environment suffix.
 pub fn find_config_file(environment_suffix: Option<&str>) -> Result<PathBuf> {
@@ -79,7 +91,7 @@ pub fn find_config_file(environment_suffix: Option<&str>) -> Result<PathBuf> {
 
 /// Initializes `fibre_logging` from a configuration file path.
 pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
-  println!(
+  vlog!(
     "[fibre_logging] Initializing from config file: {:?}",
     config_path
   );
@@ -90,12 +102,13 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
     serde_yaml::from_reader(reader).map_err(|e| Error::ConfigParse(e.to_string()))?;
 
   let internal_config: ConfigInternal = process_raw_config(raw_config)?;
-  println!(
+  vlog!(
     "[fibre_logging] Processed Internal Config: {:?}",
     internal_config
   );
 
   let mut appender_task_handles = Vec::<AppenderTaskHandle>::new();
+  let mut appender_task_names = Vec::<String>::new();
   let mut actors = Vec::<AppenderActor>::new();
   let mut custom_streams = HashMap::new();
 
@@ -104,7 +117,7 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
   let shutdown_signal = Arc::new(AtomicBool::new(false));
 
   let (error_tx_channel, error_rx_channel) = if internal_config.error_reporting_enabled {
-    println!("[fibre_logging] Internal error reporting is ENABLED.");
+    vlog!("[fibre_logging] Internal error reporting is ENABLED.");
     let (tx, rx) = mpsc::bounded::<InternalErrorReport>(256);
     (Some(tx), Some(rx))
   } else {
@@ -112,7 +125,7 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
   };
 
   for (appender_name, appender_config) in &internal_config.appenders {
-    println!("[fibre_logging] Setting up appender: {}", appender_name);
+    vlog!("[fibre_logging] Setting up appender: {}", appender_name);
 
     let formatter = encoders::new_event_formatter(&appender_config.encoder);
     let filter = build_filter_for_appender(appender_name, &internal_config.loggers);
@@ -122,51 +135,54 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
       AppenderKindInternal::DebugReport(debug_config) => {
         let print_interval = debug_config.print_interval;
         // This appender receives raw LogEvents, not formatted bytes.
-        let (tx, rx) = mpsc::bounded::<LogEvent>(2048); // A generous buffer
+        let (tx, rx) = mpsc::bounded::<LogEvent>(appender_config.channel_capacity);
+        let shutdown_clone = Arc::clone(&shutdown_signal);
 
         // Spawn the collector thread.
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
+          fn collect(collector: &mut DebugReportData, event: LogEvent) {
+            // Set the start time on the very first event received.
+            if collector.start_time.is_none() {
+              collector.start_time = Some(Instant::now());
+            }
+
+            // Check for a special "counter" field.
+            if let Some(LogValue::String(counter_name)) = event.fields.get("counter") {
+              let key = (event.target.clone(), counter_name.clone());
+              *collector.counters.entry(key).or_insert(0) += 1;
+            } else {
+              // Otherwise, record it as a regular event.
+              collector.events.push(DebugEvent {
+                timestamp: Instant::now(), // Use time of collection for sorting
+                level: event.level,
+                target: event.target,
+                message: event.message,
+                fields: event.fields,
+              });
+            }
+          }
+
           let mut last_print_time = Instant::now();
 
           loop {
-            // We can use a simple blocking recv() here because this thread does nothing
-            // else. Its shutdown is triggered by the channel disconnecting when the
-            // EventProcessor is dropped.
-            match rx.try_recv() {
-              Ok(event) => {
-                let mut collector = DEBUG_REPORT_COLLECTOR.lock();
-                // Set the start time on the very first event received.
-                if collector.start_time.is_none() {
-                  collector.start_time = Some(Instant::now());
-                }
+            if shutdown_clone.load(Ordering::Relaxed) {
+              break;
+            }
 
-                // Check for a special "counter" field.
-                if let Some(LogValue::String(counter_name)) = event.fields.get("counter") {
-                  let key = (event.target.clone(), counter_name.clone());
-                  *collector.counters.entry(key).or_insert(0) += 1;
-                } else {
-                  // Otherwise, record it as a regular event.
-                  let debug_event = DebugEvent {
-                    timestamp: Instant::now(), // Use time of collection for sorting
-                    level: event.level,
-                    target: event.target,
-                    message: event.message,
-                    fields: event.fields,
-                  };
-                  collector.events.push(debug_event);
+            match rx.recv_timeout(Duration::from_millis(100)) {
+              Ok(event) => {
+                // Hold the lock once per batch and drain everything queued.
+                let mut collector = DEBUG_REPORT_COLLECTOR.lock();
+                collect(&mut collector, event);
+                while let Ok(event) = rx.try_recv() {
+                  collect(&mut collector, event);
                 }
               }
-              Err(TryRecvError::Empty) => {
-                // Channel is empty. This is fine. We'll check the timer and sleep.
-              }
-              Err(TryRecvError::Disconnected) => {
-                // Senders are gone, shutdown is happening. Exit the loop.
-                break;
-              }
+              Err(RecvErrorTimeout::Timeout) => {}
+              Err(RecvErrorTimeout::Disconnected) => break,
             }
 
             // --- Ticker Logic ---
-            // After checking for an event, check if it's time to print.
             if let Some(interval) = print_interval {
               if last_print_time.elapsed() >= interval {
                 let mut collector = DEBUG_REPORT_COLLECTOR.lock();
@@ -178,24 +194,36 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
                 }
               }
             }
+          }
 
-            // Sleep to prevent busy-waiting if the channel is empty.
-            thread::sleep(Duration::from_millis(100));
+          // Shutdown: drain stragglers, then emit a final interval report so
+          // the last window isn't silently lost.
+          {
+            let mut collector = DEBUG_REPORT_COLLECTOR.lock();
+            while let Ok(event) = rx.try_recv() {
+              collect(&mut collector, event);
+            }
+            if print_interval.is_some() && collector.start_time.is_some() {
+              print_report_logic(&mut collector);
+            }
           }
         });
+
+        appender_task_handles.push(handle);
+        appender_task_names.push(appender_name.clone());
 
         // The action is to send the full LogEvent to our collector thread.
         ActorAction::SendEvent(tx)
       }
-      AppenderKindInternal::Custom(custom_config) => {
-        let (tx, rx) = mpsc::bounded(custom_config.buffer_size);
+      AppenderKindInternal::Custom(_) => {
+        let (tx, rx) = mpsc::bounded(appender_config.channel_capacity);
         custom_streams.insert(appender_name.clone(), rx);
         ActorAction::SendEvent(tx)
       }
       kind => {
-        let (tx, rx) = mpsc::bounded::<Vec<u8>>(DEFAULT_CHANNEL_SIZE);
+        let (tx, rx) = mpsc::bounded::<Vec<u8>>(appender_config.channel_capacity);
 
-        let mut writer: Box<dyn Write + Send> = match kind {
+        let writer: Box<dyn Write + Send> = match kind {
           AppenderKindInternal::Console(_) => Box::new(io::stdout()),
           AppenderKindInternal::File(file_config) => {
             if let Some(parent_dir) = file_config.path.parent() {
@@ -225,88 +253,31 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
                 reason: format!("Failed to create directory {:?}: {}", directory, e),
               })?;
             }
-            let roller = CustomRoller::new(policy.clone())?;
+            let roller = CustomRoller::new(policy.clone(), error_tx_channel.clone())?;
             Box::new(roller)
           }
           AppenderKindInternal::Custom(_) => unreachable!(),
           AppenderKindInternal::DebugReport(_) => unreachable!(),
         };
 
-        let appender_name_clone = appender_name.clone();
-        let shutdown_clone = Arc::clone(&shutdown_signal); // Clone signal for the thread
-
-        // This is the corrected, non-blocking polling loop.
-        let handle = thread::spawn(move || {
-          // This flag tracks if the BufWriter has data that hasn't been flushed to disk yet.
-          let mut is_dirty = false;
-
-          loop {
-            // Check for the shutdown signal first for a fast exit.
-            if shutdown_clone.load(Ordering::Relaxed) {
-              break;
-            }
-
-            match rx.try_recv() {
-              Ok(bytes) => {
-                // We received a message. Write it to the buffer.
-                if writer.write_all(&bytes).is_ok() {
-                  // Mark the buffer as "dirty" since it now contains new, unflushed data.
-                  is_dirty = true;
-                } else {
-                  eprintln!(
-                    "[fibre_logging:ERROR] Appender write failed for '{}'",
-                    appender_name_clone
-                  );
-                }
-              }
-              Err(TryRecvError::Empty) => {
-                // The channel is empty. This is our moment of "downtime".
-                // If the buffer is dirty, flush it to disk now.
-                if is_dirty {
-                  if writer.flush().is_ok() {
-                    // The buffer is now clean.
-                    is_dirty = false;
-                  } else {
-                    eprintln!(
-                      "[fibre_logging:ERROR] Appender flush failed for '{}'",
-                      appender_name_clone
-                    );
-                  }
-                }
-                // Sleep to yield the CPU and prevent a tight spin loop.
-                thread::sleep(Duration::from_millis(50));
-              }
-              Err(TryRecvError::Disconnected) => {
-                // The channel has been closed by the senders, so we can exit.
-                break;
-              }
-            }
-          }
-
-          // --- Final Flush on Shutdown ---
-          // The loop has exited. Before the thread terminates, we must perform
-          // one last check to flush any remaining data.
-
-          // First, drain any messages that might have arrived just before shutdown.
-          while let Ok(bytes) = rx.try_recv() {
-            if writer.write_all(&bytes).is_ok() {
-              is_dirty = true;
-            }
-          }
-
-          // Now, if the buffer is dirty from either the main loop or the drain loop,
-          // perform one final, guaranteed flush.
-          if is_dirty {
-            if let Err(e) = writer.flush() {
-              eprintln!(
-                "[fibre_logging:ERROR] Final appender flush failed for '{}': {}",
-                appender_name_clone, e
-              );
-            }
+        let handle = thread::spawn({
+          let appender_name = appender_name.clone();
+          let shutdown = Arc::clone(&shutdown_signal);
+          let error_tx = error_tx_channel.clone();
+          move || {
+            run_byte_appender_writer(
+              rx,
+              writer,
+              &appender_name,
+              &shutdown,
+              &error_tx,
+              MAX_FLUSH_INTERVAL,
+            )
           }
         });
 
         appender_task_handles.push(handle);
+        appender_task_names.push(appender_name.clone());
         ActorAction::SendBytes(tx)
       }
     };
@@ -316,10 +287,13 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
       filter,
       formatter,
       action,
+      overflow: appender_config.overflow,
+      drops: DropCounter::default(),
     });
   }
 
   let processor = Arc::new(EventProcessor::new(actors, error_tx_channel));
+  let max_level = processor.max_level();
 
   let dispatch_layer = DispatchLayer::new(Arc::clone(&processor));
 
@@ -333,21 +307,168 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
 
   tracing::subscriber::set_global_default(subscriber)
     .map_err(|e| Error::GlobalSubscriberSet(e.to_string()))?;
-  println!("[fibre_logging] Global tracing subscriber set.");
+  vlog!("[fibre_logging] Global tracing subscriber set.");
 
   let log_handler = LogHandler::new(processor);
   log::set_boxed_logger(Box::new(log_handler))
-    .map(|()| log::set_max_level(LogLevelFilter::Trace))
+    .map(|()| log::set_max_level(tracing_filter_to_log_filter(max_level)))
     .map_err(|e| Error::LogBridgeInit(e.to_string()))?;
-  println!("[fibre_logging] Custom log handler initialized.");
+  vlog!("[fibre_logging] Custom log handler initialized.");
 
-  println!("[fibre_logging] Initialization complete.");
+  vlog!("[fibre_logging] Initialization complete.");
   Ok(InitResult {
     appender_task_handles,
+    appender_task_names,
     shutdown_signal, // Return the signal for the shutdown function
     internal_error_rx: error_rx_channel,
     custom_streams,
   })
+}
+
+/// Maps the config-derived tracing max level to the `log` crate's filter so
+/// the `log` bridge short-circuits records no appender could accept.
+fn tracing_filter_to_log_filter(filter: LevelFilter) -> LogLevelFilter {
+  if filter == LevelFilter::OFF {
+    LogLevelFilter::Off
+  } else if filter == LevelFilter::ERROR {
+    LogLevelFilter::Error
+  } else if filter == LevelFilter::WARN {
+    LogLevelFilter::Warn
+  } else if filter == LevelFilter::INFO {
+    LogLevelFilter::Info
+  } else if filter == LevelFilter::DEBUG {
+    LogLevelFilter::Debug
+  } else {
+    LogLevelFilter::Trace
+  }
+}
+
+/// Reports an appender I/O failure to stderr and, when enabled, the internal
+/// error channel.
+fn report_write_error(
+  error_tx: &Option<mpsc::BoundedSyncSender<InternalErrorReport>>,
+  appender_name: &str,
+  error: &io::Error,
+  context: &str,
+) {
+  eprintln!(
+    "[fibre_logging:ERROR] {} for appender '{}': {}",
+    context, appender_name, error
+  );
+  if let Some(tx) = error_tx {
+    let report = InternalErrorReport::new(
+      InternalErrorSource::AppenderWrite {
+        appender_name: appender_name.to_string(),
+      },
+      io::Error::new(error.kind(), error.to_string()),
+      Some(context.to_string()),
+    );
+    let _ = tx.try_send(report);
+  }
+}
+
+/// The background loop for byte-oriented appenders (console, file, rolling).
+///
+/// Blocks on the channel with a short timeout (instead of polling with a
+/// sleep), drains queued messages in bounded batches, flushes when idle, and
+/// additionally flushes at least every `max_flush_interval` under sustained
+/// load so buffered output is never more than that window behind.
+fn run_byte_appender_writer(
+  rx: mpsc::BoundedSyncReceiver<Vec<u8>>,
+  mut writer: Box<dyn Write + Send>,
+  appender_name: &str,
+  shutdown: &AtomicBool,
+  error_tx: &Option<mpsc::BoundedSyncSender<InternalErrorReport>>,
+  max_flush_interval: Duration,
+) {
+  let mut is_dirty = false;
+  let mut last_flush = Instant::now();
+
+  fn write_one(
+    writer: &mut (dyn Write + Send),
+    bytes: &[u8],
+    is_dirty: &mut bool,
+    appender_name: &str,
+    error_tx: &Option<mpsc::BoundedSyncSender<InternalErrorReport>>,
+  ) {
+    match writer.write_all(bytes) {
+      Ok(()) => *is_dirty = true,
+      Err(e) => report_write_error(error_tx, appender_name, &e, "Write failed"),
+    }
+  }
+
+  fn flush(
+    writer: &mut (dyn Write + Send),
+    is_dirty: &mut bool,
+    last_flush: &mut Instant,
+    appender_name: &str,
+    error_tx: &Option<mpsc::BoundedSyncSender<InternalErrorReport>>,
+  ) {
+    match writer.flush() {
+      Ok(()) => {
+        *is_dirty = false;
+        *last_flush = Instant::now();
+      }
+      Err(e) => report_write_error(error_tx, appender_name, &e, "Flush failed"),
+    }
+  }
+
+  loop {
+    if shutdown.load(Ordering::Relaxed) {
+      break;
+    }
+
+    match rx.recv_timeout(WRITER_RECV_TIMEOUT) {
+      Ok(bytes) => {
+        write_one(&mut *writer, &bytes, &mut is_dirty, appender_name, error_tx);
+        for _ in 0..WRITER_DRAIN_BATCH_MAX {
+          match rx.try_recv() {
+            Ok(bytes) => {
+              write_one(&mut *writer, &bytes, &mut is_dirty, appender_name, error_tx)
+            }
+            Err(_) => break,
+          }
+        }
+        if is_dirty && last_flush.elapsed() >= max_flush_interval {
+          flush(
+            &mut *writer,
+            &mut is_dirty,
+            &mut last_flush,
+            appender_name,
+            error_tx,
+          );
+        }
+      }
+      Err(RecvErrorTimeout::Timeout) => {
+        // Idle: get everything onto disk.
+        if is_dirty {
+          flush(
+            &mut *writer,
+            &mut is_dirty,
+            &mut last_flush,
+            appender_name,
+            error_tx,
+          );
+        }
+      }
+      Err(RecvErrorTimeout::Disconnected) => break,
+    }
+  }
+
+  // --- Final Flush on Shutdown ---
+  // Drain any messages that arrived just before shutdown, then flush.
+  while let Ok(bytes) = rx.try_recv() {
+    write_one(&mut *writer, &bytes, &mut is_dirty, appender_name, error_tx);
+  }
+  if is_dirty {
+    flush(
+      &mut *writer,
+      &mut is_dirty,
+      &mut last_flush,
+      appender_name,
+      error_tx,
+    );
+  }
 }
 
 fn build_filter_for_appender(
@@ -388,13 +509,15 @@ fn build_filter_for_appender(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::config::processed::LoggerInternal;
+  use crate::config::processed::{EncoderInternal, LoggerInternal, OverflowPolicy};
+  use serial_test::serial;
   use std::{collections::HashMap, fs, path::Path};
   use tempfile::NamedTempFile;
   use tracing_core::metadata::{LevelFilter, Metadata};
   use tracing_core::{callsite, field, subscriber, Kind, Level};
 
   #[test]
+  #[serial]
   fn find_config_file_default() {
     let _ = fs::remove_file(format!(
       "{}.{}",
@@ -414,6 +537,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn find_config_file_not_found() {
     let current_dir_default = PathBuf::from(format!(
       "./{}.{}",
@@ -492,6 +616,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn init_from_file_basic_stub_still_works() {
     let temp_file = NamedTempFile::new_in(".").expect("Failed to create temp file for init test");
     fs::write(temp_file.path(), "version: 1\nappenders: {}\nloggers: {}")
@@ -501,5 +626,355 @@ mod tests {
     if let Ok(init_res) = result {
       assert!(init_res.appender_task_handles.is_empty());
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Additivity / dispatch semantics
+  // ---------------------------------------------------------------------
+
+  /// Builds an event-stream actor wired the same way init_from_file does.
+  fn make_event_actor(
+    name: &str,
+    loggers: &HashMap<String, LoggerInternal>,
+    capacity: usize,
+    overflow: OverflowPolicy,
+  ) -> (AppenderActor, mpsc::BoundedSyncReceiver<LogEvent>) {
+    let (tx, rx) = mpsc::bounded::<LogEvent>(capacity);
+    let actor = AppenderActor {
+      name: name.to_string(),
+      filter: build_filter_for_appender(name, loggers),
+      formatter: encoders::new_event_formatter(&EncoderInternal::default()),
+      action: ActorAction::SendEvent(tx),
+      overflow,
+      drops: DropCounter::default(),
+    };
+    (actor, rx)
+  }
+
+  fn matrix_loggers() -> HashMap<String, LoggerInternal> {
+    let mut loggers = HashMap::new();
+    loggers.insert(
+      "root".to_string(),
+      LoggerInternal {
+        name: "root".to_string(),
+        min_level: LevelFilter::INFO,
+        appender_names: vec!["app3".to_string()],
+        additive: true,
+      },
+    );
+    loggers.insert(
+      "a".to_string(),
+      LoggerInternal {
+        name: "a".to_string(),
+        min_level: LevelFilter::DEBUG,
+        appender_names: vec!["app1".to_string()],
+        additive: false,
+      },
+    );
+    loggers.insert(
+      "a::b".to_string(),
+      LoggerInternal {
+        name: "a::b".to_string(),
+        min_level: LevelFilter::DEBUG,
+        appender_names: vec!["app2".to_string()],
+        additive: true,
+      },
+    );
+    loggers
+  }
+
+  fn drain_count(rx: &mpsc::BoundedSyncReceiver<LogEvent>) -> usize {
+    let mut n = 0;
+    while rx.try_recv().is_ok() {
+      n += 1;
+    }
+    n
+  }
+
+  #[test]
+  fn additivity_matrix_pins_dispatch_semantics() {
+    let loggers = matrix_loggers();
+    let (actor1, rx1) = make_event_actor("app1", &loggers, 16, OverflowPolicy::DropNewest);
+    let (actor2, rx2) = make_event_actor("app2", &loggers, 16, OverflowPolicy::DropNewest);
+    let (actor3, rx3) = make_event_actor("app3", &loggers, 16, OverflowPolicy::DropNewest);
+    let processor = EventProcessor::new(vec![actor1, actor2, actor3], None);
+
+    let send = |level: Level, target: &'static str| {
+      let md = mock_metadata(level, target);
+      processor.process_event(LogEvent::new(level, target, "test", None), &md);
+    };
+
+    // Non-additive logger "a" is the most specific match: only its appender
+    // receives, even though app3 would match via root.
+    send(Level::DEBUG, "a::x");
+    assert_eq!((drain_count(&rx1), drain_count(&rx2), drain_count(&rx3)), (1, 0, 0));
+    send(Level::INFO, "a::x");
+    assert_eq!((drain_count(&rx1), drain_count(&rx2), drain_count(&rx3)), (1, 0, 0));
+
+    // Additive logger "a::b" is the most specific match: every appender
+    // evaluates independently. Before the fix, app2 was wrongly suppressed
+    // because app1's rule for the same event was non-additive.
+    send(Level::INFO, "a::b::x");
+    assert_eq!((drain_count(&rx1), drain_count(&rx2), drain_count(&rx3)), (1, 1, 1));
+
+    // DEBUG passes the "a"/"a::b" rules but not root's INFO default.
+    send(Level::DEBUG, "a::b::x");
+    assert_eq!((drain_count(&rx1), drain_count(&rx2), drain_count(&rx3)), (1, 1, 0));
+
+    // Unmatched target: only root's appender.
+    send(Level::INFO, "other");
+    assert_eq!((drain_count(&rx1), drain_count(&rx2), drain_count(&rx3)), (0, 0, 1));
+
+    // Boundary check flows through dispatch: "aa" must not match logger "a".
+    send(Level::DEBUG, "aa::x");
+    assert_eq!((drain_count(&rx1), drain_count(&rx2), drain_count(&rx3)), (0, 0, 0));
+  }
+
+  #[test]
+  fn processor_fast_path_and_max_level_follow_config() {
+    let mut loggers = HashMap::new();
+    loggers.insert(
+      "root".to_string(),
+      LoggerInternal {
+        name: "root".to_string(),
+        min_level: LevelFilter::WARN,
+        appender_names: vec!["app1".to_string()],
+        additive: true,
+      },
+    );
+    let (actor, _rx) = make_event_actor("app1", &loggers, 16, OverflowPolicy::DropNewest);
+    let processor = EventProcessor::new(vec![actor], None);
+
+    assert_eq!(processor.max_level(), LevelFilter::WARN);
+    assert!(processor.event_enabled(&mock_metadata(Level::WARN, "anything")));
+    assert!(processor.event_enabled(&mock_metadata(Level::ERROR, "anything")));
+    assert!(!processor.event_enabled(&mock_metadata(Level::INFO, "anything")));
+    assert!(!processor.event_enabled(&mock_metadata(Level::DEBUG, "anything")));
+  }
+
+  #[test]
+  fn tracing_filter_maps_to_log_filter() {
+    assert_eq!(tracing_filter_to_log_filter(LevelFilter::OFF), LogLevelFilter::Off);
+    assert_eq!(tracing_filter_to_log_filter(LevelFilter::ERROR), LogLevelFilter::Error);
+    assert_eq!(tracing_filter_to_log_filter(LevelFilter::WARN), LogLevelFilter::Warn);
+    assert_eq!(tracing_filter_to_log_filter(LevelFilter::INFO), LogLevelFilter::Info);
+    assert_eq!(tracing_filter_to_log_filter(LevelFilter::DEBUG), LogLevelFilter::Debug);
+    assert_eq!(tracing_filter_to_log_filter(LevelFilter::TRACE), LogLevelFilter::Trace);
+  }
+
+  // ---------------------------------------------------------------------
+  // Overflow policies
+  // ---------------------------------------------------------------------
+
+  #[test]
+  fn overflow_block_blocks_until_consumer_drains() {
+    let mut loggers = HashMap::new();
+    loggers.insert(
+      "root".to_string(),
+      LoggerInternal {
+        name: "root".to_string(),
+        min_level: LevelFilter::INFO,
+        appender_names: vec!["app1".to_string()],
+        additive: true,
+      },
+    );
+    let (actor, rx) = make_event_actor("app1", &loggers, 1, OverflowPolicy::Block);
+    let processor = EventProcessor::new(vec![actor], None);
+
+    let md = mock_metadata(Level::INFO, "t");
+    processor.process_event(LogEvent::new(Level::INFO, "t", "e1", None), &md);
+
+    let sender_thread = thread::spawn(move || {
+      let md = mock_metadata(Level::INFO, "t");
+      processor.process_event(LogEvent::new(Level::INFO, "t", "e2", None), &md);
+    });
+
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+      !sender_thread.is_finished(),
+      "block policy must block while the channel is full"
+    );
+
+    assert!(rx.try_recv().is_ok(), "first event should be in the channel");
+    sender_thread.join().unwrap();
+    assert!(rx.try_recv().is_ok(), "second event delivered after drain");
+  }
+
+  #[test]
+  fn overflow_drop_newest_never_blocks() {
+    let mut loggers = HashMap::new();
+    loggers.insert(
+      "root".to_string(),
+      LoggerInternal {
+        name: "root".to_string(),
+        min_level: LevelFilter::INFO,
+        appender_names: vec!["app1".to_string()],
+        additive: true,
+      },
+    );
+    let (actor, rx) = make_event_actor("app1", &loggers, 1, OverflowPolicy::DropNewest);
+    let processor = EventProcessor::new(vec![actor], None);
+
+    let md = mock_metadata(Level::INFO, "t");
+    for _ in 0..10 {
+      processor.process_event(LogEvent::new(Level::INFO, "t", "e", None), &md);
+    }
+    assert_eq!(drain_count(&rx), 1, "capacity-1 channel keeps exactly one event");
+  }
+
+  // ---------------------------------------------------------------------
+  // Byte-appender writer loop
+  // ---------------------------------------------------------------------
+
+  #[derive(Clone, Default)]
+  struct SharedWriter {
+    data: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    flushes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+  }
+
+  impl Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+      self.data.lock().unwrap().extend_from_slice(buf);
+      Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+      self
+        .flushes
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      Ok(())
+    }
+  }
+
+  struct FailingWriter;
+  impl Write for FailingWriter {
+    fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+      Err(io::Error::new(io::ErrorKind::Other, "disk full"))
+    }
+    fn flush(&mut self) -> io::Result<()> {
+      Err(io::Error::new(io::ErrorKind::Other, "disk full"))
+    }
+  }
+
+  #[test]
+  fn writer_loop_writes_everything_and_flushes_on_shutdown() {
+    let (tx, rx) = mpsc::bounded::<Vec<u8>>(1024);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let writer = SharedWriter::default();
+    let data = Arc::clone(&writer.data);
+    let flushes = Arc::clone(&writer.flushes);
+
+    let handle = thread::spawn({
+      let shutdown = Arc::clone(&shutdown);
+      move || {
+        let error_tx: Option<mpsc::BoundedSyncSender<InternalErrorReport>> = None;
+        run_byte_appender_writer(
+          rx,
+          Box::new(writer),
+          "test_writer",
+          &shutdown,
+          &error_tx,
+          MAX_FLUSH_INTERVAL,
+        )
+      }
+    });
+
+    for i in 0..500 {
+      tx.try_send(format!("line {}\n", i).into_bytes())
+        .expect("channel should not fill in this test");
+    }
+    shutdown.store(true, Ordering::SeqCst);
+    handle.join().unwrap();
+
+    let written = String::from_utf8(data.lock().unwrap().clone()).unwrap();
+    for i in 0..500 {
+      assert!(
+        written.contains(&format!("line {}\n", i)),
+        "message {} lost (shutdown drain must capture queued messages)",
+        i
+      );
+    }
+    assert!(
+      flushes.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+      "final flush must run on shutdown"
+    );
+  }
+
+  #[test]
+  fn writer_loop_flushes_within_interval_under_sustained_load() {
+    let (tx, rx) = mpsc::bounded::<Vec<u8>>(1024);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let writer = SharedWriter::default();
+    let flushes = Arc::clone(&writer.flushes);
+
+    let handle = thread::spawn({
+      let shutdown = Arc::clone(&shutdown);
+      move || {
+        let error_tx: Option<mpsc::BoundedSyncSender<InternalErrorReport>> = None;
+        run_byte_appender_writer(
+          rx,
+          Box::new(writer),
+          "busy_writer",
+          &shutdown,
+          &error_tx,
+          Duration::from_millis(50),
+        )
+      }
+    });
+
+    // Keep the writer continuously busy for ~400ms.
+    let feed_until = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < feed_until {
+      let _ = tx.try_send(b"x".to_vec());
+      thread::sleep(Duration::from_millis(2));
+    }
+
+    // While still feeding (no shutdown yet), flushes must already have
+    // happened via the max-flush-interval path.
+    let flushes_before_shutdown = flushes.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+      flushes_before_shutdown >= 1,
+      "under sustained load, data must be flushed at least every interval"
+    );
+
+    shutdown.store(true, Ordering::SeqCst);
+    handle.join().unwrap();
+  }
+
+  #[test]
+  fn writer_loop_reports_write_failures_to_error_channel() {
+    let (tx, rx) = mpsc::bounded::<Vec<u8>>(16);
+    let (err_tx, err_rx) = mpsc::bounded::<InternalErrorReport>(16);
+    let shutdown = Arc::new(AtomicBool::new(false));
+
+    let handle = thread::spawn({
+      let shutdown = Arc::clone(&shutdown);
+      move || {
+        let error_tx = Some(err_tx);
+        run_byte_appender_writer(
+          rx,
+          Box::new(FailingWriter),
+          "bad_writer",
+          &shutdown,
+          &error_tx,
+          MAX_FLUSH_INTERVAL,
+        )
+      }
+    });
+
+    tx.try_send(b"payload".to_vec()).unwrap();
+
+    let report = err_rx
+      .recv_timeout(Duration::from_secs(2))
+      .expect("write failure must produce an internal error report");
+    match &report.source {
+      InternalErrorSource::AppenderWrite { appender_name } => {
+        assert_eq!(appender_name, "bad_writer");
+      }
+      other => panic!("expected AppenderWrite source, got {}", other),
+    }
+    assert!(report.error_message.contains("disk full"));
+
+    shutdown.store(true, Ordering::SeqCst);
+    handle.join().unwrap();
   }
 }

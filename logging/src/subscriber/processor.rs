@@ -1,4 +1,5 @@
 use crate::{
+  config::processed::OverflowPolicy,
   error_handling::{InternalErrorReport, InternalErrorSource},
   model::LogEvent,
   subscriber::actor::{ActorAction, AppenderActor},
@@ -6,13 +7,14 @@ use crate::{
 use fibre::{
   error::TrySendError as FibreTrySendError, mpsc::BoundedSyncSender as FibreMpscBoundedSender,
 };
-use tracing_core::Metadata;
+use tracing_core::{metadata::LevelFilter, Metadata};
 
 /// The central processor for all log events, from both `log` and `tracing`.
 /// It owns the appenders and contains the core dispatch logic.
 pub(crate) struct EventProcessor {
   actors: Vec<AppenderActor>,
   error_tx: Option<FibreMpscBoundedSender<InternalErrorReport>>,
+  max_level: LevelFilter,
 }
 
 impl EventProcessor {
@@ -20,78 +22,140 @@ impl EventProcessor {
     actors: Vec<AppenderActor>,
     error_tx: Option<FibreMpscBoundedSender<InternalErrorReport>>,
   ) -> Self {
-    Self { actors, error_tx }
+    let max_level = actors
+      .iter()
+      .map(|a| a.filter.max_level())
+      .max()
+      .unwrap_or(LevelFilter::OFF);
+    Self {
+      actors,
+      error_tx,
+      max_level,
+    }
+  }
+
+  /// The most permissive level any appender can accept. Used as the global
+  /// fast-path filter for both `tracing` and the `log` bridge.
+  pub(crate) fn max_level(&self) -> LevelFilter {
+    self.max_level
+  }
+
+  /// Fast pre-filter: is any appender interested in this metadata at all?
+  pub(crate) fn event_enabled(&self, metadata: &Metadata<'_>) -> bool {
+    self.actors.iter().any(|a| a.filter.enabled(metadata))
   }
 
   /// The single entry point for processing any log event.
   ///
-  /// This function contains the filtering and dispatching logic.
+  /// Filtering semantics: each appender evaluates the event against its own
+  /// most specific logger rule (or its root-derived default). Additivity is
+  /// decided by the most specific logger matching the event across ALL
+  /// loggers: if that logger is non-additive, only appenders wired to that
+  /// same logger receive the event.
   pub(crate) fn process_event(&self, event: LogEvent, metadata: &Metadata<'_>) {
-    // 1. Determine if this event is matched by any non-additive logger.
-    let mut non_additive_match = false;
-    for actor in &self.actors {
-      if let Some((_, (_, additive))) = actor.filter.find_most_specific_rule(metadata) {
-        if !*additive {
-          non_additive_match = true;
-          break;
-        }
+    let event_level = *metadata.level();
+
+    // One rule lookup per actor, reused for gating and level checks.
+    let rules: Vec<Option<(&str, &(LevelFilter, bool))>> = self
+      .actors
+      .iter()
+      .map(|actor| actor.filter.find_most_specific_rule(metadata))
+      .collect();
+
+    // Find the globally most specific matching logger.
+    let mut winner: Option<(&str, bool)> = None;
+    for (prefix, (_, additive)) in rules.iter().flatten() {
+      if winner.map_or(true, |(wp, _)| prefix.len() > wp.len()) {
+        winner = Some((*prefix, *additive));
       }
     }
+    let non_additive_gate: Option<&str> = match winner {
+      Some((prefix, false)) => Some(prefix),
+      _ => None,
+    };
 
-    // 2. Loop through each configured actor.
-    for actor in &self.actors {
-      let rule = actor.filter.find_most_specific_rule(metadata);
+    // Deliver to byte appenders immediately; collect event-stream appenders
+    // so the LogEvent is cloned once per extra consumer, not once per send.
+    let mut event_senders: Vec<(&AppenderActor, &FibreMpscBoundedSender<LogEvent>)> = Vec::new();
 
-      // 3. Decide if we should skip this appender due to non-additive logic.
-      if non_additive_match {
-        let is_appender_for_non_additive = rule.map_or(false, |(_, (_, additive))| !*additive);
-
-        if !is_appender_for_non_additive {
+    for (actor, rule) in self.actors.iter().zip(&rules) {
+      if let Some(gate_prefix) = non_additive_gate {
+        let wired_to_gate = rule.map_or(false, |(prefix, _)| prefix == gate_prefix);
+        if !wired_to_gate {
           continue;
         }
       }
 
-      // 4. Check if the event is enabled for this actor's specific filter.
-      if actor.filter.enabled(metadata) {
-        // 5. Perform the action defined for this actor (SendBytes or SendEvent).
-        match &actor.action {
-          ActorAction::SendBytes(sender) => {
-            // This is a standard appender (console, file, etc.)
-            // We must format the event into bytes first.
-            match actor.formatter.format_event(&event) {
-              Ok(formatted_bytes) => {
-                if let Err(FibreTrySendError::Full(_)) = sender.try_send(formatted_bytes) {
-                  // The channel to the appender actor is full. This indicates that
-                  // the appender (e.g., file writer) is back-pressured.
-                  // We drop the message to avoid blocking the application.
-                  eprintln!(
-                    "[fibre_logging:WARN] Channel for appender '{}' is full. Dropping message.",
-                    actor.name
-                  );
-                }
-              }
-              Err(e) => {
-                // This is an error during the formatting process itself.
-                self.send_error_report(
-                  InternalErrorSource::EventFormatting {
-                    appender_name: actor.name.clone(),
-                  },
-                  e,
-                  Some(format!("Event target: {}", event.target)),
-                );
-              }
-            }
+      let enabled = match rule {
+        Some((_, (level_filter, _))) => event_level <= *level_filter,
+        None => event_level <= actor.filter.default_level,
+      };
+      if !enabled {
+        continue;
+      }
+
+      match &actor.action {
+        ActorAction::SendBytes(sender) => match actor.formatter.format_event(&event) {
+          Ok(formatted_bytes) => self.send_bytes(actor, sender, formatted_bytes),
+          Err(e) => {
+            self.send_error_report(
+              InternalErrorSource::EventFormatting {
+                appender_name: actor.name.clone(),
+              },
+              e,
+              Some(format!("Event target: {}", event.target)),
+            );
           }
-          ActorAction::SendEvent(sender) => {
-            // This is a "custom" appender that wants the raw LogEvent.
-            // No formatting is needed.
-            if let Err(FibreTrySendError::Full(_)) = sender.try_send(event.clone()) {
-              eprintln!(
-                "[fibre_logging:WARN] Custom appender stream for '{}' is full. Dropping event.",
-                actor.name
-              );
-            }
-          }
+        },
+        ActorAction::SendEvent(sender) => event_senders.push((actor, sender)),
+      }
+    }
+
+    let last = event_senders.len().saturating_sub(1);
+    let mut event = Some(event);
+    for (i, (actor, sender)) in event_senders.into_iter().enumerate() {
+      let to_send = if i == last {
+        event.take().expect("event consumed before last sender")
+      } else {
+        event.as_ref().expect("event consumed early").clone()
+      };
+      self.send_event(actor, sender, to_send);
+    }
+  }
+
+  fn send_bytes(
+    &self,
+    actor: &AppenderActor,
+    sender: &FibreMpscBoundedSender<Vec<u8>>,
+    bytes: Vec<u8>,
+  ) {
+    match actor.overflow {
+      OverflowPolicy::Block => {
+        // Guaranteed delivery: block the caller until there is room.
+        // A send error means the appender task is gone (shutdown); drop then.
+        let _ = sender.send(bytes);
+      }
+      OverflowPolicy::DropNewest => {
+        if let Err(FibreTrySendError::Full(_)) = sender.try_send(bytes) {
+          actor.drops.record(&actor.name);
+        }
+      }
+    }
+  }
+
+  fn send_event(
+    &self,
+    actor: &AppenderActor,
+    sender: &FibreMpscBoundedSender<LogEvent>,
+    event: LogEvent,
+  ) {
+    match actor.overflow {
+      OverflowPolicy::Block => {
+        let _ = sender.send(event);
+      }
+      OverflowPolicy::DropNewest => {
+        if let Err(FibreTrySendError::Full(_)) = sender.try_send(event) {
+          actor.drops.record(&actor.name);
         }
       }
     }

@@ -16,12 +16,25 @@ pub struct ConfigInternal {
   pub error_reporting_enabled: bool,
 }
 
+/// What to do when an appender's channel is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverflowPolicy {
+  /// Drop the newest message; the application never blocks on logging.
+  #[default]
+  DropNewest,
+  /// Block the logging call until there is room (guaranteed delivery).
+  Block,
+}
+
 // --- Processed Appender Config ---
 #[derive(Debug, Clone)]
 pub struct AppenderInternal {
   pub name: String,
   pub kind: AppenderKindInternal,
   pub encoder: EncoderInternal,
+  /// Capacity of the channel between the logging call and the appender task.
+  pub channel_capacity: usize,
+  pub overflow: OverflowPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +148,26 @@ impl Default for EncoderInternal {
 
 // --- Conversion and Validation Logic ---
 
+const DEFAULT_CHANNEL_CAPACITY: usize = 1024;
+const DEFAULT_DEBUG_REPORT_CAPACITY: usize = 2048;
+
+fn convert_overflow(raw: Option<crate::config::raw::OverflowPolicyRaw>) -> OverflowPolicy {
+  match raw {
+    Some(crate::config::raw::OverflowPolicyRaw::Block) => OverflowPolicy::Block,
+    Some(crate::config::raw::OverflowPolicyRaw::Drop) | None => OverflowPolicy::DropNewest,
+  }
+}
+
+fn validate_channel_capacity(capacity: usize, appender_name: &str) -> Result<usize> {
+  if capacity == 0 {
+    return Err(Error::InvalidConfigValue {
+      field: format!("appenders.{}.channel_capacity", appender_name),
+      message: "channel_capacity cannot be zero.".to_string(),
+    });
+  }
+  Ok(capacity)
+}
+
 /// Processes the raw, deserialized configuration into a validated internal representation.
 pub fn process_raw_config(raw_config: crate::config::raw::ConfigRaw) -> Result<ConfigInternal> {
   let mut processed_appenders = HashMap::new();
@@ -145,6 +178,44 @@ pub fn process_raw_config(raw_config: crate::config::raw::ConfigRaw) -> Result<C
     let encoder_internal = match raw_appender.encoder_config_raw() {
       Some(raw_encoder) => process_encoder_config_raw(raw_encoder)?,
       None => EncoderInternal::default(),
+    };
+
+    if let EncoderInternal::Pattern(pattern_conf) = &encoder_internal {
+      crate::encoders::pattern::validate_pattern(&pattern_conf.pattern_string).map_err(
+        |message| Error::InvalidConfigValue {
+          field: format!("appenders.{}.encoder.pattern", name),
+          message,
+        },
+      )?;
+    }
+
+    let (channel_capacity, overflow) = match &raw_appender {
+      AppenderConfigRaw::Console(c) => (
+        validate_channel_capacity(
+          c.channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY),
+          &name,
+        )?,
+        convert_overflow(c.overflow),
+      ),
+      AppenderConfigRaw::File(f) => (
+        validate_channel_capacity(
+          f.channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY),
+          &name,
+        )?,
+        convert_overflow(f.overflow),
+      ),
+      AppenderConfigRaw::RollingFile(r) => (
+        validate_channel_capacity(
+          r.channel_capacity.unwrap_or(DEFAULT_CHANNEL_CAPACITY),
+          &name,
+        )?,
+        convert_overflow(r.overflow),
+      ),
+      AppenderConfigRaw::Custom(c) => (c.buffer_size, convert_overflow(c.overflow)),
+      AppenderConfigRaw::DebugReport(_) => (
+        DEFAULT_DEBUG_REPORT_CAPACITY,
+        OverflowPolicy::DropNewest,
+      ),
     };
 
     let appender_internal_kind = match raw_appender {
@@ -237,6 +308,8 @@ pub fn process_raw_config(raw_config: crate::config::raw::ConfigRaw) -> Result<C
         name,
         kind: appender_internal_kind,
         encoder: encoder_internal,
+        channel_capacity,
+        overflow,
       },
     );
   }
@@ -245,7 +318,7 @@ pub fn process_raw_config(raw_config: crate::config::raw::ConfigRaw) -> Result<C
   // Ensure there's a "root" logger, providing a default if not.
   let mut raw_loggers_mut = raw_config.loggers;
   if !raw_loggers_mut.contains_key("root") {
-    println!("[fibre_logging::config] No 'root' logger defined, adding a default (level: INFO, appenders: none, additive: true).");
+    crate::vlog!("[fibre_logging::config] No 'root' logger defined, adding a default (level: INFO, appenders: none, additive: true).");
     raw_loggers_mut.insert(
       "root".to_string(),
       LoggerConfigRaw {
@@ -434,5 +507,102 @@ mod tests {
     } else {
       panic!("Expected InvalidConfigValue error for undefined appender");
     }
+  }
+
+  fn config_from_yaml(yaml: &str) -> Result<ConfigInternal> {
+    let raw: crate::config::raw::ConfigRaw = serde_yaml::from_str(yaml).unwrap();
+    process_raw_config(raw)
+  }
+
+  #[test]
+  fn channel_capacity_and_overflow_are_honored() {
+    let config = config_from_yaml(
+      r#"
+appenders:
+  console:
+    kind: console
+    channel_capacity: 64
+    overflow: block
+  plain:
+    kind: console
+"#,
+    )
+    .unwrap();
+
+    let console = config.appenders.get("console").unwrap();
+    assert_eq!(console.channel_capacity, 64);
+    assert_eq!(console.overflow, OverflowPolicy::Block);
+
+    let plain = config.appenders.get("plain").unwrap();
+    assert_eq!(plain.channel_capacity, DEFAULT_CHANNEL_CAPACITY);
+    assert_eq!(plain.overflow, OverflowPolicy::DropNewest);
+  }
+
+  #[test]
+  fn zero_channel_capacity_is_rejected() {
+    let result = config_from_yaml(
+      r#"
+appenders:
+  console:
+    kind: console
+    channel_capacity: 0
+"#,
+    );
+    assert!(
+      matches!(result, Err(Error::InvalidConfigValue { ref field, .. }) if field == "appenders.console.channel_capacity")
+    );
+  }
+
+  #[test]
+  fn invalid_pattern_converter_is_rejected_at_config_time() {
+    let result = config_from_yaml(
+      r#"
+appenders:
+  console:
+    kind: console
+    encoder:
+      kind: pattern
+      pattern: "[%d] %q %m%n"
+"#,
+    );
+    assert!(
+      matches!(result, Err(Error::InvalidConfigValue { ref field, .. }) if field == "appenders.console.encoder.pattern"),
+      "unknown converter %q should be rejected, got: {:?}",
+      result
+    );
+  }
+
+  #[test]
+  fn invalid_date_format_is_rejected_at_config_time() {
+    let result = config_from_yaml(
+      r#"
+appenders:
+  console:
+    kind: console
+    encoder:
+      kind: pattern
+      pattern: "[%d{%Q-bogus}] %m%n"
+"#,
+    );
+    assert!(
+      matches!(result, Err(Error::InvalidConfigValue { ref field, .. }) if field == "appenders.console.encoder.pattern"),
+      "invalid chrono format should be rejected, got: {:?}",
+      result
+    );
+  }
+
+  #[test]
+  fn valid_pattern_passes_config_validation() {
+    let config = config_from_yaml(
+      r#"
+appenders:
+  console:
+    kind: console
+    encoder:
+      kind: pattern
+      pattern: "[%d{%Y-%m-%d %H:%M}] %-5p %t - %m %X%n 100%%"
+"#,
+    );
+    assert!(config.is_ok(), "valid pattern rejected: {:?}", config.err());
   }
 }

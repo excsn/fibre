@@ -1,14 +1,18 @@
 use crate::config::processed::RollingPolicyInternal;
 use crate::error::{Error, Result};
+use crate::error_handling::{InternalErrorReport, InternalErrorSource};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
+use fibre::mpsc::BoundedSyncSender;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+
+const DEFAULT_COMPRESSED_SUFFIX: &str = ".gz";
 
 // Regex to parse filenames like: "prefix.YYYY-MM-DD_HH-MM-SS.1.log"
 // Captures: 1=timestamp, 2=sequence
@@ -49,15 +53,24 @@ pub struct CustomRoller {
   current_path: std::path::PathBuf,
   current_size: u64,
   current_period_start: DateTime<Utc>,
+  /// Cleanup/compression failures don't fail the write; they are reported here.
+  error_tx: Option<BoundedSyncSender<InternalErrorReport>>,
 }
 
 impl CustomRoller {
-  pub fn new(policy: RollingPolicyInternal) -> Result<Self> {
-    Self::new_at_time(policy, Utc::now())
+  pub fn new(
+    policy: RollingPolicyInternal,
+    error_tx: Option<BoundedSyncSender<InternalErrorReport>>,
+  ) -> Result<Self> {
+    Self::new_at_time(policy, Utc::now(), error_tx)
   }
 
   /// Testable constructor that allows injecting the current time.
-  fn new_at_time(policy: RollingPolicyInternal, now: DateTime<Utc>) -> Result<Self> {
+  fn new_at_time(
+    policy: RollingPolicyInternal,
+    now: DateTime<Utc>,
+    error_tx: Option<BoundedSyncSender<InternalErrorReport>>,
+  ) -> Result<Self> {
     let current_path = policy.base_path();
     let (writer, current_size) = Self::open_file(&current_path)?;
     let current_period_start = Self::calculate_period_start(now, &policy);
@@ -68,7 +81,36 @@ impl CustomRoller {
       current_path,
       current_size,
       current_period_start,
+      error_tx,
     })
+  }
+
+  /// The suffix marking a rolled file as compressed, per policy.
+  fn compressed_suffix(&self) -> &str {
+    self
+      .policy
+      .compression
+      .as_ref()
+      .map(|c| c.compressed_file_suffix.as_str())
+      .unwrap_or(DEFAULT_COMPRESSED_SUFFIX)
+  }
+
+  /// Reports a non-fatal roller I/O problem without failing the write path.
+  fn report_io_error(&self, path: &Path, error: &io::Error, context: &str) {
+    eprintln!(
+      "[fibre_logging:WARN] {} {:?}: {}",
+      context, path, error
+    );
+    if let Some(tx) = &self.error_tx {
+      let report = InternalErrorReport::new(
+        InternalErrorSource::CustomRollerIo {
+          path: path.display().to_string(),
+        },
+        io::Error::new(error.kind(), error.to_string()),
+        Some(context.to_string()),
+      );
+      let _ = tx.try_send(report);
+    }
   }
 
   /// Testable write method that allows injecting the current time.
@@ -109,24 +151,20 @@ impl CustomRoller {
     let rolled_files = self.find_rolled_files()?;
     let new_period_start = Self::calculate_period_start(now, &self.policy);
 
-    // 3. Determine the sequence number and the correct timestamp for the rolled file.
-    let (period_for_rolled_file, next_sequence) = if new_period_start > self.current_period_start {
-      // --- Time-based roll ---
-      // The file being rolled belongs to the PREVIOUS period.
-      (self.current_period_start, 1) // CRITICAL FIX
-    } else {
-      // --- Size-based roll ---
-      let last_sequence = rolled_files
-        .iter()
-        .filter(|rf| {
-          self.policy.format_period(rf.timestamp)
-            == self.policy.format_period(self.current_period_start)
-        })
-        .map(|rf| rf.sequence)
-        .max()
-        .unwrap_or(0);
-      (self.current_period_start, last_sequence + 1)
-    };
+    // 3. The file being rolled always belongs to the CURRENT (about to become
+    // previous) period, and always gets the next free sequence within that
+    // period. Using a fixed sequence of 1 for time-based rolls would rename
+    // over an earlier size-rolled file from the same period and destroy it.
+    let last_sequence = rolled_files
+      .iter()
+      .filter(|rf| {
+        self.policy.format_period(rf.timestamp)
+          == self.policy.format_period(self.current_period_start)
+      })
+      .map(|rf| rf.sequence)
+      .max()
+      .unwrap_or(0);
+    let (period_for_rolled_file, next_sequence) = (self.current_period_start, last_sequence + 1);
 
     // 4. Rename the old active file to its new rolled name using the correct period.
     let rolled_path = self
@@ -172,11 +210,14 @@ impl CustomRoller {
           continue;
         }
 
-        // Check if it's a compressed file
-        let is_compressed = file_name.ends_with(".gz");
+        // Check if it's a compressed file, using the configured suffix.
+        let compressed_suffix = self.compressed_suffix();
+        let is_compressed = file_name.ends_with(compressed_suffix);
         let name_to_parse = if is_compressed {
-          // Strip .gz suffix before parsing with regex
-          file_name.strip_suffix(".gz").unwrap_or(file_name)
+          // Strip the compressed suffix before parsing with regex
+          file_name
+            .strip_suffix(compressed_suffix)
+            .unwrap_or(file_name)
         } else {
           file_name
         };
@@ -211,10 +252,7 @@ impl CustomRoller {
       // Delete files beyond the retention limit
       for old_file in sorted_files.iter().skip(max_retained as usize) {
         if let Err(e) = fs::remove_file(&old_file.path) {
-          eprintln!(
-            "[fibre_logging:WARN] Failed to delete old log file {:?}: {}",
-            old_file.path, e
-          );
+          self.report_io_error(&old_file.path, &e, "Failed to delete old log file");
         }
       }
 
@@ -227,16 +265,20 @@ impl CustomRoller {
     if let Some(compression_config) = &self.policy.compression {
       let uncompressed_to_keep = compression_config.max_uncompressed_sequences as usize;
 
-      // Files to compress are those beyond the "keep uncompressed" threshold
+      // Files to compress are those beyond the "keep uncompressed" threshold.
+      // Eligibility is based on the configured file suffix, not a hardcoded
+      // ".log" extension.
       for file in sorted_files.iter().skip(uncompressed_to_keep) {
-        if !file.is_compressed && file.path.extension().map_or(false, |ext| ext == "log") {
+        let has_log_suffix = file
+          .path
+          .file_name()
+          .and_then(|n| n.to_str())
+          .map_or(false, |n| n.ends_with(&self.policy.file_name_suffix));
+        if !file.is_compressed && has_log_suffix {
           // Compress this file
           if let Err(e) = self.compress_file(&file.path, &compression_config.compressed_file_suffix)
           {
-            eprintln!(
-              "[fibre_logging:WARN] Failed to compress {:?}: {}",
-              file.path, e
-            );
+            self.report_io_error(&file.path, &e, "Failed to compress rolled log file");
           }
         }
       }
@@ -245,18 +287,18 @@ impl CustomRoller {
     Ok(())
   }
 
-  /// Compress a log file using gzip.
-  fn compress_file(&self, source_path: &Path, compressed_suffix: &str) -> Result<()> {
+  /// Compress a log file using gzip, streaming so large files don't get
+  /// buffered in memory.
+  fn compress_file(&self, source_path: &Path, compressed_suffix: &str) -> io::Result<()> {
     let compressed_path = PathBuf::from(format!("{}{}", source_path.display(), compressed_suffix));
 
-    // Read source file
-    let input = fs::read(source_path)?;
+    let source = File::open(source_path)?;
+    let mut reader = BufReader::new(source);
 
-    // Create compressed file
     let output_file = File::create(&compressed_path)?;
-    let mut encoder = GzEncoder::new(output_file, Compression::default());
-    encoder.write_all(&input)?;
-    encoder.finish()?;
+    let mut encoder = GzEncoder::new(BufWriter::new(output_file), Compression::default());
+    io::copy(&mut reader, &mut encoder)?;
+    encoder.finish()?.flush()?;
 
     // Delete original uncompressed file
     fs::remove_file(source_path)?;
@@ -275,6 +317,9 @@ impl CustomRoller {
         .and_then(|t| t.with_second(0))
         .and_then(|t| t.with_nanosecond(0))
         .unwrap(),
+      // "never" anchors every write to one fixed period so a time-based roll
+      // can never trigger and size-roll sequences stay monotonic.
+      "never" => DateTime::<Utc>::UNIX_EPOCH,
       _ => now
         .with_hour(0)
         .and_then(|t| t.with_minute(0))
@@ -375,7 +420,7 @@ mod tests {
   fn test_size_based_roll() {
     let setup = setup(|p| p.max_file_size = Some(10));
     let now = Utc::now();
-    let mut roller = CustomRoller::new_at_time(setup.policy, now).unwrap();
+    let mut roller = CustomRoller::new_at_time(setup.policy, now, None).unwrap();
 
     // Write 8 bytes, no roll
     roller.write_all(b"12345678").unwrap();
@@ -416,7 +461,7 @@ mod tests {
   fn test_time_based_roll() {
     let setup = setup(|p| p.time_granularity = "minutely".to_string());
     let t1 = Utc.with_ymd_and_hms(2023, 1, 1, 10, 30, 15).unwrap();
-    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), t1).unwrap();
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), t1, None).unwrap();
 
     // Write at 10:30:15
     roller.write_at_time(b"first write", t1).unwrap();
@@ -451,7 +496,7 @@ mod tests {
       p.max_retained_sequences = Some(2);
     });
     let now = Utc::now();
-    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), now).unwrap();
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), now, None).unwrap();
 
     // Force 4 rolls
     for i in 0..4 {
@@ -482,7 +527,7 @@ mod tests {
     // 1. Setup: A daily roller that will not roll during this test.
     let setup = setup(|p| p.time_granularity = "daily".to_string());
     let now = Utc::now();
-    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), now).unwrap();
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), now, None).unwrap();
     let active_log_path = roller.current_path.clone();
 
     // 2. Action: Write a small amount of data.
@@ -525,7 +570,7 @@ mod tests {
     // 1. Setup
     let setup = setup(|p| p.time_granularity = "daily".to_string());
     let now = Utc::now();
-    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), now).unwrap();
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), now, None).unwrap();
     let active_log_path = roller.current_path.clone();
 
     // --- FIRST WRITE AND FLUSH CYCLE ---
@@ -601,7 +646,7 @@ mod tests {
     let t3_next_minute = Utc.with_ymd_and_hms(2025, 6, 20, 10, 31, 5).unwrap();
 
     // Instantiate the roller at the start time.
-    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), t1_start).unwrap();
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), t1_start, None).unwrap();
 
     // --- Writes within the same minute (10:30) ---
 
@@ -716,7 +761,7 @@ mod tests {
 
     // Now start the app "today" (Feb 6, 2026)
     let today = Utc.with_ymd_and_hms(2026, 2, 6, 10, 0, 0).unwrap();
-    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), today).unwrap();
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), today, None).unwrap();
 
     // Write some data today
     roller.write_at_time(b"today's data", today).unwrap();
@@ -780,5 +825,171 @@ mod tests {
       uncompressed_rolled_files[0].contains("2026-02-06"),
       "The most recent rolled file should be uncompressed"
     );
+  }
+
+  #[test]
+  fn test_never_granularity_does_not_roll_across_days() {
+    let setup = setup(|p| p.time_granularity = "never".to_string());
+    let day1 = Utc.with_ymd_and_hms(2026, 3, 1, 23, 59, 0).unwrap();
+    let day2 = Utc.with_ymd_and_hms(2026, 3, 2, 0, 1, 0).unwrap();
+    let much_later = Utc.with_ymd_and_hms(2027, 1, 1, 12, 0, 0).unwrap();
+
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), day1, None).unwrap();
+    roller.write_at_time(b"before midnight\n", day1).unwrap();
+    roller.write_at_time(b"after midnight\n", day2).unwrap();
+    roller.write_at_time(b"a year later\n", much_later).unwrap();
+    roller.flush().unwrap();
+
+    let files = list_files(&setup.policy);
+    assert_eq!(files, vec!["test.log"], "'never' must not time-roll");
+  }
+
+  #[test]
+  fn test_never_granularity_still_size_rolls_without_clobbering() {
+    let setup = setup(|p| {
+      p.time_granularity = "never".to_string();
+      p.max_file_size = Some(10);
+    });
+    let day1 = Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0).unwrap();
+    let day2 = Utc.with_ymd_and_hms(2026, 3, 2, 12, 0, 0).unwrap();
+
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), day1, None).unwrap();
+    // Two size-based rolls on different days: sequences must keep increasing,
+    // not restart (which would rename over the first rolled file).
+    roller.write_at_time(b"0123456789ab", day1).unwrap();
+    roller.write_at_time(b"cdefghijklmn", day2).unwrap();
+    roller.flush().unwrap();
+
+    let files = list_files(&setup.policy);
+    assert_eq!(
+      files.len(),
+      3,
+      "expected 2 rolled files + active file, got {:?}",
+      files
+    );
+    let rolled: Vec<_> = files.iter().filter(|f| *f != "test.log").collect();
+    assert_eq!(rolled.len(), 2, "both size rolls must survive: {:?}", files);
+  }
+
+  #[test]
+  fn test_time_roll_does_not_clobber_size_rolled_file() {
+    let setup = setup(|p| {
+      p.time_granularity = "minutely".to_string();
+      p.max_file_size = Some(10);
+    });
+    let t1 = Utc.with_ymd_and_hms(2026, 3, 1, 10, 30, 5).unwrap();
+    let t2 = Utc.with_ymd_and_hms(2026, 3, 1, 10, 30, 40).unwrap();
+    let t3 = Utc.with_ymd_and_hms(2026, 3, 1, 10, 31, 5).unwrap();
+
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), t1, None).unwrap();
+    // Two size rolls inside minute 10:30 -> sequences 1 and 2.
+    roller.write_at_time(b"first-roll--", t1).unwrap();
+    roller.write_at_time(b"second-roll-", t2).unwrap();
+    // Small write, then crossing into 10:31 rolls the remainder of 10:30.
+    roller.write_at_time(b"tail", t2).unwrap();
+    roller.write_at_time(b"next minute\n", t3).unwrap();
+    roller.flush().unwrap();
+
+    let files = list_files(&setup.policy);
+    // 3 rolled files from minute 10:30 (seq 1, 2, 3) + files from the 10:31
+    // write (which itself size-rolled, leaving an empty active file).
+    let period = setup.policy.format_period(t1);
+    for seq in 1..=3 {
+      let expected = format!("test.{}.{}.log", period, seq);
+      assert!(
+        files.contains(&expected),
+        "sequence {} from the 10:30 period must survive the time roll, files: {:?}",
+        seq,
+        files
+      );
+    }
+
+    // All three rolled files from 10:30 must have distinct, non-empty content.
+    let seq1 = fs::read_to_string(setup.policy.directory.join(format!("test.{}.1.log", period)))
+      .unwrap();
+    assert!(
+      seq1.contains("first-roll"),
+      "seq 1 content was clobbered: {:?}",
+      seq1
+    );
+  }
+
+  #[test]
+  fn test_compression_with_custom_suffixes() {
+    use crate::config::processed::CompressionPolicyInternal;
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    let setup = setup(|p| {
+      p.file_name_suffix = ".txt".to_string();
+      p.time_granularity = "never".to_string();
+      p.max_file_size = Some(10);
+      p.compression = Some(CompressionPolicyInternal {
+        compressed_file_suffix: ".gzip".to_string(),
+        max_uncompressed_sequences: 0,
+      });
+    });
+    let now = Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0).unwrap();
+
+    let mut roller = CustomRoller::new_at_time(setup.policy.clone(), now, None).unwrap();
+    roller.write_at_time(b"first roll payload", now).unwrap();
+    roller.flush().unwrap();
+
+    let files = list_files(&setup.policy);
+    let compressed: Vec<_> = files.iter().filter(|f| f.ends_with(".txt.gzip")).collect();
+    assert_eq!(
+      compressed.len(),
+      1,
+      "rolled .txt file must be compressed with the configured suffix, files: {:?}",
+      files
+    );
+    assert!(
+      !files.iter().any(|f| f.ends_with(".txt") && *f != "test.txt"),
+      "uncompressed rolled original must be removed, files: {:?}",
+      files
+    );
+
+    // The compressed content must round-trip.
+    let compressed_path = setup.policy.directory.join(compressed[0]);
+    let mut decoder = GzDecoder::new(File::open(&compressed_path).unwrap());
+    let mut contents = String::new();
+    decoder.read_to_string(&mut contents).unwrap();
+    assert_eq!(contents, "first roll payload");
+
+    // A second roll must re-discover the compressed file (configured suffix)
+    // and pick the next sequence rather than re-using or re-compressing it.
+    roller.write_at_time(b"second roll payload", now).unwrap();
+    roller.flush().unwrap();
+    let files = list_files(&setup.policy);
+    let compressed_count = files.iter().filter(|f| f.ends_with(".txt.gzip")).count();
+    assert_eq!(
+      compressed_count, 2,
+      "second roll must produce a second compressed sequence, files: {:?}",
+      files
+    );
+  }
+
+  #[test]
+  fn test_streaming_compression_round_trips_large_file() {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    let setup = setup(|p| p.time_granularity = "never".to_string());
+    let now = Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0).unwrap();
+    let roller = CustomRoller::new_at_time(setup.policy.clone(), now, None).unwrap();
+
+    // ~3MB of patterned data.
+    let payload: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    let source_path = setup.policy.directory.join("test.2026-03-01.9.log");
+    fs::write(&source_path, &payload).unwrap();
+
+    roller.compress_file(&source_path, ".gz").unwrap();
+    assert!(!source_path.exists(), "source must be removed after compression");
+
+    let compressed_path = setup.policy.directory.join("test.2026-03-01.9.log.gz");
+    let mut decoder = GzDecoder::new(File::open(&compressed_path).unwrap());
+    let mut round_tripped = Vec::new();
+    decoder.read_to_end(&mut round_tripped).unwrap();
+    assert_eq!(round_tripped, payload, "gunzipped bytes must match source");
   }
 }

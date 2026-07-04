@@ -50,22 +50,29 @@ impl DispatchLayer {
       }
     }
 
-    let current_thread = std::thread::current();
-    // Extract the raw ID from the `Debug` output of `ThreadId`.
-    let debug_id = format!("{:?}", current_thread.id());
-    log_event.thread_id = Some(
-      debug_id
-        .strip_prefix("ThreadId(")
-        .and_then(|s| s.strip_suffix(')'))
-        .unwrap_or(&debug_id) // Fallback to the full debug string if parsing fails
-        .to_string(),
-    );
-    if let Some(name) = current_thread.name() {
-      log_event.thread_name = Some(name.to_string());
-    }
+    THREAD_INFO.with(|(id, name)| {
+      log_event.thread_id = Some(id.clone());
+      log_event.thread_name = name.clone();
+    });
 
     log_event
   }
+}
+
+thread_local! {
+  // Computed once per thread instead of Debug-formatting and re-parsing the
+  // ThreadId on every event.
+  static THREAD_INFO: (String, Option<String>) = {
+    let current_thread = std::thread::current();
+    // Extract the raw ID from the `Debug` output of `ThreadId`.
+    let debug_id = format!("{:?}", current_thread.id());
+    let id = debug_id
+      .strip_prefix("ThreadId(")
+      .and_then(|s| s.strip_suffix(')'))
+      .unwrap_or(&debug_id) // Fallback to the full debug string if parsing fails
+      .to_string();
+    (id, current_thread.name().map(str::to_string))
+  };
 }
 
 impl<S> Layer<S> for DispatchLayer
@@ -81,15 +88,19 @@ where
       .process_event(log_event, event.metadata());
   }
 
-  // We keep this `enabled` check as a fast path to avoid building the
-  // log event if no appender could possibly be interested.
+  // Fast path: avoid building the log event if no appender could possibly be
+  // interested. The result is cached per callsite by the default
+  // `register_callsite`, which is safe because filters are static after init.
   fn enabled(&self, metadata: &tracing::Metadata<'_>, _ctx: Context<'_, S>) -> bool {
-    // The layer is enabled if ANY of its actors are enabled for this metadata.
-    // This is a broad check; the fine-grained filtering happens in `on_event`.
-    // self
-    //   .actors
-    //   .iter()
-    //   .any(|actor| actor.filter.enabled(metadata))
-    true // For now, let the processor handle all filtering.
+    // Spans must stay enabled regardless of appender levels: events inside
+    // them need the registry to know the span for span_id/parent_id capture.
+    if !metadata.is_event() {
+      return true;
+    }
+    self.processor.event_enabled(metadata)
+  }
+
+  fn max_level_hint(&self) -> Option<tracing_core::metadata::LevelFilter> {
+    Some(self.processor.max_level())
   }
 }

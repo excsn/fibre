@@ -38,6 +38,16 @@ pub enum AppenderConfigRaw {
   DebugReport(DebugReportAppenderConfigRaw),
 }
 
+/// What to do when an appender's channel is full.
+#[derive(Debug, Deserialize, PartialEq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum OverflowPolicyRaw {
+  /// Drop the newest message (never blocks the application). The default.
+  Drop,
+  /// Block the logging call until the appender catches up (guaranteed delivery).
+  Block,
+}
+
 // --- Console Appender ---
 
 #[derive(Debug, Deserialize, PartialEq, Default)]
@@ -45,6 +55,10 @@ pub enum AppenderConfigRaw {
 pub struct ConsoleAppenderConfigRaw {
   #[serde(default)]
   pub encoder: Option<EncoderConfigRaw>,
+  #[serde(default)]
+  pub channel_capacity: Option<usize>,
+  #[serde(default)]
+  pub overflow: Option<OverflowPolicyRaw>,
 }
 
 // --- File Appender ---
@@ -55,6 +69,10 @@ pub struct FileAppenderConfigRaw {
   pub path: String,
   #[serde(default)]
   pub encoder: Option<EncoderConfigRaw>,
+  #[serde(default)]
+  pub channel_capacity: Option<usize>,
+  #[serde(default)]
+  pub overflow: Option<OverflowPolicyRaw>,
 }
 
 // --- Rolling Appender ---
@@ -79,6 +97,10 @@ pub struct RollingFileAppenderConfigRaw {
   pub policy: RollingPolicyRaw,
   #[serde(default)]
   pub encoder: Option<EncoderConfigRaw>,
+  #[serde(default)]
+  pub channel_capacity: Option<usize>,
+  #[serde(default)]
+  pub overflow: Option<OverflowPolicyRaw>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -114,6 +136,8 @@ pub struct CustomAppenderConfigRaw {
   /// The capacity of the underlying `fibre` channel.
   #[serde(default = "default_buffer_size")]
   pub buffer_size: usize,
+  #[serde(default)]
+  pub overflow: Option<OverflowPolicyRaw>,
 }
 
 fn default_buffer_size() -> usize {

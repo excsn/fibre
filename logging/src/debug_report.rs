@@ -98,5 +98,15 @@ pub fn print_debug_report() {
 pub fn clear_debug_report() {
   let mut collector = DEBUG_REPORT_COLLECTOR.lock();
   *collector = Default::default();
-  println!("[fibre_logging] Debug report data cleared.");
+  crate::vlog!("[fibre_logging] Debug report data cleared.");
+}
+
+/// Totals across the collector: (recorded events, sum of all counter values).
+/// Useful for tests and programmatic health checks.
+pub fn debug_report_totals() -> (usize, usize) {
+  let collector = DEBUG_REPORT_COLLECTOR.lock();
+  (
+    collector.events.len(),
+    collector.counters.values().sum(),
+  )
 }

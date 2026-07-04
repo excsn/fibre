@@ -140,20 +140,21 @@ impl PatternFormatter {
           if !event.fields.is_empty() {
             target_buf.push('{');
 
-            // Sort keys for consistent output order.
-            let mut sorted_keys: Vec<_> = event.fields.keys().collect();
+            // Sort keys for consistent output order. The "message" field is
+            // excluded here as it's already handled by the %m specifier.
+            let mut sorted_keys: Vec<_> = event
+              .fields
+              .keys()
+              .filter(|k| k.as_str() != "message")
+              .collect();
             sorted_keys.sort();
 
             for (i, key) in sorted_keys.iter().enumerate() {
               if let Some(value) = event.fields.get(*key) {
-                // We don't print the "message" field here as it's
-                // already handled by the %m specifier.
-                if key.as_str() != "message" {
-                  let _ = write!(target_buf, "{}={}", key, value);
-                  if i < sorted_keys.len() - 1 {
-                    target_buf.push_str(", ");
-                  }
+                if i > 0 {
+                  target_buf.push_str(", ");
                 }
+                let _ = write!(target_buf, "{}={}", key, value);
               }
             }
             target_buf.push('}');
@@ -186,6 +187,44 @@ impl PatternFormatter {
       let _ = write!(buf, "{:<width$}", content, width = width);
     }
   }
+}
+
+/// The set of conversion characters `format_specifier` understands.
+const KNOWN_CONVERTERS: &[char] = &['d', 'p', 'l', 't', 'm', 'T', 'n', 'X'];
+
+/// Validates a pattern string at configuration time so typos fail loudly at
+/// startup instead of silently producing empty output.
+pub(crate) fn validate_pattern(pattern: &str) -> std::result::Result<(), String> {
+  for segment in PatternFormatter::parse(pattern) {
+    if let Segment::Specifier(spec) = segment {
+      if !KNOWN_CONVERTERS.contains(&spec.converter) {
+        return Err(format!(
+          "Unknown conversion specifier '%{}'. Known specifiers: %d, %p, %l, %t, %m, %T, %n, %X.",
+          spec.converter
+        ));
+      }
+      if spec.converter == 'd' {
+        if let Some(format_str) = &spec.options {
+          // chrono reports invalid strftime items as a fmt::Error when the
+          // formatted value is rendered, so trial-format one timestamp.
+          let mut probe = String::new();
+          if write!(
+            probe,
+            "{}",
+            chrono::Utc::now().format(format_str)
+          )
+          .is_err()
+          {
+            return Err(format!(
+              "Invalid date format string '{}' in %d{{...}}.",
+              format_str
+            ));
+          }
+        }
+      }
+    }
+  }
+  Ok(())
 }
 
 impl EventFormatter for PatternFormatter {
@@ -269,6 +308,59 @@ mod tests {
     let event = create_test_event();
     let formatted_str = String::from_utf8(formatter.format_event(&event).unwrap()).unwrap();
     assert_eq!(formatted_str.trim(), "100% INFO");
+  }
+
+  #[test]
+  fn x_specifier_separators_with_message_field_present() {
+    use crate::model::LogValue;
+    let formatter = PatternFormatter::new("%X");
+
+    // "message" among the fields must not produce dangling separators.
+    let mut event = create_test_event();
+    event.fields.insert(
+      "alpha".to_string(),
+      LogValue::String("1".to_string()),
+    );
+    event.fields.insert(
+      "message".to_string(),
+      LogValue::String("dup".to_string()),
+    );
+    event
+      .fields
+      .insert("zeta".to_string(), LogValue::String("2".to_string()));
+    let out = String::from_utf8(formatter.format_event(&event).unwrap()).unwrap();
+    assert_eq!(out.trim(), "{alpha=1, zeta=2}");
+
+    // Only a "message" field: braces but no dangling separator.
+    let mut event = create_test_event();
+    event.fields.insert(
+      "message".to_string(),
+      LogValue::String("dup".to_string()),
+    );
+    let out = String::from_utf8(formatter.format_event(&event).unwrap()).unwrap();
+    assert_eq!(out.trim(), "{}");
+
+    // No message field: plain comma-separated list.
+    let mut event = create_test_event();
+    event
+      .fields
+      .insert("a".to_string(), LogValue::Int(1));
+    event
+      .fields
+      .insert("b".to_string(), LogValue::Int(2));
+    let out = String::from_utf8(formatter.format_event(&event).unwrap()).unwrap();
+    assert_eq!(out.trim(), "{a=1, b=2}");
+  }
+
+  #[test]
+  fn validate_pattern_accepts_known_and_rejects_unknown() {
+    assert!(validate_pattern("[%d] %-5p %t - %m %X %T%n 100%%").is_ok());
+    assert!(validate_pattern("[%d{%Y-%m-%d %H:%M}] %m").is_ok());
+
+    let err = validate_pattern("%q %m").unwrap_err();
+    assert!(err.contains("%q"), "error should name the bad specifier: {}", err);
+
+    assert!(validate_pattern("%d{%Q-bogus} %m").is_err());
   }
 
   #[test]
