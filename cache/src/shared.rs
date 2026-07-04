@@ -35,6 +35,9 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) pending_loads: Box<[HybridMutex<HashMap<K, Arc<LoadFuture<V>>>>]>,
   pub(crate) maintenance_probability_denominator: u32,
   pub(crate) maintenance_on_introspection: bool,
+  // False when no shard policy uses access events, letting reads skip the
+  // access batcher entirely.
+  pub(crate) track_reads: bool,
 }
 
 impl<K: Send, V: Send + Sync, H> fmt::Debug for CacheShared<K, V, H> {

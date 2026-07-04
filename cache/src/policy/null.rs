@@ -13,6 +13,10 @@ where
   
   fn on_access(&self, _key: &K, _cost: u64) {}
 
+  fn uses_access_events(&self) -> bool {
+    false
+  }
+
   fn on_admit(&self, _key: &K, _cost: u64) -> AdmissionDecision<K> {
     AdmissionDecision::Admit // Always admit new items.
   }

@@ -622,8 +622,10 @@ where
       entry.update_last_accessed();
     }
 
-    let shard = &self.shared.store.shards[shard_idx];
-    shard.read_access_batcher.record_access(key, hash, entry.cost());
+    if self.shared.track_reads {
+      let shard = &self.shared.store.shards[shard_idx];
+      shard.read_access_batcher.record_access(key, hash, entry.cost());
+    }
   }
 
   /// Helper to run maintenance on a shard if the maintenance lock is not contended.

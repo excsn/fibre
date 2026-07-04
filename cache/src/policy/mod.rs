@@ -32,6 +32,15 @@ pub trait CachePolicy<K, V>: Send + Sync {
   /// The policy should update its internal tracking structures.
   fn on_access(&self, key: &K, cost: u64);
 
+  /// Returns `true` if this policy makes use of `on_access` events.
+  ///
+  /// Policies that ignore access information (e.g. a no-op policy for
+  /// unbounded caches) can return `false`, allowing the cache to skip
+  /// recording read accesses entirely on the hot path.
+  fn uses_access_events(&self) -> bool {
+    true
+  }
+
   /// Called when an item is being admitted.
   ///
   /// The policy can use this to decide if the new item should be admitted,

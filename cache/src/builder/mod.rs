@@ -423,6 +423,8 @@ where
       .collect::<Vec<_>>()
       .into_boxed_slice();
 
+    let track_reads = cache_policy.iter().any(|p| p.uses_access_events());
+
     let (notifier, notification_sender) = if let Some(listener) = &self.listener {
       let (notifier, sender) = Notifier::spawn(listener.clone());
       (Some(notifier), Some(sender))
@@ -505,6 +507,7 @@ where
       spawner,
       maintenance_probability_denominator,
       maintenance_on_introspection: self.maintenance_on_introspection,
+      track_reads,
     }))
   }
 

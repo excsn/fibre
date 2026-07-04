@@ -1,6 +1,6 @@
 // cache/src/task/access_batcher.rs
 use crate::sync::HybridMutex;
-use std::collections::HashMap;
+use ahash::{HashMap, HashMapExt};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -41,8 +41,10 @@ impl<K: Hash + Eq> AccessBatcher<K> {
     let idx = self.active_idx.load(Ordering::Relaxed);
     let stripes = &self.instances[idx];
 
-    // 2. Use the pre-computed hash to select the correct stripe.
-    let stripe_idx = hash as usize & (BATCH_STRIPES - 1);
+    // 2. Use the pre-computed hash to select the correct stripe. The high bits
+    //    are used because the low bits select the shard and are therefore
+    //    constant for every key that reaches this batcher.
+    let stripe_idx = (hash >> 32) as usize & (BATCH_STRIPES - 1);
 
     // 3. Lock only that single stripe and insert the key only if not already present.
     let mut guard = stripes[stripe_idx].lock();
