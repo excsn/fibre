@@ -39,6 +39,10 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   // False when no shard policy uses access events, letting reads skip the
   // access batcher entirely.
   pub(crate) track_reads: bool,
+  // Non-blocking maintenance requests from async paths to the janitor
+  // (shard index). `Some` whenever the janitor is running. Lossy by design:
+  // a full buffer means the janitor is already busy.
+  pub(crate) maintenance_signal: Option<std::sync::mpsc::SyncSender<usize>>,
 }
 
 impl<K: Send, V: Send + Sync, H> fmt::Debug for CacheShared<K, V, H> {

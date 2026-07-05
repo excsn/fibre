@@ -5,7 +5,6 @@ use crate::iter::{AsyncSnapshotIter, IterStream, DEFAULT_ITER_BATCH_SIZE};
 use crate::loader::LoadFuture;
 use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
-use crate::task::janitor::COOPERATIVE_MAINTENANCE_DRAIN_LIMIT;
 use crate::{time, Cache, EvictionReason, MetricsSnapshot};
 
 use std::borrow::Borrow;
@@ -562,14 +561,18 @@ where
     None
   }
 
-  /// Helper to run maintenance on a shard if the maintenance lock is not contended.
+  /// Requests maintenance for this shard's pending events. Never blocks and
+  /// never does the work here: drain/eviction takes blocking locks, which is
+  /// forbidden on async paths, so the janitor performs it on its own (sync)
+  /// thread. The rng gate keeps signal traffic at ~1/denominator inserts;
+  /// a full signal buffer means the janitor is already busy, so dropping
+  /// the signal is fine.
   fn _run_opportunistic_maintenance(&self, key: &K, shard: &crate::store::Shard<K, V, H>)
   where
     K: Eq + Hash + Clone + Send,
     V: Send + Sync,
     H: BuildHasher + Clone,
   {
-    // The check is now a simple, fast method call on the shard's FastRng.
     if !shard
       .rng
       .should_run(self.shared.maintenance_probability_denominator)
@@ -577,26 +580,9 @@ where
       return;
     }
 
-    if let Some(_guard) = shard.maintenance_lock.try_lock() {
+    if let Some(signal) = &self.shared.maintenance_signal {
       let shard_index = self.shared.get_shard_index(key);
-      let janitor_context = crate::task::janitor::JanitorContext {
-        store: Arc::clone(&self.shared.store),
-        metrics: Arc::clone(&self.shared.metrics),
-        cache_policy: self.shared.cache_policy.clone(),
-        capacity: self.shared.capacity,
-        time_to_idle: self.shared.time_to_idle,
-        notification_sender: self
-          .shared
-          .notification_sender
-          .as_ref()
-          .map(|val| val.clone()),
-      };
-      crate::task::janitor::perform_shard_maintenance(
-        shard,
-        shard_index,
-        &janitor_context,
-        COOPERATIVE_MAINTENANCE_DRAIN_LIMIT,
-      );
+      let _ = signal.try_send(shard_index);
     }
   }
 }

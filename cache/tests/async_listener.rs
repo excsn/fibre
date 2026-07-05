@@ -33,6 +33,9 @@ async fn test_async_listener_for_capacity() {
   cache.insert(2, "two".to_string(), 1).await;
   // Access key 1 to make it the most-recently-used.
   // This makes key 2 the unambiguous least-recently-used item.
+  // No flushing needed: the maintenance pass orders reads around pending
+  // write admissions (see perform_shard_maintenance), so this access is
+  // applied against an admitted key 1 regardless of how passes batch.
   cache.fetch(&1).await;
   // Inserting item 3 will cause the janitor to evict the LRU item (2).
   cache.insert(3, "three".to_string(), 1).await;

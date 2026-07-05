@@ -400,6 +400,7 @@ where
     let metrics = Arc::new(Metrics::new(self.shards));
 
     // Create the per-shard eviction policies using the factory.
+    let has_custom_policy = self.policy_factory.is_some();
     let factory = self.policy_factory.take().unwrap_or_else(|| {
       // If the user did not provide a factory, create a default one
       // that constructs our default TinyLfu policy.
@@ -478,13 +479,26 @@ where
     };
 
     let maintenance_probability_denominator = self.maintenance_probability_denominator;
-    let janitor =
-      if self.time_to_live.is_some() || self.time_to_idle.is_some() || self.capacity != u64::MAX {
-        let tick_interval = self.janitor_tick_interval.unwrap_or(Duration::from_secs(1));
-        Some(Janitor::spawn(janitor_context, tick_interval, maintenance_probability_denominator))
-      } else {
-        None
-      };
+    // The janitor also runs for custom policies on unbounded caches: async
+    // paths never do maintenance inline (they signal instead), so a policy
+    // that wants access/write events needs this thread to apply them.
+    let needs_janitor = self.time_to_live.is_some()
+      || self.time_to_idle.is_some()
+      || self.capacity != u64::MAX
+      || has_custom_policy;
+    let (janitor, maintenance_signal) = if needs_janitor {
+      let tick_interval = self.janitor_tick_interval.unwrap_or(Duration::from_secs(1));
+      let (signal_tx, signal_rx) = std::sync::mpsc::sync_channel(self.shards.max(16));
+      let janitor = Janitor::spawn(
+        janitor_context,
+        tick_interval,
+        maintenance_probability_denominator,
+        signal_rx,
+      );
+      (Some(janitor), Some(signal_tx))
+    } else {
+      (None, None)
+    };
 
     let pending_loads = (0..self.shards)
       .map(|_| crate::sync::HybridMutex::new(Default::default()))
@@ -508,6 +522,7 @@ where
       maintenance_probability_denominator,
       maintenance_on_introspection: self.maintenance_on_introspection,
       track_reads,
+      maintenance_signal,
     }))
   }
 

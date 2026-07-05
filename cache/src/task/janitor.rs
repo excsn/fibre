@@ -47,10 +47,17 @@ pub(crate) struct Janitor {
 
 impl Janitor {
   /// Spawns a new janitor thread.
+  ///
+  /// `signal_rx` carries shard indices from async paths requesting
+  /// maintenance: async callers must never run drain/eviction work inline
+  /// (blocking locks on an executor thread), so they signal and this thread
+  /// does the work in sync context. The receive timeout doubles as the
+  /// periodic tick sleep.
   pub(crate) fn spawn<K, V, H>(
     context: JanitorContext<K, V, H>,
     tick_interval: Duration,
     maintenance_probability_denominator: u32,
+    signal_rx: std::sync::mpsc::Receiver<usize>,
   ) -> Self
   where
     K: Eq + Hash + Clone + Send + Sync + 'static,
@@ -61,20 +68,70 @@ impl Janitor {
     let stop_clone = stop_flag.clone();
 
     let handle = thread::spawn(move || {
-      while !stop_clone.load(Ordering::Relaxed) {
-        let sleep_start = std::time::Instant::now();
-
-        // Perform all maintenance tasks.
-        Self::cleanup(&context, maintenance_probability_denominator);
-
-        // Sleep for the remaining duration of the tick interval.
-        if let Some(remaining) = tick_interval.checked_sub(sleep_start.elapsed()) {
-          thread::sleep(remaining);
+      use std::sync::mpsc::RecvTimeoutError;
+      loop {
+        if stop_clone.load(Ordering::Relaxed) {
+          break;
+        }
+        match signal_rx.recv_timeout(tick_interval) {
+          Ok(shard_index) => {
+            if stop_clone.load(Ordering::Relaxed) {
+              break;
+            }
+            Self::signaled_maintenance(&context, shard_index, &signal_rx);
+          }
+          Err(RecvTimeoutError::Timeout) => {
+            Self::cleanup(&context, maintenance_probability_denominator);
+          }
+          Err(RecvTimeoutError::Disconnected) => {
+            // All senders gone: the cache is shutting down. Keep periodic
+            // ticks until the stop flag lands.
+            Self::cleanup(&context, maintenance_probability_denominator);
+            thread::sleep(tick_interval);
+          }
         }
       }
     });
 
     Self { handle, stop_flag }
+  }
+
+  /// Handles a burst of maintenance signals: dedups pending shard indices
+  /// and runs one drain + capacity pass per shard. No probability gate —
+  /// the sender side already gated.
+  fn signaled_maintenance<K, V, H>(
+    context: &JanitorContext<K, V, H>,
+    first: usize,
+    signal_rx: &std::sync::mpsc::Receiver<usize>,
+  ) where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    V: Send + Sync + 'static,
+    H: BuildHasher + Clone + Send + Sync + 'static,
+  {
+    let num_shards = context.store.shards.len();
+    let mut pending: Vec<usize> = Vec::with_capacity(8);
+    pending.push(first);
+    while let Ok(idx) = signal_rx.try_recv() {
+      if !pending.contains(&idx) {
+        pending.push(idx);
+        if pending.len() >= num_shards {
+          break;
+        }
+      }
+    }
+
+    for shard_index in pending {
+      if shard_index >= num_shards {
+        continue;
+      }
+      let shard = &context.store.shards[shard_index];
+      // Contended means someone else is already maintaining this shard;
+      // the signal is satisfied either way.
+      if let Some(_guard) = shard.maintenance_lock.try_lock() {
+        perform_shard_maintenance(shard, shard_index, context, JANITOR_MAINTENANCE_DRAIN_LIMIT);
+        Self::cleanup_capacity_for_shard(shard, shard_index, context);
+      }
+    }
   }
 
   /// The main cleanup and maintenance routine, probabilistic.
@@ -270,71 +327,105 @@ pub(crate) fn perform_shard_maintenance<K, V, H>(
 {
   let policy = &context.cache_policy[shard_index];
 
-  // 1. Drain the read batcher first so access frequency is up to date before
-  //    admission decisions are made for new writes.
-  let read_batch = shard.read_access_batcher.drain();
-  if !read_batch.is_empty() {
-    for (key, cost) in read_batch {
-      policy.on_access(&key, cost);
+  // The write channel and the read batcher are separate streams with no
+  // total order, and the batcher additionally coalesces, so a pass
+  // reconstructs temporal order structurally:
+  //
+  //   1. collect (don't apply) this pass's write events;
+  //   2. apply read accesses for keys with NO write pending in this pass —
+  //      their inserts were admitted long ago and their reads happened
+  //      before this pass's writes were drained;
+  //   3. apply the writes (admissions / admission-driven evictions);
+  //   4. apply read accesses for keys that WERE admitted in step 3 — an
+  //      access can only be recorded after a map hit, and `insert()`
+  //      enqueues the Write event before returning, so these reads
+  //      necessarily postdate their key's insert.
+  //
+  // Both Left-Right batcher instances are drained: drain() flips sides, so
+  // a record racing an earlier drain can sit in either — and flushes must
+  // catch both. Residual advisory loss windows, self-correcting on later
+  // hits: a reader hitting mid-insert (the map insert precedes the event
+  // enqueue), a write backlog beyond `drain_limit`, and arbitrary ordering
+  // WITHIN one read batch (the batcher coalesces). A sequence-stamped total
+  // order was implemented and benched 2026-07-05: the per-hit fetch_add on
+  // a shared per-shard counter cost too much read throughput and was
+  // reverted in favor of this reconstruction.
+
+  // 1. Collect this pass's write events.
+  let mut writes: Vec<(K, u64)> = Vec::new();
+  for _ in 0..drain_limit {
+    match shard.event_buffer_rx.try_recv() {
+      Ok(AccessEvent::Write(key, cost)) => writes.push((key, cost)),
+      Err(_) => break,
     }
   }
 
-  // 2. Drain write events so new keys are admitted to the policy with the
-  //    latest access-frequency state already applied.
-  for _ in 0..drain_limit {
-    match shard.event_buffer_rx.try_recv() {
-      Ok(event) => match event {
-        AccessEvent::Write(key, cost) => {
-          let decision = policy.on_admit(&key, cost);
-
-          if let AdmissionDecision::AdmitAndEvict(victims) = decision {
-            let mut notifications_to_send = Vec::new();
-            let mut total_cost_released = 0;
-
-            for victim_key in victims {
-              // The victim could be in another shard, so we must look it up.
-              let victim_shard_index = context.store.get_shard_index(&victim_key);
-              let victim_shard = &context.store.shards[victim_shard_index];
-
-              let mut guard = victim_shard.map.write();
-
-              if let Some(removed_entry) = guard.remove(&victim_key) {
-                // If we evicted a key, we must also tell its original policy.
-                context.cache_policy[victim_shard_index].on_remove(&victim_key);
-
-                let victim_cost = removed_entry.cost();
-                total_cost_released += victim_cost;
-                context
-                  .metrics
-                  .evicted_by_capacity
-                  .fetch_add(1, Ordering::Relaxed);
-
-                if context.notification_sender.is_some() {
-                  notifications_to_send.push((
-                    victim_key.clone(),
-                    removed_entry.value(),
-                    EvictionReason::Capacity,
-                  ));
-                }
-              }
-            }
-
-            context
-              .metrics
-              .current_cost
-              .fetch_sub(total_cost_released, Ordering::Relaxed);
-
-            if let Some(sender) = &context.notification_sender {
-              for notif in notifications_to_send {
-                let _ = sender.try_send(notif);
-              }
-            }
-          }
-        }
-      },
-      Err(_) => {
-        break;
+  // 2. Apply accesses for keys without a pending write; defer the rest.
+  let mut read_batch = shard.read_access_batcher.drain();
+  read_batch.extend(shard.read_access_batcher.drain());
+  let mut deferred_reads: Vec<(K, u64)> = Vec::new();
+  {
+    let pending_writes: HashSet<&K> = writes.iter().map(|(k, _)| k).collect();
+    for (key, cost) in read_batch {
+      if pending_writes.contains(&key) {
+        deferred_reads.push((key, cost));
+      } else {
+        policy.on_access(&key, cost);
       }
     }
+  }
+
+  // 3. Apply the writes.
+  for (key, cost) in writes {
+    let decision = policy.on_admit(&key, cost);
+
+    if let AdmissionDecision::AdmitAndEvict(victims) = decision {
+      let mut notifications_to_send = Vec::new();
+      let mut total_cost_released = 0;
+
+      for victim_key in victims {
+        // The victim could be in another shard, so we must look it up.
+        let victim_shard_index = context.store.get_shard_index(&victim_key);
+        let victim_shard = &context.store.shards[victim_shard_index];
+
+        let mut guard = victim_shard.map.write();
+
+        if let Some(removed_entry) = guard.remove(&victim_key) {
+          // If we evicted a key, we must also tell its original policy.
+          context.cache_policy[victim_shard_index].on_remove(&victim_key);
+
+          let victim_cost = removed_entry.cost();
+          total_cost_released += victim_cost;
+          context
+            .metrics
+            .evicted_by_capacity
+            .fetch_add(1, Ordering::Relaxed);
+
+          if context.notification_sender.is_some() {
+            notifications_to_send.push((
+              victim_key.clone(),
+              removed_entry.value(),
+              EvictionReason::Capacity,
+            ));
+          }
+        }
+      }
+
+      context
+        .metrics
+        .current_cost
+        .fetch_sub(total_cost_released, Ordering::Relaxed);
+
+      if let Some(sender) = &context.notification_sender {
+        for notif in notifications_to_send {
+          let _ = sender.try_send(notif);
+        }
+      }
+    }
+  }
+
+  // 4. Apply the reads that had to wait for this pass's admissions.
+  for (key, cost) in deferred_reads {
+    policy.on_access(&key, cost);
   }
 }

@@ -624,7 +624,9 @@ where
 
     if self.shared.track_reads {
       let shard = &self.shared.store.shards[shard_idx];
-      shard.read_access_batcher.record_access(key, hash, entry.cost());
+      shard
+        .read_access_batcher
+        .record_access(key, hash, entry.cost());
     }
   }
 

@@ -116,10 +116,11 @@ where
 
     let key_for_event = self.key.clone();
 
+    let shard = self.shared.store.get_shard(&key_for_event);
+
     self.shard_guard.insert(self.key, new_cache_entry);
     drop(self.shard_guard);
 
-    let shard = self.shared.store.get_shard(&key_for_event);
     let _ = shard
       .event_buffer_tx
       .try_send(AccessEvent::Write(key_for_event, cost));

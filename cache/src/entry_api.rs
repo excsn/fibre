@@ -115,6 +115,8 @@ where
     // The key is cloned once for the event and once for the map insertion.
     let key_for_event = self.key.clone();
 
+    let shard = self.shared.store.get_shard(&key_for_event);
+
     // Insert the new entry into the hash map.
     self.shard_guard.insert(self.key, new_cache_entry);
 
@@ -122,9 +124,6 @@ where
     // that might try to lock other shards, although in this new model, we don't.
     // It's still good practice.
     drop(self.shard_guard);
-
-    // Get the shard again to access its event buffer.
-    let shard = self.shared.store.get_shard(&key_for_event);
 
     // Record the write event for the janitor to process later.
     let _ = shard
