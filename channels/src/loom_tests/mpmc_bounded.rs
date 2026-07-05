@@ -1,27 +1,14 @@
-//! Loom models of the bounded MPMC (`mpmc::bounded`): multi-producer publish
-//! and multi-consumer take through the cell/slab core, plus the sync
-//! park/notify handshake (`backoff::adaptive_wait` -> park, and the waiter wake
-//! path). Handles are `Clone` and `send`/`recv` take `&self`.
+//! Loom models of the bounded MPMC (`mpmc::bounded`): the sync park/notify
+//! handshake (`backoff::adaptive_wait` -> park, and the waiter wake path) and
+//! close handling. Handles are `Clone` and `send`/`recv` take `&self`.
+//!
+//! No multi-producer model here: every mpmc op takes the spinlock-backed
+//! HybridMutex, and three contending threads explode loom's spin-interleaving
+//! branch cap. The lock's own contention is modeled in `hybrid_mutex`; these
+//! single-producer models cover the channel's park/wake and close logic.
 
 use crate::mpmc::bounded;
 use loom::thread;
-
-/// Two producers race the publish into a cap-2 channel; the consumer drains
-/// both. Global order is not fixed — assert the multiset.
-#[test]
-fn two_producers_one_item_each() {
-  loom::model(|| {
-    let (tx, rx) = bounded::<u32>(2);
-    let tx2 = tx.clone();
-    let a = thread::spawn(move || tx.send(1).unwrap());
-    let b = thread::spawn(move || tx2.send(2).unwrap());
-    let first = rx.recv().unwrap();
-    let second = rx.recv().unwrap();
-    assert_eq!(first + second, 3);
-    a.join().unwrap();
-    b.join().unwrap();
-  });
-}
 
 /// Cap-1 backpressure: the producer's second send must block until the consumer
 /// takes the first — exercises the producer park + consumer wake.

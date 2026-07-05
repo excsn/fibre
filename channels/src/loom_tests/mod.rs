@@ -13,6 +13,7 @@
 //! - A lost wakeup shows up as a loom "deadlock" report; a protocol bug as an
 //!   assert/panic with the exact interleaving trace.
 
+mod hybrid_mutex;
 mod mpmc_bounded;
 mod mpmc_rendezvous;
 mod mpmc_unbounded;

@@ -1112,6 +1112,71 @@ mod tests {
   use std::thread;
   use std::time::Duration;
 
+  /// `send_batch`/`recv_batch` with a batch far larger than the channel
+  /// capacity must still deliver every item exactly once — it just clamps to
+  /// free space and blocks a lot. Sweep several producer/consumer shapes over a
+  /// low cap to shake out any wake/handoff gap that only shows under sustained
+  /// fill/drain churn. The operation should always succeed, only slowly.
+  #[test]
+  fn batch_far_exceeds_capacity_delivers_all() {
+    // batch >> cap on every config below.
+    let batch = 64usize;
+    let per_producer = if cfg!(miri) { 20 } else { 3_000 };
+
+    for &(cap, producers, consumers) in &[
+      (1usize, 1usize, 1usize),
+      (1, 4, 1),
+      (1, 1, 4),
+      (2, 2, 2),
+      (2, 4, 1),
+      (4, 4, 4),
+      (4, 1, 4),
+    ] {
+      let total = per_producer * producers;
+      let (tx, rx) = bounded::<usize>(cap);
+
+      let mut consumer_handles = Vec::new();
+      for _ in 0..consumers {
+        let rx = rx.clone();
+        consumer_handles.push(thread::spawn(move || {
+          let mut got = 0usize;
+          while let Ok(v) = rx.recv_batch(batch) {
+            got += v.len();
+          }
+          got
+        }));
+      }
+      drop(rx);
+
+      let mut producer_handles = Vec::new();
+      for _ in 0..producers {
+        let tx = tx.clone();
+        producer_handles.push(thread::spawn(move || {
+          let mut remaining = per_producer;
+          while remaining > 0 {
+            let n = remaining.min(batch);
+            tx.send_batch(vec![7usize; n]).unwrap();
+            remaining -= n;
+          }
+        }));
+      }
+      drop(tx);
+
+      for h in producer_handles {
+        h.join().unwrap();
+      }
+      let received: usize = consumer_handles
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .sum();
+
+      assert_eq!(
+        received, total,
+        "cap={cap} producers={producers} consumers={consumers}: lost or duplicated items"
+      );
+    }
+  }
+
   #[test]
   fn test_mpmc_v2_recv_timeout_spurious_wakeup_leak() {
     // Create a bounded channel of capacity 5

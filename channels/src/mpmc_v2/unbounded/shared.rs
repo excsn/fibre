@@ -3,8 +3,9 @@
 //! Producers publish lock-free onto the slab-backed Vyukov chain
 //! (`internal::slab_chain`): one always-succeeding `swap` per send, nodes from
 //! per-handle slabs, sends never block, no send waiters exist. The consumer
-//! side is serialized by one small `parking_lot::Mutex` — the mechanism the
-//! v2-vs-v3 contention benchmarks crowned — guarding only the chain cursor,
+//! side is serialized by one small `HybridMutex` — the single-consumer-lock
+//! mechanism the v2-vs-v3 contention benchmarks crowned — guarding only the
+//! chain cursor,
 //! the recv-waiter queue, and the reclaimed-item buffer.
 //!
 //! **Eager handoff:** whoever holds the consumer mutex while waiters exist
@@ -29,8 +30,9 @@ use std::task::Waker;
 use std::time::Instant;
 
 use crate::internal::sync::{
-  fence, thread, Arc, AtomicBool, AtomicU8, AtomicUsize, Mutex, Ordering, Thread,
+  fence, thread, Arc, AtomicBool, AtomicU8, AtomicUsize, Ordering, Thread,
 };
+use crate::sync::HybridMutex as Mutex;
 
 /// Compile-time kill-switch for eager handoff (A/B: flip and re-bench).
 pub(crate) const EAGER_HANDOFF: bool = false;

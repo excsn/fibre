@@ -16,6 +16,10 @@ pub use mpmc_v2 as mpmc;
 pub mod mpmc_exp;
 pub mod telemetry;
 
+/// Hybrid sync/async locking primitives (`HybridMutex`, `HybridRwLock`).
+/// FIFO wait-list, spin-yield-then-park, barging.
+pub mod sync;
+
 // Internal utilities
 mod internal;
 mod sync_util;

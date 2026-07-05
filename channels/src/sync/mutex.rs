@@ -14,18 +14,21 @@ use std::{
   ops::{Deref, DerefMut},
   pin::Pin,
   ptr,
-  sync::atomic::{AtomicUsize, Ordering},
   task::{Context, Poll},
-  thread,
 };
+
+// Sync primitives via the loom facade (see wait_queue.rs). Plain std re-exports
+// in normal builds; loom's instrumented types only under channels' `--cfg loom`.
+use crate::internal::sync::{thread, AtomicUsize, Ordering};
 
 const LOCKED: usize = 1;
 const HAS_QUEUED: usize = 1 << 1;
 
-/// Spin iterations (with `yield_now`) before parking.
-const SPIN_YIELDS: usize = 100;
+/// Spin iterations (with `yield_now`) before parking. Collapses to 1 under loom
+/// so the model explores parking instead of blowing the branch cap.
+const SPIN_YIELDS: usize = if crate::internal::sync::IS_LOOM { 1 } else { 100 };
 /// Lock-free acquisition attempts per async poll before queueing.
-const POLL_ATTEMPTS: usize = 4;
+const POLL_ATTEMPTS: usize = if crate::internal::sync::IS_LOOM { 1 } else { 4 };
 
 pub struct HybridMutex<T> {
   state: AtomicUsize,
@@ -36,6 +39,12 @@ pub struct HybridMutex<T> {
 unsafe impl<T: Send> Send for HybridMutex<T> {}
 unsafe impl<T: Send> Sync for HybridMutex<T> {}
 
+impl<T> std::fmt::Debug for HybridMutex<T> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("HybridMutex").finish_non_exhaustive()
+  }
+}
+
 impl<T> HybridMutex<T> {
   pub fn new(data: T) -> Self {
     Self {
@@ -43,6 +52,13 @@ impl<T> HybridMutex<T> {
       waiters: WaitList::new(),
       data: UnsafeCell::new(data),
     }
+  }
+
+  /// Exclusive access without locking — `&mut self` proves no other reference
+  /// exists (matches `parking_lot::Mutex::get_mut`).
+  #[inline]
+  pub fn get_mut(&mut self) -> &mut T {
+    unsafe { &mut *self.data.get() }
   }
 
   /// Single lock-free acquisition attempt (barges past the queue; the

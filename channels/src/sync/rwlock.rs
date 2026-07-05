@@ -25,10 +25,12 @@ use std::{
   ops::{Deref, DerefMut},
   pin::Pin,
   ptr,
-  sync::atomic::{AtomicUsize, Ordering},
   task::{Context, Poll},
-  thread,
 };
+
+// Sync primitives via the loom facade (see wait_queue.rs). Plain std re-exports
+// in normal builds; loom's instrumented types only under channels' `--cfg loom`.
+use crate::internal::sync::{thread, AtomicUsize, Ordering};
 
 const WRITE_LOCKED: usize = 1;
 const WRITER_PENDING: usize = 1 << 1;
@@ -38,10 +40,10 @@ const FLAGS: usize = WRITE_LOCKED | WRITER_PENDING | HAS_QUEUED;
 const READERS: usize = !FLAGS;
 
 /// Spin iterations (with `yield_now`) before parking — the original
-/// Hybrid contention profile.
-const SPIN_YIELDS: usize = 100;
+/// Hybrid contention profile. Collapses to 1 under loom.
+const SPIN_YIELDS: usize = if crate::internal::sync::IS_LOOM { 1 } else { 100 };
 /// Lock-free acquisition attempts per async poll before queueing.
-const POLL_ATTEMPTS: usize = 4;
+const POLL_ATTEMPTS: usize = if crate::internal::sync::IS_LOOM { 1 } else { 4 };
 
 pub struct HybridRwLock<T> {
   state: AtomicUsize,

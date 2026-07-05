@@ -61,7 +61,6 @@ fn parameter_axes(core_count: u64) -> Vec<Vec<MatrixCellValue>> {
   vec![
     vec![
       // Axis 0: Capacity
-      // MatrixCellValue::Unsigned(0), // Rendezvous
       MatrixCellValue::Unsigned(4),
       MatrixCellValue::Unsigned(128),
     ],
@@ -300,6 +299,15 @@ fn extract_mpmc_batch_config(combo: &AbstractCombination) -> Result<MpmcBatchBen
   if batch_size == 0 {
     return Err("Batch size must be at least 1.".to_string());
   }
+  // Batching only measures batching when a whole batch fits the channel;
+  // otherwise `send_batch` clamps to free space and degenerates to the
+  // per-item fill/block/wake cycle. Skip `batch > cap` combos.
+  if batch_size > capacity {
+    return Err(format!(
+      "Batch size ({}) must be <= capacity ({})",
+      batch_size, capacity
+    ));
+  }
   if total_items > 0 && num_producers > 0 && total_items < num_producers {
     return Err(format!(
       "Total items ({}) must be >= num_producers ({})",
@@ -318,6 +326,14 @@ fn extract_mpmc_batch_config(combo: &AbstractCombination) -> Result<MpmcBatchBen
 
 fn batch_parameter_axes(core_count: u64) -> Vec<Vec<MatrixCellValue>> {
   let mut axes = parameter_axes(core_count);
+  // Capacities sized so the batches below actually fit (see the `batch <= cap`
+  // gate in `extract_mpmc_batch_config`); `cap-4` batching is meaningless.
+  axes[0] = vec![
+    MatrixCellValue::Unsigned(128),
+    MatrixCellValue::Unsigned(1024),
+  ];
+  // Batch suites run a single item count instead of the 100k/1M sweep.
+  axes[3] = vec![MatrixCellValue::Unsigned(500_000)];
   axes.push(vec![
     // Axis 4: Batch Size
     MatrixCellValue::Unsigned(8),

@@ -8,7 +8,8 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::task::Waker;
 
-use crate::internal::sync::{AtomicU8, Mutex, Ordering, Thread};
+use crate::internal::sync::{AtomicU8, Ordering, Thread};
+use crate::sync::HybridMutex as Mutex;
 
 // --- State Machine Constants ---
 pub(crate) const STATE_WAITING: u8 = 0;

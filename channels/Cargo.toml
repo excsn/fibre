@@ -44,6 +44,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
 [dev-dependencies]
 criterion = { workspace = true }
 bench_matrix = { workspace = true }
+futures-executor = "0.3"
 tokio = { version = "1", features = ["full"] }
 serial_test = "^3"
 rand = "0.9"

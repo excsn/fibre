@@ -1,11 +1,5 @@
-mod mutex;
-mod rwlock;
-mod wait_queue;
+//! Hybrid sync/async locking primitives. These now live in the `fibre`
+//! (channels) crate and are re-exported here so `fibre_cache` and `fibre` share
+//! one implementation. See `fibre::sync`.
 
-#[cfg(all(test, miri))]
-mod miri_tests;
-#[cfg(test)]
-mod test_util;
-
-pub use mutex::{HybridMutex, MutexGuard};
-pub use rwlock::{HybridRwLock, ReadGuard, WriteGuard};
+pub use fibre::sync::{HybridMutex, HybridRwLock, MutexGuard, ReadGuard, WriteGuard};

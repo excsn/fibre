@@ -19,11 +19,15 @@
 //! across user code, parking, or `.await`.
 
 use std::cell::UnsafeCell;
-use std::hint::spin_loop;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::task::Waker;
-use std::thread::Thread;
+
+// Sync primitives via the loom facade so `HybridMutex`/`HybridRwLock` are
+// loom-modelable in channels' loom tests. Under normal builds these are plain
+// std re-exports (zero cost); only channels' `--cfg loom` test build swaps in
+// loom's instrumented types. The data cell stays std (loom's closure-cell can't
+// back a guard's Deref).
+use crate::internal::sync::{hint, thread, AtomicBool, AtomicU8, Ordering, Thread};
 
 pub(super) const WAITING: u8 = 0;
 pub(super) const WOKEN: u8 = 1;
@@ -61,7 +65,7 @@ impl WaiterNode {
       next: ptr::null_mut(),
       is_writer,
       linked: false,
-      waiter: Some(Waiter::Thread(std::thread::current())),
+      waiter: Some(Waiter::Thread(thread::current())),
       state: AtomicU8::new(WAITING),
     }
   }
@@ -119,7 +123,7 @@ impl WaitList {
         return ListGuard { list: self };
       }
       while self.locked.load(Ordering::Relaxed) {
-        spin_loop();
+        hint::spin_loop();
       }
     }
   }
