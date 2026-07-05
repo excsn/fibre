@@ -2,6 +2,9 @@ log.txt
 logs.txt
 channels/bench/results.jsonl
 
+# Out-of-tree experiment sandbox crate (fibre_lab) — never committed
+/experimental/
+
 ##### macOS #####
 # General
 **/.DS_Store

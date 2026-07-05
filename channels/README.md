@@ -118,18 +118,18 @@ Benchmarks on Apple M4 Pro; full results in [`docs/benches/`](./docs/benches/).
 | :--- | :--- | ---: | ---: |
 | **SPSC** | Cap-1024, 1P / 1C | 44.5 Melem/s | 183 Melem/s |
 | **SPSC** | Cap-1024, batch 512 | 180 Melem/s | 146 Melem/s |
-| **MPSC** | Cap-128, 4P | 15.3 Melem/s | 63.2 Melem/s |
-| **MPSC** | Cap-128, 14P | 14.8 Melem/s | 62.9 Melem/s |
+| **MPSC** | Cap-128, 4P | 9.6 Melem/s | 63.2 Melem/s |
+| **MPSC** | Cap-128, 14P | 2.8 Melem/s | 62.9 Melem/s |
 | **SPMC** | Cap-128, 1C (broadcast) | 15.0 Melem/s | 14.8 Melem/s |
 | **SPMC** | Cap-128, 4C (broadcast) | 15.7 Melem/s | 19.5 Melem/s |
 | **SPMC Topic** | 1 subscriber | 18.1 Melem/s | 7.8 Melem/s |
 | **SPMC Topic** | 14 subscribers | 726 Kelem/s | 14.9 Melem/s |
-| **MPMC** | Cap-128, 1P / 1C | 22.2 Melem/s | 73.2 Melem/s |
-| **MPMC** | Cap-128, 14P / 14C | 14.3 Melem/s | 19.9 Melem/s |
+| **MPMC** | Cap-128, 1P / 1C | 42.1 Melem/s | 73.2 Melem/s |
+| **MPMC** | Cap-128, 14P / 14C | 18.9 Melem/s | 19.9 Melem/s |
 | **Oneshot** | — | — | 10.4 Melem/s |
 
 - SPSC numbers are measured with a real spawned producer and consumer (thread or task) per iteration, so they include genuine cross-core synchronization; throughput scales with buffer size (Cap-128: 27 / 139 Melem/s sync/async, Cap-1024: 44.5 / 183 Melem/s). Batch APIs at Cap-1024 reach 150–185 Melem/s sync.
-- MPSC throughput at Cap-128 is remarkably consistent across producer counts: 4P and 14P both sustain ~15 Melem/s sync / ~63 Melem/s async.
+- MPSC async throughput at Cap-128 is remarkably consistent across producer counts (~63 Melem/s from 4P to 14P); sync bounded throughput is lower and falls off under contention (~9.6 Melem/s at 4P down to ~2.8 at 14P).
 - SPMC figures are per-message sent; each message is cloned and delivered to every consumer.
 - SPMC Topic's async 14-subscriber result (14.9 Melem/s) is ~20× faster than the sync equivalent (726 Kelem/s) because the non-blocking sender fully decouples producers from slow subscribers.
 - MPMC async at 73 Melem/s (Cap-128, 1P / 1C) avoids lock overhead when the buffer has slack.
