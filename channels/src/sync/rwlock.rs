@@ -2,7 +2,7 @@
 //!
 //! Contention strategy (matches the original Hybrid profile): spin with
 //! yields first, barge freely, park only as a last resort, and on unlock
-//! wake waiters to RE-CONTEND — the lock is always released before anyone
+//! wake waiters to RE-CONTEND - the lock is always released before anyone
 //! is woken, so ownership is never parked inside a suspended task and any
 //! runnable thread (including a blocking waiter on an executor thread) can
 //! always make progress.
@@ -13,7 +13,7 @@
 //! cancellation unlinks under the list lock.
 //!
 //! Fairness: `WRITER_PENDING` is set only while a writer is actually queued
-//! and gates new readers — the writer stays linked (keeping the gate up)
+//! and gates new readers - the writer stays linked (keeping the gate up)
 //! until it wins, which is what prevents reader streams from starving
 //! writers. Pure-read workloads never set it and never touch the queue.
 
@@ -39,7 +39,7 @@ const READER_UNIT: usize = 1 << 3;
 const FLAGS: usize = WRITE_LOCKED | WRITER_PENDING | HAS_QUEUED;
 const READERS: usize = !FLAGS;
 
-/// Spin iterations (with `yield_now`) before parking — the original
+/// Spin iterations (with `yield_now`) before parking - the original
 /// Hybrid contention profile. Collapses to 1 under loom.
 const SPIN_YIELDS: usize = if crate::internal::sync::IS_LOOM { 1 } else { 100 };
 /// Lock-free acquisition attempts per async poll before queueing.
@@ -112,7 +112,7 @@ impl<T> HybridRwLock<T> {
 
       // Phase 2: queue. Arm-then-recheck: after linking, acquisition is
       // re-attempted via RMWs under the list lock, so we can only proceed
-      // to park while a live holder was observed — whose unlock will see
+      // to park while a live holder was observed - whose unlock will see
       // HAS_QUEUED and wake us.
       {
         let mut g = self.waiters.lock();
@@ -177,7 +177,7 @@ impl<T> HybridRwLock<T> {
     let mut node = WaiterNode::new_sync(true);
     let node_ptr: *mut WaiterNode = &mut node;
     // Writers stay linked while re-contending (keeps WRITER_PENDING up so
-    // readers cannot starve us); track linkage locally — only we unlink it.
+    // readers cannot starve us); track linkage locally - only we unlink it.
     let mut linked = false;
     loop {
       for _ in 0..SPIN_YIELDS {
@@ -312,7 +312,7 @@ impl<T> HybridRwLock<T> {
       debug_assert!(!w_node.is_null());
       // SAFETY: linked node, valid under the list lock; take_and_mark_woken
       // does not touch the node after the guard drops. `None` means the
-      // writer is already awake re-contending — its arm-then-recheck
+      // writer is already awake re-contending - its arm-then-recheck
       // covers this release.
       let w = unsafe { g.take_and_mark_woken(w_node) };
       drop(g);
@@ -387,7 +387,7 @@ impl<T> DerefMut for WriteGuard<'_, T> {
 //
 // One heap waiter node per future, allocated on first queueing; freed only
 // by the future. Wakes are re-contention signals, never ownership transfer,
-// so a cancelled future only has to unlink — plus pass the wake token on if
+// so a cancelled future only has to unlink - plus pass the wake token on if
 // it was woken but never used it.
 
 struct ReadFuture<'a, T> {

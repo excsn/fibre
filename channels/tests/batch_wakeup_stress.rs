@@ -182,7 +182,7 @@ async fn run_mpmc_burst(cap: usize, producers: usize, items_per_producer: usize,
 }
 
 /// Variant (c): mpsc bounded, sync producer thread using try_send_batch_mut,
-/// async consumer alternating Stream::poll_next with try_recv_batch —
+/// async consumer alternating Stream::poll_next with try_recv_batch -
 /// exercising the shared consumer waker across both call styles.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mpsc_sync_producer_async_consumer_stream_mix() {

@@ -1,4 +1,4 @@
-# fibre_miri — the dedicated miri suite
+# fibre_miri - the dedicated miri suite
 
 This crate is the **only** place miri runs. The main `fibre` crate and its
 integration tests carry no `cfg(miri)` flags at all; if you find yourself
@@ -16,8 +16,8 @@ cargo +nightly miri test -p fibre_miri --test mpsc_unbounded
 
 ### Seed exploration (not optional for concurrency bugs)
 
-A default miri run explores **one** thread interleaving. Weak-memory bugs —
-ABA on recycled nodes, missing-`Acquire` stale reads, lost wakeups — are
+A default miri run explores **one** thread interleaving. Weak-memory bugs -
+ABA on recycled nodes, missing-`Acquire` stale reads, lost wakeups - are
 schedule-dependent and routinely survive a green default run. `-Zmiri-many-seeds`
 re-runs each test under many schedules; **use it for anything touching atomics,
 recycling, or park/wake:**
@@ -36,11 +36,11 @@ Two things learned the hard way (mpsc bounded ghost/deadlock hunt, 2026-07-03):
 - **Run BOTH the isolated test and the full suite.** Isolating a test changes the
   process-global schedule, so a bug can pass in one framing and fail in the other
   at the *same* seed number. Green on one is not green.
-- **A failure prints `FAILING SEED: N` and is deterministic** — re-run that exact
+- **A failure prints `FAILING SEED: N` and is deterministic** - re-run that exact
   seed (`-Zmiri-many-seeds=N..N+1`) to iterate on a fix. `0..64` is the floor for
   trusting a fix; bump higher (`0..256`) for a hairy one.
 
-The tests also compile and pass under plain `cargo test -p fibre_miri` — they
+The tests also compile and pass under plain `cargo test -p fibre_miri` - they
 are ordinary fast native tests when not interpreted, which doubles as a cheap
 smoke suite. That is a side effect, not the purpose; behavioral coverage lives
 in `channels/tests/`.
@@ -59,11 +59,11 @@ here is shaped for the interpreter:
   If you change one of those internal sizes past ~150, bump `ITEMS_CROSSING`.
 - **No tokio.** Runtimes need timers/epoll, which miri can't provide. Async
   paths are exercised two ways instead:
-  - `poll_once(pin!(fut))` — one manual poll with a no-op waker. Poll to
+  - `poll_once(pin!(fut))` - one manual poll with a no-op waker. Poll to
     `Pending` (drives waiter *registration*), then drop the future (drives the
     cancel-safety `Drop`/unregister path). This reaches the lost-wakeup-shaped
     code that tokio-based tests can never reach under miri.
-  - `block_on` (re-exported from `futures`) — for cross-thread completion;
+  - `block_on` (re-exported from `futures`) - for cross-thread completion;
     its park/unpark waker works under miri.
 - **No sleeps, no timing assumptions.** A blocking `recv()` on one thread
   woken by a `send()` on another is fine (miri supports park/unpark); a test

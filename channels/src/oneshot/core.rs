@@ -81,7 +81,7 @@ impl<T> OneShotShared<T> {
       {
         self.receiver_waker.wake(); // Wake receiver to observe Disconnected state
       }
-      // Receiver is gone and the value is in STATE_SENT — it will never be taken.
+      // Receiver is gone and the value is in STATE_SENT - it will never be taken.
       // Drop it here to prevent a leak. This is the "drop race" case where the receiver
       // dropped while the sender was in STATE_WRITING, so the receiver's close_internal
       // couldn't claim it at that time.

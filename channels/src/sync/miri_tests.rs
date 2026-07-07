@@ -3,7 +3,7 @@
 //! The regular unit tests in mutex.rs / rwlock.rs also run under miri with
 //! scaled-down iteration counts; this module holds the scenarios whose value
 //! is specifically miri's UB, leak, and weak-memory checking of the raw
-//! pointer WaitQueue lifecycle — the assertions themselves are secondary.
+//! pointer WaitQueue lifecycle - the assertions themselves are secondary.
 
 use super::mutex::HybridMutex;
 use super::rwlock::HybridRwLock;

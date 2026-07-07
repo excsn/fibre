@@ -1,7 +1,7 @@
 //! Unbounded MPSC v3: strict-FIFO Vyukov intrusive chain with per-handle bump
 //! slabs.
 //!
-//! Producers pay exactly one shared atomic RMW per send — the always-succeeding
+//! Producers pay exactly one shared atomic RMW per send - the always-succeeding
 //! `swap` that linearizes the global FIFO order (the provable floor for any
 //! strictly ordered multi-producer queue). Everything else is handle-local:
 //! nodes come from private `SLAB_NODES`-node slabs (recycled through a small

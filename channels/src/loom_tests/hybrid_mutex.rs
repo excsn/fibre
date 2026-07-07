@@ -2,8 +2,8 @@
 //! spin-then-park acquire, and the release / barge / wake-to-recontend handoff.
 //!
 //! The data `UnsafeCell` stays std (loom's closure-cell can't back a guard's
-//! `Deref`), so this models the lock's LIVENESS/ORDERING protocol — no deadlock,
-//! no lost wakeup, no ABA on the intrusive wait-list handoff — not mutual
+//! `Deref`), so this models the lock's LIVENESS/ORDERING protocol - no deadlock,
+//! no lost wakeup, no ABA on the intrusive wait-list handoff - not mutual
 //! exclusion itself (a std-cell `+= 1` isn't a loom sync point, so loom won't
 //! interleave it). That's the right target: the risk in a custom
 //! spin/queue/park/barge/wake-to-recontend lock is a *lost wakeup*, which loom

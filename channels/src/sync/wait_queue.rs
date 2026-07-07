@@ -1,17 +1,17 @@
 //! Intrusive FIFO wait list shared by `HybridMutex` and `HybridRwLock`.
 //!
-//! Nodes are OWNED by their waiters — a stack slot for sync waiters, a single
-//! stable heap allocation for async futures — and the list only ever holds
+//! Nodes are OWNED by their waiters - a stack slot for sync waiters, a single
+//! stable heap allocation for async futures - and the list only ever holds
 //! raw pointers; it never allocates and never frees.
 //!
 //! Protocol (wake-and-recontend): the lock is always RELEASED before waiters
 //! are woken; a wake is a re-contention signal, never an ownership transfer,
 //! so a lock can never be owned by a suspended task. A waker takes the
-//! node's `Waiter` handle and stores `WOKEN` — both under the list lock, so
+//! node's `Waiter` handle and stores `WOKEN` - both under the list lock, so
 //! the node is never touched after the lock is released (its owner may
 //! observe `WOKEN` and immediately reuse or free it). `Pending`/parking is
 //! only ever entered after the node is armed+linked and a live holder was
-//! observed by a post-RMW load, so a wake is always owed — there is no
+//! observed by a post-RMW load, so a wake is always owed - there is no
 //! state in which a linked waiter can be forgotten.
 //!
 //! All node fields except `state` are accessed only while holding the list
@@ -240,7 +240,7 @@ impl ListGuard<'_> {
     }
   }
 
-  /// Takes the waiter handle and marks the node WOKEN — both under the list
+  /// Takes the waiter handle and marks the node WOKEN - both under the list
   /// lock, so the node is never touched after the lock is released (its
   /// owner may observe WOKEN and immediately reuse or free it). Returns
   /// `None` if the waiter was already consumed (the owner is awake and

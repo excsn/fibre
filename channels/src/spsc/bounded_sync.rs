@@ -15,7 +15,7 @@ use super::bounded_async::{BoundedAsyncReceiver, BoundedAsyncSender};
 use std::mem;
 
 // Adaptive spin backoff constants. Under loom every spin iteration is a tracked
-// op counting against loom's branch cap, so the whole budget collapses to 1 —
+// op counting against loom's branch cap, so the whole budget collapses to 1 -
 // parking is the path we want the model checker to explore (see the loom
 // rollout doc's Gotcha #1).
 const SPIN_INITIAL: u32 = if crate::internal::sync::IS_LOOM { 1 } else { 16 };

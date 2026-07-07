@@ -11,7 +11,7 @@ use crate::mpmc::bounded;
 use loom::thread;
 
 /// Cap-1 backpressure: the producer's second send must block until the consumer
-/// takes the first — exercises the producer park + consumer wake.
+/// takes the first - exercises the producer park + consumer wake.
 #[test]
 fn capacity_one_backpressure() {
   loom::model(|| {
@@ -27,7 +27,7 @@ fn capacity_one_backpressure() {
 }
 
 /// Producer sends then disconnects: the consumer drains the item, then observes
-/// Disconnected — the lost close-wake surface.
+/// Disconnected - the lost close-wake surface.
 #[test]
 fn disconnect_after_send_drains_then_errors() {
   loom::model(|| {

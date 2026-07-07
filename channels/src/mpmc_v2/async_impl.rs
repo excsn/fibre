@@ -260,7 +260,7 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
             drop(guard);
           }
         } else {
-          // Still parked: a spurious poll — update the waker in place.
+          // Still parked: a spurious poll - update the waker in place.
           let mut guard = this.sender.shared.internal.lock();
           if let Some(w) = guard
             .waiting_async_senders
@@ -353,8 +353,8 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
 /// A future that sends a batch in place, draining sent items from the
 /// caller's vector.
 ///
-/// Cancel-safe: if dropped before completion, every unsent item — including a
-/// rendezvous payload parked in the waiter queue, which is recovered on drop —
+/// Cancel-safe: if dropped before completion, every unsent item - including a
+/// rendezvous payload parked in the waiter queue, which is recovered on drop -
 /// remains in the caller's vector.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchMutFuture<'a, T: Send> {

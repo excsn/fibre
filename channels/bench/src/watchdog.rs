@@ -24,7 +24,7 @@ pub struct WatchdogTick {
 
 /// Spawns the stall-watchdog thread.
 ///
-/// `detail` — if provided, called each tick to get `(ring_len, send_waiters, recv_waiters)`.
+/// `detail` - if provided, called each tick to get `(ring_len, send_waiters, recv_waiters)`.
 /// Only available for mpmc_v3 sync (the only handle with `debug_state`).
 pub fn spawn(
   sent: Arc<AtomicUsize>,
@@ -72,7 +72,7 @@ pub fn spawn(
         if stalls >= cfg.stall_count {
           let stall_ms_total = cfg.stall_ms * cfg.stall_count as u64;
           eprintln!(
-            "\n[watchdog] *** STALL (no progress {stall_ms_total}ms) — likely deadlock ***"
+            "\n[watchdog] *** STALL (no progress {stall_ms_total}ms) - likely deadlock ***"
           );
           eprintln!("[watchdog]   sent={s} recv={r} expected={}", cfg.expected);
           if let Some(ref f) = detail {
@@ -91,7 +91,7 @@ pub fn spawn(
             } else if sw > 0 && rw > 0 {
               eprintln!("[watchdog]   => MUTUAL DEADLOCK: producers AND receivers both parked.");
             } else {
-              eprintln!("[watchdog]   => (unclassified — see counts above)");
+              eprintln!("[watchdog]   => (unclassified - see counts above)");
             }
           }
           fibre::telemetry::print_stall_report();

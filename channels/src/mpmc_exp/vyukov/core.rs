@@ -25,14 +25,14 @@
 //!   `*_waiters`; if non-zero it drains and wakes that role.
 //!
 //! Two `SeqCst` fences guarantee it is impossible for both "the actor missed the
-//! registration" and "the waiter missed the progress" to be true at once — so at
+//! registration" and "the waiter missed the progress" to be true at once - so at
 //! least one side acts, and no wakeup is lost.
 //!
 //! ## Cancellation
 //!
 //! `push` claims, writes, and publishes in a single synchronous burst with no
 //! suspension point, so a send/recv future can only ever be dropped while parked
-//! for space/data — i.e. while holding no slot. Cancellation is therefore just
+//! for space/data - i.e. while holding no slot. Cancellation is therefore just
 //! "unlink the parked waiter"; there is no in-buffer tombstone to resolve.
 
 use std::cell::UnsafeCell;
@@ -103,7 +103,7 @@ impl<T> Ring<T> {
     // Two independent monotonic counters can't be snapshotted atomically, so
     // read `head`, then `tail`, then `head` again and retry until `head` is
     // stable across the `tail` read. That makes the pair reflect one real
-    // instant — where `tail >= head` and `tail - head` is in `[0, cap]` — so the
+    // instant - where `tail >= head` and `tail - head` is in `[0, cap]` - so the
     // result never underflows (torn read) or overshoots capacity. (Same approach
     // as crossbeam's `ArrayQueue::len`.)
     loop {
@@ -248,21 +248,21 @@ struct SlabEntry {
   /// waiter can tell it was already removed and skip a redundant `unregister`.
   /// Not touched by `remove` (cancellation is not a wake). Sound because the
   /// waiter always `unregister`s (taking the same lock) before its frame goes
-  /// away — see `set_notified`.
+  /// away - see `set_notified`.
   notified: *const AtomicBool,
   /// Intrusive doubly-linked FIFO order links (live slots), or free-list `next`
   /// (recycled slots). `NIL` terminates a list.
   prev: u32,
   next: u32,
   /// Bumped on every free so any outstanding handle to a recycled slot is
-  /// rejected by `remove` — makes post-wake `unregister` a safe no-op.
+  /// rejected by `remove` - makes post-wake `unregister` a safe no-op.
   _gen: u32,
 }
 
 /// O(1) FIFO waiter queue. A slab of `SlabEntry`s threaded by two intrusive
 /// lists: the live FIFO order (`head`..`tail`) and a free list (`free_head`).
-/// Handles are packed `(gen << 32 | index)` `u64`s. Every operation —
-/// `push_back`, `pop_front`, `remove` — is O(1), so the parking critical section
+/// Handles are packed `(gen << 32 | index)` `u64`s. Every operation -
+/// `push_back`, `pop_front`, `remove` - is O(1), so the parking critical section
 /// no longer scales with the number of waiters.
 struct WaiterSlab {
   entries: Vec<SlabEntry>,
@@ -511,7 +511,7 @@ impl<T> Shared<T> {
   }
 
   /// Wakes exactly one parked waiter of `role`, in arrival (FIFO) order. Used
-  /// after a single `push`/`pop` frees one unit of work — waking the whole pool
+  /// after a single `push`/`pop` frees one unit of work - waking the whole pool
   /// would be a thundering herd, since only one waiter can claim that unit.
   fn wake_one(&self, role: Role) {
     let wake = {

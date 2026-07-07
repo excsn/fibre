@@ -1,6 +1,6 @@
 //! Central loom model checks, one file per migrated channel.
 //!
-//! Gated once in `lib.rs` (`#[cfg(all(test, loom))]`) — no cfg in this tree.
+//! Gated once in `lib.rs` (`#[cfg(all(test, loom))]`) - no cfg in this tree.
 //! Run: `channels/scripts/loom.sh [filter] [max-preemptions]`.
 //!
 //! Ground rules (loom is exponential in operations × threads):
@@ -9,7 +9,7 @@
 //! - Drive channels through the public API (`crate::mpsc::bounded(..)` etc.);
 //!   the channel's internals must have been migrated to `internal::sync` first,
 //!   or its blocking calls will deadlock the model (see internal/sync.rs).
-//! - No timeout APIs, no sleeps — the mocked primitives panic on them.
+//! - No timeout APIs, no sleeps - the mocked primitives panic on them.
 //! - A lost wakeup shows up as a loom "deadlock" report; a protocol bug as an
 //!   assert/panic with the exact interleaving trace.
 

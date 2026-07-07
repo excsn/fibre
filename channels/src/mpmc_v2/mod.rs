@@ -703,8 +703,8 @@ impl<T: Send> AsyncSender<T> {
   }
 
   /// Sends a batch asynchronously in place, draining sent items from the
-  /// front of `items`. Cancel-safe: on drop or closure, unsent items —
-  /// including a parked rendezvous payload — remain in `items`.
+  /// front of `items`. Cancel-safe: on drop or closure, unsent items -
+  /// including a parked rendezvous payload - remain in `items`.
   pub fn send_batch_mut<'a>(&'a self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T> {
     async_impl::SendBatchMutFuture::new(self, items)
   }
@@ -1113,7 +1113,7 @@ mod tests {
   use std::time::Duration;
 
   /// `send_batch`/`recv_batch` with a batch far larger than the channel
-  /// capacity must still deliver every item exactly once — it just clamps to
+  /// capacity must still deliver every item exactly once - it just clamps to
   /// free space and blocks a lot. Sweep several producer/consumer shapes over a
   /// low cap to shake out any wake/handoff gap that only shows under sustained
   /// fill/drain churn. The operation should always succeed, only slowly.

@@ -25,7 +25,7 @@
 //! ## Write Model: Double Execution
 //!
 //! Rather than cloning the live buffer into the stale slot on every write (O(N)),
-//! the writer applies the same `FnMut` closure twice — once to each slot —
+//! the writer applies the same `FnMut` closure twice - once to each slot -
 //! keeping both in sync at O(1) cost relative to data size.
 //! **Requirement:** the closure must be deterministic and produce the same result
 //! when applied to either slot (both slots are always in the same logical state
@@ -146,7 +146,7 @@ impl<T> ReadHandle<T> {
         };
       }
 
-      // Writer swapped live_idx between our load and the increment — back off.
+      // Writer swapped live_idx between our load and the increment - back off.
       self.shared.active_readers[idx].fetch_sub(1, Ordering::SeqCst);
     }
   }
@@ -172,7 +172,7 @@ impl<T> WriteHandle<T> {
   /// 1. Apply `f` to the currently-stale slot (safe: no active readers there).
   /// 2. Publish the stale slot as the new live slot (SeqCst store).
   /// 3. Wait (spin) until every reader that had entered the old live slot has
-  ///    dropped its guard — their SeqCst decrement is visible after the fence.
+  ///    dropped its guard - their SeqCst decrement is visible after the fence.
   /// 4. Apply the identical `f` to the old live slot, bringing it back in sync.
   ///
   /// After step 4, both slots hold the same logical state and the invariant is
@@ -185,7 +185,7 @@ impl<T> WriteHandle<T> {
     let live_idx = self.shared.live_idx.load(Ordering::SeqCst);
     let write_idx = 1 - live_idx;
 
-    // Step 1 — mutate the currently-stale slot.
+    // Step 1 - mutate the currently-stale slot.
     // Safety: writer lock held; active_readers[write_idx] == 0 is guaranteed by
     // the invariant (we waited for it in the previous modify call, and no new
     // readers can join a non-live slot).
@@ -198,10 +198,10 @@ impl<T> WriteHandle<T> {
     };
     f(stale);
 
-    // Step 2 — atomically publish the updated slot.
+    // Step 2 - atomically publish the updated slot.
     self.shared.live_idx.store(write_idx, Ordering::SeqCst);
 
-    // Step 3 — drain readers still inside the old live slot.
+    // Step 3 - drain readers still inside the old live slot.
     // SeqCst store above + SeqCst loads below form a total order that prevents
     // the writer from missing a reader that incremented active_readers[live_idx]
     // before observing the new live_idx.
@@ -209,7 +209,7 @@ impl<T> WriteHandle<T> {
       hint::spin_loop();
     }
 
-    // Step 4 — bring the old slot back in sync.
+    // Step 4 - bring the old slot back in sync.
     // Safety: writer lock held; spin above guarantees active_readers[live_idx] == 0.
     let old = unsafe {
       if live_idx == 0 {

@@ -13,7 +13,7 @@ struct ProducerSide {
   tail: AtomicUsize,
   /// Producer-private snapshot of `head`. A stale value only under-reports
   /// free space (`head` never moves backwards), so it is always safe to trust
-  /// — but `push` must refresh it before it may report the ring full.
+  /// - but `push` must refresh it before it may report the ring full.
   cached_head: UnsafeCell<usize>,
 }
 
@@ -28,8 +28,8 @@ struct ConsumerSide {
 
 /// Owned-index SPSC ring (Lamport queue with cached counterpart indices).
 ///
-/// Each side owns its index outright — the producer is the only writer of
-/// `tail`, the consumer the only writer of `head` — so neither side ever needs
+/// Each side owns its index outright - the producer is the only writer of
+/// `tail`, the consumer the only writer of `head` - so neither side ever needs
 /// a CAS. Each side works against a private cached copy of the other side's
 /// index and only pays a cross-core Acquire load when the cache can no longer
 /// prove progress is possible. Items live in one contiguous unpadded buffer;
@@ -39,7 +39,7 @@ struct ConsumerSide {
 /// Producer-side methods (`push`, `producer_free_space`) require exclusive
 /// producer access and consumer-side methods (`pop`) exclusive consumer
 /// access: they mutate the private caches through `UnsafeCell`. Callers uphold
-/// this — the sync handles are `!Sync` and not `Clone`, the async handles take
+/// this - the sync handles are `!Sync` and not `Clone`, the async handles take
 /// `&mut self` for every ring-touching operation, and the sync<->async
 /// conversions consume the handle.
 pub(crate) struct Ring<T> {
@@ -118,7 +118,7 @@ impl<T> Ring<T> {
   }
 
   /// Enqueue. Returns `Err(item)` only after a cache refresh proves the ring
-  /// is genuinely full — the waiter protocol in `SpscShared` relies on this
+  /// is genuinely full - the waiter protocol in `SpscShared` relies on this
   /// refresh-before-reporting-full behavior for its post-registration re-check.
   ///
   /// Producer-side: see the soundness notes on [`Ring`].
@@ -359,7 +359,7 @@ impl<T> SpscShared<T> {
     for _ in 0..to_send {
       let Some(item) = iter.next() else { break };
       // Infallible: `producer_free_space` proved these slots free, and only the
-      // consumer can change that — in the direction of more space.
+      // consumer can change that - in the direction of more space.
       if self.ring.push(item).is_err() {
         unreachable!("spsc write_batch: push failed inside reserved free space");
       }

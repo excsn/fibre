@@ -24,7 +24,7 @@ fn two_items() {
 }
 
 /// Cap-1 backpressure: the producer's second send must park until the consumer
-/// pops the first item — exercises the producer-side register/park and the
+/// pops the first item - exercises the producer-side register/park and the
 /// consumer-side `notify_senders` wake.
 #[test]
 fn capacity_one_backpressure() {
@@ -40,7 +40,7 @@ fn capacity_one_backpressure() {
   });
 }
 
-/// The consumer parks on an empty ring before the producer's single send —
+/// The consumer parks on an empty ring before the producer's single send -
 /// exercises the consumer-side register/park and the producer's
 /// `notify_receivers` wake (the mirror of `capacity_one_backpressure`).
 #[test]
@@ -56,7 +56,7 @@ fn consumer_parks_then_wakes() {
 }
 
 /// Producer sends then disconnects: the consumer must drain the item and then
-/// observe Disconnected — the classic lost-close-wake surface.
+/// observe Disconnected - the classic lost-close-wake surface.
 #[test]
 fn disconnect_after_send_drains_then_errors() {
   loom::model(|| {

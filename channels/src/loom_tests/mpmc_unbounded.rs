@@ -13,7 +13,7 @@ use crate::mpmc::unbounded;
 use loom::thread;
 
 /// Producer publishes then drops: the consumer drains the item, then observes
-/// Disconnected — the lost close-wake surface.
+/// Disconnected - the lost close-wake surface.
 #[test]
 fn disconnect_after_send_drains_then_errors() {
   loom::model(|| {

@@ -1,7 +1,7 @@
 //! A mutex with sync (parking) and async (waker) waiting, built on the same
 //! FIFO wait list as `HybridRwLock` (see wait_queue.rs) with the same
 //! contention strategy: spin with yields, barge freely, park last, and wake
-//! waiters to RE-CONTEND — the lock is always released before anyone is
+//! waiters to RE-CONTEND - the lock is always released before anyone is
 //! woken, so ownership is never parked inside a suspended task. Wakes go to
 //! the queue head one at a time; the node stays linked while its owner
 //! re-contends, and a loser simply re-arms and waits for the next wake.
@@ -54,7 +54,7 @@ impl<T> HybridMutex<T> {
     }
   }
 
-  /// Exclusive access without locking — `&mut self` proves no other reference
+  /// Exclusive access without locking - `&mut self` proves no other reference
   /// exists (matches `parking_lot::Mutex::get_mut`).
   #[inline]
   pub fn get_mut(&mut self) -> &mut T {
@@ -187,7 +187,7 @@ impl<T> HybridMutex<T> {
       return;
     }
     // SAFETY: linked node, valid under the list lock; `None` means the
-    // owner is already awake re-contending — its arm-then-recheck covers
+    // owner is already awake re-contending - its arm-then-recheck covers
     // this release.
     let w = unsafe { g.take_and_mark_woken(head) };
     drop(g);

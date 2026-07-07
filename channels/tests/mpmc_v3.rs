@@ -23,7 +23,7 @@ fn sync_send_recv_basic() {
 #[test]
 fn capacity_reports_requested() {
   // Channel capacity is the requested value (Some(n)), independent of the
-  // pow2-rounded physical buffer behind it — matching mpmc_v2.
+  // pow2-rounded physical buffer behind it - matching mpmc_v2.
   assert_eq!(bounded::<i32>(5).0.capacity(), Some(5));
   assert_eq!(bounded::<i32>(4).0.capacity(), Some(4));
   assert_eq!(bounded::<i32>(1).0.capacity(), Some(1));

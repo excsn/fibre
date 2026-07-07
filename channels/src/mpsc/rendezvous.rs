@@ -3,7 +3,7 @@
 //! A rendezvous channel has zero capacity: a `send` completes only once the
 //! receiver takes the value as part of the same direct handoff. It is a
 //! distinct channel family from the buffered/unbounded [`mpsc`](crate::mpsc)
-//! channels — there is no item buffer and no early deposit, so cancelling a
+//! channels - there is no item buffer and no early deposit, so cancelling a
 //! pending send can never ghost-deliver its payload.
 //!
 //! Senders can be cloned; there is exactly one receiver (not `Clone`). Both
@@ -64,7 +64,7 @@ pub struct RendezvousSyncSender<T: Send> {
 }
 
 /// The synchronous receiving half of an MPSC rendezvous channel. Single
-/// consumer — not `Clone`.
+/// consumer - not `Clone`.
 #[derive(Debug)]
 pub struct RendezvousSyncReceiver<T: Send> {
   shared: Arc<MpscRvShared<T>>,
@@ -81,7 +81,7 @@ pub struct RendezvousAsyncSender<T: Send> {
 }
 
 /// The asynchronous receiving half of an MPSC rendezvous channel. Single
-/// consumer — not `Clone`.
+/// consumer - not `Clone`.
 #[derive(Debug)]
 pub struct RendezvousAsyncReceiver<T: Send> {
   shared: Arc<MpscRvShared<T>>,
@@ -464,7 +464,7 @@ impl<'a, T: Send> Drop for SendFuture<'a, T> {
   fn drop(&mut self) {
     if self.registered {
       // If the cancel wins, our inline `slot` still holds the item and is
-      // dropped with the future — no ghost delivery. If it loses, the item was
+      // dropped with the future - no ghost delivery. If it loses, the item was
       // already handed off under the lock and delivery stands.
       self
         .shared

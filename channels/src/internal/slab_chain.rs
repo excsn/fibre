@@ -1,9 +1,9 @@
 //! The slab-backed Vyukov intrusive chain shared by the unbounded MPSC and
 //! MPMC channels.
 //!
-//! Producers publish with one always-succeeding `swap` of the chain head — the
+//! Producers publish with one always-succeeding `swap` of the chain head - the
 //! single shared atomic RMW that any strict (linearizable) multi-producer FIFO
-//! requires — and bump-allocate nodes from per-handle slabs so concurrent
+//! requires - and bump-allocate nodes from per-handle slabs so concurrent
 //! producers write into disjoint memory. Each slab is released once every node
 //! in it has been retired, via an Arc-style refcount, so the retirement side
 //! is safe for one consumer or many. Fully-retired slabs recycle through a
@@ -12,8 +12,8 @@
 //! dominant multi-producer cost, and the clean A/B (2026-07-02, both sides at
 //! 512 nodes) showed removing the pool regressed mpmc async 1P by 13-17%.
 //!
-//! The consumer-side release is a bare pointer push — it can run under the
-//! mpmc consumer mutex, a measured lock-hold amplifier — while the node
+//! The consumer-side release is a bare pointer push - it can run under the
+//! mpmc consumer mutex, a measured lock-hold amplifier - while the node
 //! re-arm walk runs on the producer side in `acquire`.
 
 use crate::internal::cache_padded::CachePadded;
@@ -49,7 +49,7 @@ pub(crate) struct Node<T> {
 pub(crate) struct Slab<T> {
   /// Starts at `SLAB_NODES + 1`: one count per node plus one hold for the
   /// producer. Retirement releases one count per node; the producer releases
-  /// the hold — plus one count per never-used node — when it seals the slab
+  /// the hold - plus one count per never-used node - when it seals the slab
   /// (on exhaustion or handle close/drop). Whoever reaches zero releases the
   /// slab. Arc-style ordering: `fetch_sub(Release)` with an `Acquire` fence
   /// before the release. The decrements are atomic, so retirement is safe
@@ -58,8 +58,8 @@ pub(crate) struct Slab<T> {
   /// The pool this slab returns to when fully retired. Points into the
   /// pool's own `Arc` allocation (never into channel shared state, so the
   /// shared state's `Drop` drain doesn't alias `&mut self`), and every
-  /// retire/seal runs while something still holds that `Arc` — a sender
-  /// handle or the channel's shared state — so it cannot dangle.
+  /// retire/seal runs while something still holds that `Arc` - a sender
+  /// handle or the channel's shared state - so it cannot dangle.
   pool: *const SlabPool<T>,
   nodes: Box<[Node<T>]>,
 }

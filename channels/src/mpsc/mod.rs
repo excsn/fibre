@@ -5,7 +5,7 @@
 //! mixed sync/async operations, allowing, for example, a synchronous `Sender` to
 //! send to an asynchronous `AsyncReceiver`.
 
-pub(crate) mod bounded_queue;
+mod bounded_v3;
 pub mod rendezvous;
 mod unbounded_v3;
 
@@ -27,7 +27,7 @@ pub use rendezvous::{
   RendezvousAsyncReceiver, RendezvousAsyncSender, RendezvousSyncReceiver, RendezvousSyncSender,
 };
 
-pub use bounded_queue::{
+pub use bounded_v3::{
   AsyncReceiver as BoundedAsyncReceiver, AsyncSender as BoundedAsyncSender,
   BoundedRecvBatchFuture, BoundedRecvBatchMutFuture,
   BoundedSendBatchFuture, BoundedSendBatchMutFuture,
@@ -65,7 +65,7 @@ pub fn bounded<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncRe
     capacity != 0,
     "mpsc::bounded(0) is not a rendezvous channel; use mpsc::rendezvous::rendezvous() instead"
   );
-  bounded_queue::bounded(capacity)
+  bounded_v3::bounded(capacity)
 }
 
 /// Creates a new bounded asynchronous MPSC channel with a given capacity.
@@ -80,7 +80,7 @@ pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, Bounde
     capacity != 0,
     "mpsc::bounded_async(0) is not a rendezvous channel; use mpsc::rendezvous::rendezvous_async() instead"
   );
-  bounded_queue::bounded_async(capacity)
+  bounded_v3::bounded_async(capacity)
 }
 
 #[cfg(test)]

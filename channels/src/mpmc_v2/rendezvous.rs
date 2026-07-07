@@ -3,7 +3,7 @@
 //! A rendezvous channel has zero capacity: a `send` completes only once a
 //! `recv` takes the value as part of the same direct handoff, and vice versa.
 //! It is a distinct channel family from the buffered [`mpmc`](crate::mpmc)
-//! channel — there is no item buffer and no early deposit, so cancelling a
+//! channel - there is no item buffer and no early deposit, so cancelling a
 //! pending send can never ghost-deliver its payload.
 //!
 //! Senders and receivers can both be cloned. Both blocking and async ends are
@@ -129,19 +129,19 @@ impl<T: Send> RendezvousSyncSender<T> {
     self.shared.receiver_count() == 0
   }
 
-  /// Always `0` — a rendezvous channel never buffers items.
+  /// Always `0` - a rendezvous channel never buffers items.
   #[inline]
   pub fn len(&self) -> usize {
     0
   }
 
-  /// Always `true` — a rendezvous channel never buffers items.
+  /// Always `true` - a rendezvous channel never buffers items.
   #[inline]
   pub fn is_empty(&self) -> bool {
     true
   }
 
-  /// Always `true` — a zero-capacity channel can never accept buffered items.
+  /// Always `true` - a zero-capacity channel can never accept buffered items.
   #[inline]
   pub fn is_full(&self) -> bool {
     true
@@ -494,7 +494,7 @@ impl<'a, T: Send> Drop for SendFuture<'a, T> {
   fn drop(&mut self) {
     if self.registered {
       // If the cancel wins, our inline `slot` still holds the item and is
-      // dropped with the future — no ghost delivery. If it loses, the item was
+      // dropped with the future - no ghost delivery. If it loses, the item was
       // already handed off under the lock and delivery stands.
       self
         .shared

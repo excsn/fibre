@@ -46,130 +46,132 @@
 
 ## Bounded Results (`MpscBoundedSync`)
 
+_Engine: `mpsc::bounded_v3` (fusion2 credit-before-claim port)._
+
 ### Capacity: 1 (`Cap-1`)
 
 #### `MpscBoundedSync/Cap-1_Prod-1_Items-100000`
-- **Time:** 17.126 ms – 17.438 ms – 17.816 ms  
-- **Throughput:** 5.6129 Melem/s – 5.7347 Melem/s – 5.8392 Melem/s
+- **Time:** 13.895 ms – 14.111 ms – 14.399 ms  
+- **Throughput:** 6.9450 Melem/s – 7.0867 Melem/s – 7.1969 Melem/s
 
 #### `MpscBoundedSync/Cap-1_Prod-1_Items-1000000`
-- **Time:** 171.43 ms – 175.53 ms – 179.95 ms  
-- **Throughput:** 5.5571 Melem/s – 5.6969 Melem/s – 5.8332 Melem/s
+- **Time:** 138.19 ms – 141.42 ms – 144.91 ms  
+- **Throughput:** 6.9010 Melem/s – 7.0711 Melem/s – 7.2363 Melem/s
 
 #### `MpscBoundedSync/Cap-1_Prod-1_Items-10000000`
-- **Time:** 1.8304 s – 1.8796 s – 1.9287 s  
-- **Throughput:** 5.1847 Melem/s – 5.3202 Melem/s – 5.4631 Melem/s
+- **Time:** 1.3430 s – 1.3812 s – 1.4360 s  
+- **Throughput:** 6.9637 Melem/s – 7.2399 Melem/s – 7.4458 Melem/s
 
 ---
 
 #### `MpscBoundedSync/Cap-1_Prod-4_Items-100000`
-- **Time:** 35.775 ms – 38.216 ms – 39.860 ms  
-- **Throughput:** 2.5088 Melem/s – 2.6167 Melem/s – 2.7952 Melem/s
+- **Time:** 29.981 ms – 30.897 ms – 31.946 ms  
+- **Throughput:** 3.1303 Melem/s – 3.2366 Melem/s – 3.3354 Melem/s
 
 #### `MpscBoundedSync/Cap-1_Prod-4_Items-1000000`
-- **Time:** 355.09 ms – 372.20 ms – 389.39 ms  
-- **Throughput:** 2.5681 Melem/s – 2.6867 Melem/s – 2.8162 Melem/s
+- **Time:** 315.86 ms – 340.60 ms – 373.34 ms  
+- **Throughput:** 2.6785 Melem/s – 2.9360 Melem/s – 3.1659 Melem/s
 
 #### `MpscBoundedSync/Cap-1_Prod-4_Items-10000000`
-- **Time:** 3.1181 s – 3.3359 s – 3.5812 s  
-- **Throughput:** 2.7924 Melem/s – 2.9977 Melem/s – 3.2071 Melem/s
+- **Time:** 3.1529 s – 3.2329 s – 3.3193 s  
+- **Throughput:** 3.0127 Melem/s – 3.0932 Melem/s – 3.1717 Melem/s
 
 ---
 
 #### `MpscBoundedSync/Cap-1_Prod-14_Items-100000`
-- **Time:** 83.312 ms – 86.310 ms – 87.754 ms  
-- **Throughput:** 1.1396 Melem/s – 1.1586 Melem/s – 1.2003 Melem/s
+- **Time:** 80.583 ms – 80.846 ms – 81.132 ms  
+- **Throughput:** 1.2326 Melem/s – 1.2369 Melem/s – 1.2410 Melem/s
 
 #### `MpscBoundedSync/Cap-1_Prod-14_Items-1000000`
-- **Time:** 875.84 ms – 888.08 ms – 898.98 ms  
-- **Throughput:** 1.1124 Melem/s – 1.1260 Melem/s – 1.1418 Melem/s
+- **Time:** 784.73 ms – 793.98 ms – 803.26 ms  
+- **Throughput:** 1.2449 Melem/s – 1.2595 Melem/s – 1.2743 Melem/s
 
 #### `MpscBoundedSync/Cap-1_Prod-14_Items-10000000`
-- **Time:** 8.9013 s – 8.9654 s – 9.0168 s  
-- **Throughput:** 1.1090 Melem/s – 1.1154 Melem/s – 1.1234 Melem/s
+- **Time:** 7.8849 s – 7.9135 s – 7.9405 s  
+- **Throughput:** 1.2594 Melem/s – 1.2637 Melem/s – 1.2682 Melem/s
 
 
 ### Capacity: 4 (`Cap-4`)
 
 #### `MpscBoundedSync/Cap-4_Prod-1_Items-100000`
-- **Time:** 14.369 ms – 14.852 ms – 15.094 ms  
-- **Throughput:** 6.6253 Melem/s – 6.7333 Melem/s – 6.9596 Melem/s
+- **Time:** 6.3119 ms – 6.3436 ms – 6.3997 ms  
+- **Throughput:** 15.626 Melem/s – 15.764 Melem/s – 15.843 Melem/s
 
 #### `MpscBoundedSync/Cap-4_Prod-1_Items-1000000`
-- **Time:** 138.53 ms – 139.11 ms – 140.15 ms  
-- **Throughput:** 7.1350 Melem/s – 7.1883 Melem/s – 7.2189 Melem/s
+- **Time:** 61.685 ms – 62.017 ms – 62.482 ms  
+- **Throughput:** 16.005 Melem/s – 16.125 Melem/s – 16.211 Melem/s
 
 #### `MpscBoundedSync/Cap-4_Prod-1_Items-10000000`
-- **Time:** 1.3475 s – 1.3612 s – 1.3785 s  
-- **Throughput:** 7.2541 Melem/s – 7.3462 Melem/s – 7.4212 Melem/s
+- **Time:** 604.23 ms – 607.18 ms – 611.09 ms  
+- **Throughput:** 16.364 Melem/s – 16.470 Melem/s – 16.550 Melem/s
 
 ---
 
 #### `MpscBoundedSync/Cap-4_Prod-4_Items-100000`
-- **Time:** 18.436 ms – 18.630 ms – 19.037 ms  
-- **Throughput:** 5.2530 Melem/s – 5.3678 Melem/s – 5.4242 Melem/s
+- **Time:** 10.451 ms – 10.572 ms – 10.792 ms  
+- **Throughput:** 9.2665 Melem/s – 9.4593 Melem/s – 9.5685 Melem/s
 
 #### `MpscBoundedSync/Cap-4_Prod-4_Items-1000000`
-- **Time:** 187.29 ms – 193.58 ms – 201.76 ms  
-- **Throughput:** 4.9563 Melem/s – 5.1658 Melem/s – 5.3392 Melem/s
+- **Time:** 105.38 ms – 111.65 ms – 119.94 ms  
+- **Throughput:** 8.3375 Melem/s – 8.9568 Melem/s – 9.4892 Melem/s
 
 #### `MpscBoundedSync/Cap-4_Prod-4_Items-10000000`
-- **Time:** 1.8387 s – 1.8894 s – 1.9513 s  
-- **Throughput:** 5.1249 Melem/s – 5.2927 Melem/s – 5.4386 Melem/s
+- **Time:** 1.0601 s – 1.1086 s – 1.1693 s  
+- **Throughput:** 8.5525 Melem/s – 9.0204 Melem/s – 9.4329 Melem/s
 
 ---
 
 #### `MpscBoundedSync/Cap-4_Prod-14_Items-100000`
-- **Time:** 44.599 ms – 44.711 ms – 44.781 ms  
-- **Throughput:** 2.2331 Melem/s – 2.2366 Melem/s – 2.2422 Melem/s
+- **Time:** 23.798 ms – 23.950 ms – 24.095 ms  
+- **Throughput:** 4.1503 Melem/s – 4.1754 Melem/s – 4.2020 Melem/s
 
 #### `MpscBoundedSync/Cap-4_Prod-14_Items-1000000`
-- **Time:** 440.85 ms – 442.41 ms – 444.16 ms  
-- **Throughput:** 2.2514 Melem/s – 2.2604 Melem/s – 2.2683 Melem/s
+- **Time:** 228.91 ms – 236.44 ms – 240.62 ms  
+- **Throughput:** 4.1559 Melem/s – 4.2293 Melem/s – 4.3685 Melem/s
 
 #### `MpscBoundedSync/Cap-4_Prod-14_Items-10000000`
-- **Time:** 4.3997 s – 4.4067 s – 4.4135 s  
-- **Throughput:** 2.2658 Melem/s – 2.2693 Melem/s – 2.2729 Melem/s
+- **Time:** 2.4008 s – 2.4077 s – 2.4145 s  
+- **Throughput:** 4.1417 Melem/s – 4.1533 Melem/s – 4.1652 Melem/s
 
 
 ### Capacity: 128 (`Cap-128`)
 
 #### `MpscBoundedSync/Cap-128_Prod-1_Items-100000`
-- **Time:** 11.096 ms – 11.216 ms – 11.311 ms  
-- **Throughput:** 8.8410 Melem/s – 8.9155 Melem/s – 9.0121 Melem/s
+- **Time:** 1.2410 ms – 1.2466 ms – 1.2548 ms  
+- **Throughput:** 79.695 Melem/s – 80.218 Melem/s – 80.579 Melem/s
 
 #### `MpscBoundedSync/Cap-128_Prod-1_Items-1000000`
-- **Time:** 112.84 ms – 113.36 ms – 113.96 ms  
-- **Throughput:** 8.7748 Melem/s – 8.8216 Melem/s – 8.8618 Melem/s
+- **Time:** 12.090 ms – 12.168 ms – 12.305 ms  
+- **Throughput:** 81.271 Melem/s – 82.180 Melem/s – 82.711 Melem/s
 
 #### `MpscBoundedSync/Cap-128_Prod-1_Items-10000000`
-- **Time:** 1.0857 s – 1.0954 s – 1.1070 s  
-- **Throughput:** 9.0338 Melem/s – 9.1287 Melem/s – 9.2108 Melem/s
+- **Time:** 121.33 ms – 122.67 ms – 124.37 ms  
+- **Throughput:** 80.406 Melem/s – 81.521 Melem/s – 82.420 Melem/s
 
 ---
 
 #### `MpscBoundedSync/Cap-128_Prod-4_Items-100000`
-- **Time:** 9.8435 ms – 10.419 ms – 11.321 ms  
-- **Throughput:** 8.8329 Melem/s – 9.5980 Melem/s – 10.159 Melem/s
+- **Time:** 4.5885 ms – 4.6312 ms – 4.6743 ms  
+- **Throughput:** 21.393 Melem/s – 21.593 Melem/s – 21.793 Melem/s
 
 #### `MpscBoundedSync/Cap-128_Prod-4_Items-1000000`
-- **Time:** 120.42 ms – 131.18 ms – 140.56 ms  
-- **Throughput:** 7.1143 Melem/s – 7.6229 Melem/s – 8.3043 Melem/s
+- **Time:** 46.719 ms – 47.702 ms – 48.727 ms  
+- **Throughput:** 20.522 Melem/s – 20.964 Melem/s – 21.405 Melem/s
 
 #### `MpscBoundedSync/Cap-128_Prod-4_Items-10000000`
-- **Time:** 962.64 ms – 1.0070 s – 1.0503 s  
-- **Throughput:** 9.5210 Melem/s – 9.9305 Melem/s – 10.388 Melem/s
+- **Time:** 459.21 ms – 472.69 ms – 494.37 ms  
+- **Throughput:** 20.228 Melem/s – 21.156 Melem/s – 21.777 Melem/s
 
 ---
 
 #### `MpscBoundedSync/Cap-128_Prod-14_Items-100000`
-- **Time:** 34.250 ms – 34.870 ms – 35.167 ms  
-- **Throughput:** 2.8436 Melem/s – 2.8678 Melem/s – 2.9197 Melem/s
+- **Time:** 26.070 ms – 26.336 ms – 26.633 ms  
+- **Throughput:** 3.7548 Melem/s – 3.7971 Melem/s – 3.8358 Melem/s
 
 #### `MpscBoundedSync/Cap-128_Prod-14_Items-1000000`
-- **Time:** 348.75 ms – 353.52 ms – 357.81 ms  
-- **Throughput:** 2.7948 Melem/s – 2.8287 Melem/s – 2.8674 Melem/s
+- **Time:** 263.48 ms – 270.27 ms – 277.83 ms  
+- **Throughput:** 3.5993 Melem/s – 3.7001 Melem/s – 3.7953 Melem/s
 
 #### `MpscBoundedSync/Cap-128_Prod-14_Items-10000000`
-- **Time:** 3.5713 s – 3.5928 s – 3.6130 s  
-- **Throughput:** 2.7678 Melem/s – 2.7834 Melem/s – 2.8001 Melem/s
+- **Time:** 2.6993 s – 2.7165 s – 2.7449 s  
+- **Throughput:** 3.6432 Melem/s – 3.6812 Melem/s – 3.7046 Melem/s

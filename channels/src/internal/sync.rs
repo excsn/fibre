@@ -7,12 +7,12 @@
 //! tests live centrally in `src/loom_tests/`; run via `channels/scripts/loom.sh`.
 //!
 //! This selector and the single gate in `lib.rs` are the ONLY `cfg(loom)`
-//! sites in the source tree — `real.rs` and `mocked.rs` are cfg-free, channel
+//! sites in the source tree - `real.rs` and `mocked.rs` are cfg-free, channel
 //! files carry one plain import and no cfg at all.
 //!
 //! Migration rules:
 //! - Atomics left on `std` in un-migrated modules merely lose loom coverage
-//!   (loom can't explore orderings it can't see) — they still compile and run.
+//!   (loom can't explore orderings it can't see) - they still compile and run.
 //! - Any BLOCKING primitive reached by a loom test (`Mutex`, `thread::park`)
 //!   MUST come from here: loom runs threads one at a time, so a real OS block
 //!   inside a model stalls the only running thread and deadlocks the run.

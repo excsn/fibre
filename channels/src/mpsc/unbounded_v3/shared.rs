@@ -1,7 +1,7 @@
 //! Shared core of the unbounded v3 MPSC channel.
 //!
 //! Strict-FIFO Vyukov intrusive chain (see `internal::slab_chain` for the
-//! producer machinery): producers publish with one always-succeeding `swap` —
+//! producer machinery): producers publish with one always-succeeding `swap` -
 //! the single shared atomic RMW per send, which is the floor any linearizable
 //! multi-producer order requires. Every other cost is handle-local: nodes are
 //! bump-allocated from per-handle slabs, `len()` is tracked with sharded
@@ -25,7 +25,7 @@ use crate::internal::sync::{fence, Arc, AtomicBool, AtomicUsize, Mutex, Ordering
 const LEN_SHARDS: usize = 16;
 
 pub(crate) struct MpscShared<T> {
-  /// Producers swap here — the single shared RMW per send.
+  /// Producers swap here - the single shared RMW per send.
   head: ChainHead<T>,
   /// Recycles retired slabs; its own `Arc` so sender handles (and the slabs
   /// themselves) can outlive-independently reference it.
@@ -391,7 +391,7 @@ impl<T: Send> MpscShared<T> {
 impl<T> Drop for MpscShared<T> {
   fn drop(&mut self) {
     // Drain every published item (dropping values, retiring nodes and slabs),
-    // then retire the final tail node — retirement always runs one behind, so
+    // then retire the final tail node - retirement always runs one behind, so
     // exactly one node remains when the chain is empty.
     unsafe {
       loop {

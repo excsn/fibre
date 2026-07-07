@@ -2,11 +2,11 @@
 # Compares fibre_bench SPSC sync vs async under dtrace: counts calls into SpscShared's
 # register/wake_one (shared by both), plus the sync-specific real OS park/unpark and the
 # async-specific Future poll counts. (Tokio's own wake_by_val/schedule_task were tried and
-# dropped — confirmed via `nm` to be fully inlined into Harness::poll in this build, no
+# dropped - confirmed via `nm` to be fully inlined into Harness::poll in this build, no
 # standalone symbol to probe.)
 #
 # batch=0 (single-item send/recv) uses different async symbols than batch>0
-# (send_batch/recv_batch) — handled automatically below.
+# (send_batch/recv_batch) - handled automatically below.
 #
 # Usage: ./dtrace_compare.sh [capacity] [batch] [items]
 # Pass batch=0 for plain send()/recv() baseline; defaults otherwise match the
@@ -43,7 +43,7 @@ EOF
 
 if [ "$BATCH" = "0" ]; then
   # Single-item mode (fibre_bench -b 0): SendFuture/ReceiveFuture, not the batch Futures.
-  # ReceiveFuture::poll itself gets fully inlined in this build (confirmed via `nm` — no
+  # ReceiveFuture::poll itself gets fully inlined in this build (confirmed via `nm` - no
   # standalone symbol), but it just delegates to SpscShared::poll_recv_internal, which does
   # have its own symbol, so we probe that instead for the recv-side equivalent.
   cat > "$ASYNC_D" <<'EOF'
@@ -62,13 +62,13 @@ EOF
 fi
 
 # -Z: don't abort if a probe clause matches zero probes (only relevant while still
-# narrowing down real symbol names — everything above is confirmed to exist via `nm`).
+# narrowing down real symbol names - everything above is confirmed to exist via `nm`).
 echo
-echo "=== SYNC — Cap-$CAPACITY / Batch-$BATCH / Items-$ITEMS ==="
+echo "=== SYNC - Cap-$CAPACITY / Batch-$BATCH / Items-$ITEMS ==="
 sudo dtrace -Z -s "$SYNC_D" -c "$BIN -c spsc -m sync -C $CAPACITY -b $BATCH -i $ITEMS"
 
 echo
-echo "=== ASYNC — Cap-$CAPACITY / Batch-$BATCH / Items-$ITEMS ==="
+echo "=== ASYNC - Cap-$CAPACITY / Batch-$BATCH / Items-$ITEMS ==="
 sudo dtrace -Z -s "$ASYNC_D" -c "$BIN -c spsc -m async -C $CAPACITY -b $BATCH -i $ITEMS"
 
 echo

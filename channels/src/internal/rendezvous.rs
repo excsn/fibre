@@ -11,8 +11,8 @@
 //! many receivers may be parked at once. The core is therefore generic over a
 //! [`ReceiverStore`]:
 //!
-//! * MPMC uses [`VecDeque<RecvRec<T>>`] — many receivers may park in FIFO order.
-//! * MPSC uses [`Option<RecvRec<T>>`] — a single consumer, so a one-slot store
+//! * MPMC uses [`VecDeque<RecvRec<T>>`] - many receivers may park in FIFO order.
+//! * MPSC uses [`Option<RecvRec<T>>`] - a single consumer, so a one-slot store
 //!   with no receiver-queue allocation.
 //!
 //! Both instantiations monomorphize the same audited handoff/cancel code; the
@@ -22,11 +22,11 @@
 //!
 //! # Transfer model: under-lock handoff ("Mode A")
 //!
-//! `plan.md` specifies "Mode B" (claim a waiter under the mutex, release the
-//! lock, then move `T` outside the lock and publish `DONE`). Mode B is unsound
+//! An alternative "Mode B" (claim a waiter under the mutex, release the lock,
+//! then move `T` outside the lock and publish `DONE`) is unsound
 //! for **async** waiters: the waiter's state atomic and payload live inline in
 //! the future to keep parking allocation-free, but if the future is dropped
-//! while its node is `TAKING`, `Drop` must not block — so it frees the inline
+//! while its node is `TAKING`, `Drop` must not block - so it frees the inline
 //! atomic while the matching peer is still about to write `DONE` into it. That
 //! is a use-after-free, and closing it would require either an `Arc` on the
 //! normal parked path (violating the zero-allocation rule) or an unsound
@@ -357,7 +357,7 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
       if core.receiver_count == 0 {
         return Err(SendError::Closed);
       }
-      // Fast path: a receiver is already parked — hand off directly.
+      // Fast path: a receiver is already parked - hand off directly.
       if let Some(rec) = core.receivers.pop_receiver() {
         let wake = fulfill_receiver(rec, slot.take().unwrap());
         drop(core);
@@ -389,7 +389,7 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
 
     {
       let mut core = self.core.lock();
-      // Fast path: a sender is already parked — take its item directly.
+      // Fast path: a sender is already parked - take its item directly.
       if let Some(rec) = core.sender_waiters.pop_front() {
         let (item, wake) = fulfill_sender(rec);
         drop(core);

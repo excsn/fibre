@@ -55,7 +55,7 @@ pub mod enabled {
   const MAX_THREADS: usize = 32;
   const STALL_RING_CAP: usize = 128;
 
-  // Fields are all Copy primitives — no allocation, no drop, no barrier.
+  // Fields are all Copy primitives - no allocation, no drop, no barrier.
   #[derive(Clone, Copy)]
   struct StallRecord {
     seq_id: usize,
@@ -334,7 +334,7 @@ pub mod disabled {
   pub fn clear_telemetry_fn() {}
 }
 
-// log_stall! — zero-barrier flight recorder. Arguments are all integers
+// log_stall! - zero-barrier flight recorder. Arguments are all integers
 // (no format!, no String) so no allocator call ever reaches the macro body.
 // The `not(diagnostics)` arms evaluate-and-discard their arguments (zero
 // codegen after optimization) so call sites keep their constants and locals

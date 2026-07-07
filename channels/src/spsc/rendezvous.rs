@@ -2,7 +2,7 @@
 //!
 //! A rendezvous channel has zero capacity: a `send` completes only once the
 //! receiver takes the value as part of the same direct handoff. It is a
-//! distinct channel family from the buffered SPSC ring buffer — there is no
+//! distinct channel family from the buffered SPSC ring buffer - there is no
 //! item buffer and no early deposit, so cancelling a pending send can never
 //! ghost-deliver its payload.
 //!
@@ -14,9 +14,9 @@
 //! This SPSC rendezvous is currently backed by the shared, mutex-based
 //! [`crate::internal::rendezvous`] core (instantiated with a single-slot
 //! receiver store). That core is fully cancel-safe and allocation-free on the
-//! steady-state parked path. `plan.md` §6 envisions a *lock-free* SPSC phase
-//! machine; that is a tracked follow-up optimization. Correctness and API are
-//! identical — only the uncontended fast-path cost differs (an uncontended
+//! steady-state parked path. A *lock-free* SPSC phase machine is a tracked
+//! follow-up optimization. Correctness and API are
+//! identical - only the uncontended fast-path cost differs (an uncontended
 //! `parking_lot` lock, a couple of atomics).
 
 use crate::error::{CloseError, RecvError, RecvErrorTimeout, SendError, TryRecvError, TrySendError};

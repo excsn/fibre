@@ -16,7 +16,7 @@ where
 {
   // Under loom every spin/yield iteration is a tracked op counting against the
   // branch cap, so both pre-park phases collapse to a single check and we fall
-  // straight through to the park — the path the model checker is meant to
+  // straight through to the park - the path the model checker is meant to
   // explore (see the loom rollout doc's Gotcha #1).
   const SPIN_ROUNDS: usize = if crate::internal::sync::IS_LOOM { 1 } else { 10 };
   const YIELD_ROUNDS: usize = if crate::internal::sync::IS_LOOM { 1 } else { 20 };

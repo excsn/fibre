@@ -1,5 +1,5 @@
 //! Normal-build primitives: plain re-exports, zero cost. Keep this file's
-//! export list in lockstep with `mocked.rs` — the two must expose identical
+//! export list in lockstep with `mocked.rs` - the two must expose identical
 //! names/APIs or migrated channels break under one cfg but not the other.
 
 pub(crate) use std::sync::atomic::{

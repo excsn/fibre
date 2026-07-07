@@ -10,7 +10,7 @@
 
 `fibre` is stable. The API is stable, but minor breaking changes may occur before version 1.0 as feedback is incorporated and improvements are made.
 
-**Performance highlights** (Apple M4 Pro) — **SPSC** 44 / 183 Melem/s (sync/async, Cap-1024; batch up to ~185 Melem/s) · **MPSC** ~15 / ~63 Melem/s (sync/async, Cap-128, 4–14P) · **SPMC** 15–20 Melem/s broadcast · **SPMC Topic** up to 15 Melem/s async (14 subs) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128 1P/1C) · **Oneshot** ~10 Melem/s async — [details](#performance) · [bench data](./docs/benches/)
+**Performance highlights** (Apple M4 Pro) - **SPSC** 44 / 183 Melem/s (sync/async, Cap-1024; batch up to ~185 Melem/s) · **MPSC** ~4–21 / ~67 Melem/s (sync/async, Cap-128, 4–14P) · **SPMC** 15–20 Melem/s broadcast · **SPMC Topic** up to 15 Melem/s async (14 subs) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128 1P/1C) · **Oneshot** ~10 Melem/s async - [details](#performance) · [bench data](./docs/benches/)
 
 ## Notable Users
 
@@ -91,23 +91,23 @@ The following tables summarize the consistent API surface across all channel sen
 
 ### Batch Operations
 
-Every core channel (SPSC, MPSC, SPMC, MPMC) offers a full batch API suite — `send_batch`, `try_send_batch`, `recv_batch`, `try_recv_batch` plus in-place `_mut` variants — that amortizes synchronization over the whole batch: a single atomic index update or lock acquisition, bulk capacity-permit handling, and coalesced wakeups. Batch operations have partial-progress semantics: by-value sends return the count sent and the unsent remainder on interruption (no owned value is ever silently dropped), and in-place variants drain sent items from the front of the caller's `Vec` (send) or append to it (receive). Blocking/async `recv_batch(max)` waits until at least one item is available, then drains up to `max` without further waiting.
+Every core channel (SPSC, MPSC, SPMC, MPMC) offers a full batch API suite - `send_batch`, `try_send_batch`, `recv_batch`, `try_recv_batch` plus in-place `_mut` variants - that amortizes synchronization over the whole batch: a single atomic index update or lock acquisition, bulk capacity-permit handling, and coalesced wakeups. Batch operations have partial-progress semantics: by-value sends return the count sent and the unsent remainder on interruption (no owned value is ever silently dropped), and in-place variants drain sent items from the front of the caller's `Vec` (send) or append to it (receive). Blocking/async `recv_batch(max)` waits until at least one item is available, then drains up to `max` without further waiting.
 
 ### Performance-Oriented Design
 
 Performance is a primary goal. Fibre uses proven, high-performance algorithms for each channel type, including:
 *   Lock-free ring buffers for SPSC.
-*   Lock-free linked lists for MPSC.
+*   Lock-free linked lists for unbounded MPSC, and an array-based buffer for bounded MPSC.
 *   A specialized ring buffer for SPMC that tracks individual consumer progress, ensuring backpressure from the slowest consumer.
 *   A non-blocking, topic-based SPMC variant built on a concurrent hash map, copy-on-write lists, and individual mailboxes for high-performance pub/sub.
-*   A fair, hybrid semaphore built on `parking_lot::Mutex` for MPMC and bounded MPSC channels.
+*   A fair, hybrid semaphore built on `parking_lot::Mutex` for MPMC channels.
 *   Cache-line padding on critical atomic data to minimize false sharing and maximize throughput on multi-core systems.
 
 ### Ergonomic and Safe
 
 *   **Explicit Lifecycle Control:** All channel handles provide an idempotent `close()` method as an explicit alternative to `drop`, giving developers fine-grained control over the channel lifecycle.
 *   **Clear Error Handling & Drop Safety:** Descriptive error types (`TrySendError<T>`, `RecvError`, `CloseError`) allow for value recovery and clear error reporting. Channels correctly signal disconnection when handles are dropped or explicitly closed, and any buffered items are properly deallocated.
-*   **Defined Disconnect Semantics:** Fibre follows a consistent two-sided disconnection contract across all channel types. When all **senders** are dropped or closed, any items already buffered in the channel remain readable; receivers will drain them before observing `Disconnected`. When a **receiver** is dropped or explicitly closed, that handle immediately returns `Disconnected` on any subsequent receive call — it does not attempt to drain remaining buffered items. This distinction is important for graceful shutdown: drop your senders to let receivers drain cleanly, rather than closing receivers while items are still in flight.
+*   **Defined Disconnect Semantics:** Fibre follows a consistent two-sided disconnection contract across all channel types. When all **senders** are dropped or closed, any items already buffered in the channel remain readable; receivers will drain them before observing `Disconnected`. When a **receiver** is dropped or explicitly closed, that handle immediately returns `Disconnected` on any subsequent receive call - it does not attempt to drain remaining buffered items. This distinction is important for graceful shutdown: drop your senders to let receivers drain cleanly, rather than closing receivers while items are still in flight.
 *   **Thread Safety:** Each channel type enforces appropriate `Send` and `Sync` bounds, ensuring correct concurrent usage. For example, SPSC and MPSC sync consumer handles are `!Sync` as they are designed for single-threaded consumption, and SPSC async handles take `&mut self` on their send/receive methods so exclusive single-producer/single-consumer access is checked at compile time.
 
 ## Performance
@@ -118,18 +118,18 @@ Benchmarks on Apple M4 Pro; full results in [`docs/benches/`](./docs/benches/).
 | :--- | :--- | ---: | ---: |
 | **SPSC** | Cap-1024, 1P / 1C | 44.5 Melem/s | 183 Melem/s |
 | **SPSC** | Cap-1024, batch 512 | 180 Melem/s | 146 Melem/s |
-| **MPSC** | Cap-128, 4P | 9.6 Melem/s | 63.2 Melem/s |
-| **MPSC** | Cap-128, 14P | 2.8 Melem/s | 62.9 Melem/s |
+| **MPSC** | Cap-128, 4P | 21.0 Melem/s | 67.6 Melem/s |
+| **MPSC** | Cap-128, 14P | 3.7 Melem/s | 67.2 Melem/s |
 | **SPMC** | Cap-128, 1C (broadcast) | 15.0 Melem/s | 14.8 Melem/s |
 | **SPMC** | Cap-128, 4C (broadcast) | 15.7 Melem/s | 19.5 Melem/s |
 | **SPMC Topic** | 1 subscriber | 18.1 Melem/s | 7.8 Melem/s |
 | **SPMC Topic** | 14 subscribers | 726 Kelem/s | 14.9 Melem/s |
 | **MPMC** | Cap-128, 1P / 1C | 42.1 Melem/s | 73.2 Melem/s |
 | **MPMC** | Cap-128, 14P / 14C | 18.9 Melem/s | 19.9 Melem/s |
-| **Oneshot** | — | — | 10.4 Melem/s |
+| **Oneshot** | - | - | 10.4 Melem/s |
 
 - SPSC numbers are measured with a real spawned producer and consumer (thread or task) per iteration, so they include genuine cross-core synchronization; throughput scales with buffer size (Cap-128: 27 / 139 Melem/s sync/async, Cap-1024: 44.5 / 183 Melem/s). Batch APIs at Cap-1024 reach 150–185 Melem/s sync.
-- MPSC async throughput at Cap-128 is remarkably consistent across producer counts (~63 Melem/s from 4P to 14P); sync bounded throughput is lower and falls off under contention (~9.6 Melem/s at 4P down to ~2.8 at 14P).
+- MPSC async throughput at Cap-128 is remarkably consistent across producer counts (~67 Melem/s from 4P to 14P); sync bounded throughput is lower and falls off under contention (~21 Melem/s at 4P down to ~3.7 at 14P, and ~82 Melem/s at 1P).
 - SPMC figures are per-message sent; each message is cloned and delivered to every consumer.
 - SPMC Topic's async 14-subscriber result (14.9 Melem/s) is ~20× faster than the sync equivalent (726 Kelem/s) because the non-blocking sender fully decouples producers from slow subscribers.
 - MPMC async at 73 Melem/s (Cap-128, 1P / 1C) avoids lock overhead when the buffer has slack.

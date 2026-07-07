@@ -201,7 +201,7 @@ fn main() {
 
   if is_spmc {
     println!(
-      "Completed in {:.1?} — sent={} received={} ({}x broadcast) — {:.2}M dispatched/sec",
+      "Completed in {:.1?} - sent={} received={} ({}x broadcast) - {:.2}M dispatched/sec",
       result.duration,
       result.sent,
       result.received,
@@ -210,7 +210,7 @@ fn main() {
     );
   } else {
     println!(
-      "Completed in {:.1?} — sent={} received={} — {:.2}M items/sec",
+      "Completed in {:.1?} - sent={} received={} - {:.2}M items/sec",
       result.duration, result.sent, result.received, throughput_m,
     );
   }
@@ -218,8 +218,8 @@ fn main() {
   append_result_record(&args, &result, throughput_m);
 }
 
-/// Appends one JSON line per run to `channels/bench/results.jsonl` — config, the full watchdog
-/// tick history, and the final summary — so a session's worth of runs can be reviewed directly
+/// Appends one JSON line per run to `channels/bench/results.jsonl` - config, the full watchdog
+/// tick history, and the final summary - so a session's worth of runs can be reviewed directly
 /// from the file instead of needing terminal output pasted in. Hand-formatted rather than pulling
 /// in serde_json: the shape is small, flat, and every field is either a plain number or an
 /// enum-derived string (nothing needing arbitrary-string escaping).

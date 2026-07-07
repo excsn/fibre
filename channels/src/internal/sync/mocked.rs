@@ -10,7 +10,7 @@ pub(crate) use loom::sync::atomic::{
 // wait-for-progress spins become explorable instead of branch explosions.
 pub(crate) use loom::hint;
 
-/// See `real.rs` — collapses spin budgets inside loom models.
+/// See `real.rs` - collapses spin budgets inside loom models.
 pub(crate) const IS_LOOM: bool = true;
 
 pub(crate) use loom::sync::Arc;
@@ -19,7 +19,7 @@ pub(crate) use self::thread::Thread;
 
 /// `loom::thread` plus panicking stubs for the time-based APIs loom doesn't
 /// model. The stubs exist so `#[cfg(test)]` std-thread tests and timeout code
-/// paths still COMPILE under `--cfg loom` (they are never run there — loom.sh
+/// paths still COMPILE under `--cfg loom` (they are never run there - loom.sh
 /// filters to `loom_tests`); if a loom model actually reaches one, failing
 /// loudly at the call site beats degrading to an untimed park and reporting a
 /// deadlock miles from the cause.
@@ -29,11 +29,11 @@ pub(crate) mod thread {
   use std::time::Duration;
 
   pub fn park_timeout(_duration: Duration) {
-    panic!("thread::park_timeout is not modeled under loom — keep timeout paths out of loom tests");
+    panic!("thread::park_timeout is not modeled under loom - keep timeout paths out of loom tests");
   }
 
   pub fn sleep(_duration: Duration) {
-    panic!("thread::sleep is not modeled under loom — keep sleeping tests out of loom runs");
+    panic!("thread::sleep is not modeled under loom - keep sleeping tests out of loom runs");
   }
 }
 
@@ -51,7 +51,7 @@ impl<T> Mutex<T> {
   #[inline]
   pub(crate) fn lock(&self) -> loom::sync::MutexGuard<'_, T> {
     // Loom mirrors std's poisoning API; poison here means a panic already
-    // happened inside the model — propagate it.
+    // happened inside the model - propagate it.
     self.0.lock().unwrap()
   }
 

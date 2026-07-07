@@ -7,7 +7,7 @@
 # drives the channel protocol tests in the `fibre_miri` test crate.)
 #
 # Miri is a UB / data-race / UAF / leak detector; `-Zmiri-many-seeds` re-runs
-# each test under many schedules (essential for weak-memory bugs — a default
+# each test under many schedules (essential for weak-memory bugs - a default
 # single run routinely passes with an ordering bug present).
 #
 # The #[ignore]d starvation proof test is sleep/timing based and stays

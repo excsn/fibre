@@ -22,7 +22,7 @@ fn handoff() {
 }
 
 /// Sender drops without ever sending: a receiver that has parked (or is about
-/// to) must observe Disconnected rather than hang — the lost close-wake surface.
+/// to) must observe Disconnected rather than hang - the lost close-wake surface.
 #[test]
 fn sender_drop_disconnects_receiver() {
   loom::model(|| {

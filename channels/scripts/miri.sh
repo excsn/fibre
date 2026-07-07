@@ -3,7 +3,7 @@
 # Run a fibre_miri test under miri with many-seeds interleaving exploration.
 #
 # Miri is a UB / data-race / UAF detector; `-Zmiri-many-seeds` re-runs each test
-# under many schedules (essential for weak-memory bugs — a default single run
+# under many schedules (essential for weak-memory bugs - a default single run
 # routinely passes with an ordering bug present). Run BOTH an isolated test and
 # the full file: isolating changes the global schedule, so a bug can hide in one
 # framing and show in the other at the same seed number.

@@ -141,7 +141,7 @@ A high-performance, lock-free, bounded channel for one producer and one consumer
 
 *   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (panics if `capacity == 0`)
 *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (panics if `capacity == 0`)
-*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff; both ends `!Clone`. Handles expose `send`/`recv`/`try_send`/`try_recv`/`recv_timeout` (receiver)/`close`/`is_closed`/`len`/`is_empty`/`is_full`/`capacity`/`to_async`/`to_sync`. No batch API.
+*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` - zero-capacity direct handoff; both ends `!Clone`. Handles expose `send`/`recv`/`try_send`/`try_recv`/`recv_timeout` (receiver)/`close`/`is_closed`/`len`/`is_empty`/`is_full`/`capacity`/`to_async`/`to_sync`. No batch API.
 *   `pub fn rendezvous::rendezvous_async<T: Send>() -> (rendezvous::RendezvousAsyncSender<T>, rendezvous::RendezvousAsyncReceiver<T>)`
 
 ### Struct `BoundedSyncSender<T>`
@@ -217,9 +217,9 @@ An optimized channel for multiple producers and one consumer.
 
 *   `pub fn unbounded<T: Send>() -> (UnboundedSyncSender<T>, UnboundedSyncReceiver<T>)`
 *   `pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>)`
-*   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
-*   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
-*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff; senders `Clone`, single receiver `!Clone`. No batch API. `_async` variant available.
+*   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (panics if `capacity == 0` - use `rendezvous`)
+*   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (panics if `capacity == 0` - use `rendezvous`)
+*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` - zero-capacity direct handoff; senders `Clone`, single receiver `!Clone`. No batch API. `_async` variant available.
 
 ### Unbounded MPSC Types
 
@@ -326,11 +326,11 @@ A flexible, lock-based channel for many producers and many consumers.
 
 ### Functions
 
-*   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
-*   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (panics if `capacity == 0` — use `rendezvous`)
+*   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)` (panics if `capacity == 0` - use `rendezvous`)
+*   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (panics if `capacity == 0` - use `rendezvous`)
 *   `pub fn unbounded<T: Send>() -> (UnboundedSyncSender<T>, UnboundedSyncReceiver<T>)`
 *   `pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>)`
-*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff; senders and receivers `Clone`. No batch API. `_async` variant available.
+*   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` - zero-capacity direct handoff; senders and receivers `Clone`. No batch API. `_async` variant available.
 
 ### Struct `Sender<T: Send>`
 
@@ -378,7 +378,7 @@ The asynchronous, cloneable receiving handle of the bounded channel. Implements 
 
 ### Unbounded MPMC Types
 
-The unbounded channel is a dedicated implementation (lock-free slab-chain producers, mutex-serialized consumer side), not the bounded channel with infinite capacity. All four handles are `Clone`. Sends and waiting receives take `&mut self` — each handle owns its bump slab (senders) or cached waiter cell (receivers), so the hot paths never lock or allocate; clone a handle per thread or task.
+The unbounded channel is a dedicated implementation (lock-free slab-chain producers, mutex-serialized consumer side), not the bounded channel with infinite capacity. All four handles are `Clone`. Sends and waiting receives take `&mut self` - each handle owns its bump slab (senders) or cached waiter cell (receivers), so the hot paths never lock or allocate; clone a handle per thread or task.
 
 *   **Struct `UnboundedSyncSender<T: Send>`**:
     *   `send(&mut self, value: T) -> Result<(), SendError>`: Never blocks.

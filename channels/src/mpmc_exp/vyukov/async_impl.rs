@@ -51,7 +51,7 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
   type Output = Result<(), SendError>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    // Safety: `SendFuture` is never relied upon to stay pinned — it holds only an
+    // Safety: `SendFuture` is never relied upon to stay pinned - it holds only an
     // `Option<T>`, a shared-ref, and an id, none self-referential, so moving its
     // fields is sound.
     let this = unsafe { self.get_unchecked_mut() };

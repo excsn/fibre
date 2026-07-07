@@ -215,7 +215,7 @@ pub(crate) fn send_batch_sync<T: Send>(
 
 /// The synchronous, blocking in-place batch send. The vector is exclusively
 /// borrowed for the whole call, so this delegates to the by-value path and
-/// restores the unsent remainder into `items` on closure — observationally
+/// restores the unsent remainder into `items` on closure - observationally
 /// identical to draining sent items from the front as they go.
 pub(crate) fn send_batch_mut_sync<T: Send>(
   sender: &Sender<T>,
@@ -361,7 +361,7 @@ pub(crate) fn recv_timeout_sync<T: Send>(
     Err(TryRecvError::Empty) => { /* Continue to blocking path */ }
   }
 
-  // Declare state and waiter exactly once on the stack — no per-iteration allocation.
+  // Declare state and waiter exactly once on the stack - no per-iteration allocation.
   let done_flag = AtomicU8::new(STATE_WAITING);
   let done_ptr = &done_flag as *const AtomicU8;
   let waiter = SyncWaiter {
@@ -428,10 +428,10 @@ pub(crate) fn recv_timeout_sync<T: Send>(
       match receiver.shared.try_recv_core() {
         Ok(item) => return Ok(item),
         Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
-        Err(TryRecvError::Empty) => {} // Spurious wakeup — loop to re-check timeout
+        Err(TryRecvError::Empty) => {} // Spurious wakeup - loop to re-check timeout
       }
     }
-    // Spurious wakeup with no handoff committed — loop to re-check timeout without
+    // Spurious wakeup with no handoff committed - loop to re-check timeout without
     // re-acquiring the lock or re-enqueuing.
   }
 }

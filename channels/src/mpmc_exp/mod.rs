@@ -9,7 +9,7 @@
 //! reports the rounded value.
 //!
 //! Cancellation is trivial: a send/recv future suspends only while parked,
-//! holding no slot, so dropping it merely unlinks the parked waiter — there is no
+//! holding no slot, so dropping it merely unlinks the parked waiter - there is no
 //! in-buffer tombstone to resolve and no risk of "ghost delivery".
 
 use std::mem;
@@ -41,7 +41,7 @@ pub use crate::mpmc_v2::{unbounded, unbounded_async};
 /// names so the two cores can be swapped for benching/testing.
 mod vyukov;
 
-/// THE BACKEND SWITCH — flip this alias to bench/test the other MPMC core.
+/// THE BACKEND SWITCH - flip this alias to bench/test the other MPMC core.
 /// Both backends expose an identical surface (`Shared`, the sync ops, the
 /// futures, `poll_stream_next`).
 use self::vyukov as imp;

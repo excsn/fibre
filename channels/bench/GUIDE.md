@@ -1,7 +1,7 @@
-# fibre_bench — throughput & profiling harness
+# fibre_bench - throughput & profiling harness
 
 `fibre_bench` is a small CLI, separate from the Criterion suites in `channels/benches/`. Criterion
-runs many short, sampled iterations with its own statistics machinery — great for tracking
+runs many short, sampled iterations with its own statistics machinery - great for tracking
 regressions, bad for profiling, since the sampling overhead and short iteration length pollute a
 flamegraph. `fibre_bench` instead runs **one long, fixed-size workload start to finish**, with a
 stall watchdog, so it's meant to be run directly under a profiler:
@@ -29,7 +29,7 @@ or from `channels/bench/`:
 cargo run --release -- <flags>
 ```
 
-Always use `--release` for real numbers — the workspace's `[profile.release]` keeps debug symbols
+Always use `--release` for real numbers - the workspace's `[profile.release]` keeps debug symbols
 (`debug = true`) specifically so release builds stay flamegraph-friendly.
 
 There's also a `diagnostics` feature (`cargo run --release --features diagnostics -- ...`) that
@@ -53,14 +53,14 @@ at the end of every run regardless (and immediately, if the watchdog detects a s
 
 The watchdog prints a `[watchdog] sent=.. recv=.. in_flight=..` line every `stall_ms` while
 running. If `sent`/`received` don't move for `stall_count` consecutive ticks, it aborts (exit code
-2) and prints a best-effort classification (lost wakeup / lost item(s) / mutual deadlock) — full
+2) and prints a best-effort classification (lost wakeup / lost item(s) / mutual deadlock) - full
 detail (ring length, waiter counts) is only available for `mpmc-v3` sync, which exposes
 `debug_state`.
 
 ## Results file
 
 Every run also appends one JSON line to `channels/bench/results.jsonl` (always on, no flag needed)
-— config, the full watchdog tick history, and the final summary, so a session's worth of runs can
+- config, the full watchdog tick history, and the final summary, so a session's worth of runs can
 be reviewed directly from the file instead of needing terminal output pasted in. Not committed
 (gitignored). Shape of one line:
 
@@ -74,7 +74,7 @@ be reviewed directly from the file instead of needing terminal output pasted in.
 ## Channel constraints
 
 - **`spsc`**: `--producers 1 --consumers 1` (enforced), `bounded` only.
-- **`spmc`**: `--producers 1` (enforced), `bounded` only. It's a broadcast channel — every
+- **`spmc`**: `--producers 1` (enforced), `bounded` only. It's a broadcast channel - every
   consumer receives every item, so `received` in the output is `items * consumers`; the reported
   throughput uses `sent` (dispatch rate), not `received`, so it's comparable to the other channel
   types.
@@ -82,7 +82,7 @@ be reviewed directly from the file instead of needing terminal output pasted in.
 - **`mpmc-v2`** / **`mpmc-v3`**: any producer/consumer count, all three flavors. `mpmc-v3` only has
   its own implementation for `bounded`; `unbounded`/`rendezvous` under `-c mpmc-v3` silently
   delegate to `mpmc-v2`'s implementation.
-- **`rendezvous` has no batch API** — `-b` > 0 with `-f rendezvous` is rejected at startup
+- **`rendezvous` has no batch API** - `-b` > 0 with `-f rendezvous` is rejected at startup
   regardless of channel.
 
 ## Example commands
@@ -93,7 +93,7 @@ be reviewed directly from the file instead of needing terminal output pasted in.
 cargo run --release -p fibre_bench -- -c spsc -m sync -C 1024 -i 1000000
 # single-item, async
 cargo run --release -p fibre_bench -- -c spsc -m async -C 1024 -i 1000000
-# batched, sync — batch size 8
+# batched, sync - batch size 8
 cargo run --release -p fibre_bench -- -c spsc -m sync -C 1024 -i 1000000 -b 8
 # batched, async
 cargo run --release -p fibre_bench -- -c spsc -m async -C 1024 -i 1000000 -b 8
@@ -129,9 +129,9 @@ cargo run --release -p fibre_bench -- -c mpmc-v3 -m async -p 4 -n 4 -C 128 -i 10
 Use `-p fibre_bench`, not `--bin fibre_bench`.
 
 **Pick `-i` for wall-clock time, not item count.** A sampling profiler needs the process to run
-for several seconds to gather a useful number of samples — `-i 1000000` finishes in tens of
+for several seconds to gather a useful number of samples - `-i 1000000` finishes in tens of
 milliseconds for most of these combos, which produces flamegraphs with as few as 17-35 total
-samples (checked: `total_samples="..."` in the SVG's `<svg id="frames" ...>` tag) — nowhere near
+samples (checked: `total_samples="..."` in the SVG's `<svg id="frames" ...>` tag) - nowhere near
 enough to see anything past `all`/`thread_start`. Back into `-i` from a rough throughput estimate
 (criterion numbers, or a quick non-flamegraph `cargo run --release` first) so the run lasts
 roughly 10-15s; that's enough for hundreds to low-thousands of samples with this binary.
@@ -139,19 +139,19 @@ roughly 10-15s; that's enough for hundreds to low-thousands of samples with this
 The values below are confirmed (rerun and checked `total_samples` in the resulting SVG):
 
 ```sh
-# SPSC sync, Cap-1024/Batch-8 — 754 samples
+# SPSC sync, Cap-1024/Batch-8 - 754 samples
 cargo flamegraph -p fibre_bench -o flame_cap1024_batch8_sync.svg   -- -c spsc -m sync  -C 1024 -b 8  -i 700000000
 
-# SPSC sync, Cap-1024/Batch-64 — 673 samples
+# SPSC sync, Cap-1024/Batch-64 - 673 samples
 cargo flamegraph -p fibre_bench -o flame_cap1024_batch64_sync.svg  -- -c spsc -m sync  -C 1024 -b 64 -i 1000000000
 
-# SPSC sync, Cap-128/Batch-8 — 860 samples
+# SPSC sync, Cap-128/Batch-8 - 860 samples
 cargo flamegraph -p fibre_bench -o flame_cap128_batch8_sync.svg    -- -c spsc -m sync  -C 128  -b 8  -i 350000000
 
-# SPSC async, Cap-1024/Batch-8 — 1375 samples
+# SPSC async, Cap-1024/Batch-8 - 1375 samples
 cargo flamegraph -p fibre_bench -o flame_cap1024_batch8_async.svg  -- -c spsc -m async -C 1024 -b 8  -i 1000000000
 
-# SPSC sync, Cap-1024, single-item (no batch) — only 75 samples at 450M, needs more; try ~4-5x
+# SPSC sync, Cap-1024, single-item (no batch) - only 75 samples at 450M, needs more; try ~4-5x
 cargo flamegraph -p fibre_bench -o flame_cap1024_single_sync.svg   -- -c spsc -m sync  -C 1024        -i 2000000000
 ```
 

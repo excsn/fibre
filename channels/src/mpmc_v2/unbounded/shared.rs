@@ -3,8 +3,8 @@
 //! Producers publish lock-free onto the slab-backed Vyukov chain
 //! (`internal::slab_chain`): one always-succeeding `swap` per send, nodes from
 //! per-handle slabs, sends never block, no send waiters exist. The consumer
-//! side is serialized by one small `HybridMutex` — the single-consumer-lock
-//! mechanism the v2-vs-v3 contention benchmarks crowned — guarding only the
+//! side is serialized by one small `HybridMutex` - the single-consumer-lock
+//! mechanism the v2-vs-v3 contention benchmarks crowned - guarding only the
 //! chain cursor,
 //! the recv-waiter queue, and the reclaimed-item buffer.
 //!
@@ -136,7 +136,7 @@ unsafe impl<T: Send> Send for ConsumerState<T> {}
 // --- Shared state ----------------------------------------------------------------
 
 pub(crate) struct UnboundedShared<T> {
-  /// Producers swap here — the single shared RMW per send; never locked.
+  /// Producers swap here - the single shared RMW per send; never locked.
   head: ChainHead<T>,
   /// Recycles retired slabs; its own `Arc` so sender handles (and the slabs
   /// themselves) can outlive-independently reference it.
@@ -212,7 +212,7 @@ impl<T: Send> UnboundedShared<T> {
   /// Post-publish notify. The common case (no waiters) touches nothing shared
   /// beyond the gate load; with waiters, the producer enters the consumer
   /// mutex and runs a handoff session (or classic wake-one under the
-  /// kill-switch) — which also removes the wake-then-lose-race respawning.
+  /// kill-switch) - which also removes the wake-then-lose-race respawning.
   pub(crate) fn notify_receivers(&self) {
     fence(Ordering::SeqCst);
     if self.recv_waiter_count.load(Ordering::Relaxed) == 0 {
@@ -296,7 +296,7 @@ impl<T: Send> UnboundedShared<T> {
       .store(c.waiters.len(), Ordering::Release);
   }
 
-  /// Pops one item — reclaimed items first, then the chain.
+  /// Pops one item - reclaimed items first, then the chain.
   fn pop_locked(&self, c: &mut ConsumerState<T>) -> Option<T> {
     if let Some(v) = c.reclaimed.pop_front() {
       self.consumed.fetch_add(1, Ordering::Relaxed);
@@ -549,7 +549,7 @@ impl<T: Send> UnboundedShared<T> {
   }
 
   /// Resolves a timeout race: if the registration is gone, a deliverer beat
-  /// us — honor its outcome (state writes happen under the lock we now hold).
+  /// us - honor its outcome (state writes happen under the lock we now hold).
   fn timeout_finish(
     &self,
     cell: &Arc<WaiterCell<T>>,

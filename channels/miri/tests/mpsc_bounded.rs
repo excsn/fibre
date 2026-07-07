@@ -1,5 +1,9 @@
-//! Miri suite for the bounded MPSC channel: Vyukov publish, node pool +
-//! chunk-stack recycling, capacity park/wake.
+//! Miri suite for the bounded MPSC channel (`mpsc::bounded_v3`):
+//! credit-before-claim ticket writes, chunk-TABLE recycling with
+//! reset-on-drain, and capacity park/wake. Under miri the chunk table is shrunk
+//! (see `bounded_v3::shared` SLACK / CHUNK_FLOOR) so reuse - `ensure_resident`'s
+//! id-epoch CAS and the reset-on-drain ordering, the fresh unsafe surface - is
+//! exercised within these tests' item budgets, wrapping the table many times.
 
 use fibre::error::{RecvError, TryRecvError, TrySendError};
 use fibre::mpsc;
@@ -43,6 +47,36 @@ fn multi_producer_race() {
     assert_eq!(next[p], i);
     next[p] += 1;
   }
+  for h in handles {
+    h.join().unwrap();
+  }
+}
+
+#[test]
+fn concurrent_reuse_wraps_table() {
+  // Tiny cap = maximal chunk-table reuse pressure under the miri-shrunk table:
+  // producers keep reinstalling chunks (`ensure_resident` id-epoch CAS) as the
+  // consumer drains and resets them (reset-on-drain), wrapping the table several
+  // times. Asserts per-producer FIFO and exact multiset (no lost/dup/torn item).
+  let (tx, rx) = mpsc::bounded::<(usize, usize)>(2);
+  let mut handles = Vec::new();
+  for p in 0..2usize {
+    let txc = tx.clone();
+    handles.push(thread::spawn(move || {
+      for i in 0..40usize {
+        txc.send((p, i)).unwrap();
+      }
+    }));
+  }
+  drop(tx);
+  let mut next = [0usize; 2];
+  let mut got = 0;
+  while let Ok((p, i)) = rx.recv() {
+    assert_eq!(next[p], i, "per-producer FIFO broken across chunk reuse");
+    next[p] += 1;
+    got += 1;
+  }
+  assert_eq!(got, 80);
   for h in handles {
     h.join().unwrap();
   }

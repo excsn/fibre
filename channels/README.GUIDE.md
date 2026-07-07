@@ -50,7 +50,7 @@ assert_eq!(rx.try_recv(), Ok(2));  // still drains
 assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected)); // now empty
 ```
 
-**Receiver-side close (immediate stop):** When a receiver handle is dropped or explicitly closed, that handle immediately returns `Disconnected` on any subsequent `recv` or `try_recv` call — it does **not** drain remaining buffered items. Other receiver handles on the same channel (for channel types that support cloning) are unaffected.
+**Receiver-side close (immediate stop):** When a receiver handle is dropped or explicitly closed, that handle immediately returns `Disconnected` on any subsequent `recv` or `try_recv` call - it does **not** drain remaining buffered items. Other receiver handles on the same channel (for channel types that support cloning) are unaffected.
 
 The practical implication for graceful shutdown: **close or drop your senders** to allow receivers to drain the remaining work cleanly. Closing a receiver while items are still in the buffer abandons those items.
 
@@ -255,16 +255,16 @@ _(Note: `T` must generally be `Send`. Specific trait bounds like `Clone` are not
 A flexible channel for many-to-many communication.
 
 *   **Constructors:**
-    *   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)` (Panics if capacity is 0 — use `mpmc::rendezvous`).
-    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (Panics if capacity is 0 — use `mpmc::rendezvous`).
+    *   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)` (Panics if capacity is 0 - use `mpmc::rendezvous`).
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)` (Panics if capacity is 0 - use `mpmc::rendezvous`).
     *   `pub fn unbounded<T: Send>() -> (UnboundedSyncSender<T>, UnboundedSyncReceiver<T>)`
     *   `pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>)`
-    *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff.
+    *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` - zero-capacity direct handoff.
     *   `pub fn rendezvous::rendezvous_async<T: Send>() -> (rendezvous::RendezvousAsyncSender<T>, rendezvous::RendezvousAsyncReceiver<T>)`
 *   **Handles:**
     *   Bounded: `Sender<T: Send>` (`Clone`) and `Receiver<T: Send>` (`Clone`).
     *   Bounded async: `AsyncSender<T: Send>` (`Clone`) and `AsyncReceiver<T: Send>` (`Clone`). `AsyncReceiver` implements `futures::Stream`.
-    *   Unbounded: `Unbounded{Sync,Async}{Sender,Receiver}<T: Send>` (all `Clone`; `UnboundedAsyncReceiver` implements `futures::Stream`). Sends and waiting receives take `&mut self` — clone a handle per thread or task.
+    *   Unbounded: `Unbounded{Sync,Async}{Sender,Receiver}<T: Send>` (all `Clone`; `UnboundedAsyncReceiver` implements `futures::Stream`). Sends and waiting receives take `&mut self` - clone a handle per thread or task.
     *   Rendezvous handles `rendezvous::{Sender, Receiver, AsyncSender, AsyncReceiver}` (all `Clone`) expose `send`/`recv`/`try_*`/`recv_timeout`/`close`/conversions but no batch API.
 *   **Key Methods:**
     *   `send(...)`: Sync sends block, async sends return a `Future`.
@@ -282,11 +282,11 @@ An optimized lock-free channel for many-to-one communication.
 *   **Constructors:**
     *   `pub fn unbounded<T: Send>() -> (UnboundedSyncSender<T>, UnboundedSyncReceiver<T>)`
     *   `pub fn unbounded_async<T: Send>() -> (UnboundedAsyncSender<T>, UnboundedAsyncReceiver<T>)`
-    *   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (Panics if capacity is 0 — use `mpsc::rendezvous`).
-    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (Panics if capacity is 0 — use `mpsc::rendezvous`).
-    *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff (senders `Clone`; single receiver, `!Clone`). `_async` variant available. No batch API.
+    *   `pub fn bounded<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (Panics if capacity is 0 - use `mpsc::rendezvous`).
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (Panics if capacity is 0 - use `mpsc::rendezvous`).
+    *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` - zero-capacity direct handoff (senders `Clone`; single receiver, `!Clone`). `_async` variant available. No batch API.
 *   **Handles (Unbounded):**
-    *   `UnboundedSyncSender<T: Send>` (sync, `Clone`) and `UnboundedSyncReceiver<T: Send>` (sync, `!Clone`). Sends take `&mut self` — clone a sender per thread or task.
+    *   `UnboundedSyncSender<T: Send>` (sync, `Clone`) and `UnboundedSyncReceiver<T: Send>` (sync, `!Clone`). Sends take `&mut self` - clone a sender per thread or task.
     *   `UnboundedAsyncSender<T: Send>` (async, `Clone`) and `UnboundedAsyncReceiver<T: Send>` (async, `!Clone`). `UnboundedAsyncReceiver` implements `futures::Stream`.
 *   **Handles (Bounded):**
     *   `BoundedSyncSender<T: Send>` (sync, `Clone`) and `BoundedSyncReceiver<T: Send>` (sync, `!Clone`).
@@ -339,9 +339,9 @@ A flexible publish-subscribe channel for one-to-many communication. Messages are
 A high-performance lock-free channel for one-to-one communication (bounded). `T` must be `Send`.
 
 *   **Constructors:**
-    *   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (Panics if capacity is 0 — use `spsc::rendezvous`).
-    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (Panics if capacity is 0 — use `spsc::rendezvous`).
-    *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` — zero-capacity direct handoff (both ends `!Clone`). `_async` variant available. No batch API.
+    *   `pub fn bounded_sync<T: Send>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>)` (Panics if capacity is 0 - use `spsc::rendezvous`).
+    *   `pub fn bounded_async<T: Send>(capacity: usize) -> (BoundedAsyncSender<T>, BoundedAsyncReceiver<T>)` (Panics if capacity is 0 - use `spsc::rendezvous`).
+    *   `pub fn rendezvous::rendezvous<T: Send>() -> (rendezvous::RendezvousSyncSender<T>, rendezvous::RendezvousSyncReceiver<T>)` - zero-capacity direct handoff (both ends `!Clone`). `_async` variant available. No batch API.
 *   **Handles:**
     *   `BoundedSyncSender<T: Send>` (`!Clone`) and `BoundedSyncReceiver<T: Send>` (`!Clone`).
     *   `BoundedAsyncSender<T: Send>` (`!Clone`) and `BoundedAsyncReceiver<T: Send>` (`!Clone`). `BoundedAsyncReceiver` implements `futures::Stream`. The async handles take `&mut self` on every send/receive method, enforcing the single-producer/single-consumer contract at compile time (their futures remain `Send`).
@@ -372,21 +372,21 @@ All core channels (`spsc`, `mpsc`, `spmc`, `mpmc`) provide a uniform batch API t
 
 | Operation | Input | Success | Failure |
 | :--- | :--- | :--- | :--- |
-| `try_send_batch(items)` | `Vec<T>` (by value) | `Ok(n)` — **all** items sent | `TrySendBatchError { sent, unsent, reason }` |
-| `send_batch(items)` | `Vec<T>` (by value) | `Ok(n)` — all items sent (blocks/awaits) | `SendBatchError { sent, unsent }` (channel closed) |
-| `try_send_batch_mut(&mut items)` | `&mut Vec<T>` | `Ok(k)` — `k` items drained from the **front** | `SendError::Closed` only if closed with zero sent |
-| `send_batch_mut(&mut items)` | `&mut Vec<T>` | `Ok(n)` — all sent (blocks/awaits) | `SendError::Closed`; unsent items remain in the vec |
-| `try_recv_batch(max)` | limit | `Ok(Vec<T>)` — 1..=max items | `TryRecvError::Empty` / `Disconnected` |
-| `recv_batch(max)` | limit | `Ok(Vec<T>)` — 1..=max items (blocks/awaits) | `RecvError::Disconnected` |
-| `try_recv_batch_mut(&mut out, max)` | buffer + limit | `Ok(k)` — `k` items appended to `out` | `TryRecvError::Empty` / `Disconnected` |
-| `recv_batch_mut(&mut out, max)` | buffer + limit | `Ok(k)` — appended (blocks/awaits) | `RecvError::Disconnected` |
+| `try_send_batch(items)` | `Vec<T>` (by value) | `Ok(n)` - **all** items sent | `TrySendBatchError { sent, unsent, reason }` |
+| `send_batch(items)` | `Vec<T>` (by value) | `Ok(n)` - all items sent (blocks/awaits) | `SendBatchError { sent, unsent }` (channel closed) |
+| `try_send_batch_mut(&mut items)` | `&mut Vec<T>` | `Ok(k)` - `k` items drained from the **front** | `SendError::Closed` only if closed with zero sent |
+| `send_batch_mut(&mut items)` | `&mut Vec<T>` | `Ok(n)` - all sent (blocks/awaits) | `SendError::Closed`; unsent items remain in the vec |
+| `try_recv_batch(max)` | limit | `Ok(Vec<T>)` - 1..=max items | `TryRecvError::Empty` / `Disconnected` |
+| `recv_batch(max)` | limit | `Ok(Vec<T>)` - 1..=max items (blocks/awaits) | `RecvError::Disconnected` |
+| `try_recv_batch_mut(&mut out, max)` | buffer + limit | `Ok(k)` - `k` items appended to `out` | `TryRecvError::Empty` / `Disconnected` |
+| `recv_batch_mut(&mut out, max)` | buffer + limit | `Ok(k)` - appended (blocks/awaits) | `RecvError::Disconnected` |
 
 ### Semantics
 
 *   **Partial progress, no silent drops.** By-value sends return the count sent *and* the unsent remainder on interruption (`.into_unsent()` recovers the items). In-place sends drain only what was actually sent.
-*   **Blocking/async `recv_batch(max)` waits for at least one item**, then drains up to `max` without further waiting — the latency-friendly semantic for burst draining.
+*   **Blocking/async `recv_batch(max)` waits for at least one item**, then drains up to `max` without further waiting - the latency-friendly semantic for burst draining.
 *   **Empty input or `max == 0`** returns immediately with `Ok(0)` / an empty vector, even on a closed channel.
-*   **Rendezvous channels** (`spsc`/`mpsc`/`mpmc::rendezvous`) do **not** provide batch operations — they are a dedicated zero-capacity family exposing only single-item `send`/`recv` and `try_*`. The buffered `bounded`/`unbounded` constructors are the ones that offer batch.
+*   **Rendezvous channels** (`spsc`/`mpsc`/`mpmc::rendezvous`) do **not** provide batch operations - they are a dedicated zero-capacity family exposing only single-item `send`/`recv` and `try_*`. The buffered `bounded`/`unbounded` constructors are the ones that offer batch.
 *   **Cancellation.** Dropping a pending by-value async send-batch future drops the unsent remainder (consistent with the single-item send futures). The `_mut` send futures are cancel-safe: unsent items remain in your vector. All batch receive futures are cancel-safe.
 
 ### Sync Example (bounded MPSC)

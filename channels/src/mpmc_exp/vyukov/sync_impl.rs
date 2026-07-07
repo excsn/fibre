@@ -34,7 +34,7 @@ pub(crate) fn send_sync<T: Send>(shared: &Arc<Shared<T>>, item: T) -> Result<(),
   let mut item = item;
   // `my_id` is `Some` only while we are actually linked in the waiter slab. A
   // legitimate wake (`notified` set by `wake_one`) means we were already popped,
-  // so we clear `my_id` and skip the redundant re-register + unregister — that
+  // so we clear `my_id` and skip the redundant re-register + unregister - that
   // churn is what dominated the lock traffic under contention.
   let mut my_id: Option<u64> = None;
   let notified = AtomicBool::new(false);
@@ -65,7 +65,7 @@ pub(crate) fn send_sync<T: Send>(shared: &Arc<Shared<T>>, item: T) -> Result<(),
       return Err(SendError::Closed);
     }
 
-    // Lock-free retry first — covers the initial slow entry, every backoff step,
+    // Lock-free retry first - covers the initial slow entry, every backoff step,
     // and every wake.
     match shared.ring.push(item) {
       Ok(()) => {
@@ -117,7 +117,7 @@ pub(crate) fn recv_sync<T: Send>(shared: &Arc<Shared<T>>) -> Result<T, RecvError
   let spin_limit = THREAD_SPIN_LIMIT.with(|c| c.get());
   let mut backoff: u32 = 0;
   loop {
-    // Lock-free retry first — covers the initial slow entry, every backoff step,
+    // Lock-free retry first - covers the initial slow entry, every backoff step,
     // and every wake.
     if let Some(item) = shared.ring.pop() {
       if let Some(id) = my_id {

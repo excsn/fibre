@@ -8,7 +8,7 @@ use crate::mpsc::unbounded;
 use loom::thread;
 
 /// Two producers each publish one item into the chain; the single consumer
-/// drains both. Per-producer order is FIFO, global order is not — assert the
+/// drains both. Per-producer order is FIFO, global order is not - assert the
 /// multiset.
 #[test]
 fn two_producers_one_item_each() {
@@ -42,7 +42,7 @@ fn producer_sends_consumer_parks() {
 }
 
 /// Producer publishes then drops: the consumer must drain the item and then
-/// observe Disconnected — the classic lost close-wake surface.
+/// observe Disconnected - the classic lost close-wake surface.
 #[test]
 fn disconnect_after_send_drains_then_errors() {
   loom::model(|| {
