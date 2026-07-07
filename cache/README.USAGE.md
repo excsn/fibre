@@ -252,13 +252,13 @@ These methods are more efficient than calling their singular counterparts in a l
 
 ### Maintenance API
 
-By default, `fibre_cache` uses a background janitor thread for periodic cleanup and probabilistic opportunistic maintenance on writes. For scenarios that require deterministic, on-demand flushing — primarily tests — two explicit maintenance methods are provided.
+By default, `fibre_cache` uses a background janitor thread for periodic cleanup and probabilistic opportunistic maintenance on writes. For scenarios that require deterministic, on-demand flushing - primarily tests - two explicit maintenance methods are provided.
 
 *   `run_maintenance(&self)` / `async run_maintenance(&self)`
     *   Forces a complete maintenance pass over all shards. This includes draining all pending write-admission and read-access events, running TTL/TTI expiration, and enforcing capacity. The call blocks (or, for `AsyncCache`, yields) until the pass completes. Unlike opportunistic maintenance, this is never skipped.
 
 *   `maintenance_on_introspection(bool)` *(builder option)*
-    *   When enabled, the cache automatically runs a partial flush — draining pending read-access events — before every call to `metrics()`, `iter()`, `iter_snapshot()`, `to_snapshot()`, and their async equivalents. This ensures that the eviction policy's internal state (access frequencies, recency order) reflects all reads that have been performed, giving accurate and up-to-date introspection results.
+    *   When enabled, the cache automatically runs a partial flush - draining pending read-access events - before every call to `metrics()`, `iter()`, `iter_snapshot()`, `to_snapshot()`, and their async equivalents. This ensures that the eviction policy's internal state (access frequencies, recency order) reflects all reads that have been performed, giving accurate and up-to-date introspection results.
 
 **When to use `run_maintenance` vs `maintenance_on_introspection`:**
 

@@ -91,7 +91,7 @@ where
   fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
     let mut state = self.state.lock();
 
-    // Handle re-admission of an existing key — treat as a high-frequency access.
+    // Handle re-admission of an existing key - treat as a high-frequency access.
     if state.t1.remove(key).is_some() {
       state.t2.push_front(key.clone(), cost);
       return AdmissionDecision::Admit;

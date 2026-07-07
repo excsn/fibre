@@ -37,7 +37,7 @@ loggers:
   init.shutdown(Duration::from_secs(5));
 
   // Buffered events must still be deliverable after shutdown, after which
-  // the receiver observes a real disconnect — previously it saw Empty
+  // the receiver observes a real disconnect - previously it saw Empty
   // forever, indistinguishable from a quiet system.
   let mut received = 0;
   loop {

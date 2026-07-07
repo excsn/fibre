@@ -103,7 +103,7 @@ where
         None => break,
       };
 
-      // All data is now under one lock — no drop/re-acquire needed.
+      // All data is now under one lock - no drop/re-acquire needed.
       let main_victim_key_opt = state.main.peek_lru();
       let admit_candidate = main_victim_key_opt
         .as_ref()
@@ -157,7 +157,7 @@ mod cms {
 
   #[derive(Debug)]
   pub(super) struct CountMinSketch {
-    // Plain usize counters — synchronization is handled by the outer TinyLfuState Mutex.
+    // Plain usize counters - synchronization is handled by the outer TinyLfuState Mutex.
     counters: Vec<Vec<usize>>,
     hashers: Vec<ahash::RandomState>,
     increments: usize,

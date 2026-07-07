@@ -154,7 +154,7 @@ The current appenders are foundational. The next step is to add appenders that i
 
 #### The User Experience
 
-**In Rust Code:** The user does *nothing different*. They just use `tracing` spans as intended. This is the beauty of the feature—it requires zero changes to application instrumentation code.
+**In Rust Code:** The user does *nothing different*. They just use `tracing` spans as intended. This is the beauty of the feature-it requires zero changes to application instrumentation code.
 
 ```rust
 use tracing::{info, info_span, Instrument};

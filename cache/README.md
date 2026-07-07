@@ -96,7 +96,7 @@ async fn main() {
 #### **Key Architectural Pillars**
 *   **High Concurrency via Sharding:** Partitions data across independently locked shards to minimize contention.
 *   **Hybrid Locking:** A custom `HybridRwLock` provides raw, blocking speed for sync operations and true, non-blocking suspension for async operations.
-*   **No `V: Clone` Required:** Stores values in an `Arc<V>`, making `V: Clone` unnecessary for most operations—a core advantage over many other Rust caches.
+*   **No `V: Clone` Required:** Stores values in an `Arc<V>`, making `V: Clone` unnecessary for most operations-a core advantage over many other Rust caches.
 *   **Unified Sync/Async API:** Zero-cost `to_sync()` and `to_async()` methods allow seamless conversion between handles.
 *   **Trait-Based Policies:** A flexible `CachePolicy` trait allows for swapping out admission and eviction algorithms.
 

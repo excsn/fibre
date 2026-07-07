@@ -29,7 +29,7 @@ loggers:
   let init = fibre_logging::init_from_file(&config_path).unwrap();
 
   // 2000 events fit inside the collector channel (capacity 2048), so none
-  // can be dropped even if the collector momentarily stalls — making the
+  // can be dropped even if the collector momentarily stalls - making the
   // throughput assertion deterministic.
   const N: usize = 2000;
   for _ in 0..N {

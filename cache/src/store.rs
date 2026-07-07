@@ -47,7 +47,7 @@ pub(crate) struct Shard<K: Send, V, H> {
 }
 
 // SAFETY: `event_buffer_rx` (a `fibre::mpsc::Receiver`) is deliberately
-// `!Sync` upstream — its internal free-list cache is a `RefCell`, which
+// `!Sync` upstream - its internal free-list cache is a `RefCell`, which
 // catches unsynchronized cross-thread `try_recv()` calls at compile time.
 // `Shard` is still safe to share across threads by reference because the
 // only reader of `event_buffer_rx` is `try_recv()` inside
@@ -59,7 +59,7 @@ pub(crate) struct Shard<K: Send, V, H> {
 //   - handles/futures.rs (cooperative maintenance, async path)
 // so access is externally serialized to one thread at a time. Any new call
 // site that reads `event_buffer_rx` WITHOUT holding `maintenance_lock`
-// first would be undefined behavior — the compiler can no longer catch
+// first would be undefined behavior - the compiler can no longer catch
 // that mistake for us, so `maintenance_lock` discipline must be preserved
 // by convention at every future call site.
 unsafe impl<K: Send + Sync, V: Send + Sync, H: Send + Sync> Sync for Shard<K, V, H> {}

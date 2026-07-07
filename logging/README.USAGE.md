@@ -420,11 +420,11 @@ Get an in-memory snapshot of events for debugging. This feature is only availabl
 
 ### Async Runtime Debugging (tokio-console)
 
-[tokio-console](https://github.com/tokio-rs/console) is an interactive debugger for async Rust programs. It streams live data about every task in your Tokio runtime — scheduling latency, wakeup counts, poll durations, and resource contention — via a gRPC server that the `tokio-console` CLI reads from.
+[tokio-console](https://github.com/tokio-rs/console) is an interactive debugger for async Rust programs. It streams live data about every task in your Tokio runtime - scheduling latency, wakeup counts, poll durations, and resource contention - via a gRPC server that the `tokio-console` CLI reads from.
 
 The `tokio-console` feature integrates this transparently: when enabled, `init_from_file` attaches the console subscriber layer alongside your normal `fibre_logging` pipeline and starts the gRPC server automatically. No YAML changes are needed.
 
-#### Step 1 — Enable the feature
+#### Step 1 - Enable the feature
 
 ```toml
 # Cargo.toml
@@ -433,7 +433,7 @@ fibre_logging = { version = "0.5", features = ["tokio-console"] }
 tokio = { version = "1", features = ["full"] }
 ```
 
-#### Step 2 — Set `tokio_unstable`
+#### Step 2 - Set `tokio_unstable`
 
 `console-subscriber` requires Tokio's unstable task instrumentation, which is gated behind a cfg flag. Add it to your project's Cargo config so it applies consistently:
 
@@ -449,7 +449,7 @@ Alternatively, set it per-session in your shell:
 export RUSTFLAGS="--cfg tokio_unstable"
 ```
 
-#### Step 3 — Initialize as normal
+#### Step 3 - Initialize as normal
 
 Your application code does not change. `init_from_file` detects the feature and starts the console server on `localhost:6669`:
 
@@ -462,7 +462,7 @@ fn main() {
 }
 ```
 
-#### Step 4 — Install and run `tokio-console`
+#### Step 4 - Install and run `tokio-console`
 
 ```bash
 cargo install tokio-console

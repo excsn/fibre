@@ -55,7 +55,7 @@ impl<K: Hash + Eq> AccessBatcher<K> {
   }
 
   /// Non-blocking attempt to record an access event. Returns `false` if the
-  /// stripe lock was contended and the event was NOT recorded — the caller
+  /// stripe lock was contended and the event was NOT recorded - the caller
   /// must then fall back to [`record_access_async`]. Used from async hit
   /// paths while the shard guard is held (so no awaiting is possible here).
   #[inline]

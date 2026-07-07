@@ -11,7 +11,7 @@ A flexible, multimode sync/async logging library that unifies the `log` and `tra
 ## Key Features
 
 ### External YAML Configuration
-Decouple your logging logic from your application code. All aspects—log levels, outputs, and formats—are defined in a `fibre_logging.yaml` file. Changes to logging behavior no longer require a recompile and redeploy.
+Decouple your logging logic from your application code. All aspects-log levels, outputs, and formats-are defined in a `fibre_logging.yaml` file. Changes to logging behavior no longer require a recompile and redeploy.
 
 ### Unified `log` and `tracing` Ecosystems
 Instrument your code with your preferred facade. Whether you use `log::info!` or `tracing::info!`, all events are routed through the same configurable pipeline. `fibre_logging` provides a seamless bridge, allowing you to leverage `tracing`'s powerful structured logging and spans even when using the `log` crate.
@@ -29,7 +29,7 @@ Keep log file sizes manageable with a powerful rolling file appender. Configure 
 Diagnose complex application behavior during development with the `debug_report` appender. This debug-only tool collects targeted events and counters in memory, which can be printed to the console on demand or at a regular interval, providing a snapshot of your application's state.
 
 ### Async Runtime Debugging (tokio-console)
-Enable the optional `tokio-console` feature to attach the [tokio-console](https://github.com/tokio-rs/console) diagnostic layer alongside your normal logging pipeline. When active, `fibre_logging` starts the console gRPC server on initialization, and you can connect the `tokio-console` CLI to get a live, interactive view of every task, its wakeup history, and resource contention in your async runtime — without changing a single line of application code.
+Enable the optional `tokio-console` feature to attach the [tokio-console](https://github.com/tokio-rs/console) diagnostic layer alongside your normal logging pipeline. When active, `fibre_logging` starts the console gRPC server on initialization, and you can connect the `tokio-console` CLI to get a live, interactive view of every task, its wakeup history, and resource contention in your async runtime - without changing a single line of application code.
 
 ### Introspection & Extensibility
 Turn your logging system into an in-app message bus with the `custom` appender. Your application can subscribe to a stream of structured `LogEvent`s to drive metrics, internal monitoring, or other custom logic. Additionally, the library can report its own internal errors (e.g., file permission issues) to your application for robust error handling.

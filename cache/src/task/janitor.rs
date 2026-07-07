@@ -97,7 +97,7 @@ impl Janitor {
   }
 
   /// Handles a burst of maintenance signals: dedups pending shard indices
-  /// and runs one drain + capacity pass per shard. No probability gate —
+  /// and runs one drain + capacity pass per shard. No probability gate -
   /// the sender side already gated.
   fn signaled_maintenance<K, V, H>(
     context: &JanitorContext<K, V, H>,
@@ -332,17 +332,17 @@ pub(crate) fn perform_shard_maintenance<K, V, H>(
   // reconstructs temporal order structurally:
   //
   //   1. collect (don't apply) this pass's write events;
-  //   2. apply read accesses for keys with NO write pending in this pass —
+  //   2. apply read accesses for keys with NO write pending in this pass -
   //      their inserts were admitted long ago and their reads happened
   //      before this pass's writes were drained;
   //   3. apply the writes (admissions / admission-driven evictions);
-  //   4. apply read accesses for keys that WERE admitted in step 3 — an
+  //   4. apply read accesses for keys that WERE admitted in step 3 - an
   //      access can only be recorded after a map hit, and `insert()`
   //      enqueues the Write event before returning, so these reads
   //      necessarily postdate their key's insert.
   //
   // Both Left-Right batcher instances are drained: drain() flips sides, so
-  // a record racing an earlier drain can sit in either — and flushes must
+  // a record racing an earlier drain can sit in either - and flushes must
   // catch both. Residual advisory loss windows, self-correcting on later
   // hits: a reader hitting mid-insert (the map insert precedes the event
   // enqueue), a write backlog beyond `drain_limit`, and arbitrary ordering
