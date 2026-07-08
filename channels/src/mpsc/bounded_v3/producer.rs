@@ -245,13 +245,40 @@ impl<T: Send> Sender<T> {
     if items.is_empty() {
       return Ok(0);
     }
-    let batch = std::mem::take(items);
-    match self.send_batch(batch) {
-      Ok(n) => Ok(n),
-      Err(e) => {
-        *items = e.unsent;
-        Err(SendError::Closed)
+    if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
+      return Err(SendError::Closed);
+    }
+
+    // Drain in place so the caller keeps the buffer's allocation (unlike a
+    // `mem::take`, which hands it off and leaves an empty zero-capacity Vec).
+    // One `drain(..)` held for the whole call: `by_ref().take(valid)` advances
+    // its cursor without shifting per run, and on drop only the unconsumed tail
+    // moves back into `items` (empty on full success) — capacity retained either
+    // way, and a mid-batch close leaves exactly the untried tail in `items`.
+    let total = items.len();
+    let mut drain = items.drain(..);
+    let mut sent = 0;
+    while sent < total {
+      if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
+        break;
       }
+      let (t, valid, m) = self.shared.claim_run(total - sent);
+      if m > 0 {
+        self
+          .shared
+          .resolve_run(t, valid, m, &mut drain.by_ref().take(valid));
+        sent += valid;
+        continue;
+      }
+      // Window closed - block until it reopens.
+      if self.wait_for_window().is_err() {
+        break;
+      }
+    }
+    if sent == total {
+      Ok(sent)
+    } else {
+      Err(SendError::Closed)
     }
   }
 

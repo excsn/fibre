@@ -254,13 +254,55 @@ impl<T: Send> BoundedSyncSender<T> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(SendError::Closed);
     }
-    let batch = std::mem::take(items);
-    match self.send_batch(batch) {
-      Ok(n) => Ok(n),
-      Err(e) => {
-        *items = e.unsent;
-        Err(SendError::Closed)
+
+    // Drain in place so the caller keeps the buffer's allocation (a `mem::take`
+    // hands it off and leaves an empty zero-capacity Vec). The unconsumed tail
+    // (empty on full success) moves back into `items` when `drain` drops.
+    let total = items.len();
+    let mut drain = items.drain(..);
+    let mut sent = 0;
+    let mut is_registered = false;
+
+    loop {
+      if self.shared.consumer_dropped.load(Ordering::Acquire) {
+        if is_registered {
+          self.shared.unregister(Role::Send);
+        }
+        break;
       }
+
+      sent += self.shared.write_batch(&mut drain, total - sent);
+      if sent == total {
+        if is_registered {
+          self.shared.unregister(Role::Send);
+        }
+        break;
+      }
+
+      self.shared.register(
+        Role::Send,
+        WakeRef::Thread(thread::current()),
+        std::ptr::null(),
+      );
+      is_registered = true;
+      self.shared.pre_park_fence();
+
+      sent += self.shared.write_batch(&mut drain, total - sent);
+      if sent == total {
+        self.shared.unregister(Role::Send);
+        break;
+      }
+
+      if self.shared.consumer_dropped.load(Ordering::Acquire) {
+        continue;
+      }
+      sync_util::park_thread();
+    }
+
+    if sent == total {
+      Ok(sent)
+    } else {
+      Err(SendError::Closed)
     }
   }
 

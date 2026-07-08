@@ -176,3 +176,60 @@ _Engine: `mpsc::bounded_v3` (fusion2 credit-before-claim port)._
 #### `MpscBoundedAsync/Cap-128_Prod-14_Items-10000000`
 - **Time:** 148.26 ms – 148.50 ms – 148.70 ms  
 - **Throughput:** 67.252 Melem/s – 67.342 Melem/s – 67.451 Melem/s
+
+
+## Bounded Batch Results (`MpscBoundedAsyncBatch`)
+
+_Engine: `mpsc::bounded_v3`. Each producer sends its share via `send_batch_mut().await`,
+the consumer drains via `recv_batch_mut().await`, both reusing a caller-owned buffer.
+Cells are **median throughput (Melem/s)** over the batch-size axis {8, 64, 512}._
+
+### Capacity: 1 (`Cap-1`)
+
+| Prod | Items | Batch-8 | Batch-64 | Batch-512 |
+|---|---|---|---|---|
+| 1 | 100k | 9.17 | 8.79 | 7.76 |
+| 1 | 1M | 8.81 | 8.62 | 7.55 |
+| 1 | 10M | 9.10 | 8.73 | 7.43 |
+| 4 | 100k | 8.41 | 8.14 | 7.08 |
+| 4 | 1M | 8.47 | 8.22 | 6.96 |
+| 4 | 10M | 8.39 | 8.17 | 6.92 |
+| 14 | 100k | 7.68 | 7.45 | 5.97 |
+| 14 | 1M | 7.52 | 7.56 | 5.92 |
+| 14 | 10M | 7.49 | 7.26 | 5.79 |
+
+### Capacity: 4 (`Cap-4`)
+
+| Prod | Items | Batch-8 | Batch-64 | Batch-512 |
+|---|---|---|---|---|
+| 1 | 100k | 33.0 | 33.4 | 28.2 |
+| 1 | 1M | 33.2 | 33.3 | 28.1 |
+| 1 | 10M | 33.3 | 33.6 | 28.1 |
+| 4 | 100k | 32.6 | 32.1 | 25.4 |
+| 4 | 1M | 33.1 | 32.5 | 25.9 |
+| 4 | 10M | 33.1 | 32.4 | 25.7 |
+| 14 | 100k | 30.9 | 29.5 | 21.9 |
+| 14 | 1M | 31.6 | 30.4 | 22.1 |
+| 14 | 10M | 31.9 | 30.4 | 21.8 |
+
+### Capacity: 128 (`Cap-128`)
+
+| Prod | Items | Batch-8 | Batch-64 | Batch-512 |
+|---|---|---|---|---|
+| 1 | 100k | 133 | 198 | 224 |
+| 1 | 1M | 133 | 203 | 229 |
+| 1 | 10M | 127 | 206 | 229 |
+| 4 | 100k | 57.1 | 122 | 220 |
+| 4 | 1M | 56.6 | 128 | 227 |
+| 4 | 10M | 56.5 | 130 | 227 |
+| 14 | 100k | 40.2 | 111 | 212 |
+| 14 | 1M | 36.9 | 117 | 214 |
+| 14 | 10M | 35.4 | 119 | 222 |
+
+**Notes.** The `_mut` batch APIs lifted every cell (e.g. `Cap-128/Prod-1/Batch-8`
+~54 → ~133 Melem/s). The async trend still inverts sync: **bigger batches win**. At
+`Cap-128` throughput climbs with batch size — `Cap-128/Prod-1` goes ~133 → ~203 → ~229
+Melem/s across `Batch-8 → 64 → 512` (and the multi-producer rows more steeply, e.g.
+`Prod-14` ~35 → ~119 → ~222), since larger batches amortize the per-wake poll/waker
+overhead that dominates the async path. Small caps (1, 4) are wake-bound and slightly
+*prefer* small batches (`Batch-512` dips a little there).

@@ -273,19 +273,25 @@ fn benchmark_logic_spsc_sync_batch(
   let start_time = Instant::now();
 
   let producer_handle = thread::spawn(move || {
+    let mut buf = Vec::new();
     let mut remaining = total;
     while remaining > 0 {
       let chunk_size = remaining.min(batch_size);
-      let chunk = vec![ITEM_VALUE; chunk_size];
-      producer.send_batch(chunk).unwrap();
+      buf.clear();
+      buf.resize(chunk_size, ITEM_VALUE);
+      producer.send_batch_mut(&mut buf).unwrap();
       remaining -= chunk_size;
     }
   });
 
-  let consumer_handle = thread::spawn(move || loop {
-    match consumer.recv_batch(batch_size) {
-      Ok(_) => {}
-      Err(_) => break,
+  let consumer_handle = thread::spawn(move || {
+    let mut out = Vec::new();
+    loop {
+      out.clear();
+      match consumer.recv_batch_mut(&mut out, batch_size) {
+        Ok(_) => {}
+        Err(_) => break,
+      }
     }
   });
 
@@ -348,18 +354,22 @@ fn benchmark_logic_spsc_async_batch(
     let start_time = Instant::now();
 
     let producer_handle = tokio::spawn(async move {
+      let mut buf = Vec::new();
       let mut remaining = total;
       while remaining > 0 {
         let chunk_size = remaining.min(batch_size);
-        let chunk = vec![ITEM_VALUE; chunk_size];
-        producer.send_batch(chunk).await.unwrap();
+        buf.clear();
+        buf.resize(chunk_size, ITEM_VALUE);
+        producer.send_batch_mut(&mut buf).await.unwrap();
         remaining -= chunk_size;
       }
     });
 
     let consumer_handle = tokio::spawn(async move {
+      let mut out = Vec::new();
       loop {
-        match consumer.recv_batch(batch_size).await {
+        out.clear();
+        match consumer.recv_batch_mut(&mut out, batch_size).await {
           Ok(_) => {}
           Err(_) => break,
         }

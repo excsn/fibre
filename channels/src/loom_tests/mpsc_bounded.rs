@@ -1,7 +1,9 @@
 //! Loom models of the bounded MPSC (`mpsc::bounded_v3`) sync protocol:
 //! credit-before-claim `g_tail` ticket writes, the overshoot
 //! SKIP-tombstone + retry, and the sync park/notify handshake
-//! (`register_sync_send` / `register_sync_recv`). The chunk table is shrunk
+//! (`register_sync_send` / `register_sync_recv`). The batch run-claim path
+//! (`claim_run` / `resolve_run` / `deq_run` and the batch producer's
+//! `wait_for_window` park) gets its own models below. The chunk table is shrunk
 //! under loom (see `bounded_v3::shared` MODEL_CHECK) so these tiny models don't
 //! allocate atomics they never touch; chunk REUSE itself is miri's job (too many
 //! items to reach under loom's exponential exploration).
@@ -102,5 +104,84 @@ fn disconnect_after_send_drains_then_errors() {
     assert_eq!(rx.recv().unwrap(), 7);
     assert!(rx.recv().is_err());
     t.join().unwrap();
+  });
+}
+
+// --- batch run-claim models ---
+
+/// Single producer `send_batch([1,2])` through a cap-2 queue drained by
+/// `recv_batch`: a two-slot `claim_run` + `resolve_run` (ascending Release SETs,
+/// one `notify_receiver` per run) meeting the consumer's `deq_run` intra-run
+/// drain + park/wake. The batch analog of `spsc_two_items`.
+#[test]
+fn batch_spsc_two_items() {
+  model_slack(|| {
+    let (tx, rx) = bounded::<u32>(2);
+    let t = thread::spawn(move || {
+      tx.send_batch(vec![1, 2]).unwrap();
+    });
+    let mut got = Vec::new();
+    while got.len() < 2 {
+      match rx.recv_batch(2) {
+        Ok(v) => got.extend(v),
+        Err(_) => break,
+      }
+    }
+    assert_eq!(got, vec![1, 2]);
+    t.join().unwrap();
+  });
+}
+
+/// Cap-1 batch backpressure: `send_batch([1,2])` fits only one credit per claim,
+/// so the producer resolves item 1, then PARKS in `wait_for_window` until the
+/// consumer frees a credit, then resolves item 2. Exercises the batch producer's
+/// park/wake path (distinct from single-`send`'s `try_send_now` register loop).
+#[test]
+fn batch_send_backpressure() {
+  loom::model(|| {
+    let (tx, rx) = bounded::<u32>(1);
+    let t = thread::spawn(move || {
+      tx.send_batch(vec![1, 2]).unwrap();
+    });
+    assert_eq!(rx.recv().unwrap(), 1);
+    assert_eq!(rx.recv().unwrap(), 2);
+    t.join().unwrap();
+  });
+}
+
+/// Two producers each `send_batch([x])` race concurrent `claim_run` fetch_adds
+/// into a cap-2 window (both fit); global order is not guaranteed - assert the
+/// multiset. The batch analog of `two_producers_one_item_each`.
+#[test]
+fn two_producers_batch_one_item_each() {
+  model_slack(|| {
+    let (tx, rx) = bounded::<u32>(2);
+    let tx2 = tx.clone();
+    let a = thread::spawn(move || tx.send_batch(vec![1]).unwrap());
+    let b = thread::spawn(move || tx2.send_batch(vec![2]).unwrap());
+    let first = rx.recv().unwrap();
+    let second = rx.recv().unwrap();
+    assert_eq!(first + second, 3);
+    a.join().unwrap();
+    b.join().unwrap();
+  });
+}
+
+/// Two producers `send_batch([x])` race a SINGLE credit (cap 1): both may pass
+/// the pre-claim gate and `fetch_add`, so one claims a run that fully overshoots
+/// the window (`valid == 0`), SKIP-tombstones it, and retries after the consumer
+/// drains. Batch analog of `overshoot_skip_and_retry`.
+#[test]
+fn two_producers_batch_overshoot() {
+  loom::model(|| {
+    let (tx, rx) = bounded::<u32>(1);
+    let tx2 = tx.clone();
+    let a = thread::spawn(move || tx.send_batch(vec![1]).unwrap());
+    let b = thread::spawn(move || tx2.send_batch(vec![2]).unwrap());
+    let first = rx.recv().unwrap();
+    let second = rx.recv().unwrap();
+    assert_eq!(first + second, 3);
+    a.join().unwrap();
+    b.join().unwrap();
   });
 }

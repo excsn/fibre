@@ -352,11 +352,13 @@ fn benchmark_logic_mpsc_sync_batch(
       if items_this_producer > 0 {
         let tx_clone = tx.clone();
         s.spawn(move || {
+          let mut buf = Vec::new();
           let mut remaining = items_this_producer;
           while remaining > 0 {
             let chunk_size = remaining.min(batch_size);
-            let chunk = vec![ITEM_VALUE; chunk_size];
-            tx_clone.send_batch(chunk).unwrap();
+            buf.clear();
+            buf.resize(chunk_size, ITEM_VALUE);
+            tx_clone.send_batch_mut(&mut buf).unwrap();
             remaining -= chunk_size;
           }
         });
@@ -364,11 +366,13 @@ fn benchmark_logic_mpsc_sync_batch(
     }
     drop(tx); // Drop original sender handle so receiver sees disconnect
 
-    // Receiver drains in batches on the current scoped thread.
+    // Receiver drains in batches on the current scoped thread, reusing `out`.
+    let mut out = Vec::new();
     let mut received = 0;
     while received < total_items {
-      match rx.recv_batch(batch_size) {
-        Ok(v) => received += v.len(),
+      out.clear();
+      match rx.recv_batch_mut(&mut out, batch_size) {
+        Ok(k) => received += k,
         Err(_) => break,
       }
     }
@@ -402,10 +406,12 @@ fn benchmark_logic_mpsc_async_batch(
     let batch_size = cfg_clone.batch_size;
 
     let consumer_handle = tokio::spawn(async move {
+      let mut out = Vec::new();
       let mut received = 0;
       while received < total_items {
-        match rx.recv_batch(batch_size).await {
-          Ok(v) => received += v.len(),
+        out.clear();
+        match rx.recv_batch_mut(&mut out, batch_size).await {
+          Ok(k) => received += k,
           Err(_) => break,
         }
       }
@@ -421,11 +427,13 @@ fn benchmark_logic_mpsc_async_batch(
       if items_this_producer > 0 {
         let tx_clone = tx.clone();
         producer_handles.push(tokio::spawn(async move {
+          let mut buf = Vec::new();
           let mut remaining = items_this_producer;
           while remaining > 0 {
             let chunk_size = remaining.min(batch_size);
-            let chunk = vec![ITEM_VALUE; chunk_size];
-            tx_clone.send_batch(chunk).await.unwrap();
+            buf.clear();
+            buf.resize(chunk_size, ITEM_VALUE);
+            tx_clone.send_batch_mut(&mut buf).await.unwrap();
             remaining -= chunk_size;
           }
         }));

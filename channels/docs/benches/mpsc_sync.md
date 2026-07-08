@@ -175,3 +175,63 @@ _Engine: `mpsc::bounded_v3` (fusion2 credit-before-claim port)._
 #### `MpscBoundedSync/Cap-128_Prod-14_Items-10000000`
 - **Time:** 2.6993 s – 2.7165 s – 2.7449 s  
 - **Throughput:** 3.6432 Melem/s – 3.6812 Melem/s – 3.7046 Melem/s
+
+
+## Bounded Batch Results (`MpscBoundedSyncBatch`)
+
+_Engine: `mpsc::bounded_v3`. Each producer sends its share via `send_batch_mut`, the
+consumer drains via `recv_batch_mut`, both reusing a caller-owned buffer (allocation-free
+after the drain-in-place `send_batch_mut`). Cells are **median throughput (Melem/s)** over
+the batch-size axis {8, 64, 512}._
+
+### Capacity: 1 (`Cap-1`)
+
+| Prod | Items | Batch-8 | Batch-64 | Batch-512 |
+|---|---|---|---|---|
+| 1 | 100k | 6.25 | 6.28 | 6.32 |
+| 1 | 1M | 6.28 | 6.25 | 6.31 |
+| 1 | 10M | 6.23 | 6.29 | 6.31 |
+| 4 | 100k | 1.84 | 1.84 | 1.85 |
+| 4 | 1M | 1.86 | 1.76 | 1.84 |
+| 4 | 10M | 1.84 | 1.83 | 1.84 |
+| 14 | 100k | 0.450 | 0.459 | 0.465 |
+| 14 | 1M | 0.459 | 0.461 | 0.436 |
+| 14 | 10M | 0.446 | 0.458 | 0.459 |
+
+### Capacity: 4 (`Cap-4`)
+
+| Prod | Items | Batch-8 | Batch-64 | Batch-512 |
+|---|---|---|---|---|
+| 1 | 100k | 4.47 | 4.45 | 3.72 |
+| 1 | 1M | 4.52 | 4.47 | 3.78 |
+| 1 | 10M | 4.45 | 4.50 | 3.70 |
+| 4 | 100k | 3.07 | 2.80 | 2.81 |
+| 4 | 1M | 2.94 | 2.88 | 2.78 |
+| 4 | 10M | 2.96 | 2.87 | 2.88 |
+| 14 | 100k | 0.709 | 0.705 | 0.718 |
+| 14 | 1M | 0.699 | 0.702 | 0.696 |
+| 14 | 10M | 0.700 | 0.704 | 0.701 |
+
+### Capacity: 128 (`Cap-128`)
+
+| Prod | Items | Batch-8 | Batch-64 | Batch-512 |
+|---|---|---|---|---|
+| 1 | 100k | 101 | 49.5 | 46.9 |
+| 1 | 1M | 104 | 51.4 | 47.6 |
+| 1 | 10M | 106 | 52.5 | 46.2 |
+| 4 | 100k | 27.1 | 20.5 | 20.2 |
+| 4 | 1M | 27.7 | 20.9 | 20.3 |
+| 4 | 10M | 27.5 | 19.8 | 20.5 |
+| 14 | 100k | 0.733 | 3.82 | 3.86 |
+| 14 | 1M | 0.703 | 3.72 | 3.85 |
+| 14 | 10M | 0.699 | 3.74 | 3.76 |
+
+**Notes.** These use the allocation-free `_mut` batch APIs (buffers reused across calls),
+which lifted every cell vs the `Vec`-returning forms — e.g. `Cap-128/Prod-1/Batch-8` went
+~61 → ~104 Melem/s. The trend holds: for sync, **smaller batches are best** (the head lock
+is consumer-only, so it isn't contention — two coupled OS threads pipeline best in small
+units, so coarse bursts reduce producer↔consumer overlap; async inverts this and *gains*
+with batch size because wakes are cheap). At `Cap-128/Prod-1`, `Batch-8` runs ~104 Melem/s
+vs ~47–52 for `Batch-64`/`Batch-512`. The one anomaly persists at `Cap-128/Prod-14`, where
+`Batch-8` collapses to ~0.7 Melem/s (tiny batches × 14 contending producers) while
+`Batch-64`+ recover to ~3.8 Melem/s.

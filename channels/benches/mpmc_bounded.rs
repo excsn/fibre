@@ -386,11 +386,13 @@ fn benchmark_logic_mpmc_sync_batch(
 
     if items_this_producer > 0 {
       let handle = thread::spawn(move || {
+        let mut buf = Vec::new();
         let mut remaining = items_this_producer;
         while remaining > 0 {
           let chunk_size = remaining.min(batch_size);
-          let chunk = vec![ITEM_VALUE; chunk_size];
-          producer_clone.send_batch(chunk).unwrap();
+          buf.clear();
+          buf.resize(chunk_size, ITEM_VALUE);
+          producer_clone.send_batch_mut(&mut buf).unwrap();
           remaining -= chunk_size;
         }
       });
@@ -404,8 +406,10 @@ fn benchmark_logic_mpmc_sync_batch(
     let consumer_clone = main_consumer.clone();
     let batch_size = cfg.batch_size;
     let handle = thread::spawn(move || {
+      let mut out = Vec::new();
       loop {
-        match consumer_clone.recv_batch(batch_size) {
+        out.clear();
+        match consumer_clone.recv_batch_mut(&mut out, batch_size) {
           Ok(_) => {}
           Err(_) => break,
         }
@@ -491,11 +495,13 @@ fn benchmark_logic_mpmc_async_batch(
 
       if items_this_producer > 0 {
         let handle = tokio::spawn(async move {
+          let mut buf = Vec::new();
           let mut remaining = items_this_producer;
           while remaining > 0 {
             let chunk_size = remaining.min(batch_size);
-            let chunk = vec![ITEM_VALUE; chunk_size];
-            producer_clone.send_batch(chunk).await.unwrap();
+            buf.clear();
+            buf.resize(chunk_size, ITEM_VALUE);
+            producer_clone.send_batch_mut(&mut buf).await.unwrap();
             remaining -= chunk_size;
           }
         });
@@ -509,8 +515,10 @@ fn benchmark_logic_mpmc_async_batch(
       let consumer_clone = main_consumer.clone();
       let batch_size = cfg_clone.batch_size;
       let handle = tokio::spawn(async move {
+        let mut out = Vec::new();
         loop {
-          match consumer_clone.recv_batch(batch_size).await {
+          out.clear();
+          match consumer_clone.recv_batch_mut(&mut out, batch_size).await {
             Ok(_) => {}
             Err(_) => break,
           }

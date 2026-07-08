@@ -214,3 +214,87 @@ fn recv_timeout_zero_and_success() {
   tx.send(8).unwrap();
   assert_eq!(rx.recv_timeout(std::time::Duration::ZERO).unwrap(), 8);
 }
+
+#[test]
+fn cancelled_send_batch_future_drops_each_value_once() {
+  // A `send_batch` future cancelled mid-batch must drop every value exactly once:
+  // the values already `resolve_run`-published sit buffered in the channel, and
+  // the un-sent tail is dropped by the future's `iter` on Drop. cap-1 makes the
+  // split deterministic - the first poll resolves 1 and parks with 2 unsent.
+  let counter = drop_counter();
+  {
+    let (tx, rx) = mpsc::bounded_async(1);
+    let items: Vec<DropCounter> = (0..3).map(|_| DropCounter::new(&counter)).collect();
+    {
+      let mut fut = pin!(tx.send_batch(items));
+      assert!(poll_once(fut.as_mut()).is_pending()); // sent 1, parked with 2 unsent
+    } // Drop: the 2 unsent values drop here (via the batch future's iter)
+    assert_eq!(drops(&counter), 2);
+    drop(block_on(rx.recv()).unwrap()); // drain the 1 buffered value
+    assert_eq!(drops(&counter), 3);
+    drop(tx);
+    drop(rx);
+  }
+  assert_eq!(drops(&counter), 3); // exactly once each, no double-drop
+}
+
+#[test]
+fn async_batch_paths_recycle_chunks() {
+  // Async analog of `batch_paths_recycle_chunks`: the `BoundedSendBatchFuture` /
+  // `BoundedRecvBatchFuture` poll paths driving claim_run/resolve_run/deq_run
+  // through repeated chunk-table reuse under the miri-shrunk table.
+  let (tx, rx) = mpsc::bounded_async::<usize>(8);
+  let producer = thread::spawn(move || {
+    let mut next = 0;
+    while next < ITEMS_CROSSING {
+      let batch: Vec<usize> = (next..(next + 5).min(ITEMS_CROSSING)).collect();
+      next += batch.len();
+      block_on(tx.send_batch(batch)).unwrap();
+    }
+  });
+  let mut expected = 0;
+  while expected < ITEMS_CROSSING {
+    for v in block_on(rx.recv_batch(7)).unwrap() {
+      assert_eq!(v, expected);
+      expected += 1;
+    }
+  }
+  producer.join().unwrap();
+}
+
+#[test]
+fn batch_mut_reused_buffers() {
+  // The `_mut` batch variants reuse a caller-owned buffer: `send_batch_mut`
+  // drains it (mem::take) on success; `recv_batch_mut` appends into it. Cycle
+  // both across chunk reuse and assert exact FIFO with no lost/dup/torn item.
+  let (tx, rx) = mpsc::bounded::<usize>(4);
+  let producer = thread::spawn(move || {
+    let mut buf: Vec<usize> = Vec::new();
+    let mut next = 0;
+    while next < ITEMS_CROSSING {
+      buf.clear();
+      buf.extend(next..(next + 5).min(ITEMS_CROSSING));
+      let want = buf.len();
+      let n = tx.send_batch_mut(&mut buf).unwrap();
+      assert_eq!(n, want);
+      assert!(buf.is_empty(), "send_batch_mut must drain the buffer on success");
+      next += n;
+    }
+  });
+  let mut out: Vec<usize> = Vec::new();
+  let mut expected = 0;
+  while expected < ITEMS_CROSSING {
+    out.clear();
+    match rx.recv_batch_mut(&mut out, 7) {
+      Ok(k) => {
+        assert_eq!(k, out.len());
+        for v in &out {
+          assert_eq!(*v, expected);
+          expected += 1;
+        }
+      }
+      Err(_) => break,
+    }
+  }
+  producer.join().unwrap();
+}

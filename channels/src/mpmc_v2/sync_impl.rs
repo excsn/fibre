@@ -96,17 +96,16 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
   }
 }
 
-/// The synchronous, blocking batch send: sends every item, parking whenever
-/// the channel is full, until done or all receivers drop.
-pub(crate) fn send_batch_sync<T: Send>(
+/// Iterator-driven core for the blocking batch send, shared by the by-value and
+/// in-place (`_mut`) entry points. Sends every item, parking whenever the channel
+/// is full, until done or all receivers drop. On close returns `(sent, pending)`,
+/// where `pending` is the one item pulled from `iter` but not yet placed — callers
+/// restore it ahead of whatever remains in `iter`.
+fn send_batch_iter_sync<T: Send, I: Iterator<Item = T>>(
   sender: &Sender<T>,
-  items: Vec<T>,
-) -> Result<usize, SendBatchError<T>> {
-  let total = items.len();
-  if total == 0 {
-    return Ok(0);
-  }
-  let mut iter = items.into_iter();
+  iter: &mut I,
+  total: usize,
+) -> Result<usize, (usize, Option<T>)> {
   let mut sent = 0;
   let mut pending: Option<T> = None;
 
@@ -118,23 +117,18 @@ pub(crate) fn send_batch_sync<T: Send>(
       if k == 0 {
         pending = once.next();
         if matches!(reason, Some(BatchSendErrorReason::Closed)) {
-          let mut unsent: Vec<T> = pending.take().into_iter().collect();
-          unsent.extend(iter.by_ref());
-          return Err(SendBatchError { sent, unsent });
+          return Err((sent, pending.take()));
         }
       }
     }
     if pending.is_none() {
-      let (k, reason) = sender.shared.try_send_batch_core(&mut iter, total - sent);
+      let (k, reason) = sender.shared.try_send_batch_core(iter, total - sent);
       sent += k;
       if sent == total {
         return Ok(total);
       }
       if matches!(reason, Some(BatchSendErrorReason::Closed)) {
-        return Err(SendBatchError {
-          sent,
-          unsent: iter.collect(),
-        });
+        return Err((sent, None));
       }
     }
 
@@ -158,9 +152,7 @@ pub(crate) fn send_batch_sync<T: Send>(
       }
 
       if guard.receiver_count == 0 {
-        let mut unsent: Vec<T> = pending.take().into_iter().collect();
-        unsent.extend(iter.by_ref());
-        return Err(SendBatchError { sent, unsent });
+        return Err((sent, pending.take()));
       }
 
       guard.waiting_sync_senders.push_back(waiter);
@@ -185,9 +177,7 @@ pub(crate) fn send_batch_sync<T: Send>(
       }
       drop(guard);
 
-      let mut unsent: Vec<T> = pending.take().into_iter().collect();
-      unsent.extend(iter.by_ref());
-      return Err(SendBatchError { sent, unsent });
+      return Err((sent, pending.take()));
     }
 
     // It was a success!
@@ -213,10 +203,31 @@ pub(crate) fn send_batch_sync<T: Send>(
   }
 }
 
-/// The synchronous, blocking in-place batch send. The vector is exclusively
-/// borrowed for the whole call, so this delegates to the by-value path and
-/// restores the unsent remainder into `items` on closure - observationally
-/// identical to draining sent items from the front as they go.
+/// The synchronous, blocking batch send: sends every item, parking whenever
+/// the channel is full, until done or all receivers drop.
+pub(crate) fn send_batch_sync<T: Send>(
+  sender: &Sender<T>,
+  items: Vec<T>,
+) -> Result<usize, SendBatchError<T>> {
+  let total = items.len();
+  if total == 0 {
+    return Ok(0);
+  }
+  let mut iter = items.into_iter();
+  match send_batch_iter_sync(sender, &mut iter, total) {
+    Ok(n) => Ok(n),
+    Err((sent, pending)) => {
+      let mut unsent: Vec<T> = pending.into_iter().collect();
+      unsent.extend(iter);
+      Err(SendBatchError { sent, unsent })
+    }
+  }
+}
+
+/// The synchronous, blocking in-place batch send. Drains the caller's buffer in
+/// place so its allocation is retained (a `mem::take` hands it off and leaves an
+/// empty zero-capacity Vec). On close the unconsumed tail is left in `items`,
+/// with the one popped-but-unsent item (if any) restored ahead of it.
 pub(crate) fn send_batch_mut_sync<T: Send>(
   sender: &Sender<T>,
   items: &mut Vec<T>,
@@ -224,14 +235,19 @@ pub(crate) fn send_batch_mut_sync<T: Send>(
   if items.is_empty() {
     return Ok(0);
   }
-  let batch = std::mem::take(items);
-  match send_batch_sync(sender, batch) {
-    Ok(n) => Ok(n),
-    Err(e) => {
-      *items = e.unsent;
-      Err(SendError::Closed)
+  let total = items.len();
+  let pending = {
+    let mut drain = items.drain(..);
+    match send_batch_iter_sync(sender, &mut drain, total) {
+      Ok(n) => return Ok(n),
+      Err((_sent, pending)) => pending,
+      // `drain` drops here: the unconsumed tail moves back into `items`.
     }
+  };
+  if let Some(item) = pending {
+    items.insert(0, item);
   }
+  Err(SendError::Closed)
 }
 
 /// The synchronous, blocking batch receive: blocks until at least one item is
