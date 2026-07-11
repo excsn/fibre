@@ -225,9 +225,10 @@ pub(crate) fn send_batch_sync<T: Send>(
 }
 
 /// The synchronous, blocking in-place batch send. Drains the caller's buffer in
-/// place so its allocation is retained (a `mem::take` hands it off and leaves an
-/// empty zero-capacity Vec). On close the unconsumed tail is left in `items`,
-/// with the one popped-but-unsent item (if any) restored ahead of it.
+/// place so on success its allocation is retained (a `mem::take` hands it off
+/// and leaves an empty zero-capacity Vec). On close the unconsumed tail is
+/// collected back into `items` (Drain's Drop would destroy it), with the one
+/// popped-but-unsent item (if any) restored ahead of it.
 pub(crate) fn send_batch_mut_sync<T: Send>(
   sender: &Sender<T>,
   items: &mut Vec<T>,
@@ -236,18 +237,18 @@ pub(crate) fn send_batch_mut_sync<T: Send>(
     return Ok(0);
   }
   let total = items.len();
-  let pending = {
-    let mut drain = items.drain(..);
-    match send_batch_iter_sync(sender, &mut drain, total) {
-      Ok(n) => return Ok(n),
-      Err((_sent, pending)) => pending,
-      // `drain` drops here: the unconsumed tail moves back into `items`.
+  let mut drain = items.drain(..);
+  match send_batch_iter_sync(sender, &mut drain, total) {
+    Ok(n) => Ok(n),
+    Err((_sent, pending)) => {
+      let rest: Vec<T> = drain.collect();
+      *items = rest;
+      if let Some(item) = pending {
+        items.insert(0, item);
+      }
+      Err(SendError::Closed)
     }
-  };
-  if let Some(item) = pending {
-    items.insert(0, item);
   }
-  Err(SendError::Closed)
 }
 
 /// The synchronous, blocking batch receive: blocks until at least one item is

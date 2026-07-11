@@ -249,12 +249,12 @@ impl<T: Send> Sender<T> {
       return Err(SendError::Closed);
     }
 
-    // Drain in place so the caller keeps the buffer's allocation (unlike a
-    // `mem::take`, which hands it off and leaves an empty zero-capacity Vec).
-    // One `drain(..)` held for the whole call: `by_ref().take(valid)` advances
-    // its cursor without shifting per run, and on drop only the unconsumed tail
-    // moves back into `items` (empty on full success) — capacity retained either
-    // way, and a mid-batch close leaves exactly the untried tail in `items`.
+    // Drain in place so on success the caller keeps the buffer's allocation
+    // (unlike a `mem::take`, which hands it off and leaves an empty
+    // zero-capacity Vec). One `drain(..)` held for the whole call:
+    // `by_ref().take(valid)` advances its cursor without shifting per run.
+    // Drain's Drop destroys any unconsumed elements, so a mid-batch close must
+    // collect the untried tail back into `items` before returning.
     let total = items.len();
     let mut drain = items.drain(..);
     let mut sent = 0;
@@ -278,6 +278,8 @@ impl<T: Send> Sender<T> {
     if sent == total {
       Ok(sent)
     } else {
+      let rest: Vec<T> = drain.collect();
+      *items = rest;
       Err(SendError::Closed)
     }
   }

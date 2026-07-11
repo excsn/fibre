@@ -191,6 +191,27 @@ fn bounded_sync_send_batch_closed_mid_batch() {
 }
 
 #[test]
+fn bounded_sync_send_batch_mut_closed_leaves_remainder() {
+  let (tx, rx) = mpsc::bounded::<u32>(2);
+  let producer = thread::spawn(move || {
+    let mut items: Vec<u32> = (0..10).collect();
+    let res = tx.send_batch_mut(&mut items);
+    (res, items)
+  });
+
+  assert_eq!(rx.recv().unwrap(), 0);
+  thread::sleep(Duration::from_millis(100));
+  drop(rx);
+
+  let (res, items) = producer.join().unwrap();
+  assert_eq!(res, Err(SendError::Closed));
+  assert!(!items.is_empty());
+  // Remainder is the exact unsent suffix.
+  let sent = 10 - items.len() as u32;
+  assert_eq!(items, (sent..10).collect::<Vec<_>>());
+}
+
+#[test]
 fn bounded_sync_permit_conservation() {
   // Catches release_many accounting drift / Permit::into_parts leaks:
   // after repeated full-capacity batch send + batch recv cycles, the gate

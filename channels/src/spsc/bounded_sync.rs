@@ -255,9 +255,10 @@ impl<T: Send> BoundedSyncSender<T> {
       return Err(SendError::Closed);
     }
 
-    // Drain in place so the caller keeps the buffer's allocation (a `mem::take`
-    // hands it off and leaves an empty zero-capacity Vec). The unconsumed tail
-    // (empty on full success) moves back into `items` when `drain` drops.
+    // Drain in place so on success the caller keeps the buffer's allocation (a
+    // `mem::take` hands it off and leaves an empty zero-capacity Vec). Drain's
+    // Drop destroys any unconsumed elements, so a mid-batch close must collect
+    // the unsent tail back into `items` before returning.
     let total = items.len();
     let mut drain = items.drain(..);
     let mut sent = 0;
@@ -302,6 +303,8 @@ impl<T: Send> BoundedSyncSender<T> {
     if sent == total {
       Ok(sent)
     } else {
+      let rest: Vec<T> = drain.collect();
+      *items = rest;
       Err(SendError::Closed)
     }
   }

@@ -93,6 +93,27 @@ fn sync_send_batch_closed_mid_batch() {
 }
 
 #[test]
+fn sync_send_batch_mut_closed_leaves_remainder() {
+  let (tx, rx) = mpmc::bounded::<u32>(2);
+  let producer = thread::spawn(move || {
+    let mut items: Vec<u32> = (0..10).collect();
+    let res = tx.send_batch_mut(&mut items);
+    (res, items)
+  });
+
+  assert_eq!(rx.recv().unwrap(), 0);
+  thread::sleep(Duration::from_millis(100));
+  drop(rx);
+
+  let (res, items) = producer.join().unwrap();
+  assert_eq!(res, Err(SendError::Closed));
+  assert!(!items.is_empty());
+  // Remainder is the exact unsent suffix.
+  let sent = 10 - items.len() as u32;
+  assert_eq!(items, (sent..10).collect::<Vec<_>>());
+}
+
+#[test]
 fn sync_recv_batch_blocks_until_first() {
   let (tx, rx) = mpmc::bounded::<u32>(8);
   let consumer = thread::spawn(move || rx.recv_batch(8).unwrap());

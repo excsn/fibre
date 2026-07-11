@@ -335,3 +335,90 @@ fn sync_sender_unblocks_when_receiver_dropped() {
     res
   );
 }
+
+// --- Regression: false-Full / stale len() from unpublished consumer progress ---
+//
+// `try_send` gates on the consumer-PUBLISHED `progress`, which the receiver only
+// publishes every K drains (async K = cap, sync K = min(cap, 64)) or when it
+// observes the channel empty. A partial drain that never empties the channel
+// leaves `progress` stale, so the sender sees Full (and len() == cap) while the
+// channel has free space. Observed in xsmb: a conforming client's stream was
+// killed on a single false Full at true occupancy 66/130.
+//
+// These tests assert the DESIRED semantics — try_send succeeds and len() is no
+// larger than true occupancy whenever space is free — and stay red until the fix
+// lands.
+
+/// The exact xsmb shape: cap 130, fill via try_send, drain 64, occupancy 66.
+#[tokio::test]
+async fn async_try_send_false_full_while_half_empty() {
+  const CAP: usize = 130;
+  const DRAINED: usize = 64;
+  let (tx, rx) = bounded_async::<usize>(CAP);
+
+  for i in 0..CAP {
+    tx.try_send(i).unwrap();
+  }
+  assert_eq!(tx.try_send(CAP), Err(TrySendError::Full(CAP)));
+
+  // The channel is never observed empty during the drain, so the receiver
+  // neither flushes nor crosses K = cap.
+  for i in 0..DRAINED {
+    assert_eq!(rx.recv().await.unwrap(), i);
+  }
+
+  let occupancy = CAP - DRAINED;
+  let len = tx.len();
+  assert!(
+    len <= occupancy,
+    "len() = {len} but true occupancy is {occupancy}"
+  );
+  tx.try_send(CAP)
+    .expect("try_send returned Full with free space");
+}
+
+/// Maximum staleness: drain cap − 1 so a single item remains.
+#[tokio::test]
+async fn async_try_send_false_full_worst_case() {
+  const CAP: usize = 130;
+  let (tx, rx) = bounded_async::<usize>(CAP);
+
+  for i in 0..CAP {
+    tx.try_send(i).unwrap();
+  }
+  for i in 0..CAP - 1 {
+    assert_eq!(rx.recv().await.unwrap(), i);
+  }
+
+  let len = tx.len();
+  assert!(len <= 1, "len() = {len} but true occupancy is 1");
+  tx.try_send(CAP)
+    .expect("try_send returned Full with only 1 slot occupied");
+}
+
+/// Sync flavor of the same defect: K = min(cap, 64), so at cap 130 a 63-item
+/// drain stays unpublished.
+#[test]
+fn sync_try_send_false_full() {
+  const CAP: usize = 130;
+  const DRAINED: usize = 63;
+  let (tx, rx) = bounded::<usize>(CAP);
+
+  for i in 0..CAP {
+    tx.try_send(i).unwrap();
+  }
+  assert_eq!(tx.try_send(CAP), Err(TrySendError::Full(CAP)));
+
+  for i in 0..DRAINED {
+    assert_eq!(rx.try_recv().unwrap(), i);
+  }
+
+  let occupancy = CAP - DRAINED;
+  let len = tx.len();
+  assert!(
+    len <= occupancy,
+    "len() = {len} but true occupancy is {occupancy}"
+  );
+  tx.try_send(CAP)
+    .expect("try_send returned Full with free space");
+}
