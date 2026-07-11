@@ -133,7 +133,12 @@ impl<T: Send> Sender<T> {
     }
     match self.shared.try_send_now(item) {
       Ok(()) => Ok(()),
-      Err(v) => Err(TrySendError::Full(v)),
+      // The hot window is up-to-K stale; verify Full against the fresh
+      // split counter before reporting it.
+      Err(v) => match self.shared.try_send_now_cold(v) {
+        Ok(()) => Ok(()),
+        Err(v) => Err(TrySendError::Full(v)),
+      },
     }
   }
 
@@ -374,7 +379,12 @@ impl<T: Send> AsyncSender<T> {
     }
     match self.shared.try_send_now(item) {
       Ok(()) => Ok(()),
-      Err(v) => Err(TrySendError::Full(v)),
+      // The hot window is up-to-K stale; verify Full against the fresh
+      // split counter before reporting it.
+      Err(v) => match self.shared.try_send_now_cold(v) {
+        Ok(()) => Ok(()),
+        Err(v) => Err(TrySendError::Full(v)),
+      },
     }
   }
 
@@ -698,8 +708,10 @@ impl<'a, T: Send> Drop for BoundedSendBatchMutFuture<'a, T> {
 }
 
 /// Non-blocking batch send via run-claims (shared by sync + async `try_send_batch`).
-/// Callers must have already handled the up-front closed check. Stops as `Full`
-/// the moment the window closes (or overshoots), returning the untouched tail.
+/// Callers must have already handled the up-front closed check. The first
+/// full-signal (closed window or overshoot) escalates from the K-stale hot
+/// window to the fresh split-counter claim (`claim_run_cold`); a full-signal
+/// while already cold is a verified `Full`, returning the untouched tail.
 fn try_send_run_batch<T: Send>(
   shared: &Shared<T>,
   items: Vec<T>,
@@ -707,6 +719,7 @@ fn try_send_run_batch<T: Send>(
   let total = items.len();
   let mut iter = items.into_iter();
   let mut sent = 0;
+  let mut cold = false;
   loop {
     if sent == total {
       return Ok(total);
@@ -718,8 +731,16 @@ fn try_send_run_batch<T: Send>(
         reason: BatchSendErrorReason::Closed,
       });
     }
-    let (t, valid, m) = shared.claim_run(total - sent);
+    let (t, valid, m) = if cold {
+      shared.claim_run_cold(total - sent)
+    } else {
+      shared.claim_run(total - sent)
+    };
     if m == 0 {
+      if !cold {
+        cold = true;
+        continue;
+      }
       return Err(TrySendBatchError {
         sent,
         unsent: iter.collect(),
@@ -732,6 +753,10 @@ fn try_send_run_batch<T: Send>(
       // Overshoot tombstoned the rest of the claim; the window is closed for us.
       if sent == total {
         return Ok(total);
+      }
+      if !cold {
+        cold = true;
+        continue;
       }
       return Err(TrySendBatchError {
         sent,

@@ -16,6 +16,12 @@
 //! - **Run-claim batching** - `claim_run` + `resolve_run` (send) and `deq_run`
 //!   (recv): contiguous ticket runs, ascending slot writes, ONE `notify_receiver`
 //!   per run, intra-run progress publishes.
+//! - **Split dequeue counter** - `drained` mirrors `h.pos` at head-lock exit
+//!   (single writer, one owned-line store per deq call). It is NOT the send
+//!   window: `window_open`/`credit_ok` stay on the K-cadenced `progress`, so
+//!   the hoard/drip release policy is untouched. Only `len`/`is_full` and the
+//!   try_send cold path (`try_send_now_cold`/`claim_run_cold`) read it, making
+//!   a reported `Full` exact instead of up-to-K stale.
 //!
 //! Everything here is performance-load-bearing and tuned against the bench suite:
 //! credit-before-claim (`window_open`/`credit_ok`/`try_send_now`), the SKIP
@@ -148,6 +154,12 @@ pub struct Shared<T> {
   /// new claim iff `g_tail - progress < cap` (approximate pre-check; the claim
   /// itself re-verifies against a fresh `progress` and SKIPs on overshoot).
   progress: CachePadded<AtomicUsize>,
+  /// Split dequeue counter: `h.pos` mirrored at every head-lock exit (single
+  /// writer - the consumer). Unlike `progress` it is NOT the send-window gate,
+  /// so it carries no release-cadence policy and can be fresh per drain: the
+  /// hot send path never reads it, only `len`/`is_full` and the try_send cold
+  /// path (verifying Full against reality instead of the K-stale window).
+  drained: CachePadded<AtomicUsize>,
   /// Chunks fully drained by the consumer: `retired >= id + 1` means chunk `id`
   /// is safe to reuse. Producers spin on this before resetting a reused chunk.
   consumer_retired: CachePadded<AtomicUsize>,
@@ -205,6 +217,7 @@ impl<T> Shared<T> {
     Arc::new(Shared {
       g_tail: CachePadded::new(AtomicUsize::new(0)),
       progress: CachePadded::new(AtomicUsize::new(0)),
+      drained: CachePadded::new(AtomicUsize::new(0)),
       consumer_retired: CachePadded::new(AtomicUsize::new(0)),
       cap,
       chunk_cap,
@@ -262,6 +275,61 @@ impl<T> Shared<T> {
       < self.cap
   }
 
+  // --- cold-path mirrors gated on `drained` instead of `progress` ---
+  //
+  // Same claim protocol (fetch_add ticket, re-verify, SKIP on overshoot), just
+  // against the fresh split counter, so a `Full` from here means actually-full
+  // at this instant rather than up-to-K stale. The `<= cap` occupancy bound and
+  // the SLACK table sizing hold for ANY counter <= true drains, and slot-reuse
+  // safety is carried by `ensure_resident`'s `consumer_retired` gate, not by
+  // the credit counter. `progress` (the hot window and its release cadence) is
+  // never read or written here.
+
+  #[inline]
+  fn credit_ok_cold(&self, ticket: usize) -> bool {
+    ticket.wrapping_sub(self.drained.load(Ordering::Acquire)) < self.cap
+  }
+
+  #[inline]
+  fn window_open_cold(&self) -> bool {
+    self
+      .g_tail
+      .load(Ordering::Relaxed)
+      .wrapping_sub(self.drained.load(Ordering::Acquire))
+      < self.cap
+  }
+
+  /// Cold-path retry for `try_send` after `try_send_now` reported the window
+  /// closed. See the section comment above.
+  pub(crate) fn try_send_now_cold(&self, v: T) -> Result<(), T> {
+    while self.window_open_cold() {
+      let ticket = self.g_tail.fetch_add(1, Ordering::Relaxed);
+      if self.credit_ok_cold(ticket) {
+        self.write_slot(ticket, Some(v));
+        return Ok(());
+      }
+      self.write_slot(ticket, None);
+    }
+    Err(v)
+  }
+
+  /// Cold-path mirror of `claim_run` for the try-batch paths. See the section
+  /// comment above.
+  pub(crate) fn claim_run_cold(&self, remaining: usize) -> (usize, usize, usize) {
+    let run_cap = self.run_cap.load(Ordering::Relaxed).max(1);
+    let g = self.g_tail.load(Ordering::Relaxed);
+    let d = self.drained.load(Ordering::Acquire);
+    let slack = self.cap.saturating_sub(g.wrapping_sub(d));
+    let m = remaining.min(slack).min(run_cap);
+    if m == 0 {
+      return (0, 0, 0);
+    }
+    let t = self.g_tail.fetch_add(m, Ordering::Relaxed);
+    let d2 = self.drained.load(Ordering::Acquire);
+    let valid = m.min((d2 + self.cap).saturating_sub(t));
+    (t, valid, m)
+  }
+
   // --- close surface (fibre) ---
 
   pub(crate) fn add_sender(&self) {
@@ -289,7 +357,7 @@ impl<T> Shared<T> {
     !self.receiver_dropped.load(Ordering::Acquire)
   }
 
-  // --- len/is_empty/is_full: approximate, clamped to [0, cap] ---
+  // --- len/is_empty/is_full: split-counter snapshot, clamped to [0, cap] ---
 
   pub(crate) fn capacity(&self) -> usize {
     self.cap
@@ -297,8 +365,8 @@ impl<T> Shared<T> {
 
   pub(crate) fn len(&self) -> usize {
     let tail = self.g_tail.load(Ordering::Acquire);
-    let progress = self.progress.load(Ordering::Acquire);
-    tail.wrapping_sub(progress).min(self.cap)
+    let drained = self.drained.load(Ordering::Acquire);
+    tail.wrapping_sub(drained).min(self.cap)
   }
 
   pub(crate) fn is_empty(&self) -> bool {
@@ -642,6 +710,7 @@ impl<T> Shared<T> {
     loop {
       let entry = &self.table[h.cid % self.n];
       if entry.id.load(Ordering::Acquire) != h.cid {
+        self.drained.store(h.pos, Ordering::Release);
         return if h.pos < self.g_tail.load(Ordering::Acquire) {
           Deq::InFlight
         } else {
@@ -670,6 +739,7 @@ impl<T> Shared<T> {
           if h.unpublished >= h.publish_chunk {
             self.publish_progress(&mut h);
           }
+          self.drained.store(h.pos, Ordering::Release);
           return Deq::Got(v);
         }
         SKIP => {
@@ -683,6 +753,7 @@ impl<T> Shared<T> {
           continue;
         }
         _ => {
+          self.drained.store(h.pos, Ordering::Release);
           return if h.pos < self.g_tail.load(Ordering::Acquire) {
             Deq::InFlight
           } else {
@@ -740,6 +811,7 @@ impl<T> Shared<T> {
         _ => break,
       }
     }
+    self.drained.store(h.pos, Ordering::Release);
     got
   }
 
@@ -758,6 +830,8 @@ impl<T> Shared<T> {
   fn publish_progress(&self, h: &mut Head) {
     let freed = h.unpublished;
     h.unpublished = 0;
+    // `drained` first so no observer ever sees `drained < progress`.
+    self.drained.store(h.pos, Ordering::Release);
     self.progress.store(h.pos, Ordering::Release);
     self.notify_senders(freed);
   }

@@ -8,6 +8,7 @@
 //! allocate atomics they never touch; chunk REUSE itself is miri's job (too many
 //! items to reach under loom's exponential exploration).
 
+use crate::error::TrySendError;
 use crate::mpsc::bounded;
 use loom::thread;
 
@@ -72,6 +73,36 @@ fn overshoot_skip_and_retry() {
     assert_eq!(first + second, 3);
     a.join().unwrap();
     b.join().unwrap();
+  });
+}
+
+/// `try_send`'s cold path (`try_send_now_cold`, gated on the `drained` split
+/// counter) racing the consumer's drain. At cap 2 the sync publish cadence is
+/// K=2, so a single drain never publishes `progress` - the hot window stays
+/// closed. The concurrent probe may legitimately race the drain either way,
+/// but after joining the consumer the retry MUST succeed: a Full there is the
+/// false-Full regression (without `drained` this model fails).
+#[test]
+fn try_send_cold_sees_unpublished_drain() {
+  model_slack(|| {
+    let (tx, rx) = bounded::<u32>(2);
+    tx.try_send(1).unwrap();
+    tx.try_send(2).unwrap();
+    let t = thread::spawn(move || {
+      assert_eq!(rx.recv().unwrap(), 1);
+      rx
+    });
+    let pending = match tx.try_send(3) {
+      Ok(()) => None,
+      Err(TrySendError::Full(v)) => Some(v),
+      Err(e) => panic!("unexpected try_send error: {e:?}"),
+    };
+    let rx = t.join().unwrap();
+    if let Some(v) = pending {
+      tx.try_send(v).unwrap();
+    }
+    assert_eq!(rx.recv().unwrap(), 2);
+    assert_eq!(rx.recv().unwrap(), 3);
   });
 }
 

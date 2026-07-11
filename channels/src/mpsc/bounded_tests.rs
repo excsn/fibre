@@ -396,6 +396,25 @@ async fn async_try_send_false_full_worst_case() {
     .expect("try_send returned Full with only 1 slot occupied");
 }
 
+/// Batch flavor: try_send_batch against unpublished drains must escalate to
+/// the fresh split counter and fit entirely instead of reporting Full.
+#[test]
+fn sync_try_send_batch_false_full() {
+  const CAP: usize = 130;
+  const DRAINED: usize = 63;
+  let (tx, rx) = bounded::<usize>(CAP);
+  for i in 0..CAP {
+    tx.try_send(i).unwrap();
+  }
+  for i in 0..DRAINED {
+    assert_eq!(rx.try_recv().unwrap(), i);
+  }
+  assert_eq!(
+    tx.try_send_batch((0..DRAINED).collect::<Vec<_>>()).unwrap(),
+    DRAINED
+  );
+}
+
 /// Sync flavor of the same defect: K = min(cap, 64), so at cap 130 a 63-item
 /// drain stays unpublished.
 #[test]
