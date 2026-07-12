@@ -77,6 +77,29 @@ async fn test_async_invalidate_and_clear() {
 }
 
 #[tokio::test]
+async fn test_async_remove() {
+  let cache = new_test_cache(100);
+  cache.insert("key1".to_string(), 10, 1).await;
+  cache.insert("key2".to_string(), 20, 2).await;
+
+  // Remove hit returns the stored value.
+  assert_eq!(cache.remove(&"key1".to_string()).await, Some(Arc::new(10)));
+  assert!(cache.fetch(&"key1".to_string()).await.is_none());
+
+  // Remove miss returns None.
+  assert!(cache.remove(&"key1".to_string()).await.is_none());
+  assert!(cache.remove(&"non-existent".to_string()).await.is_none());
+
+  let metrics = cache.metrics();
+  assert_eq!(metrics.invalidations, 1);
+  assert_eq!(
+    metrics.current_cost,
+    2,
+    "Cost of key2 should remain"
+  );
+}
+
+#[tokio::test]
 async fn test_async_replacement() {
   let cache = new_test_cache(100);
   cache.insert("key1".to_string(), 10, 1).await;

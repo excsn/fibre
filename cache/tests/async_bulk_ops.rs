@@ -75,6 +75,37 @@ async fn test_async_multi_invalidate() {
 
 #[tokio::test]
 #[cfg(feature = "bulk")]
+async fn test_async_multi_remove() {
+  let cache = new_test_cache(100);
+  let items: Vec<_> = (0..20).map(|i| (i, i.to_string(), 1)).collect();
+  cache.multi_insert(items).await;
+  assert_eq!(cache.metrics().current_cost, 20);
+
+  // 1. Remove a subset of keys, including some that are not present.
+  let keys_to_remove: Vec<_> = (5..25).collect();
+  let mut removed = cache.multi_remove(keys_to_remove).await;
+
+  // 2. Exactly the present pairs come back (order is unspecified).
+  removed.sort_by_key(|(k, _)| *k);
+  let expected: Vec<_> = (5..20).map(|i| (i, Arc::new(i.to_string()))).collect();
+  assert_eq!(removed, expected);
+
+  // 3. Verify cost and metrics.
+  let metrics = cache.metrics();
+  assert_eq!(metrics.current_cost, 5, "Cost should be reduced by 15");
+  assert_eq!(metrics.invalidations, 15);
+
+  // 4. Verify items are gone.
+  for i in 5..20 {
+    assert!(cache.fetch(&i).await.is_none());
+  }
+  for i in 0..5 {
+    assert!(cache.fetch(&i).await.is_some());
+  }
+}
+
+#[tokio::test]
+#[cfg(feature = "bulk")]
 async fn test_async_multi_insert_triggers_eviction() {
   use futures_util::StreamExt;
 use tokio::time;

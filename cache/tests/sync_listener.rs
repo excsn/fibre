@@ -58,6 +58,23 @@ fn test_sync_listener_for_invalidation() {
 }
 
 #[test]
+fn test_sync_listener_for_remove() {
+  let (tx, rx) = mpsc::channel();
+  let cache = CacheBuilder::default()
+    .eviction_listener(TestListener { sender: tx })
+    .build()
+    .unwrap();
+
+  cache.insert(1, "one".to_string(), 1);
+  assert_eq!(*cache.remove(&1).unwrap(), "one");
+
+  let (key, value, reason) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+  assert_eq!(key, 1);
+  assert_eq!(*value, "one");
+  assert_eq!(reason, EvictionReason::Invalidated);
+}
+
+#[test]
 fn test_sync_listener_for_ttl() {
   let (tx, rx) = mpsc::channel();
   let cache = CacheBuilder::default()

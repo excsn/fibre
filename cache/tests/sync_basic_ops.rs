@@ -73,6 +73,29 @@ fn test_sync_invalidate_and_clear() {
 }
 
 #[test]
+fn test_sync_remove() {
+  let cache = new_test_cache(100);
+  cache.insert("key1".to_string(), 10, 1);
+  cache.insert("key2".to_string(), 20, 2);
+
+  // Remove hit returns the stored value.
+  assert_eq!(cache.remove(&"key1".to_string()), Some(Arc::new(10)));
+  assert!(cache.fetch(&"key1".to_string()).is_none());
+
+  // Remove miss returns None.
+  assert!(cache.remove(&"key1".to_string()).is_none());
+  assert!(cache.remove(&"non-existent".to_string()).is_none());
+
+  let metrics = cache.metrics();
+  assert_eq!(metrics.invalidations, 1);
+  assert_eq!(
+    metrics.current_cost,
+    2,
+    "Cost of key2 should remain"
+  );
+}
+
+#[test]
 fn test_sync_replacement() {
   let cache = new_test_cache(100);
   cache.insert("key1".to_string(), 10, 1);

@@ -188,6 +188,7 @@ All caches must be configured and created via the `CacheBuilder`. It provides a 
 *   `.time_to_idle(Duration)`: Sets a global Time-to-Idle for all items.
 *   `.stale_while_revalidate(Duration)`: Configures a grace period after TTL for serving stale data while refreshing it in the background. Requires a loader.
 *   `.cache_policy_factory(impl Fn)`: Sets a custom eviction policy via a factory function. See [Eviction Policies](#eviction-policies).
+*   `.null_policy()`: Sets the eviction policy to the no-op `NullPolicy`, which never evicts. Shorthand for `.cache_policy_factory(|| Box::new(NullPolicy))`.
 *   `.loader(impl Fn)`: Sets a synchronous loader function for `Cache::fetch_with`.
 *   `.async_loader(impl Fn)`: Sets an asynchronous loader function for `AsyncCache::fetch_with`.
 *   `.eviction_listener(impl EvictionListener)`: Registers a callback for item evictions. See [Eviction Listener](#eviction-listener).
@@ -215,6 +216,8 @@ These are the primary handles for interacting with the cache. Their APIs are lar
     *   Inserts a key-value-cost triple into the cache. If the key already exists, its value and cost are updated. This method takes an owned `K`.
 *   `insert_with_ttl(&self, key: K, value: V, cost: u64, ttl: Duration)`
     *   Inserts an item with a specific TTL that overrides the cache's global default. Takes an owned `K`.
+*   `remove<Q>(&self, key: &Q) -> Option<Arc<V>>`
+    *   Removes an item from the cache, returning the stored value if the item was present. The eviction listener is notified with `EvictionReason::Invalidated`, exactly as with `invalidate`. Uses the `&Q` pattern.
 *   `invalidate<Q>(&self, key: &Q) -> bool`
     *   Removes an item from the cache, returning `true` if the item was present. Uses the `&Q` pattern.
 *   `clear(&self)`
@@ -248,6 +251,7 @@ These methods are more efficient than calling their singular counterparts in a l
 
 *   `multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
 *   `multi_insert<I>(&self, items: I)`
+*   `multi_remove<I, Q>(&self, keys: I) -> Vec<(K, Arc<V>)>`
 *   `multi_invalidate<I, Q>(&self, keys: I)`
 
 ### Maintenance API

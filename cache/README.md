@@ -10,9 +10,7 @@
 
 Please note that `fibre_cache` is currently stable. The core functionality is robust and well-tested, but the public API may change.
 
-This means:
-*   **APIs May Change:** Until the `1.0` release, breaking changes may be introduced in minor version updates (`0.x.y`).
-*   **Production Use:** While we strive for stability, using this library in a mission-critical production environment is **at your own risk**. Please be prepared to adapt to changes and conduct thorough testing for your specific use case.
+* **Production Use:** While we strive for stability, using this library in a mission-critical production environment is **at your own risk**. Please be prepared to adapt to changes and conduct thorough testing for your specific use case.
 
 We highly encourage you to try it out, provide feedback and report any issues. Contributions are always welcome as we work towards a stable release
 

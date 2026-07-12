@@ -456,8 +456,12 @@ where
     }
   }
 
-  /// Removes an entry from the cache, returning `true` if the key was found.
-  pub async fn invalidate<Q>(&self, key: &Q) -> bool
+  /// Removes an entry from the cache, returning the stored value if the key
+  /// was found.
+  ///
+  /// The eviction listener is notified with `EvictionReason::Invalidated` and
+  /// the `invalidations` metric is incremented, exactly as with `invalidate`.
+  pub async fn remove<Q>(&self, key: &Q) -> Option<Arc<V>>
   where
     K: Borrow<Q> + Clone,
     Q: Eq + Hash + Equivalent<K> + ?Sized,
@@ -494,13 +498,24 @@ where
         .current_cost
         .fetch_sub(entry.cost(), Ordering::Relaxed);
 
+      let value = entry.value();
       if let Some(sender) = &self.shared.notification_sender {
-        let _ = sender.try_send((found_key, entry.value(), EvictionReason::Invalidated));
+        let _ = sender.try_send((found_key, value.clone(), EvictionReason::Invalidated));
       }
-      true
+      Some(value)
     } else {
-      false
+      None
     }
+  }
+
+  /// Removes an entry from the cache, returning `true` if the key was found.
+  pub async fn invalidate<Q>(&self, key: &Q) -> bool
+  where
+    K: Borrow<Q> + Clone,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
+    V: Sync,
+  {
+    self.remove(key).await.is_some()
   }
 
   /// Asynchronously removes all entries from the cache.
@@ -815,9 +830,13 @@ where
     future::join_all(insert_futs).await;
   }
 
-  /// Removes multiple entries from the cache.
+  /// Removes multiple entries from the cache, returning the key-value pairs
+  /// that were present.
+  ///
+  /// This is more efficient than calling `remove` in a loop. The returned
+  /// pairs are in no particular order.
   #[cfg(feature = "bulk")]
-  pub async fn multi_invalidate<I, Q>(&self, keys: I)
+  pub async fn multi_remove<I, Q>(&self, keys: I) -> Vec<(K, Arc<V>)>
   where
     I: IntoIterator<Item = Q>,
     K: From<Q>,
@@ -830,13 +849,14 @@ where
       keys_by_shard[index].push(key);
     }
 
-    let invalidate_futs = keys_by_shard
+    let remove_futs = keys_by_shard
       .into_iter()
       .enumerate()
       .filter(|(_, keys)| !keys.is_empty())
       .map(|(i, shard_keys)| {
         let shared = Arc::clone(&self.shared);
         async move {
+          let mut removed = Vec::new();
           let shard = &shared.store.shards[i];
           let mut guard = shard.map.write_async().await;
           for key in shard_keys {
@@ -861,15 +881,32 @@ where
                 .current_cost
                 .fetch_sub(entry.cost(), std::sync::atomic::Ordering::Relaxed);
 
+              let value = entry.value();
               if let Some(sender) = &self.shared.notification_sender {
-                let _ = sender.try_send((key.clone(), entry.value(), EvictionReason::Invalidated));
+                let _ = sender.try_send((key.clone(), value.clone(), EvictionReason::Invalidated));
               }
+              removed.push((key, value));
             }
           }
+          removed
         }
       });
 
-    future::join_all(invalidate_futs).await;
+    future::join_all(remove_futs)
+      .await
+      .into_iter()
+      .flatten()
+      .collect()
+  }
+
+  /// Removes multiple entries from the cache.
+  #[cfg(feature = "bulk")]
+  pub async fn multi_invalidate<I, Q>(&self, keys: I)
+  where
+    I: IntoIterator<Item = Q>,
+    K: From<Q>,
+  {
+    let _ = self.multi_remove(keys).await;
   }
 }
 

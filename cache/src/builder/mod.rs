@@ -154,6 +154,15 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
     self
   }
 
+  /// Sets the eviction policy to the no-op `NullPolicy`, which never evicts.
+  pub fn null_policy(self) -> Self
+  where
+    K: Sync,
+    V: Sync,
+  {
+    self.cache_policy_factory(|| Box::new(crate::policy::null::NullPolicy))
+  }
+
   /// Sets the synchronous loader function for the cache.
   ///
   /// The provided closure is called by `fetch_with` when a key is not present.

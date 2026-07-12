@@ -19,9 +19,7 @@ use std::time::Duration;
 use ahash::{HashMap, HashMapExt};
 use equivalent::Equivalent;
 #[cfg(feature = "bulk")]
-use rayon::iter::{
-  IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
-};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
 thread_local! {
   // A simple, fast Xorshift random number generator for probabilistic checks.
@@ -474,8 +472,12 @@ where
     }
   }
 
-  /// Removes an entry from the cache, returning `true` if the key was found.
-  pub fn invalidate<Q>(&self, key: &Q) -> bool
+  /// Removes an entry from the cache, returning the stored value if the key
+  /// was found.
+  ///
+  /// The eviction listener is notified with `EvictionReason::Invalidated` and
+  /// the `invalidations` metric is incremented, exactly as with `invalidate`.
+  pub fn remove<Q>(&self, key: &Q) -> Option<Arc<V>>
   where
     K: Borrow<Q>,
     Q: Eq + Hash + Equivalent<K> + ?Sized,
@@ -512,13 +514,24 @@ where
         .current_cost
         .fetch_sub(entry.cost(), Ordering::Relaxed);
 
+      let value = entry.value();
       if let Some(sender) = &self.shared.notification_sender {
-        let _ = sender.try_send((found_key, entry.value(), EvictionReason::Invalidated));
+        let _ = sender.try_send((found_key, value.clone(), EvictionReason::Invalidated));
       }
-      true
+      Some(value)
     } else {
-      false
+      None
     }
+  }
+
+  /// Removes an entry from the cache, returning `true` if the key was found.
+  pub fn invalidate<Q>(&self, key: &Q) -> bool
+  where
+    K: Borrow<Q>,
+    Q: Eq + Hash + Equivalent<K> + ?Sized,
+    V: Sync,
+  {
+    self.remove(key).is_some()
   }
 
   /// Removes all entries from the cache.
@@ -1033,11 +1046,13 @@ where
       });
   }
 
-  /// Removes multiple entries from the cache.
+  /// Removes multiple entries from the cache, returning the key-value pairs
+  /// that were present.
   ///
-  /// This is more efficient than calling `invalidate` in a loop.
+  /// This is more efficient than calling `remove` in a loop. The returned
+  /// pairs are in no particular order.
   #[cfg(feature = "bulk")]
-  pub fn multi_invalidate<I, Q>(&self, keys: I)
+  pub fn multi_remove<I, Q>(&self, keys: I) -> Vec<(K, Arc<V>)>
   where
     I: IntoIterator<Item = Q>,
     K: From<Q>,
@@ -1051,19 +1066,20 @@ where
     }
 
     // Process shards in parallel.
-    keys_by_shard
-      .par_iter()
+    let removed_by_shard: Vec<Vec<(K, Arc<V>)>> = keys_by_shard
+      .into_par_iter()
       .enumerate()
-      .for_each(|(i, shard_keys)| {
+      .map(|(i, shard_keys)| {
+        let mut removed = Vec::new();
         if shard_keys.is_empty() {
-          return;
+          return removed;
         }
 
         let shard = &self.shared.store.shards[i];
         let mut guard = shard.map.write(); // Acquire write lock
 
         for key in shard_keys {
-          if let Some(entry) = guard.remove(key) {
+          if let Some(entry) = guard.remove(&key) {
             // Cancel any timers associated with the removed entry.
             if let Some(wheel) = &shard.timer_wheel {
               if let Some(handle) = &entry.ttl_timer_handle {
@@ -1074,7 +1090,7 @@ where
               }
             }
 
-            self.shared.get_cache_policy(key).on_remove(key);
+            self.shared.get_cache_policy(&key).on_remove(&key);
             self
               .shared
               .metrics
@@ -1086,11 +1102,29 @@ where
               .current_cost
               .fetch_sub(entry.cost(), std::sync::atomic::Ordering::Relaxed);
 
+            let value = entry.value();
             if let Some(sender) = &self.shared.notification_sender {
-              let _ = sender.try_send((key.clone(), entry.value(), EvictionReason::Invalidated));
+              let _ = sender.try_send((key.clone(), value.clone(), EvictionReason::Invalidated));
             }
+            removed.push((key, value));
           }
         }
-      });
+        removed
+      })
+      .collect();
+
+    removed_by_shard.into_iter().flatten().collect()
+  }
+
+  /// Removes multiple entries from the cache.
+  ///
+  /// This is more efficient than calling `invalidate` in a loop.
+  #[cfg(feature = "bulk")]
+  pub fn multi_invalidate<I, Q>(&self, keys: I)
+  where
+    I: IntoIterator<Item = Q>,
+    K: From<Q>,
+  {
+    let _ = self.multi_remove(keys);
   }
 }

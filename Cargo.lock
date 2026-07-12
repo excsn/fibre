@@ -537,7 +537,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fibre"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bench_matrix",
  "criterion",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "fibre_cache"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "ahash",
  "bench_matrix",

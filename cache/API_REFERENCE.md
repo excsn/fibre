@@ -101,6 +101,8 @@ The fluent builder for creating `Cache` and `AsyncCache` instances.
 *   `pub fn cache_policy_factory<F>(mut self, factory: F) -> Self`
     *   *where `F: Fn() -> Box<dyn CachePolicy<K, V>> + Send + Sync + 'static`*
     *   Sets a custom eviction policy via a factory function that is called for each shard. Defaults to `TinyLfuPolicy` for bounded caches and `NullPolicy` for unbounded ones.
+*   `pub fn null_policy(self) -> Self`
+    *   Sets the eviction policy to the no-op `NullPolicy`, which never evicts. Shorthand for `cache_policy_factory(|| Box::new(NullPolicy))`.
 *   `pub fn loader(mut self, f: impl Fn(K) -> (V, u64) + Send + Sync + 'static) -> Self`
     *   Sets the synchronous loader function, used by [`Cache::fetch_with`]. When `fetch_with` is called for a key that isn't in the cache, this closure is executed to compute its value and cost.
 *   `pub fn async_loader<F, Fut>(mut self, f: F) -> Self`
@@ -177,6 +179,8 @@ A handle to the cache for synchronous operations.
 *   `pub fn try_compute_val<Q, F, R>(&self, key: &Q, f: F) -> ComputeResult<R>`
     *   *where `F: FnOnce(&mut V) -> R`*
     *   Non-blocking version of `compute_val`. Returns `ComputeResult::Ok(R)` on success, `ComputeResult::Fail` if the value was locked, and `ComputeResult::NotFound` if the key was not found.
+*   `pub fn remove<Q>(&self, key: &Q) -> Option<Arc<V>>`
+    *   Removes an entry from the cache, returning the stored value if the key was found. The eviction listener is notified with `EvictionReason::Invalidated` and the `invalidations` metric is incremented, exactly as with `invalidate`.
 *   `pub fn invalidate<Q>(&self, key: &Q) -> bool`
     *   Removes an entry from the cache, returning `true` if the key was found.
 *   `pub fn clear(&self)`
@@ -198,6 +202,9 @@ A handle to the cache for synchronous operations.
 *   `pub fn multi_insert<I>(&self, items: I)`
     *   *(feature: `bulk`)*
     *   Inserts multiple key-value-cost items in parallel.
+*   `pub fn multi_remove<I, Q>(&self, keys: I) -> Vec<(K, Arc<V>)>`
+    *   *(feature: `bulk`)*
+    *   Removes multiple items in parallel, returning the key-value pairs that were present. The returned pairs are in no particular order.
 *   `pub fn multi_invalidate<I, Q>(&self, keys: I)`
     *   *(feature: `bulk`)*
     *   Removes multiple items in parallel.
@@ -222,6 +229,7 @@ A handle to the cache for asynchronous operations. All methods are async equival
 *   `pub async fn try_compute<Q, F>(&self, key: &Q, f: F) -> Option<bool>`
 *   `pub async fn compute_val<Q, F, R>(&self, key: &Q, mut f: F) -> ComputeResult<R>`
 *   `pub async fn try_compute_val<Q, F, R>(&self, key: &Q, f: F) -> ComputeResult<R>`
+*   `pub async fn remove<Q>(&self, key: &Q) -> Option<Arc<V>>`
 *   `pub async fn invalidate<Q>(&self, key: &Q) -> bool`
 *   `pub async fn clear(&self)`
 *   `pub async fn to_snapshot(&self) -> CacheSnapshot<K, V>`
@@ -237,6 +245,8 @@ A handle to the cache for asynchronous operations. All methods are async equival
     *   Async equivalent of `Cache::run_maintenance`. Uses async-compatible locking so it yields rather than blocks while acquiring shard locks.
 *   `pub async fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
 *   `pub async fn multi_insert<I>(&self, items: I)`
+    *   *(feature: `bulk`)*
+*   `pub async fn multi_remove<I, Q>(&self, keys: I) -> Vec<(K, Arc<V>)>`
     *   *(feature: `bulk`)*
 *   `pub async fn multi_invalidate<I, Q>(&self, keys: I)`
     *   *(feature: `bulk`)*

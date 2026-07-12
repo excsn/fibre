@@ -66,6 +66,24 @@ async fn test_async_listener_for_invalidation() {
 }
 
 #[tokio::test]
+async fn test_async_listener_for_remove() {
+  let (tx, rx) = mpsc::bounded(10);
+  let cache = CacheBuilder::default()
+    .eviction_listener(TestListener { sender: tx })
+    .maintenance_chance(1)
+    .build_async()
+    .unwrap();
+
+  cache.insert(1, "one".to_string(), 1).await;
+  assert_eq!(*cache.remove(&1).await.unwrap(), "one");
+
+  let (key, value, reason) = rx.to_async().recv().await.unwrap();
+  assert_eq!(key, 1);
+  assert_eq!(*value, "one");
+  assert_eq!(reason, EvictionReason::Invalidated);
+}
+
+#[tokio::test]
 async fn test_async_listener_for_ttl() {
   let (tx, rx) = mpsc::bounded(10);
   let cache = CacheBuilder::default()
