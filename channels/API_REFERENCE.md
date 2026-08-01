@@ -107,11 +107,12 @@ All core channels (`spsc`, `mpsc`, `spmc`, `mpmc`) provide eight batch operation
 
 ## 3. Module `fibre::oneshot`
 
-A channel for sending a single value from one of potentially many senders to a single receiver.
+A channel for sending a single value from one of potentially many senders to a single receiver. `exclusive()` builds a cheaper single-sender variant: no `Clone`, `&mut self` receive methods, and no claim protocol on the hot path.
 
 ### Functions
 
 *   `pub fn oneshot<T>() -> (Sender<T>, Receiver<T>)`
+*   `pub fn exclusive<T>() -> (ExclusiveSender<T>, ExclusiveReceiver<T>)`
 
 ### Struct `Sender<T>`
 
@@ -131,6 +132,25 @@ The receiving side of a oneshot channel. Cannot be cloned.
     *   `pub fn recv(&self) -> ReceiveFuture<'_, T>`
     *   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
     *   `pub fn close(&self) -> Result<(), CloseError>`
+    *   `pub fn is_closed(&self) -> bool`
+
+### Struct `ExclusiveSender<T>`
+
+The sending side of an `exclusive()` channel. Cannot be cloned; `send` consumes the handle.
+
+*   **Methods**:
+    *   `pub fn send(self, value: T) -> Result<(), TrySendError<T>>` (fails only with `TrySendError::Closed`, returning the value, if the receiver is gone)
+    *   `pub fn close(self)`
+    *   `pub fn is_closed(&self) -> bool`
+
+### Struct `ExclusiveReceiver<T>`
+
+The receiving side of an `exclusive()` channel. Cannot be cloned; receive methods take `&mut self`.
+
+*   **Methods**:
+    *   `pub fn recv(&mut self) -> ExclusiveReceiveFuture<'_, T>`
+    *   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>` (`Disconnected` once the value was taken, the sender dropped without sending, or this handle was closed)
+    *   `pub fn close(&mut self)`
     *   `pub fn is_closed(&self) -> bool`
 
 ## 4. Module `fibre::spsc`

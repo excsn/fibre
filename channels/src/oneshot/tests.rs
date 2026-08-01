@@ -291,31 +291,24 @@ fn test_oneshot_drop_race_leak() {
 
   let (tx, rx) = oneshot::<DropTracker>();
 
-  // 1. Clone the shared core pointer.
   let shared = Arc::clone(&tx.shared);
 
-  // 2. Lock the value_slot Mutex using the cloned `shared` pointer, NOT `tx`.
-  // This keeps `tx` unborrowed and eligible to be moved.
-  let lock_guard = shared.value_slot.lock();
+  // Hold the sender between its WRITING claim and its SENT publish so the
+  // receiver can drop mid-write.
+  shared.hold_publish.store(true, Ordering::Release);
 
-  // 3. Spawn a thread to send the tracked item.
-  // This moves `tx` into the closure safely.
   let sender_thread = thread::spawn(move || {
     let _ = tx.send(tracked_value);
   });
 
-  // Spin-wait until the sender thread has transitioned to `STATE_WRITING`.
-  while shared.state.load(Ordering::Acquire) != super::core::STATE_WRITING {
+  while shared.test_phase() != super::core::STATE_WRITING {
     thread::yield_now();
   }
 
-  // 4. Drop the receiver.
   drop(rx);
 
-  // 5. Release the lock to allow the sender thread to complete its write.
-  drop(lock_guard);
+  shared.hold_publish.store(false, Ordering::Release);
 
-  // 6. Wait for the sender thread to finish.
   sender_thread.join().unwrap();
 
   // 7. At this point, both the Sender and Receiver handles have been dropped,
@@ -339,19 +332,297 @@ fn test_oneshot_sender_count_underflow() {
   let tx_clone = tx.clone();
 
   // Verify that the count correctly incremented to 2
-  assert_eq!(shared.sender_count.load(Ordering::Relaxed), 2);
+  assert_eq!(shared.test_sender_count(), 2);
 
   // 3. Drop original sender (correctly decrements count from 2 to 1)
   drop(tx);
-  assert_eq!(shared.sender_count.load(Ordering::Relaxed), 1);
+  assert_eq!(shared.test_sender_count(), 1);
 
   // 4. Drop the cloned sender (correctly decrements count from 1 to 0, no underflow!)
   drop(tx_clone);
 
-  let final_count = shared.sender_count.load(Ordering::Relaxed);
+  let final_count = shared.test_sender_count();
   assert_eq!(
     final_count, 0,
     "sender_count underflowed to {}!",
     final_count
   );
+}
+
+/// `try_recv` decides "disconnected" from a stale state snapshot.
+///
+/// It loads `state` once at the top of the function, then, in the `EMPTY` branch, pairs
+/// that snapshot with a *fresh* `sender_count` load. If a sender completes its whole
+/// sequence in that window (CAS `EMPTY`->`WRITING`, write the value, swap to `SENT`, then
+/// drop the last `Sender` so the count reaches 0), the receiver compares a stale `EMPTY`
+/// against a current count of 0 and reports `Disconnected` while the value sits in
+/// `STATE_SENT`. The `compare_exchange(EMPTY, CLOSED)` on the way out fails, correctly,
+/// but its result is discarded, so nothing catches the contradiction.
+///
+/// The window is a few instructions wide, so this spins on `try_recv` to hit it.
+#[test]
+fn try_recv_never_reports_disconnected_after_a_successful_send() {
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::sync::Arc;
+  use std::thread;
+
+  const ROUNDS: usize = 50_000;
+
+  let (work_tx, work_rx) = std::sync::mpsc::channel::<Sender<u64>>();
+  let sends_ok = Arc::new(AtomicUsize::new(0));
+
+  let sender_thread = {
+    let sends_ok = Arc::clone(&sends_ok);
+    thread::spawn(move || {
+      while let Ok(tx) = work_rx.recv() {
+        if tx.send(1).is_ok() {
+          sends_ok.fetch_add(1, Ordering::Relaxed);
+        }
+      }
+    })
+  };
+
+  let mut false_disconnects = 0usize;
+  for _ in 0..ROUNDS {
+    let (tx, rx) = oneshot::<u64>();
+    work_tx.send(tx).unwrap();
+    loop {
+      match rx.try_recv() {
+        Ok(_) => break,
+        Err(TryRecvError::Empty) => std::hint::spin_loop(),
+        Err(TryRecvError::Disconnected) => {
+          false_disconnects += 1;
+          break;
+        }
+      }
+    }
+  }
+  drop(work_tx);
+  sender_thread.join().unwrap();
+
+  let sent = sends_ok.load(Ordering::SeqCst);
+  assert_eq!(sent, ROUNDS, "a send failed, so the receives are not conclusive");
+  assert_eq!(
+    false_disconnects, 0,
+    "{false_disconnects} of {ROUNDS} receives reported Disconnected even though every send returned Ok"
+  );
+}
+
+mod exclusive {
+  use super::super::exclusive;
+  use crate::error::{RecvError, TryRecvError, TrySendError};
+
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::sync::Arc;
+  use std::time::Duration;
+  use tokio::time::timeout;
+
+  const TEST_TIMEOUT: Duration = Duration::from_secs(1);
+
+  struct DropTracker(Arc<AtomicUsize>);
+  impl Drop for DropTracker {
+    fn drop(&mut self) {
+      self.0.fetch_add(1, Ordering::SeqCst);
+    }
+  }
+
+  #[tokio::test]
+  async fn send_recv_ok() {
+    let (tx, mut rx) = exclusive::<String>();
+
+    tokio::spawn(async move {
+      tx.send("hello exclusive".to_string()).expect("Send failed");
+    });
+
+    let received = timeout(TEST_TIMEOUT, rx.recv())
+      .await
+      .expect("Receive timed out")
+      .unwrap();
+    assert_eq!(received, "hello exclusive");
+  }
+
+  #[test]
+  fn send_recv_sync() {
+    let (tx, mut rx) = exclusive::<u64>();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    tx.send(7).unwrap();
+    assert_eq!(rx.try_recv().unwrap(), 7);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+  }
+
+  #[tokio::test]
+  async fn sender_drop_disconnects() {
+    let (tx, mut rx) = exclusive::<u32>();
+    drop(tx);
+    assert_eq!(
+      timeout(TEST_TIMEOUT, rx.recv()).await.expect("Timeout"),
+      Err(RecvError::Disconnected)
+    );
+  }
+
+  #[test]
+  fn sender_close_disconnects_try_recv() {
+    let (tx, mut rx) = exclusive::<u32>();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    tx.close();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+  }
+
+  #[test]
+  fn send_fails_if_receiver_dropped() {
+    let (tx, rx) = exclusive::<String>();
+    drop(rx);
+
+    let message = "won't be sent".to_string();
+    match tx.send(message.clone()) {
+      Err(TrySendError::Closed(returned)) => assert_eq!(returned, message),
+      res => panic!("Expected TrySendError::Closed, got {:?}", res),
+    }
+  }
+
+  #[test]
+  fn send_fails_if_receiver_closed() {
+    let (tx, mut rx) = exclusive::<u32>();
+    rx.close();
+    assert!(matches!(tx.send(1), Err(TrySendError::Closed(1))));
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+  }
+
+  #[test]
+  fn receiver_dropped_after_send_value_is_dropped() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    {
+      let (tx, rx) = exclusive::<DropTracker>();
+      tx.send(DropTracker(Arc::clone(&counter))).unwrap();
+      drop(rx);
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+  }
+
+  #[test]
+  fn receiver_closed_after_send_value_is_dropped() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (tx, mut rx) = exclusive::<DropTracker>();
+    tx.send(DropTracker(Arc::clone(&counter))).unwrap();
+    rx.close();
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    drop(rx);
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+  }
+
+  #[test]
+  fn rejected_send_returns_value_exactly_once() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (tx, rx) = exclusive::<DropTracker>();
+    drop(rx);
+    match tx.send(DropTracker(Arc::clone(&counter))) {
+      Err(TrySendError::Closed(v)) => {
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        drop(v);
+      }
+      res => panic!("Expected TrySendError::Closed, got {:?}", res.map_err(|_| ())),
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+  }
+
+  #[test]
+  fn send_racing_receiver_drop_never_leaks() {
+    use std::thread;
+
+    for _ in 0..1000 {
+      let counter = Arc::new(AtomicUsize::new(0));
+      let (tx, rx) = exclusive::<DropTracker>();
+      let t = {
+        let counter = Arc::clone(&counter);
+        thread::spawn(move || {
+          let _ = tx.send(DropTracker(counter));
+        })
+      };
+      drop(rx);
+      t.join().unwrap();
+      assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+  }
+
+  #[tokio::test]
+  async fn is_closed_semantics() {
+    let (tx, mut rx) = exclusive::<u32>();
+    assert!(!tx.is_closed());
+    assert!(!rx.is_closed());
+
+    tx.send(5).unwrap();
+    assert!(!rx.is_closed());
+    assert_eq!(rx.recv().await.unwrap(), 5);
+    assert!(rx.is_closed());
+
+    let (tx2, rx2) = exclusive::<u32>();
+    drop(rx2);
+    assert!(tx2.is_closed());
+  }
+
+  #[tokio::test]
+  async fn select_on_recv() {
+    let (tx1, mut rx1) = exclusive::<i32>();
+    let (_tx2, mut rx2) = exclusive::<i32>();
+
+    tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_millis(50)).await;
+      tx1.send(100).unwrap();
+    });
+
+    tokio::select! {
+        biased;
+        Ok(val) = rx1.recv() => {
+            assert_eq!(val, 100);
+        }
+        _ = rx2.recv() => {
+            panic!("Should not have received from rx2");
+        }
+        _ = tokio::time::sleep(TEST_TIMEOUT) => {
+            panic!("Select timed out");
+        }
+    }
+  }
+
+  #[test]
+  fn try_recv_never_reports_disconnected_after_a_successful_send() {
+    use std::thread;
+
+    const ROUNDS: usize = 50_000;
+
+    let (work_tx, work_rx) = std::sync::mpsc::channel::<super::super::ExclusiveSender<u64>>();
+    let sends_ok = Arc::new(AtomicUsize::new(0));
+
+    let sender_thread = {
+      let sends_ok = Arc::clone(&sends_ok);
+      thread::spawn(move || {
+        while let Ok(tx) = work_rx.recv() {
+          if tx.send(1).is_ok() {
+            sends_ok.fetch_add(1, Ordering::Relaxed);
+          }
+        }
+      })
+    };
+
+    let mut false_disconnects = 0usize;
+    for _ in 0..ROUNDS {
+      let (tx, mut rx) = exclusive::<u64>();
+      work_tx.send(tx).unwrap();
+      loop {
+        match rx.try_recv() {
+          Ok(_) => break,
+          Err(TryRecvError::Empty) => std::hint::spin_loop(),
+          Err(TryRecvError::Disconnected) => {
+            false_disconnects += 1;
+            break;
+          }
+        }
+      }
+    }
+    drop(work_tx);
+    sender_thread.join().unwrap();
+
+    assert_eq!(sends_ok.load(Ordering::SeqCst), ROUNDS);
+    assert_eq!(false_disconnects, 0);
+  }
 }

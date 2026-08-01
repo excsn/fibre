@@ -358,11 +358,14 @@ A channel for sending a single value once. `T` must be `Send`.
 
 *   **Constructors:**
     *   `pub fn oneshot<T>() -> (Sender<T>, Receiver<T>)`
+    *   `pub fn exclusive<T>() -> (ExclusiveSender<T>, ExclusiveReceiver<T>)`
 *   **Handles:**
     *   `Sender<T>` (`Clone`) and `Receiver<T>` (`!Clone`).
+    *   `ExclusiveSender<T>` and `ExclusiveReceiver<T>` (both `!Clone`).
 *   **Key Methods:**
     *   `Sender::send(self, ...)`: Consumes the sender. Only the first `send` across all clones succeeds.
     *   `Receiver::recv(&self)`: Returns a `Future` that completes when the value is sent or the channel is disconnected.
+    *   `ExclusiveSender::send(self, ...)` / `ExclusiveReceiver::recv(&mut self)`: The single-sender fast path. With clonability off the table, a send is one slot write plus one atomic flag update, and the receiver takes the value without a claim cycle. Prefer `exclusive()` for plain request/response; use `oneshot()` when several candidate senders race to fulfil one slot.
 
 ## Batch Operations
 

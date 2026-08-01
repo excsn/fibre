@@ -10,7 +10,7 @@
 
 `fibre` is stable. The API is stable, but minor breaking changes may occur before version 1.0 as feedback is incorporated and improvements are made.
 
-**Performance highlights** (Apple M4 Pro) - **SPSC** 44 / 183 Melem/s (sync/async, Cap-1024; batch up to ~185 Melem/s) · **MPSC** ~4–21 / ~67 Melem/s (sync/async, Cap-128, 4–14P) · **SPMC** 15–20 Melem/s broadcast · **SPMC Topic** up to 15 Melem/s async (14 subs) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128 1P/1C) · **Oneshot** ~10 Melem/s async - [details](#performance) · [bench data](./docs/benches/)
+**Performance highlights** (Apple M4 Pro) - **SPSC** 44 / 183 Melem/s (sync/async, Cap-1024; batch up to ~185 Melem/s) · **MPSC** ~4–21 / ~67 Melem/s (sync/async, Cap-128, 4–14P) · **SPMC** 15–20 Melem/s broadcast · **SPMC Topic** up to 15 Melem/s async (14 subs) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128 1P/1C) · **Oneshot** ~26 Melem/s async, `exclusive()` ~34 (60+ transfer-only) - [details](#performance) · [bench data](./docs/benches/)
 
 ## Notable Users
 
@@ -27,7 +27,7 @@ Fibre offers a wide range of channel types, each optimized for a specific produc
 *   **`spmc`**: A "broadcast" style Single-Producer, Multi-Consumer channel where each message is cloned and delivered to every active consumer. Bounded. Requires `T: Send + Clone`.
 *   **`spmc::topic`**: A "publish-subscribe" variant of SPMC where the producer sends messages to named topics, and consumers subscribe to the topics they're interested in. The sender is non-blocking, dropping messages for slow consumers. Requires `K: Send + Sync + Hash + Eq + Clone` and `T: Send + Clone`.
 *   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic. Supports bounded, "unbounded", and zero-capacity `mpmc::rendezvous` modes. Both `send` and `recv` futures are cancel-safe. Requires `T: Send`.
-*   **`oneshot`**: A channel for sending a single value once, perfect for futures and promise-style patterns. Requires `T: Send`.
+*   **`oneshot`**: A channel for sending a single value once, perfect for futures and promise-style patterns. `oneshot()` gives a clonable sender (first send wins); `oneshot::exclusive()` gives a leaner single-sender variant. Requires `T: Send`.
 
 **Capacity modes by channel type**
 
@@ -126,11 +126,12 @@ Benchmarks on Apple M4 Pro; full results in [`docs/benches/`](./docs/benches/).
 | **SPMC Topic** | 14 subscribers | 726 Kelem/s | 14.9 Melem/s |
 | **MPMC** | Cap-128, 1P / 1C | 42.1 Melem/s | 73.2 Melem/s |
 | **MPMC** | Cap-128, 14P / 14C | 18.9 Melem/s | 19.9 Melem/s |
-| **Oneshot** | - | - | 10.4 Melem/s |
+| **Oneshot** | clonable / exclusive | - | 26.5 / 33.7 Melem/s |
 
 - SPSC numbers are measured with a real spawned producer and consumer (thread or task) per iteration, so they include genuine cross-core synchronization; throughput scales with buffer size (Cap-128: 27 / 139 Melem/s sync/async, Cap-1024: 44.5 / 183 Melem/s). Batch APIs at Cap-1024 reach 150–185 Melem/s sync.
 - MPSC async throughput at Cap-128 is remarkably consistent across producer counts (~67 Melem/s from 4P to 14P); sync bounded throughput is lower and falls off under contention (~21 Melem/s at 4P down to ~3.7 at 14P, and ~82 Melem/s at 1P).
 - SPMC figures are per-message sent; each message is cloned and delivered to every consumer.
+- Oneshot figures are create+send+recv per op. Transfer-only (pre-created channels): clonable ~44, exclusive ~62 Melem/s, vs tokio's oneshot at ~26 full / ~33-44 transfer-only ([data](./docs/benches/oneshot.md)).
 - SPMC Topic's async 14-subscriber result (14.9 Melem/s) is ~20× faster than the sync equivalent (726 Kelem/s) because the non-blocking sender fully decouples producers from slow subscribers.
 - MPMC async at 73 Melem/s (Cap-128, 1P / 1C) avoids lock overhead when the buffer has slack.
 

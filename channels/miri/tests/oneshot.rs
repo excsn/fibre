@@ -77,3 +77,107 @@ fn cross_thread_completion() {
   assert_eq!(block_on(rx.recv()).unwrap(), 99);
   sender.join().unwrap();
 }
+
+#[test]
+fn spinning_try_recv_races_send_and_sender_drop() {
+  let (tx, rx) = oneshot::oneshot::<u32>();
+  let sender = thread::spawn(move || tx.send(1).unwrap());
+  loop {
+    match rx.try_recv() {
+      Ok(v) => {
+        assert_eq!(v, 1);
+        break;
+      }
+      Err(TryRecvError::Empty) => thread::yield_now(),
+      Err(TryRecvError::Disconnected) => panic!("false disconnect after successful send"),
+    }
+  }
+  sender.join().unwrap();
+}
+
+#[test]
+fn receiver_drop_races_send() {
+  let counter = drop_counter();
+  let (tx, rx) = oneshot::oneshot();
+  let value = DropCounter::new(&counter);
+  let sender = thread::spawn(move || {
+    let _ = tx.send(value);
+  });
+  drop(rx);
+  sender.join().unwrap();
+  assert_eq!(drops(&counter), 1);
+}
+
+mod exclusive {
+  use super::*;
+
+  #[test]
+  fn send_then_recv() {
+    let (tx, mut rx) = oneshot::exclusive::<u32>();
+    tx.send(42).unwrap();
+    assert_eq!(block_on(rx.recv()).unwrap(), 42);
+  }
+
+  #[test]
+  fn recv_registers_then_cancels() {
+    let (tx, mut rx) = oneshot::exclusive::<u32>();
+    {
+      let mut fut = pin!(rx.recv());
+      assert!(poll_once(fut.as_mut()).is_pending());
+    }
+    tx.send(7).unwrap();
+    assert_eq!(block_on(rx.recv()).unwrap(), 7);
+  }
+
+  #[test]
+  fn rejected_send_returns_value() {
+    let counter = drop_counter();
+    let (tx, rx) = oneshot::exclusive();
+    drop(rx);
+    let rejected = tx.send(DropCounter::new(&counter));
+    assert!(rejected.is_err());
+    drop(rejected);
+    assert_eq!(drops(&counter), 1);
+  }
+
+  #[test]
+  fn unconsumed_value_dropped_with_receiver() {
+    let counter = drop_counter();
+    {
+      let (tx, rx) = oneshot::exclusive();
+      tx.send(DropCounter::new(&counter)).unwrap();
+      drop(rx);
+    }
+    assert_eq!(drops(&counter), 1);
+  }
+
+  #[test]
+  fn sender_drop_disconnects() {
+    let (tx, mut rx) = oneshot::exclusive::<u32>();
+    drop(tx);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+  }
+
+  #[test]
+  fn cross_thread_completion() {
+    let (tx, mut rx) = oneshot::exclusive::<u32>();
+    let sender = thread::spawn(move || {
+      tx.send(99).unwrap();
+    });
+    assert_eq!(block_on(rx.recv()).unwrap(), 99);
+    sender.join().unwrap();
+  }
+
+  #[test]
+  fn send_races_receiver_drop() {
+    let counter = drop_counter();
+    let (tx, rx) = oneshot::exclusive();
+    let value = DropCounter::new(&counter);
+    let sender = thread::spawn(move || {
+      let _ = tx.send(value);
+    });
+    drop(rx);
+    sender.join().unwrap();
+    assert_eq!(drops(&counter), 1);
+  }
+}

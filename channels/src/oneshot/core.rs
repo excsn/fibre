@@ -1,31 +1,70 @@
+//! Shared core of the clonable oneshot channel.
+//!
+//! All channel state lives in ONE atomic word so every observer gets a
+//! consistent snapshot of phase, sender count, and receiver liveness in a
+//! single load. The word is laid out as:
+//!
+//! ```text
+//! [ sender count (bits 4..) | RX_DROPPED (bit 3) | phase (bits 0..3) ]
+//! ```
+//!
+//! Phase is strictly monotonic: EMPTY -> WRITING -> SENT -> TAKEN, with
+//! EMPTY -> CLOSED as the no-value terminal. Only the WRITING owner advances
+//! WRITING -> SENT, and only one claimant wins SENT -> TAKEN, so owner-driven
+//! transitions are `fetch_add` deltas and contended ones are CAS loops that
+//! preserve the count/flag bits.
+//!
+//! The value slot is a bare `UnsafeCell<MaybeUninit<T>>`; it is initialized
+//! iff phase is SENT, and whoever moves phase off SENT (to TAKEN) owns the
+//! value. Exclusivity for the write comes from holding WRITING.
+
 use crate::async_util::AtomicWaker;
 use crate::error::{RecvError, TryRecvError, TrySendError};
+use crate::internal::sync::{AtomicUsize, Ordering};
 
 use core::task::{Context, Poll};
+use std::cell::UnsafeCell;
 use std::fmt;
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use parking_lot::Mutex;
 
-// State constants for OneShotShared::state
-pub(super) const STATE_EMPTY: usize = 0; // No value, receiver may be waiting. Initial state.
-pub(super) const STATE_WRITING: usize = 1; // A sender is in the process of writing the value (critical section).
-pub(super) const STATE_SENT: usize = 2; // Value has been written by a sender and is ready for receiver.
-pub(super) const STATE_TAKEN: usize = 3; // Receiver has taken the value. Terminal state for value.
-pub(super) const STATE_CLOSED: usize = 4; // Channel closed definitively (e.g. receiver dropped AND no value was sent, or all senders dropped AND no value sent). Terminal state.
+pub(super) const STATE_EMPTY: usize = 0;
+pub(super) const STATE_WRITING: usize = 1;
+pub(super) const STATE_SENT: usize = 2;
+pub(super) const STATE_TAKEN: usize = 3;
+pub(super) const STATE_CLOSED: usize = 4;
+
+const PHASE_MASK: usize = 0b111;
+const RX_DROPPED: usize = 1 << 3;
+const COUNT_SHIFT: usize = 4;
+const COUNT_UNIT: usize = 1 << COUNT_SHIFT;
+
+#[inline(always)]
+fn phase(word: usize) -> usize {
+  word & PHASE_MASK
+}
+
+#[inline(always)]
+fn sender_count(word: usize) -> usize {
+  word >> COUNT_SHIFT
+}
+
+#[inline(always)]
+fn with_phase(word: usize, new_phase: usize) -> usize {
+  (word & !PHASE_MASK) | new_phase
+}
 
 pub(super) struct OneShotShared<T> {
-  pub(crate) value_slot: Mutex<Option<MaybeUninit<T>>>,
-  pub(crate) state: AtomicUsize, // STATE_EMPTY, STATE_WRITING, STATE_SENT, STATE_TAKEN, STATE_CLOSED
+  state: AtomicUsize,
+  value_slot: UnsafeCell<MaybeUninit<T>>,
   receiver_waker: AtomicWaker,
-  pub(crate) receiver_dropped: AtomicBool, // True if the Receiver struct itself has been dropped
-  pub(crate) sender_count: AtomicUsize,    // Number of active Sender structs
+  #[cfg(test)]
+  pub(super) hold_publish: crate::internal::sync::AtomicBool,
 }
 
 impl<T> fmt::Debug for OneShotShared<T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let state_val = self.state.load(Ordering::Relaxed);
-    let state_str = match state_val {
+    let word = self.state.load(Ordering::Relaxed);
+    let phase_str = match phase(word) {
       STATE_EMPTY => "Empty",
       STATE_WRITING => "Writing",
       STATE_SENT => "Sent",
@@ -34,12 +73,9 @@ impl<T> fmt::Debug for OneShotShared<T> {
       _ => "Unknown",
     };
     f.debug_struct("OneShotShared")
-      .field("state", &state_str)
-      .field(
-        "receiver_dropped",
-        &self.receiver_dropped.load(Ordering::Relaxed),
-      )
-      .field("sender_count", &self.sender_count.load(Ordering::Relaxed))
+      .field("state", &phase_str)
+      .field("receiver_dropped", &(word & RX_DROPPED != 0))
+      .field("sender_count", &sender_count(word))
       .finish_non_exhaustive()
   }
 }
@@ -50,297 +86,261 @@ unsafe impl<T: Send> Sync for OneShotShared<T> {}
 impl<T> OneShotShared<T> {
   pub(super) fn new() -> Self {
     OneShotShared {
-      value_slot: Mutex::new(None),
-      state: AtomicUsize::new(STATE_EMPTY),
+      state: AtomicUsize::new(COUNT_UNIT | STATE_EMPTY),
+      value_slot: UnsafeCell::new(MaybeUninit::uninit()),
       receiver_waker: AtomicWaker::new(),
-      receiver_dropped: AtomicBool::new(false),
-      sender_count: AtomicUsize::new(1),
+      #[cfg(test)]
+      hold_publish: crate::internal::sync::AtomicBool::new(false),
     }
+  }
+
+  unsafe fn take_value(&self) -> T {
+    unsafe { (*self.value_slot.get()).assume_init_read() }
+  }
+
+  unsafe fn drop_value(&self) {
+    unsafe { (*self.value_slot.get()).assume_init_drop() };
   }
 
   pub(super) fn increment_senders(&self) {
-    // Unconditionally increment to remain balanced with decrements on drop
-    self.sender_count.fetch_add(1, Ordering::Relaxed);
+    self.state.fetch_add(COUNT_UNIT, Ordering::Relaxed);
   }
 
   pub(super) fn decrement_senders(&self) {
-    if self.sender_count.fetch_sub(1, Ordering::AcqRel) == 1 {
-      // This was the last sender.
-      // If state is still EMPTY (meaning no value was ever successfully sent and committed),
-      // then the channel is now disconnected from the sender side.
-      // Try to transition EMPTY -> CLOSED.
-      if self
-        .state
-        .compare_exchange(
-          STATE_EMPTY,
-          STATE_CLOSED,
-          Ordering::AcqRel, // Ensure prior writes (if any) are visible, and this store is visible
-          Ordering::Relaxed,
-        )
-        .is_ok()
-      {
-        self.receiver_waker.wake(); // Wake receiver to observe Disconnected state
-      }
-      // Receiver is gone and the value is in STATE_SENT - it will never be taken.
-      // Drop it here to prevent a leak. This is the "drop race" case where the receiver
-      // dropped while the sender was in STATE_WRITING, so the receiver's close_internal
-      // couldn't claim it at that time.
-      else if self.state.load(Ordering::Acquire) == STATE_SENT
-        && self.receiver_dropped.load(Ordering::Acquire)
-      {
-        if self
-          .state
-          .compare_exchange(STATE_SENT, STATE_TAKEN, Ordering::AcqRel, Ordering::Relaxed)
-          .is_ok()
-        {
-          let mut guard = self.value_slot.lock();
-          if let Some(mut mu_value) = guard.take() {
-            unsafe {
-              mu_value.assume_init_drop();
+    // RMWs on `state` are totally ordered, so `prev` is the true current word:
+    // it cannot miss an RX_DROPPED or phase change that ordered before it.
+    let prev = self.state.fetch_sub(COUNT_UNIT, Ordering::AcqRel);
+    debug_assert!(sender_count(prev) >= 1, "oneshot: sender count underflow");
+    if sender_count(prev) != 1 {
+      return;
+    }
+
+    let mut cur = prev - COUNT_UNIT;
+    loop {
+      match phase(cur) {
+        STATE_EMPTY => {
+          match self.state.compare_exchange_weak(
+            cur,
+            with_phase(cur, STATE_CLOSED),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+          ) {
+            Ok(_) => {
+              self.receiver_waker.wake();
+              return;
             }
+            Err(w) => cur = w,
           }
         }
-      }
-      // If state was WRITING, TAKEN, or CLOSED, wake the receiver if needed.
-      else if self.state.load(Ordering::Relaxed) != STATE_TAKEN
-        && self.state.load(Ordering::Relaxed) != STATE_SENT
-      {
-        // Avoid waking if value is there or taken
-        self.receiver_waker.wake();
+        STATE_SENT => {
+          if cur & RX_DROPPED == 0 {
+            // Receiver is alive; it will take the value or reclaim it on drop.
+            return;
+          }
+          // Receiver dropped while we were WRITING, so it could not claim the
+          // value then. Claim and drop it here to prevent a leak.
+          match self.state.compare_exchange_weak(
+            cur,
+            with_phase(cur, STATE_TAKEN),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+          ) {
+            Ok(_) => {
+              unsafe { self.drop_value() };
+              return;
+            }
+            Err(w) => cur = w,
+          }
+        }
+        _ => return,
       }
     }
   }
 
+  /// Marks the receiver as gone and performs all receiver-side cleanup:
+  /// closes an EMPTY channel, or claims and drops a SENT-but-untaken value.
   pub(super) fn mark_receiver_dropped(&self) {
-    self.receiver_dropped.store(true, Ordering::Release);
-    // If no value has been sent and no senders are in the process of sending,
-    // transition to CLOSED.
-    if self
-      .state
-      .compare_exchange(
-        STATE_EMPTY,
-        STATE_CLOSED,
-        Ordering::AcqRel,
-        Ordering::Relaxed,
-      )
-      .is_ok()
-    {
-      // Senders trying to send will now see receiver_dropped or state == CLOSED.
-      // No specific waker for senders in oneshot, they fail fast.
+    let prev = self.state.fetch_or(RX_DROPPED, Ordering::AcqRel);
+    let mut cur = prev | RX_DROPPED;
+    loop {
+      match phase(cur) {
+        STATE_EMPTY => {
+          match self.state.compare_exchange_weak(
+            cur,
+            with_phase(cur, STATE_CLOSED),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+          ) {
+            Ok(_) => return,
+            Err(w) => cur = w,
+          }
+        }
+        STATE_SENT => {
+          match self.state.compare_exchange_weak(
+            cur,
+            with_phase(cur, STATE_TAKEN),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+          ) {
+            Ok(_) => {
+              unsafe { self.drop_value() };
+              return;
+            }
+            Err(w) => cur = w,
+          }
+        }
+        // WRITING: the in-flight sender publishes SENT, then the last sender
+        // drop observes SENT | RX_DROPPED and reclaims the value.
+        _ => return,
+      }
     }
-    // If state was STATE_WRITING, the sender might complete or see receiver_dropped.
-    // If state was STATE_SENT, the value is now orphaned. It will be dropped by Receiver::drop.
-    // If state was STATE_TAKEN or already CLOSED, no change.
   }
 
   pub(super) fn send(&self, value: T) -> Result<(), TrySendError<T>> {
-    // Fast path check for receiver dropped or channel already terminally closed or value sent/taken.
-    if self.receiver_dropped.load(Ordering::Acquire) {
+    let mut cur = self.state.load(Ordering::Acquire);
+    loop {
+      if cur & RX_DROPPED != 0 {
+        return Err(TrySendError::Closed(value));
+      }
+      if phase(cur) != STATE_EMPTY {
+        return Err(TrySendError::Sent(value));
+      }
+      match self.state.compare_exchange_weak(
+        cur,
+        with_phase(cur, STATE_WRITING),
+        Ordering::AcqRel,
+        Ordering::Acquire,
+      ) {
+        Ok(_) => break,
+        Err(w) => cur = w,
+      }
+    }
+
+    if self.state.load(Ordering::Acquire) & RX_DROPPED != 0 {
+      self
+        .state
+        .fetch_sub(STATE_WRITING - STATE_EMPTY, Ordering::AcqRel);
       return Err(TrySendError::Closed(value));
     }
-    let current_state = self.state.load(Ordering::Acquire);
-    if current_state >= STATE_SENT {
-      // SENT, TAKEN, or CLOSED
-      return Err(TrySendError::Sent(value)); // Treat CLOSED as if already sent for send attempt
+
+    unsafe {
+      (*self.value_slot.get()).write(value);
     }
 
-    // Attempt to transition from EMPTY to WRITING. Only one sender will succeed.
-    match self.state.compare_exchange(
-      STATE_EMPTY,
+    #[cfg(test)]
+    while self.hold_publish.load(Ordering::Acquire) {
+      std::thread::yield_now();
+    }
+
+    let prev = self
+      .state
+      .fetch_add(STATE_SENT - STATE_WRITING, Ordering::AcqRel);
+    debug_assert_eq!(
+      phase(prev),
       STATE_WRITING,
-      Ordering::AcqRel, // Acquire to sync with other CAS, Release for value_slot write
-      Ordering::Acquire, // On failure, acquire to see latest state
-    ) {
-      Ok(_) => {
-        // Successfully Acquired WRITING state
-        // Double check receiver_dropped *after* acquiring WRITING lock.
-        if self.receiver_dropped.load(Ordering::Acquire) {
-          // Receiver dropped between initial check and acquiring write lock.
-          // Revert state to EMPTY (or CLOSED if no other senders).
-          // This logic makes it more complex, simpler might be to proceed and let send fail.
-          // For now, let's assume this is rare and proceed, the send will fail if receiver is gone.
-          // A better approach: if this CAS to WRITING fails because state is now CLOSED, handle that.
-          // If it succeeds, but receiver_dropped is now true:
-          self.state.store(STATE_EMPTY, Ordering::Release); // Backtrack
-          return Err(TrySendError::Closed(value));
-        }
+      "oneshot: publish from non-WRITING phase"
+    );
 
-        // We are the chosen sender.
-        // Lock is held very briefly.
-        let mut guard = self.value_slot.lock();
-        *guard = Some(MaybeUninit::new(value));
-
-        // Now transition from WRITING to SENT.
-        // This must succeed as we are the only one in WRITING state.
-        // Use swap to ensure it was WRITING.
-        let prev_state = self.state.swap(STATE_SENT, Ordering::AcqRel);
-        debug_assert_eq!(
-          prev_state, STATE_WRITING,
-          "Oneshot: State inconsistency during send, expected WRITING"
-        );
-
-        self.receiver_waker.wake();
-        Ok(())
-      }
-      Err(observed_state_on_failure) => {
-        // CAS failed. Another sender is writing, or value is already sent/taken/closed.
-        if observed_state_on_failure >= STATE_SENT {
-          // SENT, TAKEN, CLOSED
-          Err(TrySendError::Sent(value))
-        } else if observed_state_on_failure == STATE_WRITING {
-          // Another sender is currently writing. Contend or treat as "already sent".
-          // For oneshot, usually "first wins cleanly". So, treat as Sent.
-          Err(TrySendError::Sent(value))
-        } else {
-          // Observed EMPTY again, but our CAS failed - means another thread did CAS(EMPTY, WRITING)
-          // and maybe even completed or failed itself. Effectively, we lost the race.
-          Err(TrySendError::Sent(value))
-        }
-      }
-    }
+    self.receiver_waker.wake();
+    Ok(())
   }
 
   pub(super) fn try_recv(&self) -> Result<T, TryRecvError> {
-    let current_state = self.state.load(Ordering::Acquire);
-
-    if current_state == STATE_SENT {
-      // Attempt to transition from SENT to TAKEN. Only one receiver poll will succeed.
-      if self
-        .state
-        .compare_exchange(
-          STATE_SENT,
-          STATE_TAKEN,
-          Ordering::AcqRel, // Acquire to sync with SENT, Release for value_slot change (though Mutex handles that)
-          Ordering::Acquire, // On failure, re-read state
-        )
-        .is_ok()
-      {
-        // Successfully claimed the value.
-        let mut guard = self.value_slot.lock();
-        match guard.take() {
-          Some(mu_value) => unsafe { Ok(mu_value.assume_init()) },
-          None => {
-            // Should not happen: state was SENT but value_slot was None. Logic error.
-            // This implies state machine corruption.
-            // To be safe, treat as if disconnected now.
-            self.state.store(STATE_CLOSED, Ordering::Relaxed); // Mark corrupted state as closed
-            Err(TryRecvError::Disconnected) // Or a specific "InternalError"
+    let mut cur = self.state.load(Ordering::Acquire);
+    loop {
+      match phase(cur) {
+        STATE_SENT => {
+          match self.state.compare_exchange_weak(
+            cur,
+            with_phase(cur, STATE_TAKEN),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+          ) {
+            Ok(_) => return Ok(unsafe { self.take_value() }),
+            Err(w) => cur = w,
           }
         }
-      } else {
-        // CAS failed: state changed from SENT to something else (likely TAKEN by another poll, or CLOSED).
-        // Re-evaluate current state.
-        let new_state_after_cas_fail = self.state.load(Ordering::Acquire);
-        if new_state_after_cas_fail == STATE_TAKEN {
-          Err(TryRecvError::Empty) // Already taken by this logical receiver, now appears empty
-        } else if new_state_after_cas_fail == STATE_CLOSED
-          || self.sender_count.load(Ordering::Relaxed) == 0
-        {
-          Err(TryRecvError::Disconnected)
-        } else {
-          Err(TryRecvError::Empty) // Still SENT (but our CAS failed), or EMPTY/WRITING
+        STATE_TAKEN | STATE_WRITING => return Err(TryRecvError::Empty),
+        STATE_CLOSED => return Err(TryRecvError::Disconnected),
+        _ => {
+          if sender_count(cur) > 0 {
+            return Err(TryRecvError::Empty);
+          }
+          // Disconnected only once EMPTY -> CLOSED actually commits; a failed
+          // CAS means the phase advanced (a value landed) and we re-dispatch.
+          match self.state.compare_exchange_weak(
+            cur,
+            with_phase(cur, STATE_CLOSED),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+          ) {
+            Ok(_) => return Err(TryRecvError::Disconnected),
+            Err(w) => cur = w,
+          }
         }
-      }
-    } else if current_state == STATE_TAKEN {
-      Err(TryRecvError::Empty) // Already taken, effectively empty for subsequent calls
-    } else if current_state == STATE_CLOSED {
-      Err(TryRecvError::Disconnected)
-    } else {
-      // EMPTY or WRITING
-      // If empty and all senders are gone, it's disconnected.
-      if current_state == STATE_EMPTY && self.sender_count.load(Ordering::Acquire) == 0 {
-        // Attempt to transition to CLOSED if not already done by last sender drop
-        self
-          .state
-          .compare_exchange(
-            STATE_EMPTY,
-            STATE_CLOSED,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-          )
-          .ok();
-        Err(TryRecvError::Disconnected)
-      } else {
-        Err(TryRecvError::Empty) // Not ready yet, or senders still active / writing
       }
     }
   }
 
   pub(super) fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-    loop {
-      // Loop to handle state changes after waker registration
-      match self.try_recv() {
-        Ok(value) => return Poll::Ready(Ok(value)),
-        Err(TryRecvError::Disconnected) => return Poll::Ready(Err(RecvError::Disconnected)),
-        Err(TryRecvError::Empty) => {
-          // Value not ready. State is EMPTY or WRITING, and senders might still exist.
-          // Or state was SENT but CAS to TAKEN failed (another poll is racing).
+    match self.try_recv() {
+      Ok(value) => return Poll::Ready(Ok(value)),
+      Err(TryRecvError::Disconnected) => return Poll::Ready(Err(RecvError::Disconnected)),
+      Err(TryRecvError::Empty) => {}
+    }
+    // TAKEN reports Empty from try_recv, but no wake will ever follow it; a
+    // future polled past the take must resolve rather than hang.
+    if phase(self.state.load(Ordering::Acquire)) == STATE_TAKEN {
+      return Poll::Ready(Err(RecvError::Disconnected));
+    }
 
-          // If already terminally closed or taken by another concurrent poll, future should resolve.
-          let current_state = self.state.load(Ordering::Acquire);
-          if current_state == STATE_TAKEN || current_state == STATE_CLOSED {
-            // If taken, it means another poll instance of *this same receiver* got it.
-            // This poll attempt should then effectively see it as "empty" leading to Disconnected if senders gone.
-            if self.sender_count.load(Ordering::Acquire) == 0 && current_state != STATE_SENT {
-              return Poll::Ready(Err(RecvError::Disconnected));
-            }
-            // if state is TAKEN but senders still exist, it's like Empty for this poll.
-            // We need to re-evaluate based on this, so loop or register.
-            // This path indicates a race, safer to register and re-poll.
-          }
-          // Check again if all senders dropped AFTER deciding it's Empty
-          if current_state == STATE_EMPTY && self.sender_count.load(Ordering::Acquire) == 0 {
-            self
-              .state
-              .compare_exchange(
-                STATE_EMPTY,
-                STATE_CLOSED,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-              )
-              .ok();
-            return Poll::Ready(Err(RecvError::Disconnected));
-          }
+    self.receiver_waker.register(cx.waker());
 
-          self.receiver_waker.register(cx.waker());
-
-          // Critical re-check after registering waker.
-          // This is to see if the state changed *while* we were registering.
-          match self.try_recv() {
-            // Try again immediately
-            Ok(value) => {
-              // Value became available
-              // Waker was registered, but we got the value.
-              // It's fine, next wake on this waker will be a no-op for this future.
-              return Poll::Ready(Ok(value));
-            }
-            Err(TryRecvError::Disconnected) => {
-              // Became disconnected
-              return Poll::Ready(Err(RecvError::Disconnected));
-            }
-            Err(TryRecvError::Empty) => {
-              // Still empty
-              // Waker is correctly registered for the current "empty" state.
-              return Poll::Pending;
-            }
-          }
+    match self.try_recv() {
+      Ok(value) => Poll::Ready(Ok(value)),
+      Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
+      Err(TryRecvError::Empty) => {
+        if phase(self.state.load(Ordering::Acquire)) == STATE_TAKEN {
+          return Poll::Ready(Err(RecvError::Disconnected));
         }
+        Poll::Pending
       }
     }
+  }
+
+  pub(super) fn is_receiver_dropped(&self) -> bool {
+    self.state.load(Ordering::Acquire) & RX_DROPPED != 0
+  }
+
+  pub(super) fn is_sent(&self) -> bool {
+    let p = phase(self.state.load(Ordering::Acquire));
+    p == STATE_SENT || p == STATE_TAKEN
+  }
+
+  pub(super) fn is_closed_for_receiver(&self) -> bool {
+    let word = self.state.load(Ordering::Acquire);
+    match phase(word) {
+      STATE_TAKEN | STATE_CLOSED => true,
+      STATE_EMPTY | STATE_WRITING => sender_count(word) == 0,
+      _ => false,
+    }
+  }
+
+  #[cfg(test)]
+  pub(super) fn test_phase(&self) -> usize {
+    phase(self.state.load(Ordering::Acquire))
+  }
+
+  #[cfg(test)]
+  pub(super) fn test_sender_count(&self) -> usize {
+    sender_count(self.state.load(Ordering::Acquire))
   }
 }
 
 impl<T> Drop for OneShotShared<T> {
   fn drop(&mut self) {
-    if self.state.load(Ordering::Relaxed) == STATE_SENT {
-      // Safety: &mut self guarantees exclusive access (Arc strong count == 0).
-      // STATE_SENT means the value was written into value_slot but never taken.
-      let guard = self.value_slot.get_mut();
-      if let Some(mut mu_value) = guard.take() {
-        unsafe {
-          mu_value.assume_init_drop();
-        }
-      }
+    if phase(self.state.load(Ordering::Acquire)) == STATE_SENT {
+      unsafe { self.drop_value() };
     }
   }
 }

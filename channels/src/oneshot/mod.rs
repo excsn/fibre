@@ -6,6 +6,10 @@
 //! All subsequent attempts to send by any `Sender` clone will fail.
 //! There is only one `Receiver` for the channel.
 //!
+//! When a single sender is enough, [`exclusive()`] builds a leaner channel whose
+//! non-clonable `ExclusiveSender` and `&mut self` `ExclusiveReceiver` avoid the
+//! claim protocol this clonable variant pays for.
+//!
 //! # Examples
 //!
 //! ```
@@ -14,7 +18,7 @@
 //! use std::thread;
 //!
 //! // Basic usage
-//! let (tx, rx) = oneshot::channel::<String>();
+//! let (tx, rx) = oneshot::oneshot::<String>();
 //!
 //! tokio::runtime::Runtime::new().unwrap().block_on(async {
 //!     tokio::spawn(async move {
@@ -39,7 +43,7 @@
 //! use fibre::oneshot;
 //! use fibre::error::RecvError;
 //!
-//! let (tx1, rx) = oneshot::channel::<i32>();
+//! let (tx1, rx) = oneshot::oneshot::<i32>();
 //! let tx2 = tx1.clone();
 //!
 //! tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -55,7 +59,7 @@
 //! use fibre::oneshot;
 //! use fibre::error::TrySendError;
 //!
-//! let (tx, rx) = oneshot::channel::<i32>();
+//! let (tx, rx) = oneshot::oneshot::<i32>();
 //! drop(rx); // Receiver dropped
 //!
 //! match tx.send(123) {
@@ -71,13 +75,16 @@
 pub use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendError};
 
 mod core; // Internal implementation details
+mod exclusive;
 
-use self::core::{OneShotShared, STATE_SENT, STATE_TAKEN}; // Import shared state and constants
+pub use self::exclusive::{exclusive, ExclusiveReceiveFuture, ExclusiveReceiver, ExclusiveSender};
+
+use self::core::OneShotShared;
+use crate::internal::sync::{AtomicBool, Ordering};
 
 use std::fmt; // For Sender/Receiver Debug impls
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -183,14 +190,13 @@ impl<T> Sender<T> {
 
   /// Checks if the oneshot channel's `Receiver` has been dropped.
   pub fn is_closed(&self) -> bool {
-    self.shared.receiver_dropped.load(Ordering::Acquire)
+    self.shared.is_receiver_dropped()
   }
 
   /// Checks if a value has already been successfully sent on this channel
   /// (by any `Sender` clone).
   pub fn is_sent(&self) -> bool {
-    let state = self.shared.state.load(Ordering::Acquire);
-    state == STATE_SENT || state == STATE_TAKEN
+    self.shared.is_sent()
   }
 }
 
@@ -266,49 +272,13 @@ impl<T> Receiver<T> {
   /// The internal logic for closing/dropping a receiver handle.
   fn close_internal(&self) {
     self.shared.mark_receiver_dropped();
-
-    // If a value was sent (STATE_SENT) but never taken, we must drop it.
-    if self
-      .shared
-      .state
-      .compare_exchange(
-        STATE_SENT,
-        STATE_TAKEN, // Mark as taken because we are handling its drop
-        Ordering::AcqRel,
-        Ordering::Relaxed,
-      )
-      .is_ok()
-    {
-      // We successfully claimed the value for cleanup.
-      let mut guard = self
-        .shared
-        .value_slot
-        .lock();
-      if let Some(mut mu_value) = guard.take() {
-        unsafe {
-          mu_value.assume_init_drop();
-        }
-      }
-    }
   }
 
   /// Checks if the channel is definitively closed from the receiver's perspective.
   ///
   /// This means either a value has been taken, or no value will ever be sent.
   pub fn is_closed(&self) -> bool {
-    let state = self.shared.state.load(Ordering::Acquire);
-
-    if state == core::STATE_TAKEN || state == core::STATE_CLOSED {
-      return true;
-    }
-
-    if self.shared.sender_count.load(Ordering::Acquire) == 0 {
-      // Senders are gone. If state is EMPTY, no value will come.
-      // If state is SENT, a value is still pending.
-      return state == core::STATE_EMPTY || state == core::STATE_WRITING;
-    }
-
-    false
+    self.shared.is_closed_for_receiver()
   }
 }
 
@@ -347,7 +317,6 @@ unsafe impl<T: Send> Send for Sender<T> {}
 unsafe impl<T: Send> Sync for Sender<T> {}
 
 unsafe impl<T: Send> Send for Receiver<T> {}
-// Receiver is !Sync due to the PhantomData field.
 
 #[cfg(test)]
 mod tests;
