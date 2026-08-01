@@ -73,6 +73,9 @@ pub(crate) const CHUNK_FLOOR_ASYNC: usize = if MODEL_CHECK { 4 } else { 16 };
 pub(crate) const SYNC_SPIN_LIMIT: usize = if crate::internal::sync::IS_LOOM { 1 } else { 200 };
 
 /// Cap-1-only bounded spin on the wake flag before a sync park.
+///
+/// Cap-gated deliberately: spinning before registering a waiter at larger caps
+/// was measured as a throughput regression.
 #[inline]
 pub(crate) fn spin_before_park_cap1(cap: usize, notified: &AtomicBool) {
   if cap != 1 {
@@ -178,6 +181,8 @@ pub struct Shared<T> {
   sender_count: CachePadded<AtomicUsize>,
   receiver_dropped: CachePadded<AtomicBool>,
 
+  // Notified by the single consumer only, so no concurrent-notifier race: these
+  // do NOT need the recv waiter's finish protocol.
   sync_send_waiters: Mutex<SendWaiters<Thread>>,
   async_send_waiters: Mutex<SendWaiters<Waker>>,
   sync_send_waiter_count: CachePadded<AtomicUsize>,

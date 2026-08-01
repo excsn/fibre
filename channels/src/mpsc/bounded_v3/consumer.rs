@@ -105,6 +105,8 @@ impl<T: Send> Receiver<T> {
             // synchronizes with), so `notified` is never reused on re-register
             // or dropped on return while a notifier can still touch it. Reset
             // the flag for the next register.
+            // Dropping the flag for an unpark-only waiter removes this lock;
+            // benched net-negative (Cap-128/Prod-1 +15-28%).
             self.shared.finish_sync_recv(&notified);
             is_registered = false;
             notified.store(false, Ordering::Relaxed);

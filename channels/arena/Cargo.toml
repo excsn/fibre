@@ -1,0 +1,20 @@
+[package]
+name = "channels_arena"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Empty [workspace] table: detaches this crate from the parent fibre workspace
+# so it builds standalone without being a member (same trick as experimental/).
+[workspace]
+
+[dependencies]
+fibre = { path = ".." }
+tokio = { version = "1", features = ["full"] }
+crossbeam-channel = "0.5"
+flume = "0.11"
+kanal = "0.1"
+async-channel = "2"
+
+[profile.release]
+debug = true
