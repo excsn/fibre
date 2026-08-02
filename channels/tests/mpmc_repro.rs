@@ -1,9 +1,12 @@
-use fibre::mpmc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
+use std::future::Future;
+use std::pin::pin;
+use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 
+use fibre::mpmc;
 use tokio::time::sleep;
 
 #[test]
@@ -437,11 +440,6 @@ fn test_mpmc_sync_batch_recv_lost_wakeup() {
 
 #[tokio::test]
 async fn repro_mpmc_cancel_safety_delivery_leak() {
-  use fibre::mpmc;
-  use std::future::Future;
-  use std::pin::pin;
-  use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
   // A dummy waker so we can manually poll the future and control its exact lifetime.
   fn dummy_waker() -> Waker {
     unsafe fn clone(_: *const ()) -> RawWaker {
@@ -501,10 +499,6 @@ async fn repro_mpmc_cancel_safety_delivery_leak() {
 
 #[tokio::test]
 async fn repro_mpmc_early_deposit_before_future_resolves() {
-  use fibre::mpmc;
-  use std::future::Future;
-  use std::pin::pin;
-  use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
   fn dummy_waker() -> Waker {
     unsafe fn clone(_: *const ()) -> RawWaker {
@@ -555,9 +549,6 @@ async fn repro_mpmc_early_deposit_before_future_resolves() {
 // ===========================================================================
 #[test]
 fn test_mpmc_batch_send_lost_wakeup() {
-  use fibre::mpmc;
-  use std::thread;
-  use std::time::Duration;
 
   let cap = 10;
   let num_consumers = 4;
@@ -665,7 +656,7 @@ async fn test_mpmc_v2_replicate_rzmq_fsm_chaos() {
         } else {
           // REQ FSM Gate: only recv if ExpectingReply
           let should_recv = {
-            let mut state = req_state.lock();
+            let state = req_state.lock();
             if *state == ReqState::ExpectingReply {
               true
             } else {
@@ -728,7 +719,7 @@ async fn test_mpmc_v2_replicate_rzmq_fsm_chaos() {
         } else {
           // REP FSM Gate: only recv if WaitingForRequest
           let should_recv = {
-            let mut state = rep_state.lock();
+            let state = rep_state.lock();
             if *state == RepState::WaitingForRequest {
               true
             } else {

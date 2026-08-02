@@ -107,12 +107,13 @@ All core channels (`spsc`, `mpsc`, `spmc`, `mpmc`) provide eight batch operation
 
 ## 3. Module `fibre::oneshot`
 
-A channel for sending a single value from one of potentially many senders to a single receiver. `exclusive()` builds a cheaper single-sender variant: no `Clone`, `&mut self` receive methods, and no claim protocol on the hot path.
+A channel for sending a single value from one of potentially many senders to a single receiver. `exclusive()` builds a cheaper single-sender variant: no `Clone`, `&mut self` receive methods, and no claim protocol on the hot path. `pair_pool()` builds a pool of recycled single-sender channels: `pair()` pops a slot instead of allocating, whichever handle finishes last pushes it back, and the handles carry no reference counts.
 
 ### Functions
 
 *   `pub fn oneshot<T>() -> (Sender<T>, Receiver<T>)`
 *   `pub fn exclusive<T>() -> (ExclusiveSender<T>, ExclusiveReceiver<T>)`
+*   `pub fn pair_pool<T: Send>(capacity: usize) -> OneshotPairPool<T>`
 
 ### Struct `Sender<T>`
 
@@ -130,6 +131,7 @@ The receiving side of a oneshot channel. Cannot be cloned.
 
 *   **Methods**:
     *   `pub fn recv(&self) -> ReceiveFuture<'_, T>`
+    *   `pub fn recv_blocking(&self) -> Result<T, RecvError>` (for synchronous callers; returns without parking, and without allocating a parker, when the value has already arrived)
     *   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
     *   `pub fn close(&self) -> Result<(), CloseError>`
     *   `pub fn is_closed(&self) -> bool`
@@ -149,9 +151,60 @@ The receiving side of an `exclusive()` channel. Cannot be cloned; receive method
 
 *   **Methods**:
     *   `pub fn recv(&mut self) -> ExclusiveReceiveFuture<'_, T>`
+    *   `pub fn recv_blocking(&mut self) -> Result<T, RecvError>` (for synchronous callers; returns without parking, and without allocating a parker, when the value has already arrived)
     *   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>` (`Disconnected` once the value was taken, the sender dropped without sending, or this handle was closed)
     *   `pub fn close(&mut self)`
     *   `pub fn is_closed(&self) -> bool`
+
+### Struct `OneshotPairPool<T>`
+
+A pool of `capacity` recycled oneshot channels. `Send + Sync`; share it by reference. Slots are recycled, never freed per channel; dropping the pool while channels are in flight is safe, and storage release is deferred until the last outstanding channel retires.
+
+*   **Methods**:
+    *   `pub fn new(capacity: usize) -> Self`
+    *   `pub fn capacity(&self) -> usize`
+    *   `pub fn pair(&self) -> Option<(PooledSender<T>, PooledReceiver<T>)>` (`None` when the pool is exhausted; a retired slot becomes available again immediately)
+    *   `pub fn pair_batch(&self, n: usize) -> Option<Vec<(PooledSender<T>, PooledReceiver<T>)>>` (all-or-nothing, one freelist operation; conservatively `None` when fewer than `n` slots were observed at once)
+
+### Struct `PooledSender<T>`
+
+The sending side of a pooled channel. Cannot be cloned; same contract as `ExclusiveSender`.
+
+*   **Methods**:
+    *   `pub fn send(self, value: T) -> Result<(), TrySendError<T>>` (fails only with `TrySendError::Closed`, returning the value, if the receiver is gone)
+    *   `pub fn close(self)`
+    *   `pub fn is_closed(&self) -> bool`
+
+### Struct `PooledReceiver<T>`
+
+The receiving side of a pooled channel. Cannot be cloned; same contract as `ExclusiveReceiver`.
+
+*   **Methods**:
+    *   `pub fn recv(&mut self) -> PooledReceiveFuture<'_, T>`
+    *   `pub fn recv_blocking(&mut self) -> Result<T, RecvError>` (for synchronous callers; returns without parking, and without allocating a parker, when the value has already arrived)
+    *   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
+    *   `pub fn close(&mut self)`
+    *   `pub fn is_closed(&self) -> bool`
+
+### Struct `OneshotHostPool<H, T>`
+
+The fused variant: each pool cell is a whole caller record (`H: Send + Sync`) with a `PoolSlot<T>` reply channel embedded, located by the projection given at construction, so a request/reply exchange performs no allocation. Cell mutation is exclusive between pop and push; `pair_init` runs its closure inside that window. Same drop-deferral semantics as `OneshotPairPool`.
+
+*   **Methods**:
+    *   `pub fn new(capacity: usize, make: impl FnMut() -> H, project: fn(&H) -> &PoolSlot<T>) -> Self` (`project` must always return the same field)
+    *   `pub fn capacity(&self) -> usize`
+    *   `pub fn pair_init(&self, init: impl FnOnce(&mut H)) -> Option<(HostSender<H, T>, HostReceiver<H, T>)>`
+    *   `pub fn pair_init_batch(&self, n: usize, init: impl FnMut(&mut H)) -> Option<Vec<(HostSender<H, T>, HostReceiver<H, T>)>>`
+
+### Struct `PoolSlot<T>`
+
+The reply slot a host record embeds. Opaque; constructed with `PoolSlot::new()` (or `Default`) and only becomes a channel through a host pool's projection.
+
+### Structs `HostSender<H, T>` and `HostReceiver<H, T>`
+
+Same contracts as `PooledSender`/`PooledReceiver` (`recv` returns `HostReceiveFuture<'_, H, T>`, `recv_blocking` included), plus:
+
+*   `HostReceiver::host(&self) -> &H`: the record this channel rides in, readable until the receiver finishes.
 
 ## 4. Module `fibre::spsc`
 

@@ -6,9 +6,9 @@
 //! guard against, particularly on the batch paths where an adapter has to drain
 //! accepted items from the caller's vector and report an accurate count.
 
-use channels_arena::adapters::{fibre_ch, flume_ch, tokio_ch};
-use channels_arena::driver::{run_async, run_sync};
-use channels_arena::spec::{Api, Capacity, Cell, Flavor, Mode, Pairing};
+use channels_arena::adapters::{fibre_ch, flume_ch, oneshot_ch, tokio_ch};
+use channels_arena::driver::{run_async, run_oneshot_async, run_oneshot_sync, run_sync};
+use channels_arena::spec::{Api, Capacity, Cell, Flavor, Mode, Pairing, Stage};
 
 const ITEMS: u64 = 4_096;
 
@@ -22,6 +22,21 @@ fn cell(flavor: Flavor, mode: Mode, capacity: Capacity, producers: usize, consum
       consumers,
     },
     api,
+    stage: Stage::Stream,
+  }
+}
+
+fn oneshot_cell(mode: Mode, stage: Stage) -> Cell {
+  Cell {
+    flavor: Flavor::Oneshot,
+    mode,
+    capacity: Capacity::Bounded(1),
+    pairing: Pairing {
+      producers: 1,
+      consumers: 1,
+    },
+    api: Api::Single,
+    stage,
   }
 }
 
@@ -147,4 +162,69 @@ fn tokio_recv_many_batch() {
 fn unsupported_cells_are_reported_not_run() {
   let cell = cell(Flavor::Spsc, Mode::Sync, Capacity::Bounded(128), 4, 1, Api::Single);
   assert!(run_sync::<fibre_ch::SpscSync>(&cell, ITEMS).is_err());
+}
+
+macro_rules! oneshot_sync_cases {
+  ($($name:ident => $adapter:ty),* $(,)?) => {
+    $(
+      #[test]
+      fn $name() {
+        for stage in Stage::ONESHOT {
+          let cell = oneshot_cell(Mode::Sync, stage);
+          run_oneshot_sync::<$adapter>(&cell, ITEMS)
+            .unwrap_or_else(|e| panic!("{cell} failed: {e:?}"));
+        }
+      }
+    )*
+  };
+}
+
+macro_rules! oneshot_async_cases {
+  ($($name:ident => $adapter:ty),* $(,)?) => {
+    $(
+      #[test]
+      fn $name() {
+        let rt = runtime();
+        for stage in Stage::ONESHOT {
+          let cell = oneshot_cell(Mode::Async, stage);
+          run_oneshot_async::<$adapter>(&rt, &cell, ITEMS)
+            .unwrap_or_else(|e| panic!("{cell} failed: {e:?}"));
+        }
+      }
+    )*
+  };
+}
+
+oneshot_sync_cases! {
+  oneshot_fibre_sync => oneshot_ch::FibreSync,
+  oneshot_fibre_exclusive_sync => oneshot_ch::FibreExclusiveSync,
+  oneshot_fibre_pool_sync => oneshot_ch::FibrePoolSync,
+  oneshot_fibre_pool_host_sync => oneshot_ch::FibrePoolHostSync,
+  oneshot_tokio_sync => oneshot_ch::TokioSync,
+  oneshot_crate_sync => oneshot_ch::OneshotCrateSync,
+  oneshot_lite_sync => oneshot_ch::LiteSyncSync,
+  oneshot_sync_oneshot_crate => oneshot_ch::SyncOneshotSync,
+}
+
+oneshot_async_cases! {
+  oneshot_fibre_async => oneshot_ch::FibreAsync,
+  oneshot_fibre_exclusive_async => oneshot_ch::FibreExclusiveAsync,
+  oneshot_fibre_pool_async => oneshot_ch::FibrePoolAsync,
+  oneshot_fibre_pool_host_async => oneshot_ch::FibrePoolHostAsync,
+  oneshot_tokio_async => oneshot_ch::TokioAsync,
+  oneshot_futures_async => oneshot_ch::FuturesAsync,
+  oneshot_crate_async => oneshot_ch::OneshotCrateAsync,
+  oneshot_async_oneshot_crate => oneshot_ch::AsyncOneshotAsync,
+  oneshot_lite_sync_async => oneshot_ch::LiteSyncAsync,
+}
+
+/// A pool sized under the pairs a handoff holds open has to refuse rather than
+/// hand out a slot that is still in use.
+#[test]
+fn oneshot_pool_refuses_past_its_capacity() {
+  let pool = fibre::oneshot::pair_pool::<u64>(2);
+  let held: Vec<_> = (0..2).map(|_| pool.pair().unwrap()).collect();
+  assert!(pool.pair().is_none());
+  drop(held);
+  assert!(pool.pair().is_some());
 }

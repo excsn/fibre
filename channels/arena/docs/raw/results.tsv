@@ -1,636 +1,670 @@
-library	flavor	mode	capacity	producers	consumers	api	batch_support	items	median_melem_s	min_melem_s	max_melem_s
-fibre	spsc	sync	rendezvous	1	1	single	none	27355	0.527	0.501	0.547
-flume	spsc	sync	rendezvous	1	1	single	receive only	22653	0.404	0.383	0.421
-kanal	spsc	sync	rendezvous	1	1	single	none	244368	4.339	4.202	4.474
-crossbeam	spsc	sync	rendezvous	1	1	single	none	25147	0.460	0.447	0.491
-std	spsc	sync	rendezvous	1	1	single	none	28549	0.486	0.466	0.514
-fibre	spsc	sync	1	1	1	single	send and receive	13925	0.226	0.192	0.240
-flume	spsc	sync	1	1	1	single	receive only	35560	0.583	0.568	0.602
-kanal	spsc	sync	1	1	1	single	none	371202	5.199	4.919	5.851
-crossbeam	spsc	sync	1	1	1	single	none	310310	5.138	5.035	5.225
-std	spsc	sync	1	1	1	single	none	12919	0.222	0.208	0.244
-fibre	spsc	sync	128	1	1	single	send and receive	1181476	19.504	18.995	20.164
-flume	spsc	sync	128	1	1	single	receive only	1276717	20.522	19.456	20.892
-kanal	spsc	sync	128	1	1	single	none	879405	13.964	12.724	14.705
-crossbeam	spsc	sync	128	1	1	single	none	1914344	30.296	27.639	31.773
-std	spsc	sync	128	1	1	single	none	1527222	23.783	20.388	33.357
-fibre	spsc	sync	128	1	1	batch-512	send and receive	1163806	19.353	18.803	19.615
-flume	spsc	sync	128	1	1	batch-512	receive only	837482	13.944	13.921	13.991
-fibre	spsc	sync	1024	1	1	single	send and receive	1476518	23.355	19.112	26.037
-flume	spsc	sync	1024	1	1	single	receive only	309252	6.544	4.204	14.391
-kanal	spsc	sync	1024	1	1	single	none	1658173	27.004	23.328	32.003
-crossbeam	spsc	sync	1024	1	1	single	none	2580699	38.490	35.287	43.217
-std	spsc	sync	1024	1	1	single	none	7739676	116.450	101.148	127.614
-fibre	spsc	sync	1024	1	1	batch-512	send and receive	8000000	285.531	216.614	289.425
-flume	spsc	sync	1024	1	1	batch-512	receive only	2682127	48.684	45.443	49.914
-flume	spsc	sync	unbounded	1	1	single	receive only	592364	5.413	4.183	12.013
-kanal	spsc	sync	unbounded	1	1	single	none	1000000	95.742	84.040	100.997
-crossbeam	spsc	sync	unbounded	1	1	single	none	1000000	77.460	64.989	82.453
-std	spsc	sync	unbounded	1	1	single	none	1000000	84.894	72.933	86.576
-flume	spsc	sync	unbounded	1	1	batch-512	receive only	1000000	74.023	71.579	74.425
-fibre	spsc	async	rendezvous	1	1	single	none	918128	14.973	14.859	15.208
-flume	spsc	async	rendezvous	1	1	single	receive only	270144	4.437	4.357	4.468
-kanal	spsc	async	rendezvous	1	1	single	none	781421	12.932	12.603	13.367
-fibre	spsc	async	1	1	1	single	send and receive	423508	7.289	7.165	8.021
-flume	spsc	async	1	1	1	single	receive only	258296	4.359	4.297	4.545
-kanal	spsc	async	1	1	1	single	none	992588	17.063	16.431	17.824
-async-channel	spsc	async	1	1	1	single	none	142985	2.402	2.361	2.633
-tokio	spsc	async	1	1	1	single	receive only	307695	5.182	5.101	5.774
-fibre	spsc	async	128	1	1	single	send and receive	4793547	71.494	70.210	82.634
-flume	spsc	async	128	1	1	single	receive only	1745393	28.589	28.473	29.451
-kanal	spsc	async	128	1	1	single	none	3136452	52.149	49.802	52.332
-async-channel	spsc	async	128	1	1	single	none	972204	15.531	15.421	15.656
-tokio	spsc	async	128	1	1	single	receive only	1418835	20.050	19.507	20.361
-fibre	spsc	async	128	1	1	batch-512	send and receive	6776884	112.798	112.582	113.354
-flume	spsc	async	128	1	1	batch-512	receive only	1486165	24.406	24.247	25.392
-tokio	spsc	async	128	1	1	batch-512	receive only	1764672	29.241	28.930	29.329
-fibre	spsc	async	1024	1	1	single	send and receive	6083476	102.386	71.268	104.617
-flume	spsc	async	1024	1	1	single	receive only	458398	9.717	7.646	16.629
-kanal	spsc	async	1024	1	1	single	none	3001016	51.422	50.239	59.262
-async-channel	spsc	async	1024	1	1	single	none	740729	12.684	12.209	13.568
-tokio	spsc	async	1024	1	1	single	receive only	764825	13.220	12.780	14.653
-fibre	spsc	async	1024	1	1	batch-512	send and receive	8000000	139.736	138.439	143.232
-flume	spsc	async	1024	1	1	batch-512	receive only	2228598	37.721	37.002	39.082
-tokio	spsc	async	1024	1	1	batch-512	receive only	1717677	28.311	28.129	28.376
-flume	spsc	async	unbounded	1	1	single	receive only	1000000	39.398	39.197	39.497
-kanal	spsc	async	unbounded	1	1	single	none	1000000	68.858	68.259	69.276
-async-channel	spsc	async	unbounded	1	1	single	none	1000000	18.583	18.381	18.755
-tokio	spsc	async	unbounded	1	1	single	receive only	1000000	41.193	40.870	42.127
-flume	spsc	async	unbounded	1	1	batch-512	receive only	1000000	62.747	61.334	63.426
-tokio	spsc	async	unbounded	1	1	batch-512	receive only	1000000	72.334	71.538	72.466
-fibre	mpsc	sync	rendezvous	1	1	single	none	32068	0.544	0.529	0.553
-flume	mpsc	sync	rendezvous	1	1	single	receive only	25196	0.394	0.390	0.417
-kanal	mpsc	sync	rendezvous	1	1	single	none	270483	4.585	4.424	4.669
-crossbeam	mpsc	sync	rendezvous	1	1	single	none	28916	0.482	0.445	0.495
-std	mpsc	sync	rendezvous	1	1	single	none	30849	0.513	0.484	0.521
-fibre	mpsc	sync	rendezvous	16	1	single	none	35552	0.584	0.545	0.596
-flume	mpsc	sync	rendezvous	16	1	single	receive only	10384	0.172	0.164	0.176
-kanal	mpsc	sync	rendezvous	16	1	single	none	38480	1.133	0.739	1.416
-crossbeam	mpsc	sync	rendezvous	16	1	single	none	8464	0.144	0.142	0.147
-std	mpsc	sync	rendezvous	16	1	single	none	8288	0.144	0.139	0.149
-fibre	mpsc	sync	rendezvous	64	1	single	none	35136	0.525	0.487	0.575
-flume	mpsc	sync	rendezvous	64	1	single	receive only	10048	0.162	0.159	0.176
-kanal	mpsc	sync	rendezvous	64	1	single	none	26560	0.547	0.480	0.594
-crossbeam	mpsc	sync	rendezvous	64	1	single	none	8384	0.139	0.132	0.146
-std	mpsc	sync	rendezvous	64	1	single	none	8192	0.139	0.136	0.144
-fibre	mpsc	sync	1	1	1	single	send and receive	259299	4.384	4.181	4.448
-flume	mpsc	sync	1	1	1	single	receive only	33830	0.558	0.540	0.579
-kanal	mpsc	sync	1	1	1	single	none	316891	5.238	4.844	5.394
-crossbeam	mpsc	sync	1	1	1	single	none	312494	5.223	4.904	5.321
-std	mpsc	sync	1	1	1	single	none	13581	0.232	0.210	0.235
-fibre	mpsc	sync	1	16	1	single	send and receive	61408	0.987	0.957	1.025
-flume	mpsc	sync	1	16	1	single	receive only	10304	0.173	0.168	0.174
-kanal	mpsc	sync	1	16	1	single	none	20864	1.000	0.943	1.207
-crossbeam	mpsc	sync	1	16	1	single	none	8944	0.156	0.147	0.243
-std	mpsc	sync	1	16	1	single	none	11888	0.195	0.187	0.209
-fibre	mpsc	sync	1	64	1	single	send and receive	56704	0.979	0.949	1.005
-flume	mpsc	sync	1	64	1	single	receive only	10304	0.171	0.150	0.174
-kanal	mpsc	sync	1	64	1	single	none	23168	0.479	0.414	0.658
-crossbeam	mpsc	sync	1	64	1	single	none	8128	0.134	0.118	0.139
-std	mpsc	sync	1	64	1	single	none	10304	0.176	0.173	0.195
-fibre	mpsc	sync	128	1	1	single	send and receive	1269156	28.541	24.824	29.822
-flume	mpsc	sync	128	1	1	single	receive only	1062605	20.559	19.874	21.510
-kanal	mpsc	sync	128	1	1	single	none	754869	14.292	13.034	15.378
-crossbeam	mpsc	sync	128	1	1	single	none	1754546	29.944	26.568	30.799
-std	mpsc	sync	128	1	1	single	none	1468105	24.074	21.546	30.338
-fibre	mpsc	sync	128	1	1	batch-512	send and receive	1980075	33.843	32.579	34.654
-flume	mpsc	sync	128	1	1	batch-512	receive only	835863	13.935	13.844	13.970
-fibre	mpsc	sync	128	16	1	single	send and receive	159888	2.353	2.069	2.809
-flume	mpsc	sync	128	16	1	single	receive only	10464	0.168	0.152	0.176
-kanal	mpsc	sync	128	16	1	single	none	29712	1.020	0.552	1.196
-crossbeam	mpsc	sync	128	16	1	single	none	346864	7.286	5.864	7.653
-std	mpsc	sync	128	16	1	single	none	9792	0.170	0.162	0.216
-fibre	mpsc	sync	128	16	1	batch-512	send and receive	165568	2.556	1.831	2.766
-flume	mpsc	sync	128	16	1	batch-512	receive only	157632	2.621	2.524	2.742
-fibre	mpsc	sync	128	64	1	single	send and receive	39104	0.646	0.605	0.673
-flume	mpsc	sync	128	64	1	single	receive only	10560	0.175	0.172	0.180
-kanal	mpsc	sync	128	64	1	single	none	16064	0.355	0.247	0.512
-crossbeam	mpsc	sync	128	64	1	single	none	438272	2.260	0.176	8.813
-std	mpsc	sync	128	64	1	single	none	9792	0.166	0.148	0.173
-fibre	mpsc	sync	128	64	1	batch-512	send and receive	37056	0.652	0.538	0.673
-flume	mpsc	sync	128	64	1	batch-512	receive only	60544	1.017	0.972	1.058
-fibre	mpsc	sync	1024	1	1	single	send and receive	7265021	135.334	106.927	136.580
-flume	mpsc	sync	1024	1	1	single	receive only	351227	4.643	3.924	7.961
-kanal	mpsc	sync	1024	1	1	single	none	1582453	26.624	23.766	29.817
-crossbeam	mpsc	sync	1024	1	1	single	none	2015598	44.853	40.582	51.261
-std	mpsc	sync	1024	1	1	single	none	7143880	118.366	114.015	130.020
-fibre	mpsc	sync	1024	1	1	batch-512	send and receive	8000000	253.281	147.019	261.701
-flume	mpsc	sync	1024	1	1	batch-512	receive only	2858456	47.059	46.219	48.256
-fibre	mpsc	sync	1024	16	1	single	send and receive	160096	2.657	2.497	2.734
-flume	mpsc	sync	1024	16	1	single	receive only	10656	0.206	0.193	0.218
-kanal	mpsc	sync	1024	16	1	single	none	110496	1.627	1.151	2.340
-crossbeam	mpsc	sync	1024	16	1	single	none	437088	8.439	8.236	9.686
-std	mpsc	sync	1024	16	1	single	none	10944	0.269	0.213	9.535
-fibre	mpsc	sync	1024	16	1	batch-512	send and receive	157296	2.742	2.444	2.810
-flume	mpsc	sync	1024	16	1	batch-512	receive only	786736	12.897	12.753	13.105
-fibre	mpsc	sync	1024	64	1	single	send and receive	37120	0.665	0.592	24.019
-flume	mpsc	sync	1024	64	1	single	receive only	10240	0.192	0.188	0.964
-kanal	mpsc	sync	1024	64	1	single	none	24000	0.419	0.317	0.466
-crossbeam	mpsc	sync	1024	64	1	single	none	28928	7.365	0.304	10.561
-std	mpsc	sync	1024	64	1	single	none	9600	0.182	0.177	0.187
-fibre	mpsc	sync	1024	64	1	batch-512	send and receive	38400	0.630	0.619	0.672
-flume	mpsc	sync	1024	64	1	batch-512	receive only	295168	5.162	4.902	5.312
-fibre	mpsc	sync	unbounded	1	1	single	send and receive	1000000	152.302	150.293	152.868
-flume	mpsc	sync	unbounded	1	1	single	receive only	254772	5.283	4.230	6.061
-kanal	mpsc	sync	unbounded	1	1	single	none	1000000	99.297	61.822	100.991
-crossbeam	mpsc	sync	unbounded	1	1	single	none	1000000	97.397	95.555	98.153
-std	mpsc	sync	unbounded	1	1	single	none	1000000	106.514	102.498	107.154
-fibre	mpsc	sync	unbounded	1	1	batch-512	send and receive	1000000	193.070	183.436	214.489
-flume	mpsc	sync	unbounded	1	1	batch-512	receive only	1000000	71.169	69.383	73.294
-fibre	mpsc	sync	unbounded	16	1	single	send and receive	1000000	10.666	10.338	11.202
-flume	mpsc	sync	unbounded	16	1	single	receive only	1000000	24.196	23.217	26.384
-kanal	mpsc	sync	unbounded	16	1	single	none	165008	10.929	9.346	14.732
-crossbeam	mpsc	sync	unbounded	16	1	single	none	755760	16.317	12.343	27.132
-std	mpsc	sync	unbounded	16	1	single	none	327104	5.615	5.516	9.347
-fibre	mpsc	sync	unbounded	16	1	batch-512	send and receive	1000000	160.903	154.680	162.121
-flume	mpsc	sync	unbounded	16	1	batch-512	receive only	1000000	30.924	29.282	32.543
-fibre	mpsc	sync	unbounded	64	1	single	send and receive	1000000	14.612	11.220	16.864
-flume	mpsc	sync	unbounded	64	1	single	receive only	1000000	27.409	26.173	28.596
-kanal	mpsc	sync	unbounded	64	1	single	none	274560	7.829	6.619	9.250
-crossbeam	mpsc	sync	unbounded	64	1	single	none	1000000	17.129	14.690	23.559
-std	mpsc	sync	unbounded	64	1	single	none	403136	6.337	5.308	8.324
-fibre	mpsc	sync	unbounded	64	1	batch-512	send and receive	1000000	153.679	152.895	156.746
-flume	mpsc	sync	unbounded	64	1	batch-512	receive only	1000000	39.471	35.889	47.550
-fibre	mpsc	async	rendezvous	1	1	single	none	923058	15.118	14.642	15.283
-flume	mpsc	async	rendezvous	1	1	single	receive only	263005	4.330	4.307	4.398
-kanal	mpsc	async	rendezvous	1	1	single	none	776042	12.671	12.539	13.293
-fibre	mpsc	async	rendezvous	16	1	single	none	280640	4.670	4.515	4.975
-flume	mpsc	async	rendezvous	16	1	single	receive only	40368	0.690	0.670	0.705
-kanal	mpsc	async	rendezvous	16	1	single	none	275728	4.383	3.392	4.742
-fibre	mpsc	async	rendezvous	64	1	single	none	173952	2.690	2.670	2.784
-flume	mpsc	async	rendezvous	64	1	single	receive only	27392	0.467	0.450	0.471
-kanal	mpsc	async	rendezvous	64	1	single	none	38144	0.855	0.604	1.197
-fibre	mpsc	async	1	1	1	single	send and receive	364571	6.024	5.907	6.244
-flume	mpsc	async	1	1	1	single	receive only	264220	4.393	4.375	4.601
-kanal	mpsc	async	1	1	1	single	none	1032294	17.264	17.100	18.531
-async-channel	mpsc	async	1	1	1	single	none	144602	2.406	2.353	2.581
-tokio	mpsc	async	1	1	1	single	receive only	311350	5.216	5.167	5.649
-fibre	mpsc	async	1	16	1	single	send and receive	344832	5.269	5.048	5.627
-flume	mpsc	async	1	16	1	single	receive only	40400	0.662	0.654	0.680
-kanal	mpsc	async	1	16	1	single	none	172352	10.865	9.479	12.406
-async-channel	mpsc	async	1	16	1	single	none	72768	1.075	1.064	1.171
-tokio	mpsc	async	1	16	1	single	receive only	317168	4.809	4.741	5.130
-fibre	mpsc	async	1	64	1	single	send and receive	224192	3.792	3.769	3.846
-flume	mpsc	async	1	64	1	single	receive only	27584	0.454	0.445	0.464
-kanal	mpsc	async	1	64	1	single	none	158592	6.390	6.036	9.281
-async-channel	mpsc	async	1	64	1	single	none	65600	1.090	1.074	1.124
-tokio	mpsc	async	1	64	1	single	receive only	255744	4.315	4.190	4.460
-fibre	mpsc	async	128	1	1	single	send and receive	2246773	37.479	37.335	38.001
-flume	mpsc	async	128	1	1	single	receive only	1693945	28.646	28.349	29.279
-kanal	mpsc	async	128	1	1	single	none	3125676	50.882	50.689	52.031
-async-channel	mpsc	async	128	1	1	single	none	920494	15.378	15.188	15.402
-tokio	mpsc	async	128	1	1	single	receive only	1269956	20.336	19.975	21.065
-fibre	mpsc	async	128	1	1	batch-512	send and receive	8000000	141.601	141.306	142.727
-flume	mpsc	async	128	1	1	batch-512	receive only	1466612	25.154	24.408	26.351
-tokio	mpsc	async	128	1	1	batch-512	receive only	1739004	28.979	28.868	29.199
-fibre	mpsc	async	128	16	1	single	send and receive	2207072	37.590	36.667	40.259
-flume	mpsc	async	128	16	1	single	receive only	160560	2.690	2.530	2.892
-kanal	mpsc	async	128	16	1	single	none	677168	9.155	6.619	11.629
-async-channel	mpsc	async	128	16	1	single	none	146400	2.575	2.521	2.695
-tokio	mpsc	async	128	16	1	single	receive only	262480	3.998	3.933	4.831
-fibre	mpsc	async	128	16	1	batch-512	send and receive	8000000	142.016	140.699	143.670
-flume	mpsc	async	128	16	1	batch-512	receive only	324096	5.643	5.555	5.779
-tokio	mpsc	async	128	16	1	batch-512	receive only	135536	2.131	2.121	2.286
-fibre	mpsc	async	128	64	1	single	send and receive	2094400	35.225	34.891	39.442
-flume	mpsc	async	128	64	1	single	receive only	41792	0.784	0.761	0.795
-kanal	mpsc	async	128	64	1	single	none	136064	9.985	6.526	16.705
-async-channel	mpsc	async	128	64	1	single	none	58688	0.961	0.929	1.003
-tokio	mpsc	async	128	64	1	single	receive only	106240	1.753	1.716	1.804
-fibre	mpsc	async	128	64	1	batch-512	send and receive	7477696	127.962	122.271	132.012
-flume	mpsc	async	128	64	1	batch-512	receive only	180544	3.081	2.969	3.328
-tokio	mpsc	async	128	64	1	batch-512	receive only	112448	1.881	1.819	1.913
-fibre	mpsc	async	1024	1	1	single	send and receive	2962435	49.203	48.843	55.754
-flume	mpsc	async	1024	1	1	single	receive only	629623	11.663	9.574	15.693
-kanal	mpsc	async	1024	1	1	single	none	3066823	51.649	47.590	61.736
-async-channel	mpsc	async	1024	1	1	single	none	764091	12.693	11.982	14.143
-tokio	mpsc	async	1024	1	1	single	receive only	781555	13.926	13.374	14.529
-fibre	mpsc	async	1024	1	1	batch-512	send and receive	8000000	196.399	195.010	221.921
-flume	mpsc	async	1024	1	1	batch-512	receive only	2311856	37.939	36.739	41.589
-tokio	mpsc	async	1024	1	1	batch-512	receive only	1700118	28.290	28.139	28.814
-fibre	mpsc	async	1024	16	1	single	send and receive	2907216	48.192	46.563	48.609
-flume	mpsc	async	1024	16	1	single	receive only	237344	4.029	3.889	4.095
-kanal	mpsc	async	1024	16	1	single	none	235296	3.756	3.033	9.850
-async-channel	mpsc	async	1024	16	1	single	none	314576	5.323	5.193	5.673
-tokio	mpsc	async	1024	16	1	single	receive only	265120	4.234	3.994	4.553
-fibre	mpsc	async	1024	16	1	batch-512	send and receive	8000000	173.501	170.405	186.435
-flume	mpsc	async	1024	16	1	batch-512	receive only	799312	13.753	13.409	13.884
-tokio	mpsc	async	1024	16	1	batch-512	receive only	100544	1.716	1.615	1.964
-fibre	mpsc	async	1024	64	1	single	send and receive	2792128	48.179	47.205	49.218
-flume	mpsc	async	1024	64	1	single	receive only	61504	1.215	1.063	1.248
-kanal	mpsc	async	1024	64	1	single	none	163968	5.893	3.408	14.927
-async-channel	mpsc	async	1024	64	1	single	none	185856	3.091	2.680	3.431
-tokio	mpsc	async	1024	64	1	single	receive only	107264	1.834	1.777	1.878
-fibre	mpsc	async	1024	64	1	batch-512	send and receive	8000000	172.161	169.422	177.844
-flume	mpsc	async	1024	64	1	batch-512	receive only	646656	10.833	10.502	11.371
-tokio	mpsc	async	1024	64	1	batch-512	receive only	101952	1.749	1.653	1.925
-fibre	mpsc	async	unbounded	1	1	single	send and receive	1000000	73.442	72.157	74.205
-flume	mpsc	async	unbounded	1	1	single	receive only	1000000	38.929	38.235	39.406
-kanal	mpsc	async	unbounded	1	1	single	none	1000000	68.144	67.211	68.920
-async-channel	mpsc	async	unbounded	1	1	single	none	1000000	18.551	18.375	19.012
-tokio	mpsc	async	unbounded	1	1	single	receive only	1000000	41.324	40.127	42.205
-fibre	mpsc	async	unbounded	1	1	batch-512	send and receive	1000000	134.791	124.880	138.011
-flume	mpsc	async	unbounded	1	1	batch-512	receive only	1000000	60.736	59.172	61.965
-tokio	mpsc	async	unbounded	1	1	batch-512	receive only	1000000	71.879	71.179	72.689
-fibre	mpsc	async	unbounded	16	1	single	send and receive	662576	10.614	10.397	11.593
-flume	mpsc	async	unbounded	16	1	single	receive only	1000000	19.117	17.891	20.579
-kanal	mpsc	async	unbounded	16	1	single	none	127216	11.571	8.486	13.018
-async-channel	mpsc	async	unbounded	16	1	single	none	410400	6.910	5.991	7.017
-tokio	mpsc	async	unbounded	16	1	single	receive only	113168	1.854	1.792	1.931
-fibre	mpsc	async	unbounded	16	1	batch-512	send and receive	1000000	146.912	142.234	150.442
-flume	mpsc	async	unbounded	16	1	batch-512	receive only	1000000	26.551	24.716	27.925
-tokio	mpsc	async	unbounded	16	1	batch-512	receive only	120992	1.855	1.797	2.108
-fibre	mpsc	async	unbounded	64	1	single	send and receive	618240	10.398	10.223	10.504
-flume	mpsc	async	unbounded	64	1	single	receive only	1000000	19.439	18.047	20.573
-kanal	mpsc	async	unbounded	64	1	single	none	485568	23.160	20.322	29.953
-async-channel	mpsc	async	unbounded	64	1	single	none	392512	6.830	6.131	6.981
-tokio	mpsc	async	unbounded	64	1	single	receive only	100800	1.679	1.645	1.760
-fibre	mpsc	async	unbounded	64	1	batch-512	send and receive	1000000	149.971	146.652	166.367
-flume	mpsc	async	unbounded	64	1	batch-512	receive only	1000000	25.128	23.417	28.086
-tokio	mpsc	async	unbounded	64	1	batch-512	receive only	110720	1.846	1.711	2.171
-fibre	spmc	sync	1	1	1	single	send and receive	12854	0.229	0.213	0.245
-fibre	spmc	sync	1	1	16	single	send and receive	4096	0.024	0.024	0.025
-fibre	spmc	sync	1	1	64	single	send and receive	4096	0.007	0.006	0.008
-fibre	spmc	sync	128	1	1	single	send and receive	631276	10.554	9.875	10.675
-fibre	spmc	sync	128	1	1	batch-512	send and receive	1229559	20.937	20.098	21.013
-fibre	spmc	sync	128	1	16	single	send and receive	4096	0.012	0.010	0.015
-fibre	spmc	sync	128	1	16	batch-512	send and receive	165525	2.930	2.753	3.012
-fibre	spmc	sync	128	1	64	single	send and receive	4096	0.004	0.003	0.006
-fibre	spmc	sync	128	1	64	batch-512	send and receive	40173	0.808	0.727	0.939
-fibre	spmc	sync	1024	1	1	single	send and receive	746586	10.427	8.954	12.347
-fibre	spmc	sync	1024	1	1	batch-512	send and receive	3744144	59.461	52.392	63.480
-fibre	spmc	sync	1024	1	16	single	send and receive	17232	0.073	0.017	1.435
-fibre	spmc	sync	1024	1	16	batch-512	send and receive	564052	10.275	9.195	10.739
-fibre	spmc	sync	1024	1	64	single	send and receive	4096	0.005	0.005	0.012
-fibre	spmc	sync	1024	1	64	batch-512	send and receive	221989	3.600	3.261	3.815
-fibre	spmc	async	1	1	1	single	send and receive	324158	5.808	5.435	5.878
-fibre	spmc	async	1	1	16	single	send and receive	14597	0.247	0.232	0.249
-fibre	spmc	async	1	1	64	single	send and receive	4096	0.061	0.059	0.062
-fibre	spmc	async	128	1	1	single	send and receive	1173215	24.158	17.324	30.009
-fibre	spmc	async	128	1	1	batch-512	send and receive	4294474	72.796	71.018	74.193
-fibre	spmc	async	128	1	16	single	send and receive	36103	0.594	0.470	0.603
-fibre	spmc	async	128	1	16	batch-512	send and receive	939466	15.677	15.599	16.151
-fibre	spmc	async	128	1	64	single	send and receive	9889	0.165	0.160	0.166
-fibre	spmc	async	128	1	64	batch-512	send and receive	413290	6.797	6.713	6.816
-fibre	spmc	async	1024	1	1	single	send and receive	744278	11.419	11.001	12.739
-fibre	spmc	async	1024	1	1	batch-512	send and receive	5743500	95.591	95.251	95.777
-fibre	spmc	async	1024	1	16	single	send and receive	36545	0.612	0.611	0.614
-fibre	spmc	async	1024	1	16	batch-512	send and receive	2234158	37.316	25.982	38.297
-fibre	spmc	async	1024	1	64	single	send and receive	10279	0.173	0.169	0.180
-fibre	spmc	async	1024	1	64	batch-512	send and receive	837864	15.348	14.205	16.267
-fibre	mpmc	sync	rendezvous	1	1	single	none	21576	0.506	0.388	0.537
-flume	mpmc	sync	rendezvous	1	1	single	receive only	20632	0.355	0.328	0.392
-kanal	mpmc	sync	rendezvous	1	1	single	none	237567	4.496	3.193	4.666
-crossbeam	mpmc	sync	rendezvous	1	1	single	none	25624	0.410	0.348	0.488
-fibre	mpmc	sync	rendezvous	16	16	single	none	27776	0.470	0.458	0.484
-flume	mpmc	sync	rendezvous	16	16	single	receive only	16656	0.270	0.255	0.275
-kanal	mpmc	sync	rendezvous	16	16	single	none	57792	1.384	1.269	1.541
-crossbeam	mpmc	sync	rendezvous	16	16	single	none	14112	0.229	0.210	0.243
-fibre	mpmc	sync	rendezvous	64	64	single	none	29888	0.469	0.461	0.492
-flume	mpmc	sync	rendezvous	64	64	single	receive only	14976	0.270	0.249	0.280
-kanal	mpmc	sync	rendezvous	64	64	single	none	63616	1.199	1.151	1.236
-crossbeam	mpmc	sync	rendezvous	64	64	single	none	13504	0.203	0.193	0.213
-fibre	mpmc	sync	rendezvous	16	1	single	none	28592	0.563	0.487	0.594
-flume	mpmc	sync	rendezvous	16	1	single	receive only	9648	0.174	0.172	0.178
-kanal	mpmc	sync	rendezvous	16	1	single	none	60736	1.117	0.970	1.241
-crossbeam	mpmc	sync	rendezvous	16	1	single	none	8128	0.144	0.140	0.145
-fibre	mpmc	sync	rendezvous	1	16	single	none	35437	0.546	0.489	0.594
-flume	mpmc	sync	rendezvous	1	16	single	receive only	26411	0.433	0.358	0.439
-kanal	mpmc	sync	rendezvous	1	16	single	none	53096	0.938	0.726	1.139
-crossbeam	mpmc	sync	rendezvous	1	16	single	none	8623	0.142	0.131	0.145
-fibre	mpmc	sync	rendezvous	64	1	single	none	34624	0.534	0.416	0.577
-flume	mpmc	sync	rendezvous	64	1	single	receive only	10304	0.175	0.167	0.177
-kanal	mpmc	sync	rendezvous	64	1	single	none	38656	0.537	0.440	0.576
-crossbeam	mpmc	sync	rendezvous	64	1	single	none	8256	0.139	0.126	0.141
-fibre	mpmc	sync	rendezvous	1	64	single	none	30906	0.571	0.500	0.582
-flume	mpmc	sync	rendezvous	1	64	single	receive only	27255	0.449	0.376	0.457
-kanal	mpmc	sync	rendezvous	1	64	single	none	39331	0.546	0.495	0.648
-crossbeam	mpmc	sync	rendezvous	1	64	single	none	8174	0.134	0.129	0.139
-fibre	mpmc	sync	1	1	1	single	send and receive	76309	1.254	1.208	1.284
-flume	mpmc	sync	1	1	1	single	receive only	34886	0.557	0.532	0.598
-kanal	mpmc	sync	1	1	1	single	none	323771	5.678	5.362	5.850
-crossbeam	mpmc	sync	1	1	1	single	none	317718	5.270	5.209	5.325
-fibre	mpmc	sync	1	16	16	single	send and receive	6304	0.107	0.099	0.108
-flume	mpmc	sync	1	16	16	single	receive only	18048	0.297	0.289	0.305
-kanal	mpmc	sync	1	16	16	single	none	21776	0.905	0.811	1.031
-crossbeam	mpmc	sync	1	16	16	single	none	75936	1.235	1.162	1.343
-fibre	mpmc	sync	1	64	64	single	send and receive	6080	0.103	0.096	0.104
-flume	mpmc	sync	1	64	64	single	receive only	15680	0.272	0.256	0.286
-kanal	mpmc	sync	1	64	64	single	none	49664	1.199	1.140	1.361
-crossbeam	mpmc	sync	1	64	64	single	none	63872	1.230	1.029	1.384
-fibre	mpmc	sync	1	16	1	single	send and receive	8352	0.147	0.146	0.149
-flume	mpmc	sync	1	16	1	single	receive only	9504	0.173	0.170	0.177
-kanal	mpmc	sync	1	16	1	single	none	22352	1.044	0.980	1.297
-crossbeam	mpmc	sync	1	16	1	single	none	8944	0.153	0.145	0.165
-fibre	mpmc	sync	1	1	16	single	send and receive	8679	0.146	0.137	0.148
-flume	mpmc	sync	1	1	16	single	receive only	25114	0.428	0.335	0.433
-kanal	mpmc	sync	1	1	16	single	none	141780	1.423	1.265	1.630
-crossbeam	mpmc	sync	1	1	16	single	none	8840	0.143	0.140	0.145
-fibre	mpmc	sync	1	64	1	single	send and receive	8384	0.142	0.137	0.146
-flume	mpmc	sync	1	64	1	single	receive only	9856	0.173	0.161	0.176
-kanal	mpmc	sync	1	64	1	single	none	28416	0.464	0.360	0.547
-crossbeam	mpmc	sync	1	64	1	single	none	8000	0.134	0.126	0.141
-fibre	mpmc	sync	1	1	64	single	send and receive	8602	0.142	0.128	0.144
-flume	mpmc	sync	1	1	64	single	receive only	25487	0.455	0.357	0.460
-kanal	mpmc	sync	1	1	64	single	none	28799	0.501	0.448	0.549
-crossbeam	mpmc	sync	1	1	64	single	none	7990	0.135	0.122	0.140
-fibre	mpmc	sync	128	1	1	single	send and receive	1705961	27.911	27.613	28.264
-flume	mpmc	sync	128	1	1	single	receive only	1266352	20.359	19.572	21.480
-kanal	mpmc	sync	128	1	1	single	none	903275	14.442	13.885	15.173
-crossbeam	mpmc	sync	128	1	1	single	none	1637076	29.766	26.091	33.741
-fibre	mpmc	sync	128	1	1	batch-512	send and receive	5842738	96.633	91.696	97.989
-flume	mpmc	sync	128	1	1	batch-512	receive only	837389	13.960	13.900	13.969
-fibre	mpmc	sync	128	16	16	single	send and receive	844944	15.881	14.726	16.299
-flume	mpmc	sync	128	16	16	single	receive only	167712	2.789	2.602	2.870
-kanal	mpmc	sync	128	16	16	single	none	80816	2.583	2.233	3.274
-crossbeam	mpmc	sync	128	16	16	single	none	754256	15.268	13.076	16.008
-fibre	mpmc	sync	128	16	16	batch-512	send and receive	1232608	23.807	21.947	24.671
-flume	mpmc	sync	128	16	16	batch-512	receive only	176432	3.416	3.181	3.646
-fibre	mpmc	sync	128	64	64	single	send and receive	382656	12.026	10.924	12.921
-flume	mpmc	sync	128	64	64	single	receive only	70528	1.634	1.466	1.815
-kanal	mpmc	sync	128	64	64	single	none	117632	2.477	2.215	3.301
-crossbeam	mpmc	sync	128	64	64	single	none	171712	3.872	2.406	8.754
-fibre	mpmc	sync	128	64	64	batch-512	send and receive	668224	18.232	16.884	19.392
-flume	mpmc	sync	128	64	64	batch-512	receive only	101824	2.369	2.172	2.648
-fibre	mpmc	sync	128	16	1	single	send and receive	383072	6.402	6.103	7.479
-flume	mpmc	sync	128	16	1	single	receive only	10704	0.176	0.164	0.179
-kanal	mpmc	sync	128	16	1	single	none	26656	0.872	0.687	1.655
-crossbeam	mpmc	sync	128	16	1	single	none	416016	7.054	6.807	7.864
-fibre	mpmc	sync	128	16	1	batch-512	send and receive	680096	9.582	8.402	10.210
-flume	mpmc	sync	128	16	1	batch-512	receive only	145776	2.635	2.535	2.699
-fibre	mpmc	sync	128	1	16	single	send and receive	476155	7.513	6.710	7.587
-flume	mpmc	sync	128	1	16	single	receive only	21486	0.435	0.418	0.444
-kanal	mpmc	sync	128	1	16	single	none	175118	3.963	3.241	4.986
-crossbeam	mpmc	sync	128	1	16	single	none	420376	6.565	5.911	7.945
-fibre	mpmc	sync	128	1	16	batch-512	send and receive	521502	8.569	7.309	10.348
-flume	mpmc	sync	128	1	16	batch-512	receive only	23680	0.395	0.345	0.409
-fibre	mpmc	sync	128	64	1	single	send and receive	232576	4.362	3.628	5.921
-flume	mpmc	sync	128	64	1	single	receive only	10560	0.176	0.152	0.179
-kanal	mpmc	sync	128	64	1	single	none	22464	0.363	0.279	0.396
-crossbeam	mpmc	sync	128	64	1	single	none	503680	1.481	0.479	8.382
-fibre	mpmc	sync	128	64	1	batch-512	send and receive	171520	4.911	4.245	5.702
-flume	mpmc	sync	128	64	1	batch-512	receive only	57280	1.030	0.908	1.087
-fibre	mpmc	sync	128	1	64	single	send and receive	103238	4.811	1.841	8.921
-flume	mpmc	sync	128	1	64	single	receive only	27488	0.382	0.337	0.457
-kanal	mpmc	sync	128	1	64	single	none	32545	0.368	0.344	0.473
-crossbeam	mpmc	sync	128	1	64	single	none	443219	2.195	0.684	7.174
-fibre	mpmc	sync	128	1	64	batch-512	send and receive	193520	6.784	6.350	9.877
-flume	mpmc	sync	128	1	64	batch-512	receive only	18879	0.382	0.340	0.410
-fibre	mpmc	sync	1024	1	1	single	send and receive	1994974	32.421	31.998	32.677
-flume	mpmc	sync	1024	1	1	single	receive only	231980	3.683	3.434	4.589
-kanal	mpmc	sync	1024	1	1	single	none	1562730	26.413	18.545	31.567
-crossbeam	mpmc	sync	1024	1	1	single	none	2622306	41.869	41.444	49.550
-fibre	mpmc	sync	1024	1	1	batch-512	send and receive	8000000	179.692	171.274	193.636
-flume	mpmc	sync	1024	1	1	batch-512	receive only	2865627	48.245	48.023	49.114
-fibre	mpmc	sync	1024	16	16	single	send and receive	2005616	36.982	36.190	37.687
-flume	mpmc	sync	1024	16	16	single	receive only	299328	8.180	7.658	9.049
-kanal	mpmc	sync	1024	16	16	single	none	87408	2.602	2.013	3.225
-crossbeam	mpmc	sync	1024	16	16	single	none	1226192	25.415	22.879	27.368
-fibre	mpmc	sync	1024	16	16	batch-512	send and receive	5042032	93.723	92.122	96.101
-flume	mpmc	sync	1024	16	16	batch-512	receive only	268848	7.222	5.323	7.991
-fibre	mpmc	sync	1024	64	64	single	send and receive	557824	28.037	25.863	33.004
-flume	mpmc	sync	1024	64	64	single	receive only	170048	4.584	4.496	5.992
-kanal	mpmc	sync	1024	64	64	single	none	92608	2.845	2.598	3.680
-crossbeam	mpmc	sync	1024	64	64	single	none	158592	4.265	2.839	11.991
-fibre	mpmc	sync	1024	64	64	batch-512	send and receive	760512	57.647	51.586	61.377
-flume	mpmc	sync	1024	64	64	batch-512	receive only	193728	5.749	5.303	6.618
-fibre	mpmc	sync	1024	16	1	single	send and receive	1023104	18.446	15.878	20.130
-flume	mpmc	sync	1024	16	1	single	receive only	10448	0.203	0.195	0.215
-kanal	mpmc	sync	1024	16	1	single	none	58928	1.149	0.922	1.473
-crossbeam	mpmc	sync	1024	16	1	single	none	474720	7.553	6.675	8.889
-fibre	mpmc	sync	1024	16	1	batch-512	send and receive	3868016	54.988	52.187	61.871
-flume	mpmc	sync	1024	16	1	batch-512	receive only	731456	12.992	12.703	13.410
-fibre	mpmc	sync	1024	1	16	single	send and receive	1476628	20.739	19.401	21.735
-flume	mpmc	sync	1024	1	16	single	receive only	25353	0.424	0.361	0.439
-kanal	mpmc	sync	1024	1	16	single	none	36114	1.098	0.509	2.113
-crossbeam	mpmc	sync	1024	1	16	single	none	430876	7.368	6.387	8.212
-fibre	mpmc	sync	1024	1	16	batch-512	send and receive	5226650	49.088	47.354	53.436
-flume	mpmc	sync	1024	1	16	batch-512	receive only	21770	0.392	0.349	0.452
-fibre	mpmc	sync	1024	64	1	single	send and receive	412288	8.816	7.003	17.306
-flume	mpmc	sync	1024	64	1	single	receive only	9920	0.196	0.176	0.201
-kanal	mpmc	sync	1024	64	1	single	none	20672	0.363	0.307	0.412
-crossbeam	mpmc	sync	1024	64	1	single	none	698496	10.278	1.783	12.188
-fibre	mpmc	sync	1024	64	1	batch-512	send and receive	686208	17.919	13.457	35.267
-flume	mpmc	sync	1024	64	1	batch-512	receive only	303616	4.992	4.895	5.328
-fibre	mpmc	sync	1024	1	64	single	send and receive	715990	14.272	7.905	26.326
-flume	mpmc	sync	1024	1	64	single	receive only	26623	0.422	0.311	0.470
-kanal	mpmc	sync	1024	1	64	single	none	19591	0.327	0.304	0.468
-crossbeam	mpmc	sync	1024	1	64	single	none	466203	7.640	0.335	9.549
-fibre	mpmc	sync	1024	1	64	batch-512	send and receive	976541	20.101	12.128	33.181
-flume	mpmc	sync	1024	1	64	batch-512	receive only	24385	0.387	0.348	0.413
-fibre	mpmc	sync	unbounded	1	1	single	send and receive	1000000	86.383	85.852	87.192
-flume	mpmc	sync	unbounded	1	1	single	receive only	220564	4.080	3.431	19.188
-kanal	mpmc	sync	unbounded	1	1	single	none	1000000	92.338	57.602	95.561
-crossbeam	mpmc	sync	unbounded	1	1	single	none	1000000	96.148	95.515	97.443
-fibre	mpmc	sync	unbounded	1	1	batch-512	send and receive	1000000	218.103	208.963	221.339
-flume	mpmc	sync	unbounded	1	1	batch-512	receive only	1000000	71.307	67.331	74.227
-fibre	mpmc	sync	unbounded	16	16	single	send and receive	441728	7.006	6.873	7.386
-flume	mpmc	sync	unbounded	16	16	single	receive only	394496	10.777	7.311	11.977
-kanal	mpmc	sync	unbounded	16	16	single	none	36336	1.662	1.550	2.059
-crossbeam	mpmc	sync	unbounded	16	16	single	none	1000000	27.751	20.600	58.399
-fibre	mpmc	sync	unbounded	16	16	batch-512	send and receive	1000000	101.829	84.189	106.774
-flume	mpmc	sync	unbounded	16	16	batch-512	receive only	334672	6.432	4.360	10.407
-fibre	mpmc	sync	unbounded	64	64	single	send and receive	1000000	7.560	5.630	13.013
-flume	mpmc	sync	unbounded	64	64	single	receive only	340864	9.780	7.040	18.721
-kanal	mpmc	sync	unbounded	64	64	single	none	121728	2.986	2.672	3.122
-crossbeam	mpmc	sync	unbounded	64	64	single	none	1000000	27.008	18.831	43.973
-fibre	mpmc	sync	unbounded	64	64	batch-512	send and receive	1000000	101.467	88.921	114.803
-flume	mpmc	sync	unbounded	64	64	batch-512	receive only	189568	7.719	5.721	9.726
-fibre	mpmc	sync	unbounded	16	1	single	send and receive	566432	9.588	9.397	11.769
-flume	mpmc	sync	unbounded	16	1	single	receive only	1000000	26.437	24.694	26.998
-kanal	mpmc	sync	unbounded	16	1	single	none	123760	8.105	7.350	10.018
-crossbeam	mpmc	sync	unbounded	16	1	single	none	672976	13.052	9.977	15.545
-fibre	mpmc	sync	unbounded	16	1	batch-512	send and receive	1000000	151.534	148.484	155.210
-flume	mpmc	sync	unbounded	16	1	batch-512	receive only	1000000	32.799	31.297	34.291
-fibre	mpmc	sync	unbounded	1	16	single	send and receive	24839	0.409	0.352	2.602
-flume	mpmc	sync	unbounded	1	16	single	receive only	25718	0.425	0.357	0.437
-kanal	mpmc	sync	unbounded	1	16	single	none	29624	3.535	1.384	6.860
-crossbeam	mpmc	sync	unbounded	1	16	single	none	1000000	22.666	20.334	23.864
-fibre	mpmc	sync	unbounded	1	16	batch-512	send and receive	1000000	75.589	74.056	76.245
-flume	mpmc	sync	unbounded	1	16	batch-512	receive only	23387	0.400	0.394	0.407
-fibre	mpmc	sync	unbounded	64	1	single	send and receive	1000000	13.900	9.665	18.066
-flume	mpmc	sync	unbounded	64	1	single	receive only	1000000	26.619	25.610	28.239
-kanal	mpmc	sync	unbounded	64	1	single	none	168960	6.097	4.927	7.188
-crossbeam	mpmc	sync	unbounded	64	1	single	none	1000000	18.688	16.664	29.444
-fibre	mpmc	sync	unbounded	64	1	batch-512	send and receive	1000000	151.935	145.138	156.911
-flume	mpmc	sync	unbounded	64	1	batch-512	receive only	1000000	37.786	35.031	40.142
-fibre	mpmc	sync	unbounded	1	64	single	send and receive	27159	0.416	0.294	0.470
-flume	mpmc	sync	unbounded	1	64	single	receive only	26932	0.454	0.371	0.461
-kanal	mpmc	sync	unbounded	1	64	single	none	17395	0.335	0.271	0.413
-crossbeam	mpmc	sync	unbounded	1	64	single	none	1000000	20.387	0.509	25.878
-fibre	mpmc	sync	unbounded	1	64	batch-512	send and receive	1000000	72.694	65.949	74.060
-flume	mpmc	sync	unbounded	1	64	batch-512	receive only	24321	0.404	0.337	0.419
-fibre	mpmc	async	rendezvous	1	1	single	none	1004469	14.537	14.392	14.643
-flume	mpmc	async	rendezvous	1	1	single	receive only	298165	4.476	4.459	4.562
-kanal	mpmc	async	rendezvous	1	1	single	none	831771	12.637	12.399	13.585
-fibre	mpmc	async	rendezvous	16	16	single	none	210352	3.480	3.400	3.686
-flume	mpmc	async	rendezvous	16	16	single	receive only	66064	1.553	1.315	2.012
-kanal	mpmc	async	rendezvous	16	16	single	none	61776	5.578	4.705	7.521
-fibre	mpmc	async	rendezvous	64	64	single	none	189440	3.186	3.135	3.529
-flume	mpmc	async	rendezvous	64	64	single	receive only	57536	1.457	0.955	1.681
-kanal	mpmc	async	rendezvous	64	64	single	none	232960	10.559	9.648	10.878
-fibre	mpmc	async	rendezvous	16	1	single	none	287296	4.714	4.606	4.754
-flume	mpmc	async	rendezvous	16	1	single	receive only	42864	0.684	0.678	0.700
-kanal	mpmc	async	rendezvous	16	1	single	none	294144	4.546	3.980	5.079
-fibre	mpmc	async	rendezvous	1	16	single	none	293011	4.828	4.684	5.059
-flume	mpmc	async	rendezvous	1	16	single	receive only	63302	1.065	1.027	1.089
-kanal	mpmc	async	rendezvous	1	16	single	none	298465	4.828	4.256	5.219
-fibre	mpmc	async	rendezvous	64	1	single	none	187200	2.974	2.829	3.034
-flume	mpmc	async	rendezvous	64	1	single	receive only	26944	0.450	0.430	0.460
-kanal	mpmc	async	rendezvous	64	1	single	none	46784	0.896	0.718	1.299
-fibre	mpmc	async	rendezvous	1	64	single	none	169709	2.792	2.718	2.834
-flume	mpmc	async	rendezvous	1	64	single	receive only	23572	0.358	0.348	0.381
-kanal	mpmc	async	rendezvous	1	64	single	none	44859	0.824	0.689	1.151
-fibre	mpmc	async	1	1	1	single	send and receive	370454	6.381	6.048	6.762
-flume	mpmc	async	1	1	1	single	receive only	276696	4.684	4.608	4.832
-kanal	mpmc	async	1	1	1	single	none	1043071	17.348	16.997	19.081
-async-channel	mpmc	async	1	1	1	single	none	158316	2.397	2.320	2.616
-fibre	mpmc	async	1	16	16	single	send and receive	250912	4.360	3.867	4.497
-flume	mpmc	async	1	16	16	single	receive only	103344	1.268	1.086	1.799
-kanal	mpmc	async	1	16	16	single	none	119184	9.725	8.176	13.548
-async-channel	mpmc	async	1	16	16	single	none	26000	0.422	0.416	0.429
-fibre	mpmc	async	1	64	64	single	send and receive	200384	3.231	3.190	3.458
-flume	mpmc	async	1	64	64	single	receive only	67264	1.130	1.003	1.718
-kanal	mpmc	async	1	64	64	single	none	197632	10.429	9.059	12.445
-async-channel	mpmc	async	1	64	64	single	none	20928	0.346	0.334	0.349
-fibre	mpmc	async	1	16	1	single	send and receive	328480	4.929	4.611	5.426
-flume	mpmc	async	1	16	1	single	receive only	39664	0.676	0.654	0.695
-kanal	mpmc	async	1	16	1	single	none	772576	11.082	10.479	11.942
-async-channel	mpmc	async	1	16	1	single	none	72080	1.108	1.039	1.213
-fibre	mpmc	async	1	1	16	single	send and receive	282592	4.766	4.703	5.445
-flume	mpmc	async	1	1	16	single	receive only	67689	1.113	1.092	1.144
-kanal	mpmc	async	1	1	16	single	none	426289	6.766	6.069	7.239
-async-channel	mpmc	async	1	1	16	single	none	61988	1.030	1.023	1.147
-fibre	mpmc	async	1	64	1	single	send and receive	247040	4.173	3.946	4.582
-flume	mpmc	async	1	64	1	single	receive only	26240	0.441	0.429	0.454
-kanal	mpmc	async	1	64	1	single	none	162880	9.214	6.973	12.935
-async-channel	mpmc	async	1	64	1	single	none	66624	1.120	1.074	1.223
-fibre	mpmc	async	1	1	64	single	send and receive	241467	3.991	3.887	4.599
-flume	mpmc	async	1	1	64	single	receive only	23064	0.372	0.354	0.389
-kanal	mpmc	async	1	1	64	single	none	109552	0.748	0.662	1.005
-async-channel	mpmc	async	1	1	64	single	none	65622	1.101	1.083	1.251
-fibre	mpmc	async	128	1	1	single	send and receive	2374078	39.348	39.073	46.764
-flume	mpmc	async	128	1	1	single	receive only	1680975	29.024	28.623	32.505
-kanal	mpmc	async	128	1	1	single	none	3180748	52.653	50.919	52.953
-async-channel	mpmc	async	128	1	1	single	none	903770	15.582	15.482	17.393
-fibre	mpmc	async	128	1	1	batch-512	send and receive	6504753	98.596	90.066	111.663
-flume	mpmc	async	128	1	1	batch-512	receive only	2200614	25.016	24.300	26.338
-fibre	mpmc	async	128	16	16	single	send and receive	815792	13.833	13.064	18.717
-flume	mpmc	async	128	16	16	single	receive only	488080	8.773	7.817	8.988
-kanal	mpmc	async	128	16	16	single	none	141232	9.419	9.327	11.196
-async-channel	mpmc	async	128	16	16	single	none	294224	5.195	4.449	5.254
-fibre	mpmc	async	128	16	16	batch-512	send and receive	3534032	58.761	57.810	59.017
-flume	mpmc	async	128	16	16	batch-512	receive only	521504	9.173	7.734	11.631
-fibre	mpmc	async	128	64	64	single	send and receive	818176	13.444	12.738	19.785
-flume	mpmc	async	128	64	64	single	receive only	411072	8.346	7.625	8.909
-kanal	mpmc	async	128	64	64	single	none	134016	9.933	7.219	16.708
-async-channel	mpmc	async	128	64	64	single	none	285760	4.994	4.281	5.192
-fibre	mpmc	async	128	64	64	batch-512	send and receive	2831744	57.456	55.761	58.993
-flume	mpmc	async	128	64	64	batch-512	receive only	362560	8.368	7.289	10.339
-fibre	mpmc	async	128	16	1	single	send and receive	861392	14.416	14.205	14.547
-flume	mpmc	async	128	16	1	single	receive only	162928	2.708	2.612	2.919
-kanal	mpmc	async	128	16	1	single	none	158464	7.462	6.256	15.496
-async-channel	mpmc	async	128	16	1	single	none	148272	2.443	2.314	2.469
-fibre	mpmc	async	128	16	1	batch-512	send and receive	2490656	42.261	40.507	42.936
-flume	mpmc	async	128	16	1	batch-512	receive only	331344	5.604	5.507	5.723
-fibre	mpmc	async	128	1	16	single	send and receive	951885	15.690	15.472	15.763
-flume	mpmc	async	128	1	16	single	receive only	243542	4.092	3.990	4.190
-kanal	mpmc	async	128	1	16	single	none	642902	11.067	9.557	12.613
-async-channel	mpmc	async	128	1	16	single	none	136652	2.355	2.293	2.416
-fibre	mpmc	async	128	1	16	batch-512	send and receive	3381727	54.259	53.939	55.182
-flume	mpmc	async	128	1	16	batch-512	receive only	250731	3.894	3.664	4.275
-fibre	mpmc	async	128	64	1	single	send and receive	354304	6.074	5.624	6.110
-flume	mpmc	async	128	64	1	single	receive only	40832	0.745	0.653	0.823
-kanal	mpmc	async	128	64	1	single	none	315200	12.670	7.987	20.957
-async-channel	mpmc	async	128	64	1	single	none	48320	0.868	0.801	0.950
-fibre	mpmc	async	128	64	1	batch-512	send and receive	980544	15.447	14.993	16.050
-flume	mpmc	async	128	64	1	batch-512	receive only	180544	3.035	3.014	3.221
-fibre	mpmc	async	128	1	64	single	send and receive	558249	9.326	8.773	9.949
-flume	mpmc	async	128	1	64	single	receive only	40667	0.744	0.710	0.811
-kanal	mpmc	async	128	1	64	single	none	56872	1.253	0.979	1.690
-async-channel	mpmc	async	128	1	64	single	none	42355	0.720	0.688	0.791
-fibre	mpmc	async	128	1	64	batch-512	send and receive	1313185	22.475	21.686	22.911
-flume	mpmc	async	128	1	64	batch-512	receive only	45732	0.575	0.535	0.642
-fibre	mpmc	async	1024	1	1	single	send and receive	2710393	43.229	42.829	44.399
-flume	mpmc	async	1024	1	1	single	receive only	870339	9.445	6.112	11.958
-kanal	mpmc	async	1024	1	1	single	none	3619065	50.733	47.299	57.832
-async-channel	mpmc	async	1024	1	1	single	none	819266	12.375	12.261	13.241
-fibre	mpmc	async	1024	1	1	batch-512	send and receive	8000000	143.637	134.129	152.092
-flume	mpmc	async	1024	1	1	batch-512	receive only	2303494	37.950	37.238	42.118
-fibre	mpmc	async	1024	16	16	single	send and receive	1614656	25.231	14.410	26.829
-flume	mpmc	async	1024	16	16	single	receive only	688640	11.829	11.320	12.470
-kanal	mpmc	async	1024	16	16	single	none	139904	7.895	5.792	11.495
-async-channel	mpmc	async	1024	16	16	single	none	393792	6.762	6.411	6.850
-fibre	mpmc	async	1024	16	16	batch-512	send and receive	7319968	125.750	124.717	126.424
-flume	mpmc	async	1024	16	16	batch-512	receive only	752912	15.189	14.060	16.710
-fibre	mpmc	async	1024	64	64	single	send and receive	1400448	15.002	14.082	23.209
-flume	mpmc	async	1024	64	64	single	receive only	614784	11.576	10.697	12.568
-kanal	mpmc	async	1024	64	64	single	none	314816	12.787	10.675	21.402
-async-channel	mpmc	async	1024	64	64	single	none	411072	6.670	6.346	6.843
-fibre	mpmc	async	1024	64	64	batch-512	send and receive	5790976	125.296	123.869	127.512
-flume	mpmc	async	1024	64	64	batch-512	receive only	584320	15.519	13.763	16.077
-fibre	mpmc	async	1024	16	1	single	send and receive	983024	16.502	16.376	17.943
-flume	mpmc	async	1024	16	1	single	receive only	230400	4.132	3.914	4.244
-kanal	mpmc	async	1024	16	1	single	none	250224	4.097	2.435	5.252
-async-channel	mpmc	async	1024	16	1	single	none	309360	5.331	4.670	5.604
-fibre	mpmc	async	1024	16	1	batch-512	send and receive	4736544	76.339	74.076	78.717
-flume	mpmc	async	1024	16	1	batch-512	receive only	808480	13.351	13.063	13.597
-fibre	mpmc	async	1024	1	16	single	send and receive	1076229	17.627	17.429	18.289
-flume	mpmc	async	1024	1	16	single	receive only	332310	5.493	5.357	5.695
-kanal	mpmc	async	1024	1	16	single	none	274920	4.616	3.494	5.813
-async-channel	mpmc	async	1024	1	16	single	none	255125	4.554	3.645	5.124
-fibre	mpmc	async	1024	1	16	batch-512	send and receive	5123016	87.049	85.276	89.892
-flume	mpmc	async	1024	1	16	batch-512	receive only	311514	5.362	5.035	6.051
-fibre	mpmc	async	1024	64	1	single	send and receive	516352	8.853	8.471	9.123
-flume	mpmc	async	1024	64	1	single	receive only	60544	1.015	0.839	1.143
-kanal	mpmc	async	1024	64	1	single	none	287488	6.334	4.359	11.618
-async-channel	mpmc	async	1024	64	1	single	none	144704	2.910	2.462	3.301
-fibre	mpmc	async	1024	64	1	batch-512	send and receive	2997952	48.830	46.639	49.187
-flume	mpmc	async	1024	64	1	batch-512	receive only	652096	10.492	10.303	10.647
-fibre	mpmc	async	1024	1	64	single	send and receive	747616	12.707	12.329	13.272
-flume	mpmc	async	1024	1	64	single	receive only	83038	1.303	1.178	1.386
-kanal	mpmc	async	1024	1	64	single	none	65933	1.620	0.969	4.263
-async-channel	mpmc	async	1024	1	64	single	none	115078	1.630	1.454	1.816
-fibre	mpmc	async	1024	1	64	batch-512	send and receive	3414347	57.274	56.165	58.138
-flume	mpmc	async	1024	1	64	batch-512	receive only	47360	0.812	0.730	0.917
-fibre	mpmc	async	unbounded	1	1	single	send and receive	1000000	48.545	47.852	48.687
-flume	mpmc	async	unbounded	1	1	single	receive only	1000000	39.343	38.787	39.497
-kanal	mpmc	async	unbounded	1	1	single	none	1000000	69.022	68.692	69.432
-async-channel	mpmc	async	unbounded	1	1	single	none	1000000	18.579	18.014	19.024
-fibre	mpmc	async	unbounded	1	1	batch-512	send and receive	1000000	134.502	125.889	136.659
-flume	mpmc	async	unbounded	1	1	batch-512	receive only	1000000	61.318	60.914	61.642
-fibre	mpmc	async	unbounded	16	16	single	send and receive	316560	5.646	4.991	6.560
-flume	mpmc	async	unbounded	16	16	single	receive only	660960	11.655	10.878	12.752
-kanal	mpmc	async	unbounded	16	16	single	none	110336	6.214	5.042	11.625
-async-channel	mpmc	async	unbounded	16	16	single	none	358048	5.612	5.024	5.855
-fibre	mpmc	async	unbounded	16	16	batch-512	send and receive	1000000	127.267	122.218	133.598
-flume	mpmc	async	unbounded	16	16	batch-512	receive only	710608	12.654	11.772	13.398
-fibre	mpmc	async	unbounded	64	64	single	send and receive	335616	5.870	5.518	7.180
-flume	mpmc	async	unbounded	64	64	single	receive only	700096	12.083	10.888	13.537
-kanal	mpmc	async	unbounded	64	64	single	none	234176	13.423	11.388	21.611
-async-channel	mpmc	async	unbounded	64	64	single	none	257984	6.440	5.464	6.843
-fibre	mpmc	async	unbounded	64	64	batch-512	send and receive	1000000	110.857	87.137	117.520
-flume	mpmc	async	unbounded	64	64	batch-512	receive only	606592	18.202	15.691	19.402
-fibre	mpmc	async	unbounded	16	1	single	send and receive	620896	10.531	10.447	10.721
-flume	mpmc	async	unbounded	16	1	single	receive only	1000000	19.208	17.937	19.385
-kanal	mpmc	async	unbounded	16	1	single	none	192352	14.694	13.017	16.949
-async-channel	mpmc	async	unbounded	16	1	single	none	415824	7.011	6.809	7.190
-fibre	mpmc	async	unbounded	16	1	batch-512	send and receive	1000000	153.876	147.190	156.654
-flume	mpmc	async	unbounded	16	1	batch-512	receive only	1000000	26.455	25.293	27.934
-fibre	mpmc	async	unbounded	1	16	single	send and receive	771516	13.410	11.206	19.702
-flume	mpmc	async	unbounded	1	16	single	receive only	334826	5.752	5.394	6.024
-kanal	mpmc	async	unbounded	1	16	single	none	225592	4.482	1.643	5.990
-async-channel	mpmc	async	unbounded	1	16	single	none	652061	10.018	8.120	11.046
-fibre	mpmc	async	unbounded	1	16	batch-512	send and receive	1000000	73.077	63.691	78.379
-flume	mpmc	async	unbounded	1	16	batch-512	receive only	394691	5.509	5.377	5.905
-fibre	mpmc	async	unbounded	64	1	single	send and receive	560128	9.447	9.223	9.526
-flume	mpmc	async	unbounded	64	1	single	receive only	1000000	18.808	17.825	19.742
-kanal	mpmc	async	unbounded	64	1	single	none	326976	17.868	15.485	22.203
-async-channel	mpmc	async	unbounded	64	1	single	none	368640	6.858	6.809	6.995
-fibre	mpmc	async	unbounded	64	1	batch-512	send and receive	1000000	151.873	145.847	158.106
-flume	mpmc	async	unbounded	64	1	batch-512	receive only	1000000	26.413	24.257	29.468
-fibre	mpmc	async	unbounded	1	64	single	send and receive	807349	17.897	13.421	20.843
-flume	mpmc	async	unbounded	1	64	single	receive only	79276	1.373	1.146	1.500
-kanal	mpmc	async	unbounded	1	64	single	none	74572	1.157	0.998	3.079
-async-channel	mpmc	async	unbounded	1	64	single	none	517537	9.477	6.869	11.192
-fibre	mpmc	async	unbounded	1	64	batch-512	send and receive	1000000	72.496	59.530	77.200
-flume	mpmc	async	unbounded	1	64	batch-512	receive only	50406	0.728	0.696	0.885
+library	flavor	mode	capacity	producers	consumers	api	batch_support	items	median_melem_s	min_melem_s	max_melem_s	stage
+fibre	spsc	sync	rendezvous	1	1	single	none	25735	0.561	0.531	0.617	stream
+flume	spsc	sync	rendezvous	1	1	single	receive only	27380	0.451	0.437	0.474	stream
+kanal	spsc	sync	rendezvous	1	1	single	none	444344	7.155	7.011	8.299	stream
+crossbeam	spsc	sync	rendezvous	1	1	single	none	33580	0.516	0.507	0.558	stream
+std	spsc	sync	rendezvous	1	1	single	none	33294	0.509	0.497	0.588	stream
+fibre	spsc	sync	1	1	1	single	send and receive	15382	0.263	0.244	0.280	stream
+flume	spsc	sync	1	1	1	single	receive only	40976	0.675	0.644	0.691	stream
+kanal	spsc	sync	1	1	1	single	none	587070	8.569	6.636	9.438	stream
+crossbeam	spsc	sync	1	1	1	single	none	494287	7.901	5.940	8.294	stream
+std	spsc	sync	1	1	1	single	none	15602	0.281	0.257	0.289	stream
+fibre	spsc	sync	128	1	1	single	send and receive	1745148	30.044	28.801	32.547	stream
+flume	spsc	sync	128	1	1	single	receive only	1831730	30.088	27.999	31.333	stream
+kanal	spsc	sync	128	1	1	single	none	1601771	25.884	24.725	27.350	stream
+crossbeam	spsc	sync	128	1	1	single	none	3031194	46.928	43.740	52.231	stream
+std	spsc	sync	128	1	1	single	none	2490456	53.087	38.705	57.635	stream
+fibre	spsc	sync	128	1	1	batch-512	send and receive	1469229	24.493	24.129	24.720	stream
+flume	spsc	sync	128	1	1	batch-512	receive only	1174829	19.895	19.627	20.143	stream
+fibre	spsc	sync	1024	1	1	single	send and receive	2655567	46.558	44.424	50.521	stream
+flume	spsc	sync	1024	1	1	single	receive only	359885	6.226	5.997	6.938	stream
+kanal	spsc	sync	1024	1	1	single	none	3071417	51.767	44.422	56.833	stream
+crossbeam	spsc	sync	1024	1	1	single	none	4673448	74.640	67.831	77.418	stream
+std	spsc	sync	1024	1	1	single	none	7156189	118.384	112.871	125.453	stream
+fibre	spsc	sync	1024	1	1	batch-512	send and receive	8000000	470.363	448.368	475.796	stream
+flume	spsc	sync	1024	1	1	batch-512	receive only	4425287	77.053	70.877	77.611	stream
+flume	spsc	sync	unbounded	1	1	single	receive only	432950	6.594	5.931	9.762	stream
+kanal	spsc	sync	unbounded	1	1	single	none	1000000	145.219	90.376	181.645	stream
+crossbeam	spsc	sync	unbounded	1	1	single	none	1000000	144.065	138.574	146.632	stream
+std	spsc	sync	unbounded	1	1	single	none	1000000	138.521	131.449	143.678	stream
+flume	spsc	sync	unbounded	1	1	batch-512	receive only	1000000	113.563	108.838	123.866	stream
+fibre	spsc	async	rendezvous	1	1	single	none	1448630	24.272	24.054	24.505	stream
+flume	spsc	async	rendezvous	1	1	single	receive only	464185	7.578	7.482	7.695	stream
+kanal	spsc	async	rendezvous	1	1	single	none	1219078	20.609	20.480	20.770	stream
+fibre	spsc	async	1	1	1	single	send and receive	690912	11.573	11.023	11.765	stream
+flume	spsc	async	1	1	1	single	receive only	446732	7.669	7.481	7.823	stream
+kanal	spsc	async	1	1	1	single	none	1535860	26.359	25.600	26.743	stream
+async-channel	spsc	async	1	1	1	single	none	211923	3.569	3.522	3.661	stream
+tokio	spsc	async	1	1	1	single	receive only	461364	7.767	7.543	7.956	stream
+fibre	spsc	async	128	1	1	single	send and receive	6490733	109.096	106.253	116.360	stream
+flume	spsc	async	128	1	1	single	receive only	2397884	40.470	40.032	40.749	stream
+kanal	spsc	async	128	1	1	single	none	5044247	83.755	79.830	84.478	stream
+async-channel	spsc	async	128	1	1	single	none	1426117	25.100	24.864	25.329	stream
+tokio	spsc	async	128	1	1	single	receive only	2053207	33.642	32.333	34.211	stream
+fibre	spsc	async	128	1	1	batch-512	send and receive	8000000	174.282	172.088	176.794	stream
+flume	spsc	async	128	1	1	batch-512	receive only	3263962	55.983	55.537	56.711	stream
+tokio	spsc	async	128	1	1	batch-512	receive only	2753676	45.677	45.492	45.879	stream
+fibre	spsc	async	1024	1	1	single	send and receive	8000000	154.924	127.323	168.439	stream
+flume	spsc	async	1024	1	1	single	receive only	1221339	20.618	16.903	26.626	stream
+kanal	spsc	async	1024	1	1	single	none	5164758	86.704	83.980	92.541	stream
+async-channel	spsc	async	1024	1	1	single	none	1204011	20.034	19.816	21.568	stream
+tokio	spsc	async	1024	1	1	single	receive only	1360021	22.673	18.935	23.994	stream
+fibre	spsc	async	1024	1	1	batch-512	send and receive	8000000	223.789	207.321	235.814	stream
+flume	spsc	async	1024	1	1	batch-512	receive only	3429837	58.120	56.416	59.241	stream
+tokio	spsc	async	1024	1	1	batch-512	receive only	2634465	43.168	42.754	43.304	stream
+flume	spsc	async	unbounded	1	1	single	receive only	1000000	51.906	51.548	55.968	stream
+kanal	spsc	async	unbounded	1	1	single	none	1000000	105.768	104.727	106.773	stream
+async-channel	spsc	async	unbounded	1	1	single	none	1000000	30.102	29.133	30.622	stream
+tokio	spsc	async	unbounded	1	1	single	receive only	1000000	64.066	63.111	65.295	stream
+flume	spsc	async	unbounded	1	1	batch-512	receive only	1000000	90.093	89.461	91.708	stream
+tokio	spsc	async	unbounded	1	1	batch-512	receive only	1000000	111.574	110.054	115.513	stream
+fibre	mpsc	sync	rendezvous	1	1	single	none	47850	0.576	0.533	0.651	stream
+flume	mpsc	sync	rendezvous	1	1	single	receive only	26448	0.464	0.439	0.480	stream
+kanal	mpsc	sync	rendezvous	1	1	single	none	476270	8.308	7.209	8.405	stream
+crossbeam	mpsc	sync	rendezvous	1	1	single	none	31616	0.569	0.507	0.580	stream
+std	mpsc	sync	rendezvous	1	1	single	none	33071	0.544	0.505	0.586	stream
+fibre	mpsc	sync	rendezvous	16	1	single	none	43568	0.699	0.597	0.741	stream
+flume	mpsc	sync	rendezvous	16	1	single	receive only	12480	0.213	0.211	0.215	stream
+kanal	mpsc	sync	rendezvous	16	1	single	none	54256	1.435	1.079	2.471	stream
+crossbeam	mpsc	sync	rendezvous	16	1	single	none	10608	0.176	0.171	0.183	stream
+std	mpsc	sync	rendezvous	16	1	single	none	10384	0.174	0.168	0.179	stream
+fibre	mpsc	sync	rendezvous	64	1	single	none	40768	0.662	0.583	0.721	stream
+flume	mpsc	sync	rendezvous	64	1	single	receive only	12608	0.212	0.201	0.214	stream
+kanal	mpsc	sync	rendezvous	64	1	single	none	19712	0.453	0.341	0.559	stream
+crossbeam	mpsc	sync	rendezvous	64	1	single	none	9984	0.170	0.157	0.175	stream
+std	mpsc	sync	rendezvous	64	1	single	none	10176	0.169	0.156	0.172	stream
+fibre	mpsc	sync	1	1	1	single	send and receive	386589	7.336	6.470	7.500	stream
+flume	mpsc	sync	1	1	1	single	receive only	40033	0.667	0.631	0.683	stream
+kanal	mpsc	sync	1	1	1	single	none	424960	9.730	9.197	10.475	stream
+crossbeam	mpsc	sync	1	1	1	single	none	513455	8.528	8.366	8.662	stream
+std	mpsc	sync	1	1	1	single	none	15381	0.256	0.252	0.259	stream
+fibre	mpsc	sync	1	16	1	single	send and receive	73616	1.218	1.159	1.256	stream
+flume	mpsc	sync	1	16	1	single	receive only	11536	0.212	0.207	0.214	stream
+kanal	mpsc	sync	1	16	1	single	none	24144	1.438	1.154	1.557	stream
+crossbeam	mpsc	sync	1	16	1	single	none	11680	0.194	0.189	0.237	stream
+std	mpsc	sync	1	16	1	single	none	13872	0.235	0.233	0.237	stream
+fibre	mpsc	sync	1	64	1	single	send and receive	69440	1.168	1.141	1.197	stream
+flume	mpsc	sync	1	64	1	single	receive only	13056	0.208	0.180	0.214	stream
+kanal	mpsc	sync	1	64	1	single	none	23232	0.503	0.384	0.689	stream
+crossbeam	mpsc	sync	1	64	1	single	none	9792	0.157	0.138	0.164	stream
+std	mpsc	sync	1	64	1	single	none	14464	0.230	0.226	0.232	stream
+fibre	mpsc	sync	128	1	1	single	send and receive	1193395	42.454	40.380	43.251	stream
+flume	mpsc	sync	128	1	1	single	receive only	1697122	29.291	26.724	30.226	stream
+kanal	mpsc	sync	128	1	1	single	none	1249980	25.927	20.637	27.838	stream
+crossbeam	mpsc	sync	128	1	1	single	none	2109361	46.041	38.185	49.483	stream
+std	mpsc	sync	128	1	1	single	none	2645814	53.638	45.400	57.403	stream
+fibre	mpsc	sync	128	1	1	batch-512	send and receive	2832192	45.730	37.652	46.928	stream
+flume	mpsc	sync	128	1	1	batch-512	receive only	1183763	20.343	19.985	20.464	stream
+fibre	mpsc	sync	128	16	1	single	send and receive	173616	2.707	2.141	3.392	stream
+flume	mpsc	sync	128	16	1	single	receive only	12848	0.212	0.190	0.216	stream
+kanal	mpsc	sync	128	16	1	single	none	58672	1.233	0.806	1.541	stream
+crossbeam	mpsc	sync	128	16	1	single	none	864848	13.083	11.602	15.725	stream
+std	mpsc	sync	128	16	1	single	none	11776	0.210	0.197	0.218	stream
+fibre	mpsc	sync	128	16	1	batch-512	send and receive	169024	3.257	2.323	3.385	stream
+flume	mpsc	sync	128	16	1	batch-512	receive only	201824	3.422	3.345	3.533	stream
+fibre	mpsc	sync	128	64	1	single	send and receive	43136	0.687	0.517	0.820	stream
+flume	mpsc	sync	128	64	1	single	receive only	12736	0.196	0.189	0.214	stream
+kanal	mpsc	sync	128	64	1	single	none	24832	0.479	0.341	0.594	stream
+crossbeam	mpsc	sync	128	64	1	single	none	34944	0.953	0.166	14.491	stream
+std	mpsc	sync	128	64	1	single	none	11584	0.192	0.178	0.199	stream
+fibre	mpsc	sync	128	64	1	batch-512	send and receive	44736	0.768	0.560	0.838	stream
+flume	mpsc	sync	128	64	1	batch-512	receive only	85696	1.402	1.105	1.486	stream
+fibre	mpsc	sync	1024	1	1	single	send and receive	8000000	175.968	170.959	184.291	stream
+flume	mpsc	sync	1024	1	1	single	receive only	414364	7.135	5.549	9.727	stream
+kanal	mpsc	sync	1024	1	1	single	none	3123621	42.578	34.259	56.780	stream
+crossbeam	mpsc	sync	1024	1	1	single	none	4227980	62.424	59.846	67.789	stream
+std	mpsc	sync	1024	1	1	single	none	7426441	117.424	113.137	122.499	stream
+fibre	mpsc	sync	1024	1	1	batch-512	send and receive	8000000	370.271	326.809	386.447	stream
+flume	mpsc	sync	1024	1	1	batch-512	receive only	4314443	74.379	72.974	75.081	stream
+fibre	mpsc	sync	1024	16	1	single	send and receive	179904	3.335	2.731	9.789	stream
+flume	mpsc	sync	1024	16	1	single	receive only	12704	0.248	0.231	1.359	stream
+kanal	mpsc	sync	1024	16	1	single	none	155184	1.629	1.250	2.937	stream
+crossbeam	mpsc	sync	1024	16	1	single	none	537296	14.533	12.420	27.865	stream
+std	mpsc	sync	1024	16	1	single	none	13552	0.416	0.236	0.543	stream
+fibre	mpsc	sync	1024	16	1	batch-512	send and receive	142480	2.773	2.543	3.125	stream
+flume	mpsc	sync	1024	16	1	batch-512	receive only	1018448	17.254	16.008	18.109	stream
+fibre	mpsc	sync	1024	64	1	single	send and receive	42944	0.863	0.810	1.188	stream
+flume	mpsc	sync	1024	64	1	single	receive only	12736	0.233	0.225	0.237	stream
+kanal	mpsc	sync	1024	64	1	single	none	25600	0.490	0.416	0.720	stream
+crossbeam	mpsc	sync	1024	64	1	single	none	1298880	20.966	1.617	26.136	stream
+std	mpsc	sync	1024	64	1	single	none	11712	0.216	0.209	0.221	stream
+fibre	mpsc	sync	1024	64	1	batch-512	send and receive	42240	0.852	0.554	0.866	stream
+flume	mpsc	sync	1024	64	1	batch-512	receive only	406720	6.741	6.419	7.162	stream
+fibre	mpsc	sync	unbounded	1	1	single	send and receive	1000000	231.526	126.021	232.144	stream
+flume	mpsc	sync	unbounded	1	1	single	receive only	359066	5.643	5.555	6.198	stream
+kanal	mpsc	sync	unbounded	1	1	single	none	1000000	142.069	137.242	147.438	stream
+crossbeam	mpsc	sync	unbounded	1	1	single	none	1000000	143.313	137.488	144.030	stream
+std	mpsc	sync	unbounded	1	1	single	none	1000000	133.525	128.285	139.100	stream
+fibre	mpsc	sync	unbounded	1	1	batch-512	send and receive	1000000	326.007	315.694	333.829	stream
+flume	mpsc	sync	unbounded	1	1	batch-512	receive only	1000000	102.953	99.432	115.004	stream
+fibre	mpsc	sync	unbounded	16	1	single	send and receive	790832	12.974	12.805	16.077	stream
+flume	mpsc	sync	unbounded	16	1	single	receive only	1000000	42.057	40.991	42.859	stream
+kanal	mpsc	sync	unbounded	16	1	single	none	1000000	43.483	41.414	46.747	stream
+crossbeam	mpsc	sync	unbounded	16	1	single	none	1000000	17.596	16.469	24.879	stream
+std	mpsc	sync	unbounded	16	1	single	none	453408	7.682	7.031	8.328	stream
+fibre	mpsc	sync	unbounded	16	1	batch-512	send and receive	1000000	208.672	196.663	217.772	stream
+flume	mpsc	sync	unbounded	16	1	batch-512	receive only	1000000	51.980	49.448	61.404	stream
+fibre	mpsc	sync	unbounded	64	1	single	send and receive	1000000	19.301	14.086	51.132	stream
+flume	mpsc	sync	unbounded	64	1	single	receive only	1000000	44.082	42.539	46.027	stream
+kanal	mpsc	sync	unbounded	64	1	single	none	208512	8.163	6.202	8.282	stream
+crossbeam	mpsc	sync	unbounded	64	1	single	none	1000000	23.543	21.880	41.078	stream
+std	mpsc	sync	unbounded	64	1	single	none	499264	8.612	7.035	9.852	stream
+fibre	mpsc	sync	unbounded	64	1	batch-512	send and receive	1000000	206.010	193.463	235.592	stream
+flume	mpsc	sync	unbounded	64	1	batch-512	receive only	1000000	61.935	58.957	65.326	stream
+fibre	mpsc	async	rendezvous	1	1	single	none	1531235	24.556	23.982	25.650	stream
+flume	mpsc	async	rendezvous	1	1	single	receive only	460287	7.776	7.460	7.928	stream
+kanal	mpsc	async	rendezvous	1	1	single	none	1240545	21.066	17.766	21.805	stream
+fibre	mpsc	async	rendezvous	16	1	single	none	411600	6.701	6.603	6.912	stream
+flume	mpsc	async	rendezvous	16	1	single	receive only	54912	0.898	0.877	0.929	stream
+kanal	mpsc	async	rendezvous	16	1	single	none	358528	6.085	5.354	6.691	stream
+fibre	mpsc	async	rendezvous	64	1	single	none	239488	3.609	3.263	3.884	stream
+flume	mpsc	async	rendezvous	64	1	single	receive only	34176	0.566	0.562	0.586	stream
+kanal	mpsc	async	rendezvous	64	1	single	none	400704	1.015	0.929	1.237	stream
+fibre	mpsc	async	1	1	1	single	send and receive	342334	9.479	9.379	9.944	stream
+flume	mpsc	async	1	1	1	single	receive only	395961	7.591	7.487	7.702	stream
+kanal	mpsc	async	1	1	1	single	none	1589277	26.624	26.240	28.066	stream
+async-channel	mpsc	async	1	1	1	single	none	219842	3.760	3.613	3.848	stream
+tokio	mpsc	async	1	1	1	single	receive only	480843	8.029	7.873	8.214	stream
+fibre	mpsc	async	1	16	1	single	send and receive	496832	8.269	7.862	8.530	stream
+flume	mpsc	async	1	16	1	single	receive only	52048	0.879	0.827	0.893	stream
+kanal	mpsc	async	1	16	1	single	none	458256	16.525	15.066	20.103	stream
+async-channel	mpsc	async	1	16	1	single	none	100224	1.643	1.606	1.746	stream
+tokio	mpsc	async	1	16	1	single	receive only	448848	7.731	7.607	7.956	stream
+fibre	mpsc	async	1	64	1	single	send and receive	372672	6.054	5.984	6.682	stream
+flume	mpsc	async	1	64	1	single	receive only	35648	0.569	0.554	0.597	stream
+kanal	mpsc	async	1	64	1	single	none	171520	8.850	7.837	13.640	stream
+async-channel	mpsc	async	1	64	1	single	none	99136	1.661	1.603	1.707	stream
+tokio	mpsc	async	1	64	1	single	receive only	416128	6.946	6.728	7.124	stream
+fibre	mpsc	async	128	1	1	single	send and receive	3972228	65.576	64.841	67.029	stream
+flume	mpsc	async	128	1	1	single	receive only	2328325	39.041	38.544	39.925	stream
+kanal	mpsc	async	128	1	1	single	none	4923514	82.385	79.713	82.881	stream
+async-channel	mpsc	async	128	1	1	single	none	1457292	24.617	24.347	24.876	stream
+tokio	mpsc	async	128	1	1	single	receive only	2030784	33.689	33.391	33.787	stream
+fibre	mpsc	async	128	1	1	batch-512	send and receive	8000000	226.980	224.891	228.010	stream
+flume	mpsc	async	128	1	1	batch-512	receive only	3065975	51.049	50.641	51.480	stream
+tokio	mpsc	async	128	1	1	batch-512	receive only	2691692	44.612	44.243	44.799	stream
+fibre	mpsc	async	128	16	1	single	send and receive	3810384	64.543	63.547	65.901	stream
+flume	mpsc	async	128	16	1	single	receive only	192896	3.333	3.276	3.467	stream
+kanal	mpsc	async	128	16	1	single	none	1076352	14.729	10.317	21.622	stream
+async-channel	mpsc	async	128	16	1	single	none	197872	3.423	3.208	3.544	stream
+tokio	mpsc	async	128	16	1	single	receive only	344416	5.658	5.538	6.641	stream
+fibre	mpsc	async	128	16	1	batch-512	send and receive	8000000	219.406	211.046	223.328	stream
+flume	mpsc	async	128	16	1	batch-512	receive only	435104	7.143	7.040	7.430	stream
+tokio	mpsc	async	128	16	1	batch-512	receive only	162064	2.851	2.474	2.912	stream
+fibre	mpsc	async	128	64	1	single	send and receive	3903168	63.758	62.533	65.522	stream
+flume	mpsc	async	128	64	1	single	receive only	58752	0.922	0.875	0.983	stream
+kanal	mpsc	async	128	64	1	single	none	246784	19.534	13.842	26.150	stream
+async-channel	mpsc	async	128	64	1	single	none	75520	1.250	1.127	1.366	stream
+tokio	mpsc	async	128	64	1	single	receive only	152576	2.534	2.409	2.690	stream
+fibre	mpsc	async	128	64	1	batch-512	send and receive	8000000	197.559	188.967	208.581	stream
+flume	mpsc	async	128	64	1	batch-512	receive only	267840	4.500	4.440	4.622	stream
+tokio	mpsc	async	128	64	1	batch-512	receive only	135424	2.512	2.387	2.655	stream
+fibre	mpsc	async	1024	1	1	single	send and receive	4496289	75.412	74.380	78.912	stream
+flume	mpsc	async	1024	1	1	single	receive only	1660895	21.602	16.286	32.811	stream
+kanal	mpsc	async	1024	1	1	single	none	4339571	81.691	71.172	86.538	stream
+async-channel	mpsc	async	1024	1	1	single	none	1505618	20.507	20.340	21.053	stream
+tokio	mpsc	async	1024	1	1	single	receive only	1436386	22.694	21.966	26.331	stream
+fibre	mpsc	async	1024	1	1	batch-512	send and receive	8000000	295.451	263.427	299.559	stream
+flume	mpsc	async	1024	1	1	batch-512	receive only	3469731	58.414	57.169	60.855	stream
+tokio	mpsc	async	1024	1	1	batch-512	receive only	2628947	42.440	38.977	44.070	stream
+fibre	mpsc	async	1024	16	1	single	send and receive	4485040	75.834	70.768	79.076	stream
+flume	mpsc	async	1024	16	1	single	receive only	283008	4.901	4.586	5.053	stream
+kanal	mpsc	async	1024	16	1	single	none	309904	4.477	3.732	6.337	stream
+async-channel	mpsc	async	1024	16	1	single	none	326704	7.359	7.037	7.476	stream
+tokio	mpsc	async	1024	16	1	single	receive only	387408	6.130	5.661	6.859	stream
+fibre	mpsc	async	1024	16	1	batch-512	send and receive	8000000	268.846	264.912	277.911	stream
+flume	mpsc	async	1024	16	1	batch-512	receive only	1060592	17.566	17.381	17.817	stream
+tokio	mpsc	async	1024	16	1	batch-512	receive only	124224	2.068	2.010	2.288	stream
+fibre	mpsc	async	1024	64	1	single	send and receive	4262848	74.275	70.662	77.030	stream
+flume	mpsc	async	1024	64	1	single	receive only	70912	1.341	1.243	1.396	stream
+kanal	mpsc	async	1024	64	1	single	none	798336	9.946	6.052	17.313	stream
+async-channel	mpsc	async	1024	64	1	single	none	207808	4.046	3.718	4.202	stream
+tokio	mpsc	async	1024	64	1	single	receive only	143872	2.464	2.273	2.636	stream
+fibre	mpsc	async	1024	64	1	batch-512	send and receive	8000000	273.480	269.411	276.944	stream
+flume	mpsc	async	1024	64	1	batch-512	receive only	815296	15.470	14.609	15.746	stream
+tokio	mpsc	async	1024	64	1	batch-512	receive only	133184	2.223	2.169	2.355	stream
+fibre	mpsc	async	unbounded	1	1	single	send and receive	1000000	111.624	110.080	112.263	stream
+flume	mpsc	async	unbounded	1	1	single	receive only	1000000	53.754	51.291	54.609	stream
+kanal	mpsc	async	unbounded	1	1	single	none	1000000	105.553	105.221	106.361	stream
+async-channel	mpsc	async	unbounded	1	1	single	none	1000000	29.938	29.437	30.378	stream
+tokio	mpsc	async	unbounded	1	1	single	receive only	1000000	62.864	61.943	63.025	stream
+fibre	mpsc	async	unbounded	1	1	batch-512	send and receive	1000000	197.852	182.733	200.773	stream
+flume	mpsc	async	unbounded	1	1	batch-512	receive only	1000000	90.188	88.435	91.125	stream
+tokio	mpsc	async	unbounded	1	1	batch-512	receive only	1000000	110.868	109.257	115.164	stream
+fibre	mpsc	async	unbounded	16	1	single	send and receive	782176	12.982	12.835	13.790	stream
+flume	mpsc	async	unbounded	16	1	single	receive only	1000000	24.986	23.728	26.386	stream
+kanal	mpsc	async	unbounded	16	1	single	none	1000000	44.533	39.913	47.134	stream
+async-channel	mpsc	async	unbounded	16	1	single	none	587936	10.192	10.079	10.373	stream
+tokio	mpsc	async	unbounded	16	1	single	receive only	130880	2.201	2.058	2.553	stream
+fibre	mpsc	async	unbounded	16	1	batch-512	send and receive	1000000	196.195	185.605	201.891	stream
+flume	mpsc	async	unbounded	16	1	batch-512	receive only	1000000	35.354	34.316	37.996	stream
+tokio	mpsc	async	unbounded	16	1	batch-512	receive only	160960	2.941	2.340	3.085	stream
+fibre	mpsc	async	unbounded	64	1	single	send and receive	844544	12.432	12.261	13.296	stream
+flume	mpsc	async	unbounded	64	1	single	receive only	1000000	26.419	24.894	26.993	stream
+kanal	mpsc	async	unbounded	64	1	single	none	334016	24.811	17.520	27.593	stream
+async-channel	mpsc	async	unbounded	64	1	single	none	582336	10.029	9.527	10.098	stream
+tokio	mpsc	async	unbounded	64	1	single	receive only	126912	2.111	1.953	2.182	stream
+fibre	mpsc	async	unbounded	64	1	batch-512	send and receive	1000000	197.187	188.658	212.331	stream
+flume	mpsc	async	unbounded	64	1	batch-512	receive only	1000000	39.905	39.015	40.904	stream
+tokio	mpsc	async	unbounded	64	1	batch-512	receive only	121984	2.121	2.036	2.550	stream
+fibre	spmc	sync	1	1	1	single	send and receive	14667	0.246	0.243	0.252	stream
+fibre	spmc	sync	1	1	16	single	send and receive	4096	0.032	0.030	0.032	stream
+fibre	spmc	sync	1	1	64	single	send and receive	4096	0.010	0.009	0.010	stream
+fibre	spmc	sync	128	1	1	single	send and receive	885710	14.863	13.406	15.315	stream
+fibre	spmc	sync	128	1	1	batch-512	send and receive	1874122	30.383	29.938	31.732	stream
+fibre	spmc	sync	128	1	16	single	send and receive	4096	0.016	0.013	0.019	stream
+fibre	spmc	sync	128	1	16	batch-512	send and receive	224703	3.774	3.750	3.794	stream
+fibre	spmc	sync	128	1	64	single	send and receive	4096	0.005	0.003	0.007	stream
+fibre	spmc	sync	128	1	64	batch-512	send and receive	64785	1.019	0.844	1.107	stream
+fibre	spmc	sync	1024	1	1	single	send and receive	743200	17.708	14.200	19.512	stream
+fibre	spmc	sync	1024	1	1	batch-512	send and receive	4783882	81.641	81.081	82.571	stream
+fibre	spmc	sync	1024	1	16	single	send and receive	4096	0.029	0.019	1.008	stream
+fibre	spmc	sync	1024	1	16	batch-512	send and receive	737594	13.617	12.995	14.421	stream
+fibre	spmc	sync	1024	1	64	single	send and receive	4096	0.007	0.006	0.362	stream
+fibre	spmc	sync	1024	1	64	batch-512	send and receive	247343	4.096	3.765	4.386	stream
+fibre	spmc	async	1	1	1	single	send and receive	443647	7.622	7.282	7.721	stream
+fibre	spmc	async	1	1	16	single	send and receive	21177	0.354	0.336	0.367	stream
+fibre	spmc	async	1	1	64	single	send and receive	4689	0.078	0.077	0.079	stream
+fibre	spmc	async	128	1	1	single	send and receive	2458051	43.084	27.847	44.782	stream
+fibre	spmc	async	128	1	1	batch-512	send and receive	6732620	112.764	111.748	113.214	stream
+fibre	spmc	async	128	1	16	single	send and receive	44749	0.755	0.744	0.779	stream
+fibre	spmc	async	128	1	16	batch-512	send and receive	1433551	23.962	23.301	24.204	stream
+fibre	spmc	async	128	1	64	single	send and receive	12547	0.204	0.203	0.209	stream
+fibre	spmc	async	128	1	64	batch-512	send and receive	602661	9.927	9.813	10.006	stream
+fibre	spmc	async	1024	1	1	single	send and receive	1090059	20.368	18.932	20.918	stream
+fibre	spmc	async	1024	1	1	batch-512	send and receive	8000000	142.910	142.433	143.498	stream
+fibre	spmc	async	1024	1	16	single	send and receive	45520	0.759	0.756	0.762	stream
+fibre	spmc	async	1024	1	16	batch-512	send and receive	3482869	58.230	57.991	58.752	stream
+fibre	spmc	async	1024	1	64	single	send and receive	12587	0.212	0.210	0.214	stream
+fibre	spmc	async	1024	1	64	batch-512	send and receive	1107262	23.556	22.299	24.638	stream
+fibre	mpmc	sync	rendezvous	1	1	single	none	34288	0.565	0.547	0.573	stream
+flume	mpmc	sync	rendezvous	1	1	single	receive only	27479	0.448	0.429	0.462	stream
+kanal	mpmc	sync	rendezvous	1	1	single	none	468955	6.327	5.404	7.055	stream
+crossbeam	mpmc	sync	rendezvous	1	1	single	none	33604	0.539	0.535	0.568	stream
+fibre	mpmc	sync	rendezvous	16	16	single	none	32992	0.545	0.512	0.578	stream
+flume	mpmc	sync	rendezvous	16	16	single	receive only	19792	0.330	0.270	0.339	stream
+kanal	mpmc	sync	rendezvous	16	16	single	none	28400	1.425	1.066	1.711	stream
+crossbeam	mpmc	sync	rendezvous	16	16	single	none	16800	0.286	0.276	0.291	stream
+fibre	mpmc	sync	rendezvous	64	64	single	none	33152	0.558	0.517	0.593	stream
+flume	mpmc	sync	rendezvous	64	64	single	receive only	19328	0.339	0.322	0.405	stream
+kanal	mpmc	sync	rendezvous	64	64	single	none	70656	1.536	1.473	1.591	stream
+crossbeam	mpmc	sync	rendezvous	64	64	single	none	17024	0.274	0.250	0.299	stream
+fibre	mpmc	sync	rendezvous	16	1	single	none	32496	0.519	0.444	0.592	stream
+flume	mpmc	sync	rendezvous	16	1	single	receive only	12096	0.196	0.192	0.202	stream
+kanal	mpmc	sync	rendezvous	16	1	single	none	75056	1.424	1.105	2.229	stream
+crossbeam	mpmc	sync	rendezvous	16	1	single	none	10048	0.165	0.164	0.171	stream
+fibre	mpmc	sync	rendezvous	1	16	single	none	34423	0.615	0.539	0.691	stream
+flume	mpmc	sync	rendezvous	1	16	single	receive only	31349	0.504	0.442	0.547	stream
+kanal	mpmc	sync	rendezvous	1	16	single	none	117283	1.227	0.986	1.550	stream
+crossbeam	mpmc	sync	rendezvous	1	16	single	none	10664	0.168	0.163	0.174	stream
+fibre	mpmc	sync	rendezvous	64	1	single	none	38144	0.635	0.581	0.727	stream
+flume	mpmc	sync	rendezvous	64	1	single	receive only	12480	0.209	0.193	0.217	stream
+kanal	mpmc	sync	rendezvous	64	1	single	none	25472	0.474	0.385	0.585	stream
+crossbeam	mpmc	sync	rendezvous	64	1	single	none	9984	0.167	0.162	0.171	stream
+fibre	mpmc	sync	rendezvous	1	64	single	none	41234	0.526	0.475	0.629	stream
+flume	mpmc	sync	rendezvous	1	64	single	receive only	32132	0.462	0.402	0.548	stream
+kanal	mpmc	sync	rendezvous	1	64	single	none	25879	0.463	0.398	0.599	stream
+crossbeam	mpmc	sync	rendezvous	1	64	single	none	10345	0.155	0.151	0.157	stream
+fibre	mpmc	sync	1	1	1	single	send and receive	100288	1.693	1.422	1.754	stream
+flume	mpmc	sync	1	1	1	single	receive only	37604	0.649	0.638	0.711	stream
+kanal	mpmc	sync	1	1	1	single	none	259211	4.284	4.007	6.317	stream
+crossbeam	mpmc	sync	1	1	1	single	none	393809	7.026	6.532	7.261	stream
+fibre	mpmc	sync	1	16	16	single	send and receive	7552	0.125	0.115	0.133	stream
+flume	mpmc	sync	1	16	16	single	receive only	20320	0.354	0.329	0.369	stream
+kanal	mpmc	sync	1	16	16	single	none	27776	1.117	0.934	1.548	stream
+crossbeam	mpmc	sync	1	16	16	single	none	94432	1.783	1.511	1.885	stream
+fibre	mpmc	sync	1	64	64	single	send and receive	6336	0.106	0.076	0.119	stream
+flume	mpmc	sync	1	64	64	single	receive only	17024	0.319	0.295	0.352	stream
+kanal	mpmc	sync	1	64	64	single	none	60928	1.456	1.421	1.509	stream
+crossbeam	mpmc	sync	1	64	64	single	none	92416	1.651	1.441	1.735	stream
+fibre	mpmc	sync	1	16	1	single	send and receive	8880	0.179	0.161	0.187	stream
+flume	mpmc	sync	1	16	1	single	receive only	11776	0.216	0.201	0.218	stream
+kanal	mpmc	sync	1	16	1	single	none	28336	1.583	1.365	1.855	stream
+crossbeam	mpmc	sync	1	16	1	single	none	12304	0.198	0.187	0.213	stream
+fibre	mpmc	sync	1	1	16	single	send and receive	10864	0.174	0.149	0.181	stream
+flume	mpmc	sync	1	1	16	single	receive only	32203	0.520	0.404	0.541	stream
+kanal	mpmc	sync	1	1	16	single	none	384113	1.869	1.705	2.287	stream
+crossbeam	mpmc	sync	1	1	16	single	none	11276	0.189	0.183	0.267	stream
+fibre	mpmc	sync	1	64	1	single	send and receive	10112	0.172	0.168	0.181	stream
+flume	mpmc	sync	1	64	1	single	receive only	12224	0.215	0.211	0.218	stream
+kanal	mpmc	sync	1	64	1	single	none	22720	0.569	0.384	0.867	stream
+crossbeam	mpmc	sync	1	64	1	single	none	9536	0.163	0.160	0.165	stream
+fibre	mpmc	sync	1	1	64	single	send and receive	10493	0.174	0.150	0.180	stream
+flume	mpmc	sync	1	1	64	single	receive only	33191	0.558	0.486	0.579	stream
+kanal	mpmc	sync	1	1	64	single	none	24840	0.461	0.356	0.550	stream
+crossbeam	mpmc	sync	1	1	64	single	none	9463	0.160	0.157	0.166	stream
+fibre	mpmc	sync	128	1	1	single	send and receive	2493417	39.727	38.883	43.357	stream
+flume	mpmc	sync	128	1	1	single	receive only	1587550	26.411	25.410	29.026	stream
+kanal	mpmc	sync	128	1	1	single	none	1162338	16.434	15.576	26.550	stream
+crossbeam	mpmc	sync	128	1	1	single	none	2135925	35.715	30.998	42.756	stream
+fibre	mpmc	sync	128	1	1	batch-512	send and receive	7172691	135.242	127.196	138.846	stream
+flume	mpmc	sync	128	1	1	batch-512	receive only	1203384	20.246	19.418	20.820	stream
+fibre	mpmc	sync	128	16	16	single	send and receive	1097840	18.844	18.325	19.449	stream
+flume	mpmc	sync	128	16	16	single	receive only	217712	3.619	3.412	3.716	stream
+kanal	mpmc	sync	128	16	16	single	none	84256	2.869	2.488	3.295	stream
+crossbeam	mpmc	sync	128	16	16	single	none	1242352	21.383	19.706	22.806	stream
+fibre	mpmc	sync	128	16	16	batch-512	send and receive	1467056	29.486	28.885	30.542	stream
+flume	mpmc	sync	128	16	16	batch-512	receive only	273424	4.831	4.389	5.144	stream
+fibre	mpmc	sync	128	64	64	single	send and receive	905920	16.890	8.771	17.273	stream
+flume	mpmc	sync	128	64	64	single	receive only	101888	2.295	1.965	2.595	stream
+kanal	mpmc	sync	128	64	64	single	none	100032	3.707	2.927	4.017	stream
+crossbeam	mpmc	sync	128	64	64	single	none	231552	8.477	3.476	11.820	stream
+fibre	mpmc	sync	128	64	64	batch-512	send and receive	708224	25.102	16.192	31.526	stream
+flume	mpmc	sync	128	64	64	batch-512	receive only	188032	3.593	3.579	3.913	stream
+fibre	mpmc	sync	128	16	1	single	send and receive	490048	8.879	8.174	10.551	stream
+flume	mpmc	sync	128	16	1	single	receive only	12400	0.210	0.192	0.231	stream
+kanal	mpmc	sync	128	16	1	single	none	61104	1.533	1.133	1.951	stream
+crossbeam	mpmc	sync	128	16	1	single	none	1140912	14.876	12.477	19.667	stream
+fibre	mpmc	sync	128	16	1	batch-512	send and receive	850544	15.642	12.070	20.616	stream
+flume	mpmc	sync	128	16	1	batch-512	receive only	205504	3.548	3.297	3.678	stream
+fibre	mpmc	sync	128	1	16	single	send and receive	607857	9.909	9.425	10.719	stream
+flume	mpmc	sync	128	1	16	single	receive only	27296	0.530	0.451	0.556	stream
+kanal	mpmc	sync	128	1	16	single	none	278169	5.585	3.639	7.743	stream
+crossbeam	mpmc	sync	128	1	16	single	none	732857	10.375	8.327	11.256	stream
+fibre	mpmc	sync	128	1	16	batch-512	send and receive	800871	12.112	10.506	16.325	stream
+flume	mpmc	sync	128	1	16	batch-512	receive only	29038	0.474	0.459	0.494	stream
+fibre	mpmc	sync	128	64	1	single	send and receive	333440	5.916	4.426	6.905	stream
+flume	mpmc	sync	128	64	1	single	receive only	12864	0.219	0.211	0.223	stream
+kanal	mpmc	sync	128	64	1	single	none	19520	0.436	0.353	0.556	stream
+crossbeam	mpmc	sync	128	64	1	single	none	9664	0.198	0.165	13.986	stream
+fibre	mpmc	sync	128	64	1	batch-512	send and receive	399488	8.650	7.397	9.920	stream
+flume	mpmc	sync	128	64	1	batch-512	receive only	86144	1.386	1.346	1.495	stream
+fibre	mpmc	sync	128	1	64	single	send and receive	220301	5.584	3.158	10.207	stream
+flume	mpmc	sync	128	1	64	single	receive only	35844	0.572	0.554	0.587	stream
+kanal	mpmc	sync	128	1	64	single	none	19115	0.504	0.388	0.602	stream
+crossbeam	mpmc	sync	128	1	64	single	none	694632	0.624	0.197	11.661	stream
+fibre	mpmc	sync	128	1	64	batch-512	send and receive	490961	12.145	9.081	16.987	stream
+flume	mpmc	sync	128	1	64	batch-512	receive only	28366	0.501	0.474	0.505	stream
+fibre	mpmc	sync	1024	1	1	single	send and receive	3352608	52.903	50.885	55.282	stream
+flume	mpmc	sync	1024	1	1	single	receive only	334836	6.503	5.454	8.670	stream
+kanal	mpmc	sync	1024	1	1	single	none	3067952	40.057	37.309	49.591	stream
+crossbeam	mpmc	sync	1024	1	1	single	none	3825622	63.006	58.195	74.572	stream
+fibre	mpmc	sync	1024	1	1	batch-512	send and receive	8000000	216.454	187.967	234.490	stream
+flume	mpmc	sync	1024	1	1	batch-512	receive only	4304261	72.353	69.951	72.511	stream
+fibre	mpmc	sync	1024	16	16	single	send and receive	2989984	43.872	42.520	44.795	stream
+flume	mpmc	sync	1024	16	16	single	receive only	355280	10.866	7.763	14.558	stream
+kanal	mpmc	sync	1024	16	16	single	none	93600	3.168	2.781	7.424	stream
+crossbeam	mpmc	sync	1024	16	16	single	none	2318080	43.063	41.083	45.422	stream
+fibre	mpmc	sync	1024	16	16	batch-512	send and receive	6192288	117.548	111.467	119.337	stream
+flume	mpmc	sync	1024	16	16	batch-512	receive only	363600	11.678	10.373	13.632	stream
+fibre	mpmc	sync	1024	64	64	single	send and receive	828096	36.005	34.778	40.072	stream
+flume	mpmc	sync	1024	64	64	single	receive only	263232	7.366	6.835	8.239	stream
+kanal	mpmc	sync	1024	64	64	single	none	154176	4.236	3.250	4.549	stream
+crossbeam	mpmc	sync	1024	64	64	single	none	695808	16.116	9.283	24.505	stream
+fibre	mpmc	sync	1024	64	64	batch-512	send and receive	2361920	92.275	81.741	99.989	stream
+flume	mpmc	sync	1024	64	64	batch-512	receive only	272640	8.340	7.290	10.731	stream
+fibre	mpmc	sync	1024	16	1	single	send and receive	1111216	24.227	21.158	25.272	stream
+flume	mpmc	sync	1024	16	1	single	receive only	12960	0.243	0.237	0.273	stream
+kanal	mpmc	sync	1024	16	1	single	none	75984	1.431	1.160	2.445	stream
+crossbeam	mpmc	sync	1024	16	1	single	none	710544	17.516	15.036	26.682	stream
+fibre	mpmc	sync	1024	16	1	batch-512	send and receive	4843456	65.104	57.340	71.154	stream
+flume	mpmc	sync	1024	16	1	batch-512	receive only	1047600	18.003	16.666	18.430	stream
+fibre	mpmc	sync	1024	1	16	single	send and receive	1693629	27.529	24.769	29.993	stream
+flume	mpmc	sync	1024	1	16	single	receive only	33185	0.545	0.519	0.569	stream
+kanal	mpmc	sync	1024	1	16	single	none	42921	4.442	0.833	10.304	stream
+crossbeam	mpmc	sync	1024	1	16	single	none	536538	12.925	9.857	14.210	stream
+fibre	mpmc	sync	1024	1	16	batch-512	send and receive	4575387	63.619	63.014	65.438	stream
+flume	mpmc	sync	1024	1	16	batch-512	receive only	29606	0.500	0.457	0.566	stream
+fibre	mpmc	sync	1024	64	1	single	send and receive	703808	19.005	13.961	24.878	stream
+flume	mpmc	sync	1024	64	1	single	receive only	12800	0.233	0.215	0.239	stream
+kanal	mpmc	sync	1024	64	1	single	none	29120	0.502	0.442	0.620	stream
+crossbeam	mpmc	sync	1024	64	1	single	none	1498560	5.961	0.506	27.986	stream
+fibre	mpmc	sync	1024	64	1	batch-512	send and receive	2495168	39.348	21.260	54.731	stream
+flume	mpmc	sync	1024	64	1	batch-512	receive only	472064	6.337	5.967	6.605	stream
+fibre	mpmc	sync	1024	1	64	single	send and receive	1093011	20.428	9.753	25.675	stream
+flume	mpmc	sync	1024	1	64	single	receive only	26854	0.521	0.447	0.583	stream
+kanal	mpmc	sync	1024	1	64	single	none	32016	0.492	0.376	0.801	stream
+crossbeam	mpmc	sync	1024	1	64	single	none	708326	12.818	1.040	13.213	stream
+fibre	mpmc	sync	1024	1	64	batch-512	send and receive	1671307	38.708	22.579	53.372	stream
+flume	mpmc	sync	1024	1	64	batch-512	receive only	29969	0.487	0.474	0.502	stream
+fibre	mpmc	sync	unbounded	1	1	single	send and receive	1000000	134.400	48.365	137.536	stream
+flume	mpmc	sync	unbounded	1	1	single	receive only	450637	9.475	6.412	15.041	stream
+kanal	mpmc	sync	unbounded	1	1	single	none	948871	137.679	102.041	175.103	stream
+crossbeam	mpmc	sync	unbounded	1	1	single	none	1000000	143.664	140.090	156.798	stream
+fibre	mpmc	sync	unbounded	1	1	batch-512	send and receive	1000000	225.560	195.475	326.878	stream
+flume	mpmc	sync	unbounded	1	1	batch-512	receive only	1000000	106.815	103.852	114.114	stream
+fibre	mpmc	sync	unbounded	16	16	single	send and receive	983904	9.761	8.934	10.036	stream
+flume	mpmc	sync	unbounded	16	16	single	receive only	477088	18.207	13.411	26.703	stream
+kanal	mpmc	sync	unbounded	16	16	single	none	109792	3.881	2.716	4.149	stream
+crossbeam	mpmc	sync	unbounded	16	16	single	none	1000000	50.698	35.580	70.813	stream
+fibre	mpmc	sync	unbounded	16	16	batch-512	send and receive	1000000	157.282	148.230	165.497	stream
+flume	mpmc	sync	unbounded	16	16	batch-512	receive only	418960	12.790	10.039	20.916	stream
+fibre	mpmc	sync	unbounded	64	64	single	send and receive	1000000	9.363	6.201	29.885	stream
+flume	mpmc	sync	unbounded	64	64	single	receive only	644800	15.260	13.370	20.246	stream
+kanal	mpmc	sync	unbounded	64	64	single	none	108864	3.684	3.204	4.513	stream
+crossbeam	mpmc	sync	unbounded	64	64	single	none	1000000	46.563	25.884	59.808	stream
+fibre	mpmc	sync	unbounded	64	64	batch-512	send and receive	1000000	151.176	98.679	174.258	stream
+flume	mpmc	sync	unbounded	64	64	batch-512	receive only	1000000	14.097	4.745	16.184	stream
+fibre	mpmc	sync	unbounded	16	1	single	send and receive	739872	12.022	11.689	14.344	stream
+flume	mpmc	sync	unbounded	16	1	single	receive only	1000000	43.217	39.810	44.864	stream
+kanal	mpmc	sync	unbounded	16	1	single	none	200816	13.577	12.336	21.746	stream
+crossbeam	mpmc	sync	unbounded	16	1	single	none	1000000	23.261	18.825	28.775	stream
+fibre	mpmc	sync	unbounded	16	1	batch-512	send and receive	1000000	203.176	195.168	218.506	stream
+flume	mpmc	sync	unbounded	16	1	batch-512	receive only	1000000	49.411	46.689	54.681	stream
+fibre	mpmc	sync	unbounded	1	16	single	send and receive	24893	0.500	0.409	18.830	stream
+flume	mpmc	sync	unbounded	1	16	single	receive only	25489	0.539	0.445	3.467	stream
+kanal	mpmc	sync	unbounded	1	16	single	none	124601	20.746	5.946	44.366	stream
+crossbeam	mpmc	sync	unbounded	1	16	single	none	1000000	36.864	32.742	56.218	stream
+fibre	mpmc	sync	unbounded	1	16	batch-512	send and receive	1000000	101.413	88.157	104.790	stream
+flume	mpmc	sync	unbounded	1	16	batch-512	receive only	28835	0.474	0.465	0.514	stream
+fibre	mpmc	sync	unbounded	64	1	single	send and receive	1000000	13.278	12.394	17.336	stream
+flume	mpmc	sync	unbounded	64	1	single	receive only	1000000	43.263	40.472	44.849	stream
+kanal	mpmc	sync	unbounded	64	1	single	none	275136	7.979	7.635	8.975	stream
+crossbeam	mpmc	sync	unbounded	64	1	single	none	1000000	26.141	21.514	34.648	stream
+fibre	mpmc	sync	unbounded	64	1	batch-512	send and receive	1000000	202.241	194.937	212.798	stream
+flume	mpmc	sync	unbounded	64	1	batch-512	receive only	1000000	57.339	54.663	62.125	stream
+fibre	mpmc	sync	unbounded	1	64	single	send and receive	26042	0.445	0.401	0.517	stream
+flume	mpmc	sync	unbounded	1	64	single	receive only	32082	0.536	0.503	0.573	stream
+kanal	mpmc	sync	unbounded	1	64	single	none	17680	0.411	0.327	0.507	stream
+crossbeam	mpmc	sync	unbounded	1	64	single	none	1000000	18.006	0.472	37.938	stream
+fibre	mpmc	sync	unbounded	1	64	batch-512	send and receive	1000000	91.070	80.855	94.856	stream
+flume	mpmc	sync	unbounded	1	64	batch-512	receive only	27988	0.478	0.401	0.488	stream
+fibre	mpmc	async	rendezvous	1	1	single	none	1485231	25.441	24.844	26.062	stream
+flume	mpmc	async	rendezvous	1	1	single	receive only	414904	7.107	6.866	7.663	stream
+kanal	mpmc	async	rendezvous	1	1	single	none	1261763	21.322	20.984	22.057	stream
+fibre	mpmc	async	rendezvous	16	16	single	none	318768	5.363	5.221	5.625	stream
+flume	mpmc	async	rendezvous	16	16	single	receive only	159152	3.052	2.976	3.117	stream
+kanal	mpmc	async	rendezvous	16	16	single	none	97904	9.445	7.221	12.608	stream
+fibre	mpmc	async	rendezvous	64	64	single	none	287744	4.770	4.631	4.930	stream
+flume	mpmc	async	rendezvous	64	64	single	receive only	171072	2.847	2.027	3.171	stream
+kanal	mpmc	async	rendezvous	64	64	single	none	196224	13.120	8.995	14.835	stream
+fibre	mpmc	async	rendezvous	16	1	single	none	404752	6.628	6.448	6.831	stream
+flume	mpmc	async	rendezvous	16	1	single	receive only	54496	0.929	0.899	0.958	stream
+kanal	mpmc	async	rendezvous	16	1	single	none	361664	6.143	5.075	6.589	stream
+fibre	mpmc	async	rendezvous	1	16	single	none	431246	7.053	6.921	7.196	stream
+flume	mpmc	async	rendezvous	1	16	single	receive only	88392	1.445	1.434	1.483	stream
+kanal	mpmc	async	rendezvous	1	16	single	none	336823	6.238	5.866	6.751	stream
+fibre	mpmc	async	rendezvous	64	1	single	none	264576	4.123	4.021	4.236	stream
+flume	mpmc	async	rendezvous	64	1	single	receive only	34240	0.586	0.574	0.599	stream
+kanal	mpmc	async	rendezvous	64	1	single	none	89216	0.978	0.761	1.241	stream
+fibre	mpmc	async	rendezvous	1	64	single	none	231674	3.949	3.283	3.972	stream
+flume	mpmc	async	rendezvous	1	64	single	receive only	26400	0.461	0.441	0.815	stream
+kanal	mpmc	async	rendezvous	1	64	single	none	83323	0.981	0.858	1.118	stream
+fibre	mpmc	async	1	1	1	single	send and receive	585124	10.043	9.240	10.198	stream
+flume	mpmc	async	1	1	1	single	receive only	457205	7.157	6.876	7.701	stream
+kanal	mpmc	async	1	1	1	single	none	1642632	28.169	26.420	28.610	stream
+async-channel	mpmc	async	1	1	1	single	none	231959	3.880	3.782	3.980	stream
+fibre	mpmc	async	1	16	16	single	send and receive	422208	6.851	6.563	7.003	stream
+flume	mpmc	async	1	16	16	single	receive only	168976	2.652	2.105	3.052	stream
+kanal	mpmc	async	1	16	16	single	none	164096	13.899	12.601	15.407	stream
+async-channel	mpmc	async	1	16	16	single	none	34800	0.554	0.500	0.584	stream
+fibre	mpmc	async	1	64	64	single	send and receive	296384	5.101	3.327	5.362	stream
+flume	mpmc	async	1	64	64	single	receive only	162048	2.917	2.613	3.071	stream
+kanal	mpmc	async	1	64	64	single	none	165888	11.590	8.406	14.146	stream
+async-channel	mpmc	async	1	64	64	single	none	26816	0.446	0.437	0.450	stream
+fibre	mpmc	async	1	16	1	single	send and receive	448688	7.858	7.353	7.969	stream
+flume	mpmc	async	1	16	1	single	receive only	53648	0.899	0.879	0.960	stream
+kanal	mpmc	async	1	16	1	single	none	248992	16.598	14.018	19.804	stream
+async-channel	mpmc	async	1	16	1	single	none	99472	1.755	1.644	1.837	stream
+fibre	mpmc	async	1	1	16	single	send and receive	485148	7.803	7.685	8.139	stream
+flume	mpmc	async	1	1	16	single	receive only	92954	1.495	1.458	1.551	stream
+kanal	mpmc	async	1	1	16	single	none	490996	9.798	9.115	10.847	stream
+async-channel	mpmc	async	1	1	16	single	none	106908	1.712	1.604	1.777	stream
+fibre	mpmc	async	1	64	1	single	send and receive	402112	6.586	6.357	7.060	stream
+flume	mpmc	async	1	64	1	single	receive only	35968	0.600	0.580	0.622	stream
+kanal	mpmc	async	1	64	1	single	none	248192	10.788	7.651	13.202	stream
+async-channel	mpmc	async	1	64	1	single	none	97280	1.731	1.567	1.825	stream
+fibre	mpmc	async	1	1	64	single	send and receive	396914	6.841	5.966	7.215	stream
+flume	mpmc	async	1	1	64	single	receive only	27695	0.472	0.450	0.502	stream
+kanal	mpmc	async	1	1	64	single	none	60181	0.972	0.895	1.918	stream
+async-channel	mpmc	async	1	1	64	single	none	94320	1.758	1.639	1.840	stream
+fibre	mpmc	async	128	1	1	single	send and receive	3421791	57.022	56.347	57.301	stream
+flume	mpmc	async	128	1	1	single	receive only	2280284	38.142	37.433	38.548	stream
+kanal	mpmc	async	128	1	1	single	none	4837982	76.329	71.852	80.056	stream
+async-channel	mpmc	async	128	1	1	single	none	1468657	24.209	24.128	24.477	stream
+fibre	mpmc	async	128	1	1	batch-512	send and receive	8000000	155.397	154.474	156.413	stream
+flume	mpmc	async	128	1	1	batch-512	receive only	3318624	54.581	54.013	54.827	stream
+fibre	mpmc	async	128	16	16	single	send and receive	1438384	23.708	18.621	25.281	stream
+flume	mpmc	async	128	16	16	single	receive only	755920	13.077	12.865	13.201	stream
+kanal	mpmc	async	128	16	16	single	none	2385376	45.833	39.071	49.943	stream
+async-channel	mpmc	async	128	16	16	single	none	411696	7.147	5.443	7.330	stream
+fibre	mpmc	async	128	16	16	batch-512	send and receive	4381600	74.850	68.551	88.024	stream
+flume	mpmc	async	128	16	16	batch-512	receive only	936320	16.648	16.112	17.626	stream
+fibre	mpmc	async	128	64	64	single	send and receive	1209536	21.339	14.574	22.186	stream
+flume	mpmc	async	128	64	64	single	receive only	643136	13.105	12.940	13.296	stream
+kanal	mpmc	async	128	64	64	single	none	102464	9.654	8.548	19.245	stream
+async-channel	mpmc	async	128	64	64	single	none	386240	7.012	6.096	7.387	stream
+fibre	mpmc	async	128	64	64	batch-512	send and receive	4326656	72.025	71.101	75.740	stream
+flume	mpmc	async	128	64	64	batch-512	receive only	852160	16.102	15.241	16.648	stream
+fibre	mpmc	async	128	16	1	single	send and receive	1095504	18.451	18.156	18.781	stream
+flume	mpmc	async	128	16	1	single	receive only	214448	3.515	3.397	3.782	stream
+kanal	mpmc	async	128	16	1	single	none	630288	22.288	16.699	23.584	stream
+async-channel	mpmc	async	128	16	1	single	none	194464	3.523	3.475	3.600	stream
+fibre	mpmc	async	128	16	1	batch-512	send and receive	3541744	58.462	57.508	59.747	stream
+flume	mpmc	async	128	16	1	batch-512	receive only	435472	7.400	7.092	7.512	stream
+fibre	mpmc	async	128	1	16	single	send and receive	1214296	20.282	20.158	20.696	stream
+flume	mpmc	async	128	1	16	single	receive only	319791	5.261	5.055	5.363	stream
+kanal	mpmc	async	128	1	16	single	none	798086	14.190	12.761	17.522	stream
+async-channel	mpmc	async	128	1	16	single	none	217665	3.490	3.336	3.571	stream
+fibre	mpmc	async	128	1	16	batch-512	send and receive	4578673	76.326	75.496	77.213	stream
+flume	mpmc	async	128	1	16	batch-512	receive only	308043	5.438	5.156	5.763	stream
+fibre	mpmc	async	128	64	1	single	send and receive	403456	7.112	6.924	7.335	stream
+flume	mpmc	async	128	64	1	single	receive only	56512	0.983	0.957	1.061	stream
+kanal	mpmc	async	128	64	1	single	none	167680	30.584	10.327	32.074	stream
+async-channel	mpmc	async	128	64	1	single	none	73216	1.237	1.173	1.356	stream
+fibre	mpmc	async	128	64	1	batch-512	send and receive	1218368	21.520	19.940	23.464	stream
+flume	mpmc	async	128	64	1	batch-512	receive only	261504	4.577	4.425	5.043	stream
+fibre	mpmc	async	128	1	64	single	send and receive	618008	10.262	9.899	10.623	stream
+flume	mpmc	async	128	1	64	single	receive only	63079	0.981	0.914	1.054	stream
+kanal	mpmc	async	128	1	64	single	none	253527	2.080	1.400	10.171	stream
+async-channel	mpmc	async	128	1	64	single	none	71055	1.060	0.973	1.196	stream
+fibre	mpmc	async	128	1	64	batch-512	send and receive	1657662	29.004	28.699	31.226	stream
+flume	mpmc	async	128	1	64	batch-512	receive only	45858	0.744	0.693	0.826	stream
+fibre	mpmc	async	1024	1	1	single	send and receive	3534551	58.801	57.917	59.967	stream
+flume	mpmc	async	1024	1	1	single	receive only	1225560	23.647	20.225	28.210	stream
+kanal	mpmc	async	1024	1	1	single	none	4878539	81.194	76.798	83.715	stream
+async-channel	mpmc	async	1024	1	1	single	none	1287001	21.184	21.128	21.335	stream
+fibre	mpmc	async	1024	1	1	batch-512	send and receive	8000000	213.505	212.367	214.219	stream
+flume	mpmc	async	1024	1	1	batch-512	receive only	3428715	57.064	55.550	57.718	stream
+fibre	mpmc	async	1024	16	16	single	send and receive	1865968	30.166	24.591	31.671	stream
+flume	mpmc	async	1024	16	16	single	receive only	847856	16.304	15.353	17.107	stream
+kanal	mpmc	async	1024	16	16	single	none	144720	7.663	6.361	8.381	stream
+async-channel	mpmc	async	1024	16	16	single	none	567376	9.512	8.296	10.225	stream
+fibre	mpmc	async	1024	16	16	batch-512	send and receive	8000000	168.163	148.963	177.337	stream
+flume	mpmc	async	1024	16	16	batch-512	receive only	1136272	26.177	24.208	26.855	stream
+fibre	mpmc	async	1024	64	64	single	send and receive	1789504	25.675	16.719	27.706	stream
+flume	mpmc	async	1024	64	64	single	receive only	672704	16.109	15.815	16.543	stream
+kanal	mpmc	async	1024	64	64	single	none	337216	20.844	13.250	22.796	stream
+async-channel	mpmc	async	1024	64	64	single	none	503808	9.646	9.039	9.890	stream
+fibre	mpmc	async	1024	64	64	batch-512	send and receive	8000000	164.755	159.240	179.697	stream
+flume	mpmc	async	1024	64	64	batch-512	receive only	932224	24.912	22.956	27.788	stream
+fibre	mpmc	async	1024	16	1	single	send and receive	1220640	20.411	19.814	21.001	stream
+flume	mpmc	async	1024	16	1	single	receive only	302112	5.119	4.837	5.421	stream
+kanal	mpmc	async	1024	16	1	single	none	267808	3.641	2.946	7.096	stream
+async-channel	mpmc	async	1024	16	1	single	none	434240	7.391	7.152	7.529	stream
+fibre	mpmc	async	1024	16	1	batch-512	send and receive	7052832	115.147	113.739	116.600	stream
+flume	mpmc	async	1024	16	1	batch-512	receive only	1049424	18.060	17.549	18.332	stream
+fibre	mpmc	async	1024	1	16	single	send and receive	1307088	21.733	21.568	22.506	stream
+flume	mpmc	async	1024	1	16	single	receive only	412804	6.892	6.735	7.112	stream
+kanal	mpmc	async	1024	1	16	single	none	283691	6.443	5.360	11.550	stream
+async-channel	mpmc	async	1024	1	16	single	none	351287	7.478	6.884	7.713	stream
+fibre	mpmc	async	1024	1	16	batch-512	send and receive	7766361	130.784	129.126	132.663	stream
+flume	mpmc	async	1024	1	16	batch-512	receive only	447675	7.784	7.674	8.618	stream
+fibre	mpmc	async	1024	64	1	single	send and receive	701824	10.360	9.751	10.544	stream
+flume	mpmc	async	1024	64	1	single	receive only	83392	1.431	1.284	1.537	stream
+kanal	mpmc	async	1024	64	1	single	none	327040	9.161	7.016	13.372	stream
+async-channel	mpmc	async	1024	64	1	single	none	250560	3.949	3.422	4.303	stream
+fibre	mpmc	async	1024	64	1	batch-512	send and receive	4237824	70.410	66.898	73.029	stream
+flume	mpmc	async	1024	64	1	batch-512	receive only	896000	15.354	15.125	16.073	stream
+fibre	mpmc	async	1024	1	64	single	send and receive	904122	15.027	14.434	17.974	stream
+flume	mpmc	async	1024	1	64	single	receive only	95210	1.673	1.422	1.830	stream
+kanal	mpmc	async	1024	1	64	single	none	94447	2.934	1.160	31.822	stream
+async-channel	mpmc	async	1024	1	64	single	none	158074	2.277	2.060	2.516	stream
+fibre	mpmc	async	1024	1	64	batch-512	send and receive	4820039	88.106	85.059	99.757	stream
+flume	mpmc	async	1024	1	64	batch-512	receive only	62753	1.025	0.810	1.148	stream
+fibre	mpmc	async	unbounded	1	1	single	send and receive	1000000	74.641	51.895	75.514	stream
+flume	mpmc	async	unbounded	1	1	single	receive only	1000000	50.234	47.114	52.481	stream
+kanal	mpmc	async	unbounded	1	1	single	none	1000000	100.543	97.881	105.296	stream
+async-channel	mpmc	async	unbounded	1	1	single	none	1000000	28.920	27.368	29.217	stream
+fibre	mpmc	async	unbounded	1	1	batch-512	send and receive	1000000	182.938	179.407	186.727	stream
+flume	mpmc	async	unbounded	1	1	batch-512	receive only	1000000	87.585	86.810	89.072	stream
+fibre	mpmc	async	unbounded	16	16	single	send and receive	688928	9.443	8.392	10.531	stream
+flume	mpmc	async	unbounded	16	16	single	receive only	881024	14.969	13.383	17.129	stream
+kanal	mpmc	async	unbounded	16	16	single	none	149264	7.956	6.156	9.377	stream
+async-channel	mpmc	async	unbounded	16	16	single	none	450464	8.332	8.109	9.330	stream
+fibre	mpmc	async	unbounded	16	16	batch-512	send and receive	1000000	125.190	115.748	134.037	stream
+flume	mpmc	async	unbounded	16	16	batch-512	receive only	1000000	17.945	17.306	20.014	stream
+fibre	mpmc	async	unbounded	64	64	single	send and receive	456896	8.436	7.819	10.215	stream
+flume	mpmc	async	unbounded	64	64	single	receive only	991104	16.405	15.442	17.879	stream
+kanal	mpmc	async	unbounded	64	64	single	none	169472	10.402	9.069	21.050	stream
+async-channel	mpmc	async	unbounded	64	64	single	none	493376	9.038	8.120	9.697	stream
+fibre	mpmc	async	unbounded	64	64	batch-512	send and receive	1000000	118.221	114.382	132.937	stream
+flume	mpmc	async	unbounded	64	64	batch-512	receive only	935488	26.264	24.170	29.441	stream
+fibre	mpmc	async	unbounded	16	1	single	send and receive	830720	12.984	11.674	13.749	stream
+flume	mpmc	async	unbounded	16	1	single	receive only	1000000	28.174	24.778	29.137	stream
+kanal	mpmc	async	unbounded	16	1	single	none	213856	19.262	14.398	22.305	stream
+async-channel	mpmc	async	unbounded	16	1	single	none	583088	10.323	9.689	10.435	stream
+fibre	mpmc	async	unbounded	16	1	batch-512	send and receive	1000000	201.747	195.516	210.489	stream
+flume	mpmc	async	unbounded	16	1	batch-512	receive only	1000000	39.060	37.168	43.218	stream
+fibre	mpmc	async	unbounded	1	16	single	send and receive	1000000	28.976	22.611	33.202	stream
+flume	mpmc	async	unbounded	1	16	single	receive only	426158	7.411	7.142	7.706	stream
+kanal	mpmc	async	unbounded	1	16	single	none	101817	6.579	3.448	67.479	stream
+async-channel	mpmc	async	unbounded	1	16	single	none	976084	17.091	16.257	17.866	stream
+fibre	mpmc	async	unbounded	1	16	batch-512	send and receive	1000000	91.253	87.125	104.177	stream
+flume	mpmc	async	unbounded	1	16	batch-512	receive only	457153	7.950	7.567	8.141	stream
+fibre	mpmc	async	unbounded	64	1	single	send and receive	713088	11.884	11.641	12.571	stream
+flume	mpmc	async	unbounded	64	1	single	receive only	1000000	25.738	24.730	27.873	stream
+kanal	mpmc	async	unbounded	64	1	single	none	252992	23.302	20.925	30.748	stream
+async-channel	mpmc	async	unbounded	64	1	single	none	585344	9.870	9.109	10.132	stream
+fibre	mpmc	async	unbounded	64	1	batch-512	send and receive	1000000	203.104	189.542	206.954	stream
+flume	mpmc	async	unbounded	64	1	batch-512	receive only	1000000	38.327	34.420	40.534	stream
+fibre	mpmc	async	unbounded	1	64	single	send and receive	1000000	23.640	16.670	25.247	stream
+flume	mpmc	async	unbounded	1	64	single	receive only	100418	1.645	1.551	1.806	stream
+kanal	mpmc	async	unbounded	1	64	single	none	76102	4.306	1.676	9.955	stream
+async-channel	mpmc	async	unbounded	1	64	single	none	1000000	11.675	9.479	18.398	stream
+fibre	mpmc	async	unbounded	1	64	batch-512	send and receive	1000000	93.237	89.816	106.610	stream
+flume	mpmc	async	unbounded	1	64	batch-512	receive only	62016	1.057	0.988	1.089	stream
+fibre	oneshot	sync	1	1	1	single	none	2541085	41.930	41.242	42.292	full-cycle
+fibre-exclusive	oneshot	sync	1	1	1	single	none	2760958	46.993	46.014	47.565	full-cycle
+fibre-pool	oneshot	sync	1	1	1	single	none	7081955	118.633	118.200	120.624	full-cycle
+fibre-pool-host	oneshot	sync	1	1	1	single	none	6796949	114.411	113.308	115.441	full-cycle
+tokio	oneshot	sync	1	1	1	single	none	1867613	31.769	31.122	32.687	full-cycle
+oneshot	oneshot	sync	1	1	1	single	none	2983413	48.733	47.362	49.116	full-cycle
+lite-sync	oneshot	sync	1	1	1	single	none	4045361	65.750	64.285	67.332	full-cycle
+sync-oneshot	oneshot	sync	1	1	1	single	none	2535029	44.600	41.478	45.970	full-cycle
+fibre	oneshot	sync	1	1	1	single	none	1000000	82.752	81.962	84.161	handoff
+fibre-exclusive	oneshot	sync	1	1	1	single	none	1000000	103.229	37.617	104.496	handoff
+fibre-pool	oneshot	sync	1	1	1	single	none	1000000	189.734	181.857	192.856	handoff
+fibre-pool-host	oneshot	sync	1	1	1	single	none	1000000	190.464	180.968	192.760	handoff
+tokio	oneshot	sync	1	1	1	single	none	1000000	50.145	48.888	51.054	handoff
+oneshot	oneshot	sync	1	1	1	single	none	1000000	97.536	95.033	99.220	handoff
+lite-sync	oneshot	sync	1	1	1	single	none	1000000	97.692	77.320	214.016	handoff
+sync-oneshot	oneshot	sync	1	1	1	single	none	1000000	80.587	75.984	82.551	handoff
+fibre	oneshot	async	1	1	1	single	none	2256329	42.900	41.303	43.328	full-cycle
+fibre-exclusive	oneshot	async	1	1	1	single	none	2845204	52.395	51.583	52.519	full-cycle
+fibre-pool	oneshot	async	1	1	1	single	none	7099713	120.374	97.681	121.018	full-cycle
+fibre-pool-host	oneshot	async	1	1	1	single	none	6677111	110.562	109.946	111.101	full-cycle
+tokio	oneshot	async	1	1	1	single	none	2378783	39.046	38.745	39.496	full-cycle
+futures	oneshot	async	1	1	1	single	none	2279575	37.694	37.486	37.898	full-cycle
+oneshot	oneshot	async	1	1	1	single	none	2830423	45.643	45.432	46.113	full-cycle
+async-oneshot	oneshot	async	1	1	1	single	none	3219926	53.233	52.128	53.691	full-cycle
+lite-sync	oneshot	async	1	1	1	single	none	3560411	59.851	51.745	61.941	full-cycle
+fibre	oneshot	async	1	1	1	single	none	1000000	55.255	54.493	56.701	handoff
+fibre-exclusive	oneshot	async	1	1	1	single	none	1000000	57.860	53.077	75.355	handoff
+fibre-pool	oneshot	async	1	1	1	single	none	1000000	129.581	127.535	133.749	handoff
+fibre-pool-host	oneshot	async	1	1	1	single	none	1000000	102.139	99.222	107.735	handoff
+tokio	oneshot	async	1	1	1	single	none	1000000	42.544	41.913	42.983	handoff
+futures	oneshot	async	1	1	1	single	none	1000000	60.780	59.685	62.073	handoff
+oneshot	oneshot	async	1	1	1	single	none	1000000	79.095	77.029	81.209	handoff
+async-oneshot	oneshot	async	1	1	1	single	none	1000000	77.167	74.114	79.276	handoff
+lite-sync	oneshot	async	1	1	1	single	none	1000000	184.158	154.155	190.116	handoff

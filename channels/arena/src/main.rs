@@ -4,7 +4,7 @@ use channels_arena::matrix;
 use channels_arena::measure::{Budget, Measurement, format_throughput};
 use channels_arena::registry::registry;
 use channels_arena::report::{Record, Report};
-use channels_arena::spec::{Api, BatchSupport, Capacity, Flavor, Mode, Pairing};
+use channels_arena::spec::{Api, BatchSupport, Capacity, Flavor, Mode, Pairing, Stage};
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,7 @@ struct Args {
   flavors: Option<Vec<Flavor>>,
   modes: Option<Vec<Mode>>,
   capacities: Option<Vec<Capacity>>,
+  stages: Option<Vec<Stage>>,
   pairings: Option<Vec<(usize, usize)>>,
   batch_size: Option<usize>,
   single_only: bool,
@@ -35,10 +36,13 @@ USAGE:
     cargo run --release -- [OPTIONS]
 
 OPTIONS:
-    --library <a,b>    only these libraries (fibre, tokio, crossbeam, flume, kanal, async-channel, std)
-    --flavor <a,b>     only these shapes (spsc, mpsc, spmc, mpmc)
+    --library <a,b>    only these libraries (fibre, fibre-exclusive, fibre-pool, fibre-pool-host, tokio,
+                       crossbeam, flume, kanal, async-channel, futures, oneshot,
+                       async-oneshot, lite-sync, sync-oneshot, std)
+    --flavor <a,b>     only these shapes (spsc, mpsc, spmc, mpmc, oneshot)
     --mode <a,b>       only these modes (sync, async)
     --cap <a,b>        only these capacities (rendezvous, 1, 128, 1024, unbounded)
+    --stage <a,b>      only these oneshot stages (full-cycle, handoff)
     --pairing <a,b>    only these requested loads, as PxC (1x1, 16x16, 64x64, 16x1, 1x16, 64x1, 1x64)
     --batch-size <n>   items per batch call (default 512)
     --no-batch         skip the batched cells
@@ -78,6 +82,7 @@ fn parse_args() -> Args {
     flavors: None,
     modes: None,
     capacities: None,
+    stages: None,
     pairings: None,
     batch_size: Some(DEFAULT_BATCH_SIZE),
     single_only: false,
@@ -104,6 +109,7 @@ fn parse_args() -> Args {
       "--flavor" => args.flavors = Some(parse_list(&value(), Flavor::parse, "flavor")),
       "--mode" => args.modes = Some(parse_list(&value(), Mode::parse, "mode")),
       "--cap" => args.capacities = Some(parse_list(&value(), Capacity::parse, "capacity")),
+      "--stage" => args.stages = Some(parse_list(&value(), Stage::parse, "stage")),
       "--pairing" => args.pairings = Some(parse_list(&value(), parse_pairing, "pairing")),
       "--batch-size" => {
         args.batch_size = Some(value().parse().expect("--batch-size must be a number"))
@@ -236,6 +242,7 @@ fn main() {
     .filter(|c| args.flavors.as_ref().is_none_or(|f| f.contains(&c.flavor)))
     .filter(|c| args.modes.as_ref().is_none_or(|m| m.contains(&c.mode)))
     .filter(|c| args.capacities.as_ref().is_none_or(|v| v.contains(&c.capacity)))
+    .filter(|c| args.stages.as_ref().is_none_or(|v| v.contains(&c.stage)))
     .filter(|c| {
       args.pairings.as_ref().is_none_or(|v| {
         v.iter()

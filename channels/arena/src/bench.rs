@@ -1,5 +1,5 @@
-use crate::channel::{AsyncChannel, SyncChannel};
-use crate::driver::{RunError, RunResult, run_async, run_sync};
+use crate::channel::{AsyncChannel, AsyncOneshotChannel, OneshotChannel, SyncChannel};
+use crate::driver::{RunError, RunResult, run_async, run_oneshot_async, run_oneshot_sync, run_sync};
 use crate::measure::{Budget, calibrate};
 use crate::spec::{BatchSupport, Cell, Flavor, Mode};
 
@@ -101,5 +101,85 @@ impl<C: AsyncChannel> Bench for AsyncEntry<C> {
 
   fn run_once(&self, rt: &Runtime, cell: &Cell, items: u64) -> RunResult {
     run_async::<C>(rt, cell, items)
+  }
+}
+
+pub struct OneshotSyncEntry<C: OneshotChannel> {
+  library: &'static str,
+  _channel: PhantomData<fn() -> C>,
+}
+
+impl<C: OneshotChannel> OneshotSyncEntry<C> {
+  pub fn boxed(library: &'static str) -> Box<dyn Bench> {
+    Box::new(OneshotSyncEntry::<C> {
+      library,
+      _channel: PhantomData,
+    })
+  }
+}
+
+impl<C: OneshotChannel> Bench for OneshotSyncEntry<C> {
+  fn library(&self) -> &'static str {
+    self.library
+  }
+
+  fn flavor(&self) -> Flavor {
+    Flavor::Oneshot
+  }
+
+  fn mode(&self) -> Mode {
+    Mode::Sync
+  }
+
+  fn batch_support(&self) -> BatchSupport {
+    BatchSupport::None
+  }
+
+  fn calibrate(&self, _rt: &Runtime, cell: &Cell, budget: &Budget) -> Result<u64, RunError> {
+    calibrate(budget, cell, |items| run_oneshot_sync::<C>(cell, items))
+  }
+
+  fn run_once(&self, _rt: &Runtime, cell: &Cell, items: u64) -> RunResult {
+    run_oneshot_sync::<C>(cell, items)
+  }
+}
+
+pub struct OneshotAsyncEntry<C: AsyncOneshotChannel> {
+  library: &'static str,
+  _channel: PhantomData<fn() -> C>,
+}
+
+impl<C: AsyncOneshotChannel> OneshotAsyncEntry<C> {
+  pub fn boxed(library: &'static str) -> Box<dyn Bench> {
+    Box::new(OneshotAsyncEntry::<C> {
+      library,
+      _channel: PhantomData,
+    })
+  }
+}
+
+impl<C: AsyncOneshotChannel> Bench for OneshotAsyncEntry<C> {
+  fn library(&self) -> &'static str {
+    self.library
+  }
+
+  fn flavor(&self) -> Flavor {
+    Flavor::Oneshot
+  }
+
+  fn mode(&self) -> Mode {
+    Mode::Async
+  }
+
+  fn batch_support(&self) -> BatchSupport {
+    BatchSupport::None
+  }
+
+  fn calibrate(&self, rt: &Runtime, cell: &Cell, budget: &Budget) -> Result<u64, RunError> {
+    calibrate(budget, cell, |items| run_oneshot_async::<C>(rt, cell, items))
+  }
+
+  fn run_once(&self, rt: &Runtime, cell: &Cell, items: u64) -> RunResult {
+    run_oneshot_async::<C>(rt, cell, items)
   }
 }

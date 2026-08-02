@@ -110,6 +110,46 @@ pub trait AsyncChannel: Send + Sync + 'static {
   }
 }
 
+/// A oneshot under test. Both handles are consumed by the single operation
+/// they exist for, so this cannot reuse [`SyncChannel`], whose handles persist
+/// across the whole run.
+///
+/// `Store` is whatever has to outlive the pairs. Most implementations allocate
+/// each channel independently and leave it `()`; a pooled one keeps its slots
+/// there, which is the difference the oneshot cells are there to measure.
+pub trait OneshotChannel: Send + Sync + 'static {
+  type Sender: Send + 'static;
+  type Receiver: Send + 'static;
+  type Store: Send + Sync + 'static;
+
+  /// `live` is how many pairs the run will hold open at once.
+  fn store(live: usize) -> Option<Self::Store>;
+
+  fn pair(store: &Self::Store) -> Option<(Self::Sender, Self::Receiver)>;
+
+  /// `false` means the receiver was already gone.
+  fn send(tx: Self::Sender, item: Payload) -> bool;
+
+  /// `None` means the sender was dropped without sending.
+  fn recv(rx: Self::Receiver) -> Option<Payload>;
+}
+
+pub trait AsyncOneshotChannel: Send + Sync + 'static {
+  type Sender: Send + 'static;
+  type Receiver: Send + 'static;
+  type Store: Send + Sync + 'static;
+
+  fn store(live: usize) -> Option<Self::Store>;
+
+  fn pair(store: &Self::Store) -> Option<(Self::Sender, Self::Receiver)>;
+
+  /// Sending is a publish with no waiting on any of these implementations, so
+  /// there is nothing for an async version of it to await.
+  fn send(tx: Self::Sender, item: Payload) -> bool;
+
+  fn recv(rx: Self::Receiver) -> impl Future<Output = Option<Payload>> + Send;
+}
+
 pub fn fan_clone<T: Clone>(handle: T, n: usize) -> Option<Vec<T>> {
   if n == 0 {
     return None;

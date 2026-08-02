@@ -1,5 +1,5 @@
 use crate::driver::{RunError, RunResult, sent_items};
-use crate::spec::{Capacity, Cell};
+use crate::spec::{Capacity, Cell, Stage};
 
 use std::time::Duration;
 
@@ -12,6 +12,9 @@ const MAX_ITEMS: u64 = 8_000_000;
 /// An unbounded channel lets producers run arbitrarily far ahead of consumers,
 /// so the whole run can be resident at once. Keep that bounded.
 const MAX_ITEMS_UNBOUNDED: u64 = 1_000_000;
+/// A handoff op needs its own channel, created before the timed region, so the
+/// item count is also the count of channels resident at once.
+const MAX_ITEMS_HANDOFF: u64 = 1_000_000;
 
 #[derive(Debug, Clone)]
 pub struct Budget {
@@ -87,10 +90,10 @@ fn throughput(items: u64, elapsed: Duration) -> f64 {
 }
 
 fn scale_to_budget(budget: &Budget, cell: &Cell, items: u64, elapsed: Duration) -> u64 {
-  let ceiling = if cell.capacity == Capacity::Unbounded {
-    MAX_ITEMS_UNBOUNDED
-  } else {
-    MAX_ITEMS
+  let ceiling = match (cell.stage, cell.capacity) {
+    (Stage::Handoff, _) => MAX_ITEMS_HANDOFF,
+    (_, Capacity::Unbounded) => MAX_ITEMS_UNBOUNDED,
+    _ => MAX_ITEMS,
   };
   let per_item = elapsed.as_secs_f64() / sent_items(cell, items) as f64;
   if per_item <= 0.0 {

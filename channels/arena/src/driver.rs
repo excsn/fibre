@@ -1,5 +1,5 @@
-use crate::channel::{AsyncChannel, Payload, SyncChannel};
-use crate::spec::{Api, Cell, Semantics};
+use crate::channel::{AsyncChannel, AsyncOneshotChannel, OneshotChannel, Payload, SyncChannel};
+use crate::spec::{Api, Cell, Semantics, Stage};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
@@ -221,4 +221,163 @@ pub fn run_async<C: AsyncChannel>(rt: &Runtime, cell: &Cell, items: u64) -> RunR
     }
     Ok(elapsed)
   })
+}
+
+/// Pairs a full-cycle run keeps open at once. It creates one, uses it and lets
+/// it go before the next, so a pool sized past a handful only measures how far
+/// apart its slots are.
+const CYCLE_LIVE: usize = 64;
+
+pub fn run_oneshot_sync<C: OneshotChannel>(cell: &Cell, items: u64) -> RunResult {
+  match cell.stage {
+    Stage::Stream => Err(RunError::Unsupported),
+    Stage::Cycle => {
+      let store = C::store(CYCLE_LIVE).ok_or(RunError::Unsupported)?;
+      let mut received = 0u64;
+
+      let started = Instant::now();
+      for i in 0..items {
+        let (tx, rx) = C::pair(&store).ok_or(RunError::Unsupported)?;
+        if !C::send(tx, i as Payload) {
+          break;
+        }
+        if C::recv(rx).is_some() {
+          received += 1;
+        }
+      }
+      let elapsed = started.elapsed();
+
+      if received != items {
+        return Err(RunError::Miscounted);
+      }
+      Ok(elapsed)
+    }
+    Stage::Handoff => {
+      let store = C::store(items as usize).ok_or(RunError::Unsupported)?;
+      let mut senders = Vec::with_capacity(items as usize);
+      let mut receivers = Vec::with_capacity(items as usize);
+      for _ in 0..items {
+        let (tx, rx) = C::pair(&store).ok_or(RunError::Unsupported)?;
+        senders.push(tx);
+        receivers.push(rx);
+      }
+
+      let barrier = Arc::new(Barrier::new(3));
+      let producer = {
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+          barrier.wait();
+          for (i, tx) in senders.into_iter().enumerate() {
+            if !C::send(tx, i as Payload) {
+              return;
+            }
+          }
+        })
+      };
+      let consumer = {
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+          barrier.wait();
+          let mut received = 0u64;
+          for rx in receivers {
+            if C::recv(rx).is_none() {
+              break;
+            }
+            received += 1;
+          }
+          received
+        })
+      };
+
+      barrier.wait();
+      let started = Instant::now();
+      let _ = producer.join();
+      let received = consumer.join().unwrap_or(0);
+      let elapsed = started.elapsed();
+
+      if received != items {
+        return Err(RunError::Miscounted);
+      }
+      Ok(elapsed)
+    }
+  }
+}
+
+pub fn run_oneshot_async<C: AsyncOneshotChannel>(rt: &Runtime, cell: &Cell, items: u64) -> RunResult {
+  match cell.stage {
+    Stage::Stream => Err(RunError::Unsupported),
+    Stage::Cycle => {
+      let store = C::store(CYCLE_LIVE).ok_or(RunError::Unsupported)?;
+      rt.block_on(async move {
+        let mut received = 0u64;
+
+        let started = Instant::now();
+        for i in 0..items {
+          let (tx, rx) = C::pair(&store).ok_or(RunError::Unsupported)?;
+          if !C::send(tx, i as Payload) {
+            break;
+          }
+          if C::recv(rx).await.is_some() {
+            received += 1;
+          }
+        }
+        let elapsed = started.elapsed();
+
+        if received != items {
+          return Err(RunError::Miscounted);
+        }
+        Ok(elapsed)
+      })
+    }
+    Stage::Handoff => {
+      let store = C::store(items as usize).ok_or(RunError::Unsupported)?;
+      let mut senders = Vec::with_capacity(items as usize);
+      let mut receivers = Vec::with_capacity(items as usize);
+      for _ in 0..items {
+        let (tx, rx) = C::pair(&store).ok_or(RunError::Unsupported)?;
+        senders.push(tx);
+        receivers.push(rx);
+      }
+
+      rt.block_on(async move {
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let producer = {
+          let barrier = Arc::clone(&barrier);
+          tokio::spawn(async move {
+            barrier.wait().await;
+            for (i, tx) in senders.into_iter().enumerate() {
+              if !C::send(tx, i as Payload) {
+                return;
+              }
+            }
+          })
+        };
+        let consumer = {
+          let barrier = Arc::clone(&barrier);
+          tokio::spawn(async move {
+            barrier.wait().await;
+            let mut received = 0u64;
+            for rx in receivers {
+              if C::recv(rx).await.is_none() {
+                break;
+              }
+              received += 1;
+            }
+            received
+          })
+        };
+
+        barrier.wait().await;
+        let started = Instant::now();
+        let _ = producer.await;
+        let received = consumer.await.unwrap_or(0);
+        let elapsed = started.elapsed();
+
+        if received != items {
+          return Err(RunError::Miscounted);
+        }
+        Ok(elapsed)
+      })
+    }
+  }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "fibre"
-version = "0.6.3"
+version = "0.6.4"
 
 description = "High-performance, safe, memory-efficient sync/async channels built for real-time, low-overhead communication in concurrent Rust applications."
 readme = "README.md"
@@ -35,7 +35,7 @@ papaya = { version = "^0", optional = true }
 
 # Loom: only compiled under `RUSTFLAGS="--cfg loom"`
 [target.'cfg(loom)'.dependencies]
-loom = "0.7"
+loom = { version = "0.7", features = ["futures"] }
 
 # `Don't warn `unexpected_cfgs` on every #[cfg(loom)] gate.
 [lints.rust]
@@ -76,6 +76,10 @@ harness = false
 
 [[bench]]
 name = "oneshot"
+harness = false
+
+[[bench]]
+name = "oneshot_pool"
 harness = false
 
 [[bench]]

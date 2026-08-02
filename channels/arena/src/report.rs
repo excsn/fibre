@@ -1,5 +1,5 @@
 use crate::measure::{Measurement, format_throughput};
-use crate::spec::{Api, BatchSupport, Capacity, Cell, Flavor, Mode, Pairing};
+use crate::spec::{Api, BatchSupport, Capacity, Cell, Flavor, Mode, Pairing, Stage};
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -19,7 +19,8 @@ pub struct Report {
   pub records: Vec<Record>,
 }
 
-type Rows = BTreeMap<(Capacity, Pairing), BTreeMap<&'static str, f64>>;
+type RowKey = (Stage, Capacity, Pairing);
+type Rows = BTreeMap<RowKey, BTreeMap<&'static str, f64>>;
 
 fn rows(records: &[Record], flavor: Flavor, mode: Mode, batched: bool) -> Rows {
   let mut out: Rows = BTreeMap::new();
@@ -32,11 +33,32 @@ fn rows(records: &[Record], flavor: Flavor, mode: Mode, batched: bool) -> Rows {
       continue;
     }
     out
-      .entry((cell.capacity, cell.pairing))
+      .entry((cell.stage, cell.capacity, cell.pairing))
       .or_default()
       .insert(record.library, record.measurement.median());
   }
   out
+}
+
+/// The pages promise that 1×1 rows reproduce within a few percent and caveat
+/// the contended rows wholesale. A 1×1 cell whose own samples spread this far
+/// breaks that promise, so its median is not a comparable figure.
+const SPREAD_LIMIT: f64 = 2.0;
+
+/// A oneshot's capacity and pairing have one legal value each, so the stage is
+/// the only thing worth naming on its rows.
+fn row_head(flavor: Flavor, key: &RowKey) -> String {
+  match flavor {
+    Flavor::Oneshot => format!("| {} |", key.0),
+    _ => format!("| {} | {} |", key.1, key.2.label()),
+  }
+}
+
+fn cell_name(flavor: Flavor, cell: &Cell) -> String {
+  match flavor {
+    Flavor::Oneshot => cell.stage.to_string(),
+    _ => format!("capacity {}", cell.capacity),
+  }
 }
 
 impl Report {
@@ -63,7 +85,7 @@ impl Report {
         libs.push(r.library);
       }
     }
-    libs.sort_unstable_by_key(|l| (*l != "fibre", *l));
+    libs.sort_unstable_by_key(|l| (!l.starts_with("fibre"), *l));
     libs
   }
 
@@ -78,12 +100,23 @@ impl Report {
     }
     let baseline = batched.then(|| self::rows(&self.records, flavor, mode, false));
 
+    let heads: &[&str] = match flavor {
+      Flavor::Oneshot => &["Stage"],
+      _ => &["Capacity", "P×C"],
+    };
+
     let mut out = String::new();
-    let _ = write!(out, "| Capacity | P×C |");
+    let _ = write!(out, "|");
+    for head in heads {
+      let _ = write!(out, " {} |", head);
+    }
     for lib in &libs {
       let _ = write!(out, " {} |", lib);
     }
-    let _ = write!(out, "\n| :--- | :--- |");
+    let _ = write!(out, "\n|");
+    for _ in heads {
+      let _ = write!(out, " :--- |");
+    }
     for _ in &libs {
       let _ = write!(out, " ---: |");
     }
@@ -96,7 +129,7 @@ impl Report {
       } else {
         f64::NAN
       };
-      let _ = write!(out, "| {} | {} |", key.0, key.1.label());
+      let _ = write!(out, "{}", row_head(flavor, key));
       for lib in &libs {
         match values.get(lib) {
           Some(value) => {
@@ -125,6 +158,41 @@ impl Report {
     Some(out)
   }
 
+  fn spread_note(&self, flavor: Flavor, mode: Mode, batched: bool) -> Option<String> {
+    let mut noted: Vec<String> = Vec::new();
+    for r in &self.records {
+      if r.cell.flavor != flavor || r.cell.mode != mode {
+        continue;
+      }
+      if (r.cell.api != Api::Single) != batched {
+        continue;
+      }
+      if r.cell.pairing.producers != 1 || r.cell.pairing.consumers != 1 {
+        continue;
+      }
+      let (min, max) = (r.measurement.min(), r.measurement.max());
+      if min <= 0.0 || max / min < SPREAD_LIMIT {
+        continue;
+      }
+      noted.push(format!(
+        "{} at {} ({:.1}x, {} to {})",
+        r.library,
+        cell_name(flavor, &r.cell),
+        max / min,
+        format_throughput(min),
+        format_throughput(max),
+      ));
+    }
+    if noted.is_empty() {
+      return None;
+    }
+    Some(format!(
+      "Unreliable, sample spread over {:.0}x on a 1×1 cell where the rest of the matrix holds within a few percent: {}. Those medians do not support a comparison.",
+      SPREAD_LIMIT,
+      noted.join(", ")
+    ))
+  }
+
   fn batch_support_note(&self, flavor: Flavor, mode: Mode) -> Option<String> {
     let mut described: Vec<String> = Vec::new();
     for lib in self.libraries_for(flavor, mode, true) {
@@ -144,16 +212,25 @@ impl Report {
 
   fn flavor_doc(&self, flavor: Flavor) -> Option<String> {
     let mut sections: Vec<(String, String, Option<String>)> = Vec::new();
+    let mut any_batched = false;
     for mode in Mode::ALL {
       if let Some(table) = self.table(flavor, mode, false) {
-        sections.push((mode.to_string(), table, None));
+        sections.push((mode.to_string(), table, self.spread_note(flavor, mode, false)));
       }
       if let Some(table) = self.table(flavor, mode, true) {
+        any_batched = true;
         let title = match self.batch_size() {
           Some(size) => format!("{}, batched ({} items per call)", mode, size),
           None => format!("{}, batched", mode),
         };
-        sections.push((title, table, self.batch_support_note(flavor, mode)));
+        let notes: Vec<String> = [
+          self.batch_support_note(flavor, mode),
+          self.spread_note(flavor, mode, true),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        sections.push((title, table, (!notes.is_empty()).then(|| notes.join(" "))));
       }
     }
     if sections.is_empty() {
@@ -168,7 +245,12 @@ impl Report {
     let _ = writeln!(out);
     let _ = writeln!(
       out,
-      "Melem/s per item sent, median of samples. Best per row in bold. `-` means unsupported. Bracketed figures in batched tables are the gain over the single-item row above."
+      "Melem/s per item sent, median of samples. Best per row in bold. `-` means unsupported.{}",
+      if any_batched {
+        " Bracketed figures in batched tables are the gain over the single-item row above."
+      } else {
+        ""
+      }
     );
     if let Some(caveat) = flavor_caveat(flavor) {
       let _ = writeln!(out);
@@ -199,7 +281,7 @@ impl Report {
     let _ = writeln!(out);
     let _ = writeln!(
       out,
-      "fibre against tokio, crossbeam, flume, kanal, async-channel and std, through one workload driver. Re-run with `cargo run --release` in `channels/arena`."
+      "fibre against tokio, crossbeam, flume, kanal, async-channel, futures, the `oneshot` crate and std, through one workload driver. Re-run with `cargo run --release` in `channels/arena`."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "## Results");
@@ -240,6 +322,11 @@ impl Report {
       "Capacities are rendezvous, 1, 128, 1024 and unbounded, with a lower item ceiling on unbounded cells. Batched cells run at capacity 128 and above, for implementations with a batch API."
     );
     let _ = writeln!(out);
+    let _ = writeln!(
+      out,
+      "Oneshot is the exception to all of that: its channel is spent by a single op, so capacity, pairing and batching have one legal value each and the axis that remains is whether channel construction sits inside the timed region. See that page for the two stages."
+    );
+    let _ = writeln!(out);
     let _ = writeln!(out, "## Reproducibility");
     let _ = writeln!(out);
     let _ = writeln!(
@@ -253,12 +340,12 @@ impl Report {
     let mut out = String::new();
     let _ = writeln!(
       out,
-      "library\tflavor\tmode\tcapacity\tproducers\tconsumers\tapi\tbatch_support\titems\tmedian_melem_s\tmin_melem_s\tmax_melem_s"
+      "library\tflavor\tmode\tcapacity\tproducers\tconsumers\tapi\tbatch_support\titems\tmedian_melem_s\tmin_melem_s\tmax_melem_s\tstage"
     );
     for r in &self.records {
       let _ = writeln!(
         out,
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{}",
         r.library,
         r.cell.flavor,
         r.cell.mode,
@@ -271,6 +358,7 @@ impl Report {
         r.measurement.median(),
         r.measurement.min(),
         r.measurement.max(),
+        r.cell.stage,
       );
     }
     out
@@ -300,6 +388,10 @@ impl Report {
           consumers: f[5].parse().map_err(|_| fail("consumers"))?,
         },
         api: Api::parse(f[6]).ok_or_else(|| fail("api"))?,
+        stage: f
+          .get(12)
+          .map_or(Some(Stage::Stream), |raw| Stage::parse(raw))
+          .ok_or_else(|| fail("stage"))?,
       };
       let median: f64 = f[9].parse().map_err(|_| fail("median"))?;
       let min: f64 = f[10].parse().map_err(|_| fail("min"))?;
@@ -344,14 +436,21 @@ impl Report {
 /// Library names are `&'static str` throughout; a name read back from a file
 /// has to be matched against the set the registry uses.
 fn known_library(name: &str) -> &'static str {
-  const LIBRARIES: [&str; 7] = [
+  const LIBRARIES: [&str; 14] = [
     "fibre",
+    "fibre-exclusive",
+    "fibre-pool",
+    "fibre-pool-host",
     "tokio",
     "crossbeam",
     "flume",
     "kanal",
     "async-channel",
     "std",
+    "futures",
+    "async-oneshot",
+    "lite-sync",
+    "sync-oneshot",
   ];
   LIBRARIES
     .into_iter()
@@ -364,6 +463,9 @@ fn flavor_caveat(flavor: Flavor) -> Option<&'static str> {
     Flavor::Spmc => Some(
       "Only fibre appears here: no other library in the set has a comparable broadcast channel, and `tokio::sync::broadcast` drops items for lagging consumers rather than applying backpressure. Throughput is per item sent, so a 1×64 row does 64 times the receive work per unit shown.",
     ),
+    Flavor::Oneshot => Some(
+      "Two stages, because a oneshot's channel is consumed by the op rather than standing across the run. `full-cycle` creates, sends and receives on one thread, so construction is part of the op and allocation shows. `handoff` pre-creates every pair before the barrier and times a sending thread against a receiving one, which is the same accounting the other pages use.\n\nfibre appears four times: `fibre` is the clonable `oneshot()`, `fibre-exclusive` the single-sender `exclusive()`, and `fibre-pool` and `fibre-pool-host` take their slots from a standing pool instead of allocating. kanal, flume, crossbeam, async-channel and std have no oneshot and are absent rather than approximated with a `bounded(1)`, which is a standing channel that happens to hold one item. `futures` and `async-oneshot` have no blocking receive and `sync-oneshot` has no `Future`, so each of those runs one mode only.\n\nHandoff rows carry a lower item ceiling than the rest of the arena, since every op needs its own pre-created channel and the item count is also the resident channel count.",
+    ),
     _ => None,
   }
 }
@@ -374,5 +476,6 @@ fn flavor_blurb(flavor: Flavor) -> &'static str {
     Flavor::Mpsc => "many producers, one consumer",
     Flavor::Spmc => "one producer broadcasting to many consumers (every consumer receives every item)",
     Flavor::Mpmc => "many producers, many consumers, work-sharing",
+    Flavor::Oneshot => "one value, one time, a fresh channel per op",
   }
 }

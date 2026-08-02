@@ -1,5 +1,7 @@
-use crate::adapters::{async_channel_ch, crossbeam_ch, fibre_ch, flume_ch, kanal_ch, std_ch, tokio_ch};
-use crate::bench::{AsyncEntry, Bench, SyncEntry};
+use crate::adapters::{
+  async_channel_ch, crossbeam_ch, fibre_ch, flume_ch, kanal_ch, oneshot_ch, std_ch, tokio_ch,
+};
+use crate::bench::{AsyncEntry, Bench, OneshotAsyncEntry, OneshotSyncEntry, SyncEntry};
 use crate::spec::Flavor;
 
 /// Shapes a general-purpose work-sharing channel is measured under. Broadcast
@@ -55,6 +57,50 @@ pub fn registry() -> Vec<Box<dyn Bench>> {
     entries.push(AsyncEntry::<tokio_ch::Async_>::boxed(tokio_ch::LIBRARY, flavor));
     entries.push(AsyncEntry::<tokio_ch::UnboundedAsync>::boxed(tokio_ch::LIBRARY, flavor));
   }
+
+  entries.push(OneshotSyncEntry::<oneshot_ch::FibreSync>::boxed(oneshot_ch::FIBRE));
+  entries.push(OneshotAsyncEntry::<oneshot_ch::FibreAsync>::boxed(oneshot_ch::FIBRE));
+  entries.push(OneshotSyncEntry::<oneshot_ch::FibreExclusiveSync>::boxed(
+    oneshot_ch::FIBRE_EXCLUSIVE,
+  ));
+  entries.push(OneshotAsyncEntry::<oneshot_ch::FibreExclusiveAsync>::boxed(
+    oneshot_ch::FIBRE_EXCLUSIVE,
+  ));
+  entries.push(OneshotSyncEntry::<oneshot_ch::FibrePoolSync>::boxed(
+    oneshot_ch::FIBRE_POOL,
+  ));
+  entries.push(OneshotAsyncEntry::<oneshot_ch::FibrePoolAsync>::boxed(
+    oneshot_ch::FIBRE_POOL,
+  ));
+  entries.push(OneshotSyncEntry::<oneshot_ch::FibrePoolHostSync>::boxed(
+    oneshot_ch::FIBRE_POOL_HOST,
+  ));
+  entries.push(OneshotAsyncEntry::<oneshot_ch::FibrePoolHostAsync>::boxed(
+    oneshot_ch::FIBRE_POOL_HOST,
+  ));
+  entries.push(OneshotSyncEntry::<oneshot_ch::TokioSync>::boxed(oneshot_ch::TOKIO));
+  entries.push(OneshotAsyncEntry::<oneshot_ch::TokioAsync>::boxed(oneshot_ch::TOKIO));
+  entries.push(OneshotAsyncEntry::<oneshot_ch::FuturesAsync>::boxed(
+    oneshot_ch::FUTURES,
+  ));
+  entries.push(OneshotSyncEntry::<oneshot_ch::OneshotCrateSync>::boxed(
+    oneshot_ch::ONESHOT,
+  ));
+  entries.push(OneshotAsyncEntry::<oneshot_ch::OneshotCrateAsync>::boxed(
+    oneshot_ch::ONESHOT,
+  ));
+  entries.push(OneshotAsyncEntry::<oneshot_ch::AsyncOneshotAsync>::boxed(
+    oneshot_ch::ASYNC_ONESHOT,
+  ));
+  entries.push(OneshotSyncEntry::<oneshot_ch::LiteSyncSync>::boxed(
+    oneshot_ch::LITE_SYNC,
+  ));
+  entries.push(OneshotAsyncEntry::<oneshot_ch::LiteSyncAsync>::boxed(
+    oneshot_ch::LITE_SYNC,
+  ));
+  entries.push(OneshotSyncEntry::<oneshot_ch::SyncOneshotSync>::boxed(
+    oneshot_ch::SYNC_ONESHOT,
+  ));
 
   entries
 }

@@ -626,3 +626,281 @@ mod exclusive {
     assert_eq!(false_disconnects, 0);
   }
 }
+
+mod pool {
+  use super::super::{pair_pool, OneshotHostPool, PoolSlot};
+  use crate::error::{RecvError, TryRecvError, TrySendError};
+
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::sync::Arc;
+  use std::time::Duration;
+  use tokio::time::timeout;
+
+  const TEST_TIMEOUT: Duration = Duration::from_secs(1);
+
+  struct DropCount(Arc<AtomicUsize>);
+  impl Drop for DropCount {
+    fn drop(&mut self) {
+      self.0.fetch_add(1, Ordering::SeqCst);
+    }
+  }
+
+  #[tokio::test]
+  async fn send_recv_ok() {
+    let pool = pair_pool::<u64>(4);
+    let (tx, mut rx) = pool.pair().unwrap();
+    tokio::spawn(async move {
+      tx.send(7).expect("send failed");
+    });
+    let received = timeout(TEST_TIMEOUT, rx.recv())
+      .await
+      .expect("receive timed out")
+      .unwrap();
+    assert_eq!(received, 7);
+  }
+
+  #[tokio::test]
+  async fn recv_parks_then_wakes() {
+    let pool = pair_pool::<u64>(1);
+    let (tx, mut rx) = pool.pair().unwrap();
+    let sender = tokio::spawn(async move {
+      tokio::task::yield_now().await;
+      tx.send(9).expect("send failed");
+    });
+    let received = timeout(TEST_TIMEOUT, rx.recv())
+      .await
+      .expect("receive timed out")
+      .unwrap();
+    assert_eq!(received, 9);
+    sender.await.unwrap();
+  }
+
+  #[tokio::test]
+  async fn exhaustion_returns_none_and_recycling_restores() {
+    let pool = pair_pool::<u64>(1);
+    let first = pool.pair().unwrap();
+    assert!(pool.pair().is_none());
+    let (tx, mut rx) = first;
+    tx.send(1).unwrap();
+    assert_eq!(rx.recv().await.unwrap(), 1);
+    drop(rx);
+    let again = pool.pair();
+    assert!(again.is_some());
+  }
+
+  #[tokio::test]
+  async fn receiver_drop_fails_send_with_value_back() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let pool = pair_pool::<DropCount>(2);
+    let (tx, rx) = pool.pair().unwrap();
+    drop(rx);
+    match tx.send(DropCount(Arc::clone(&counter))) {
+      Err(TrySendError::Closed(v)) => drop(v),
+      other => panic!("expected Closed, got {:?}", other.map(|_| ())),
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    assert!(pool.pair().is_some());
+  }
+
+  #[tokio::test]
+  async fn sender_drop_disconnects_receiver() {
+    let pool = pair_pool::<u64>(2);
+    let (tx, mut rx) = pool.pair().unwrap();
+    drop(tx);
+    assert!(matches!(rx.recv().await, Err(RecvError::Disconnected)));
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+  }
+
+  #[tokio::test]
+  async fn unreceived_value_dropped_on_receiver_drop() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let pool = pair_pool::<DropCount>(1);
+    let (tx, rx) = pool.pair().unwrap();
+    tx.send(DropCount(Arc::clone(&counter))).unwrap();
+    drop(rx);
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    assert!(pool.pair().is_some());
+  }
+
+  #[tokio::test]
+  async fn receiver_close_makes_send_fail() {
+    let pool = pair_pool::<u64>(1);
+    let (tx, mut rx) = pool.pair().unwrap();
+    rx.close();
+    assert!(tx.is_closed());
+    assert!(matches!(tx.send(5), Err(TrySendError::Closed(5))));
+    assert!(pool.pair().is_some());
+  }
+
+  #[tokio::test]
+  async fn pool_drop_with_channels_in_flight() {
+    let pool = pair_pool::<u64>(2);
+    let (tx, mut rx) = pool.pair().unwrap();
+    drop(pool);
+    tx.send(11).unwrap();
+    assert_eq!(rx.recv().await.unwrap(), 11);
+  }
+
+  #[tokio::test]
+  async fn pair_batch_is_all_or_nothing() {
+    let pool = pair_pool::<u64>(4);
+    let batch = pool.pair_batch(3).unwrap();
+    assert_eq!(batch.len(), 3);
+    assert!(pool.pair_batch(2).is_none());
+    let last = pool.pair_batch(1).unwrap();
+    assert_eq!(last.len(), 1);
+    assert!(pool.pair().is_none());
+    for (tx, mut rx) in batch {
+      tx.send(1).unwrap();
+      assert_eq!(rx.recv().await.unwrap(), 1);
+    }
+    assert_eq!(pool.pair_batch(3).map(|v| v.len()), Some(3));
+    drop(last);
+  }
+
+  #[tokio::test]
+  async fn cross_thread_handoff() {
+    let pool = pair_pool::<u64>(64);
+    let mut senders = Vec::new();
+    let mut receivers = Vec::new();
+    for _ in 0..64 {
+      let (tx, rx) = pool.pair().unwrap();
+      senders.push(tx);
+      receivers.push(rx);
+    }
+    let handle = std::thread::spawn(move || {
+      for (i, tx) in senders.into_iter().enumerate() {
+        tx.send(i as u64).expect("send failed");
+      }
+    });
+    for (i, rx) in receivers.iter_mut().enumerate() {
+      let got = timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .expect("receive timed out")
+        .unwrap();
+      assert_eq!(got, i as u64);
+    }
+    handle.join().unwrap();
+    drop(receivers);
+    assert_eq!(pool.pair_batch(64).map(|v| v.len()), Some(64));
+  }
+
+  struct Req {
+    id: u64,
+    reply: PoolSlot<u64>,
+  }
+
+  #[tokio::test]
+  async fn host_pool_records_ride_free() {
+    let pool = OneshotHostPool::new(
+      4,
+      || Req {
+        id: 0,
+        reply: PoolSlot::new(),
+      },
+      |r| &r.reply,
+    );
+    for round in 0..8u64 {
+      let (tx, mut rx) = pool.pair_init(|r| r.id = round).unwrap();
+      assert_eq!(rx.host().id, round);
+      tx.send(rx.host().id * 2).unwrap();
+      assert_eq!(rx.recv().await.unwrap(), round * 2);
+    }
+  }
+
+  #[tokio::test]
+  async fn host_pool_batch_and_exhaustion() {
+    let pool = OneshotHostPool::new(
+      3,
+      || Req {
+        id: 0,
+        reply: PoolSlot::new(),
+      },
+      |r| &r.reply,
+    );
+    let mut next = 0u64;
+    let batch = pool
+      .pair_init_batch(3, |r| {
+        r.id = next;
+        next += 1;
+      })
+      .unwrap();
+    assert!(pool.pair_init(|_| {}).is_none());
+    let mut seen: Vec<u64> = batch.iter().map(|(_, rx)| rx.host().id).collect();
+    seen.sort_unstable();
+    assert_eq!(seen, vec![0, 1, 2]);
+    for (tx, mut rx) in batch {
+      let id = rx.host().id;
+      tx.send(id).unwrap();
+      assert_eq!(rx.recv().await.unwrap(), id);
+    }
+    assert!(pool.pair_init(|_| {}).is_some());
+  }
+
+  #[tokio::test]
+  async fn host_pool_drop_with_channels_in_flight() {
+    let pool = OneshotHostPool::new(
+      2,
+      || Req {
+        id: 0,
+        reply: PoolSlot::new(),
+      },
+      |r| &r.reply,
+    );
+    let (tx, mut rx) = pool.pair_init(|r| r.id = 42).unwrap();
+    drop(pool);
+    assert_eq!(rx.host().id, 42);
+    tx.send(1).unwrap();
+    assert_eq!(rx.recv().await.unwrap(), 1);
+  }
+}
+
+mod recv_blocking {
+  use super::super::{exclusive, oneshot, pair_pool};
+  use crate::error::RecvError;
+
+  use std::sync::{Arc, Barrier};
+  use std::thread;
+
+  #[test]
+  fn clonable_recv_blocking_cross_thread() {
+    let (tx, rx) = oneshot::<u64>();
+    let barrier = Arc::new(Barrier::new(2));
+    let b = Arc::clone(&barrier);
+    let t = thread::spawn(move || {
+      b.wait();
+      tx.send(5).unwrap();
+    });
+    barrier.wait();
+    assert_eq!(rx.recv_blocking().unwrap(), 5);
+    t.join().unwrap();
+  }
+
+  #[test]
+  fn exclusive_recv_blocking_cross_thread() {
+    let (tx, mut rx) = exclusive::<u64>();
+    let t = thread::spawn(move || {
+      tx.send(6).unwrap();
+    });
+    assert_eq!(rx.recv_blocking().unwrap(), 6);
+    t.join().unwrap();
+  }
+
+  #[test]
+  fn pooled_recv_blocking_cross_thread_and_disconnect() {
+    let pool = pair_pool::<u64>(2);
+    let (tx, mut rx) = pool.pair().unwrap();
+    let t = thread::spawn(move || {
+      tx.send(7).unwrap();
+    });
+    assert_eq!(rx.recv_blocking().unwrap(), 7);
+    t.join().unwrap();
+
+    let (tx, mut rx) = pool.pair().unwrap();
+    let t = thread::spawn(move || {
+      drop(tx);
+    });
+    assert!(matches!(rx.recv_blocking(), Err(RecvError::Disconnected)));
+    t.join().unwrap();
+  }
+}

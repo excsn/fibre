@@ -8,10 +8,17 @@ pub enum Flavor {
   Mpsc,
   Spmc,
   Mpmc,
+  Oneshot,
 }
 
 impl Flavor {
-  pub const ALL: [Flavor; 4] = [Flavor::Spsc, Flavor::Mpsc, Flavor::Spmc, Flavor::Mpmc];
+  pub const ALL: [Flavor; 5] = [
+    Flavor::Spsc,
+    Flavor::Mpsc,
+    Flavor::Spmc,
+    Flavor::Mpmc,
+    Flavor::Oneshot,
+  ];
 
   pub fn as_str(&self) -> &'static str {
     match self {
@@ -19,6 +26,7 @@ impl Flavor {
       Flavor::Mpsc => "mpsc",
       Flavor::Spmc => "spmc",
       Flavor::Mpmc => "mpmc",
+      Flavor::Oneshot => "oneshot",
     }
   }
 
@@ -28,14 +36,14 @@ impl Flavor {
 
   pub fn max_producers(&self) -> Option<usize> {
     match self {
-      Flavor::Spsc | Flavor::Spmc => Some(1),
+      Flavor::Spsc | Flavor::Spmc | Flavor::Oneshot => Some(1),
       _ => None,
     }
   }
 
   pub fn max_consumers(&self) -> Option<usize> {
     match self {
-      Flavor::Spsc | Flavor::Mpsc => Some(1),
+      Flavor::Spsc | Flavor::Mpsc | Flavor::Oneshot => Some(1),
       _ => None,
     }
   }
@@ -60,6 +68,41 @@ impl fmt::Display for Flavor {
 pub enum Semantics {
   WorkSharing,
   Broadcast,
+}
+
+/// What one op is. The streaming flavors push an item through a channel that
+/// already exists, so there is only ever one answer. A oneshot needs its own
+/// channel per op, which makes construction part of the workload rather than
+/// setup, so it is measured both ways.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Stage {
+  Stream,
+  Cycle,
+  Handoff,
+}
+
+impl Stage {
+  pub const ONESHOT: [Stage; 2] = [Stage::Cycle, Stage::Handoff];
+
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Stage::Stream => "stream",
+      Stage::Cycle => "full-cycle",
+      Stage::Handoff => "handoff",
+    }
+  }
+
+  pub fn parse(s: &str) -> Option<Stage> {
+    [Stage::Stream, Stage::Cycle, Stage::Handoff]
+      .into_iter()
+      .find(|stage| stage.as_str() == s)
+  }
+}
+
+impl fmt::Display for Stage {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(self.as_str())
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -247,6 +290,7 @@ pub struct Cell {
   pub capacity: Capacity,
   pub pairing: Pairing,
   pub api: Api,
+  pub stage: Stage,
 }
 
 impl Cell {
@@ -261,10 +305,13 @@ impl Cell {
 
 impl fmt::Display for Cell {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(
-      f,
-      "{}/{}/cap-{}/{}/{}",
-      self.flavor, self.mode, self.capacity, self.pairing, self.api
-    )
+    match self.stage {
+      Stage::Stream => write!(
+        f,
+        "{}/{}/cap-{}/{}/{}",
+        self.flavor, self.mode, self.capacity, self.pairing, self.api
+      ),
+      stage => write!(f, "{}/{}/{}", self.flavor, self.mode, stage),
+    }
   }
 }

@@ -1,7 +1,7 @@
 # Channel Arena
 **Test Machine:** MacBook M4 Pro (14 cores)
 
-fibre against tokio, crossbeam, flume, kanal, async-channel and std, through one workload driver. Re-run with `cargo run --release` in `channels/arena`.
+fibre against tokio, crossbeam, flume, kanal, async-channel, futures, the `oneshot` crate and std, through one workload driver. Re-run with `cargo run --release` in `channels/arena`.
 
 ## Results
 
@@ -9,6 +9,7 @@ fibre against tokio, crossbeam, flume, kanal, async-channel and std, through one
 - [MPSC](./mpsc.md) - many producers, one consumer
 - [SPMC](./spmc.md) - one producer broadcasting to many consumers (every consumer receives every item)
 - [MPMC](./mpmc.md) - many producers, many consumers, work-sharing
+- [ONESHOT](./oneshot.md) - one value, one time, a fresh channel per op
 
 Interpretation: [FINDINGS.md](./FINDINGS.md).
 
@@ -23,6 +24,8 @@ Timing starts once every worker has reached a barrier, excluding spawn and chann
 Pairings are clamped to what each shape allows, so only MPMC shows all seven. A general-purpose MPMC library is measured under the SPSC, MPSC and MPMC shapes; fibre uses its specialized channel per shape.
 
 Capacities are rendezvous, 1, 128, 1024 and unbounded, with a lower item ceiling on unbounded cells. Batched cells run at capacity 128 and above, for implementations with a batch API.
+
+Oneshot is the exception to all of that: its channel is spent by a single op, so capacity, pairing and batching have one legal value each and the axis that remains is whether channel construction sits inside the timed region. See that page for the two stages.
 
 ## Reproducibility
 

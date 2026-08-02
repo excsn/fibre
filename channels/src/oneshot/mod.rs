@@ -76,8 +76,13 @@ pub use crate::error::{CloseError, RecvError, SendError, TryRecvError, TrySendEr
 
 mod core; // Internal implementation details
 mod exclusive;
+mod pool;
 
 pub use self::exclusive::{exclusive, ExclusiveReceiveFuture, ExclusiveReceiver, ExclusiveSender};
+pub use self::pool::{
+  pair_pool, HostReceiveFuture, HostReceiver, HostSender, OneshotHostPool, OneshotPairPool,
+  PoolSlot, PooledReceiveFuture, PooledReceiver, PooledSender,
+};
 
 use self::core::OneShotShared;
 use crate::internal::sync::{AtomicBool, Ordering};
@@ -224,6 +229,12 @@ impl<T> Receiver<T> {
   ///
   /// This returns a future that resolves to the sent value or an error if the
   /// channel is disconnected.
+  /// Blocking receive for synchronous callers: parks the thread until the
+  /// value arrives or the channel disconnects.
+  pub fn recv_blocking(&self) -> Result<T, RecvError> {
+    crate::sync_util::block_on(self.recv())
+  }
+
   pub fn recv(&self) -> ReceiveFuture<'_, T> {
     ReceiveFuture {
       receiver_shared: &self.shared,

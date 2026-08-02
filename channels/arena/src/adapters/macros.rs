@@ -170,4 +170,98 @@ macro_rules! async_adapter {
   };
 }
 
-pub(crate) use {async_adapter, fan, sync_adapter};
+/// A oneshot's handles are consumed by the operation they exist for, so `send`
+/// and `recv` take them by value rather than by reference.
+macro_rules! oneshot_sync_adapter {
+  (
+    name: $name:ident,
+    sender: $sender:ty,
+    receiver: $receiver:ty,
+    store: $store:ty,
+    make_store: |$live:pat_param| $make:expr,
+    pair: |$store_ref:ident| $pair:expr,
+    send: |$tx:ident, $item:ident| $send:expr,
+    recv: |$rx:ident| $recv:expr,
+  ) => {
+    pub struct $name;
+
+    impl $crate::channel::OneshotChannel for $name {
+      type Sender = $sender;
+      type Receiver = $receiver;
+      type Store = $store;
+
+      fn store(live: usize) -> Option<Self::Store> {
+        let $live = live;
+        $make
+      }
+
+      fn pair(store: &Self::Store) -> Option<(Self::Sender, Self::Receiver)> {
+        let $store_ref = store;
+        $pair
+      }
+
+      fn send(tx: Self::Sender, item: $crate::channel::Payload) -> bool {
+        #[allow(unused_mut)]
+        let mut $tx = tx;
+        let $item = item;
+        $send
+      }
+
+      fn recv(rx: Self::Receiver) -> Option<$crate::channel::Payload> {
+        #[allow(unused_mut)]
+        let mut $rx = rx;
+        $recv
+      }
+    }
+  };
+}
+
+macro_rules! oneshot_async_adapter {
+  (
+    name: $name:ident,
+    sender: $sender:ty,
+    receiver: $receiver:ty,
+    store: $store:ty,
+    make_store: |$live:pat_param| $make:expr,
+    pair: |$store_ref:ident| $pair:expr,
+    send: |$tx:ident, $item:ident| $send:expr,
+    recv: |$rx:ident| $recv:expr,
+  ) => {
+    pub struct $name;
+
+    impl $crate::channel::AsyncOneshotChannel for $name {
+      type Sender = $sender;
+      type Receiver = $receiver;
+      type Store = $store;
+
+      fn store(live: usize) -> Option<Self::Store> {
+        let $live = live;
+        $make
+      }
+
+      fn pair(store: &Self::Store) -> Option<(Self::Sender, Self::Receiver)> {
+        let $store_ref = store;
+        $pair
+      }
+
+      fn send(tx: Self::Sender, item: $crate::channel::Payload) -> bool {
+        #[allow(unused_mut)]
+        let mut $tx = tx;
+        let $item = item;
+        $send
+      }
+
+      fn recv(
+        rx: Self::Receiver,
+      ) -> impl ::std::future::Future<Output = Option<$crate::channel::Payload>> + Send {
+        async move {
+          #[allow(unused_mut)]
+          let mut $rx = rx;
+          $recv
+        }
+      }
+    }
+  };
+}
+
+pub(crate) use {async_adapter, fan, oneshot_async_adapter, oneshot_sync_adapter, sync_adapter};

@@ -37,6 +37,36 @@ pub(crate) mod thread {
   }
 }
 
+/// Loom-modeled stand-in for `futures_util::task::AtomicWaker`, so waker-driven
+/// protocols can run under `loom::future::block_on`. Ordering-stronger than the
+/// real primitive (a loom Mutex instead of AtomicWaker's internal handshake):
+/// it verifies the CALLER's protocol orderings, not AtomicWaker's.
+pub(crate) struct AtomicWaker {
+  inner: Mutex<Option<std::task::Waker>>,
+}
+
+impl AtomicWaker {
+  pub(crate) fn new() -> Self {
+    AtomicWaker {
+      inner: Mutex::new(None),
+    }
+  }
+
+  pub(crate) fn register(&self, waker: &std::task::Waker) {
+    *self.inner.lock() = Some(waker.clone());
+  }
+
+  pub(crate) fn wake(&self) {
+    if let Some(waker) = self.inner.lock().take() {
+      waker.wake();
+    }
+  }
+
+  pub(crate) fn take(&self) -> Option<std::task::Waker> {
+    self.inner.lock().take()
+  }
+}
+
 /// Loom `Mutex` wearing parking_lot's API: guard-returning `lock`,
 /// `Option`-returning `try_lock`, no poison `Result`s.
 #[derive(Debug)]

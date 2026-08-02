@@ -20,6 +20,7 @@ mod mpmc_unbounded;
 mod mpsc_bounded;
 mod mpsc_unbounded;
 mod oneshot;
+mod oneshot_pool;
 mod spmc_bounded;
 mod spsc_bounded;
 mod spsc_rendezvous;

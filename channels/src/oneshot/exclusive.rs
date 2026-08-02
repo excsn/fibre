@@ -164,6 +164,12 @@ impl<T> ExclusiveReceiver<T> {
     ExclusiveReceiveFuture { receiver: self }
   }
 
+  /// Blocking receive for synchronous callers: parks the thread until the
+  /// value arrives or the channel disconnects.
+  pub fn recv_blocking(&mut self) -> Result<T, RecvError> {
+    crate::sync_util::block_on(self.recv())
+  }
+
   /// Closes the receiving end. After this, `send` fails and returns the value.
   ///
   /// This is an explicit alternative to `drop`. If a value was already sent

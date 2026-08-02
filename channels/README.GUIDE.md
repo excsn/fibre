@@ -359,13 +359,20 @@ A channel for sending a single value once. `T` must be `Send`.
 *   **Constructors:**
     *   `pub fn oneshot<T>() -> (Sender<T>, Receiver<T>)`
     *   `pub fn exclusive<T>() -> (ExclusiveSender<T>, ExclusiveReceiver<T>)`
+    *   `pub fn pair_pool<T: Send>(capacity: usize) -> OneshotPairPool<T>`
+    *   `OneshotHostPool::<H, T>::new(capacity, make, project)` (associated constructor; cells are caller records with an embedded `PoolSlot<T>`)
 *   **Handles:**
     *   `Sender<T>` (`Clone`) and `Receiver<T>` (`!Clone`).
     *   `ExclusiveSender<T>` and `ExclusiveReceiver<T>` (both `!Clone`).
+    *   `PooledSender<T>` and `PooledReceiver<T>` (both `!Clone`), handed out by `OneshotPairPool::pair()`.
+    *   `HostSender<H, T>` and `HostReceiver<H, T>` (both `!Clone`), handed out by `OneshotHostPool::pair_init()`.
 *   **Key Methods:**
     *   `Sender::send(self, ...)`: Consumes the sender. Only the first `send` across all clones succeeds.
     *   `Receiver::recv(&self)`: Returns a `Future` that completes when the value is sent or the channel is disconnected.
+    *   `recv_blocking()`: Every oneshot receiver (`Receiver`, `ExclusiveReceiver`, `PooledReceiver`, `HostReceiver`) also offers a blocking receive, for synchronous callers. It parks only when the value has not arrived yet, and allocates the parker only then, so a value already in the slot costs the same as `try_recv`. Sends need no sync/async split: a oneshot send never waits.
     *   `ExclusiveSender::send(self, ...)` / `ExclusiveReceiver::recv(&mut self)`: The single-sender fast path. With clonability off the table, a send is one slot write plus one atomic flag update, and the receiver takes the value without a claim cycle. Prefer `exclusive()` for plain request/response; use `oneshot()` when several candidate senders race to fulfil one slot.
+    *   `OneshotPairPool::pair(&self)`: The zero-channel-allocation path for high-rate request/response. The pool owns recycled slot storage; `pair()` pops a slot (`None` on exhaustion), the handles keep the `exclusive()` contract, and whichever handle finishes last pushes the slot back, so per-channel cost is a freelist pop and push instead of an allocation and free. `pair_batch(n)` amortizes creation to one freelist operation. Prefer a pool once oneshot creation rate matters; a pool outlives its channels safely (release defers to the last retire).
+    *   `OneshotHostPool::pair_init(&self, init)`: The zero-allocation path for the full request, not just the channel. Each pool cell is a whole caller record with a `PoolSlot<T>` reply channel embedded, located by the projection given at construction; `pair_init` pops the record and its channel as one unit, runs `init` on the record exclusively, and `HostReceiver::host()` reads it for the channel's lifetime. On record-carrying workloads this measures about twice the plain pool with a per-request record allocation ([data](./docs/benches/oneshot_pool.md)); on recordless workloads the two pools measure identically. `pair_init_batch(n, init)` is the batch form.
 
 ## Batch Operations
 

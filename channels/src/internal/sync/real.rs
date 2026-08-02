@@ -3,7 +3,7 @@
 //! names/APIs or migrated channels break under one cfg but not the other.
 
 pub(crate) use std::sync::atomic::{
-  fence, AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering,
+  fence, AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
 
 pub(crate) use std::hint;
@@ -19,3 +19,5 @@ pub(crate) use std::thread;
 pub(crate) use std::thread::Thread;
 
 pub(crate) use parking_lot::Mutex;
+
+pub(crate) use futures_util::task::AtomicWaker;

@@ -14,5 +14,6 @@ pub mod crossbeam_ch;
 pub mod fibre_ch;
 pub mod flume_ch;
 pub mod kanal_ch;
+pub mod oneshot_ch;
 pub mod std_ch;
 pub mod tokio_ch;
