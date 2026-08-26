@@ -1,3 +1,4 @@
+use fibre_cache::builder::TimerWheelMode;
 use fibre_cache::{EvictionReason, builder::CacheBuilder, policy::lru::LruPolicy};
 use std::{
   sync::{Arc, mpsc},
@@ -80,6 +81,7 @@ fn test_sync_listener_for_ttl() {
   let cache = CacheBuilder::default()
     .shards(1)
     .time_to_live(Duration::from_millis(100))
+    .timer_mode(TimerWheelMode::HighPrecisionShortLived)
     .janitor_tick_interval(Duration::from_millis(10))
     .maintenance_chance(1)
     .eviction_listener(TestListener { sender: tx })

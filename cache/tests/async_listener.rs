@@ -88,8 +88,9 @@ async fn test_async_listener_for_ttl() {
   let (tx, rx) = mpsc::bounded(10);
   let cache = CacheBuilder::default()
     .time_to_live(Duration::from_millis(100))
+    .timer_mode(fibre_cache::builder::TimerWheelMode::HighPrecisionShortLived)
     .janitor_tick_interval(Duration::from_millis(10))
-    .maintenance_chance(1) 
+    .maintenance_chance(1)
     .eviction_listener(TestListener { sender: tx })
     .build_async()
     .unwrap();

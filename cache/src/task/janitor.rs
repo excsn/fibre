@@ -189,12 +189,28 @@ impl Janitor {
     }
 
     let expired_set: HashSet<u64> = expired_hashes.into_iter().collect();
+    let mut premature: Vec<(u64, Duration)> = Vec::new();
     let mut guard = shard.map.write();
 
     guard.retain(|key, entry| {
-      let key_hash = crate::store::hash_key(&context.store.hasher, key);
+      // 0 means no hash was recorded (the entry never armed a timer); only then hash.
+      let key_hash = match entry.key_hash {
+        0 => crate::store::hash_key(&context.store.hasher, key),
+        h => h,
+      };
 
       if expired_set.contains(&key_hash) {
+        // The entry's own expires_at is the truth; the wheel only says where to look.
+        // A hash-collision hit or clock skew must never evict a live entry, so re-arm
+        // it for the remainder instead of removing or stranding it.
+        if !entry.is_expired(None) {
+          let now = crate::time::now_duration().as_nanos() as u64;
+          let expires_at = entry.expires_at.load(Ordering::Relaxed);
+          if expires_at > 0 {
+            premature.push((key_hash, Duration::from_nanos(expires_at.saturating_sub(now).max(1))));
+          }
+          return true;
+        }
         context.cache_policy[shard_index].on_remove(key);
         context
           .metrics
@@ -212,6 +228,13 @@ impl Janitor {
         true // Keep in map.
       }
     });
+    drop(guard);
+
+    if let Some(wheel) = &shard.timer_wheel {
+      for (key_hash, remaining) in premature {
+        wheel.schedule(key_hash, remaining);
+      }
+    }
   }
 
   /// Removes expired items based on TTI for a single shard by sampling.
