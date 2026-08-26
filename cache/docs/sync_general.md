@@ -6,83 +6,75 @@
 
 ### `SyncGeneral/Workload-Read100_Zipf_Cap-1000000_Ops-1000000_Threads-1`
 
-* **Time:** 91.926 ms – 94.255 ms – 97.282 ms
-* **Throughput:** 10.279 Melem/s – 10.610 Melem/s – 10.878 Melem/s
+* **Time:** 84.968 ms – 88.567 ms – 92.733 ms
+* **Throughput:** 10.784 Melem/s – 11.291 Melem/s – 11.769 Melem/s
 
 ### `SyncGeneral/Workload-Read100_Zipf_Cap-1000000_Ops-1000000_Threads-4`
 
-* **Time:** 36.263 ms – 39.013 ms – 43.487 ms
-* **Throughput:** 22.996 Melem/s – 25.632 Melem/s – 27.576 Melem/s
+* **Time:** 34.147 ms – 35.630 ms – 37.232 ms
+* **Throughput:** 26.858 Melem/s – 28.066 Melem/s – 29.285 Melem/s
 
 ### `SyncGeneral/Workload-Read100_Zipf_Cap-1000000_Ops-1000000_Threads-8`
 
-* **Time:** 33.394 ms – 33.798 ms – 34.509 ms
-* **Throughput:** 28.978 Melem/s – 29.588 Melem/s – 29.946 Melem/s
-
----
+* **Time:** 31.388 ms – 31.762 ms – 32.161 ms
+* **Throughput:** 31.093 Melem/s – 31.484 Melem/s – 31.859 Melem/s
 
 ### `SyncGeneral/Workload-Read75Write25_Zipf_Cap-1000000_Ops-1000000_Threads-1`
 
-* **Time:** 193.98 ms – 196.34 ms – 199.46 ms
-* **Throughput:** 5.0135 Melem/s – 5.0932 Melem/s – 5.1551 Melem/s
+* **Time:** 191.88 ms – 194.78 ms – 197.58 ms
+* **Throughput:** 5.0613 Melem/s – 5.1340 Melem/s – 5.2117 Melem/s
 
 ### `SyncGeneral/Workload-Read75Write25_Zipf_Cap-1000000_Ops-1000000_Threads-4`
 
-* **Time:** 75.050 ms – 76.711 ms – 79.350 ms
-* **Throughput:** 12.602 Melem/s – 13.036 Melem/s – 13.324 Melem/s
+* **Time:** 83.178 ms – 86.903 ms – 91.022 ms
+* **Throughput:** 10.986 Melem/s – 11.507 Melem/s – 12.022 Melem/s
 
 ### `SyncGeneral/Workload-Read75Write25_Zipf_Cap-1000000_Ops-1000000_Threads-8`
 
-* **Time:** 64.850 ms – 65.044 ms – 65.405 ms
-* **Throughput:** 15.289 Melem/s – 15.374 Melem/s – 15.420 Melem/s
-
----
+* **Time:** 63.242 ms – 63.658 ms – 64.176 ms
+* **Throughput:** 15.582 Melem/s – 15.709 Melem/s – 15.812 Melem/s
 
 ### `SyncGeneral/Workload-Write100_Zipf_Cap-1000000_Ops-1000000_Threads-1`
 
-* **Time:** 227.00 ms – 228.96 ms – 230.68 ms
-* **Throughput:** 4.3350 Melem/s – 4.3676 Melem/s – 4.4053 Melem/s
+* **Time:** 245.31 ms – 248.72 ms – 252.63 ms
+* **Throughput:** 3.9583 Melem/s – 4.0205 Melem/s – 4.0764 Melem/s
 
 ### `SyncGeneral/Workload-Write100_Zipf_Cap-1000000_Ops-1000000_Threads-4`
 
-* **Time:** 143.48 ms – 154.03 ms – 170.02 ms
-* **Throughput:** 5.8815 Melem/s – 6.4921 Melem/s – 6.9698 Melem/s
+* **Time:** 167.36 ms – 171.08 ms – 174.36 ms
+* **Throughput:** 5.7352 Melem/s – 5.8452 Melem/s – 5.9753 Melem/s
 
 ### `SyncGeneral/Workload-Write100_Zipf_Cap-1000000_Ops-1000000_Threads-8`
 
-* **Time:** 153.09 ms – 154.65 ms – 156.59 ms
-* **Throughput:** 6.3863 Melem/s – 6.4662 Melem/s – 6.5321 Melem/s
-
----
+* **Time:** 150.14 ms – 152.30 ms – 155.55 ms
+* **Throughput:** 6.4287 Melem/s – 6.5661 Melem/s – 6.6605 Melem/s
 
 ### `SyncGeneral/Workload-Compute_SameKey_Cap-1000000_Ops-1000000_Threads-1`
 
-* **Time:** 28.581 ms – 29.039 ms – 29.373 ms
-* **Throughput:** 34.044 Melem/s – 34.437 Melem/s – 34.988 Melem/s
+* **Time:** 10.870 ms – 10.909 ms – 10.962 ms
+* **Throughput:** 91.225 Melem/s – 91.671 Melem/s – 91.994 Melem/s
 
 ### `SyncGeneral/Workload-Compute_SameKey_Cap-1000000_Ops-1000000_Threads-4`
 
-* **Time:** 125.69 ms – 127.69 ms – 130.66 ms
-* **Throughput:** 7.6533 Melem/s – 7.8315 Melem/s – 7.9563 Melem/s
+* **Time:** 143.35 ms – 147.20 ms – 152.53 ms
+* **Throughput:** 6.5562 Melem/s – 6.7934 Melem/s – 6.9757 Melem/s
 
 ### `SyncGeneral/Workload-Compute_SameKey_Cap-1000000_Ops-1000000_Threads-8`
 
-* **Time:** 258.53 ms – 274.20 ms – 292.13 ms
-* **Throughput:** 3.4231 Melem/s – 3.6469 Melem/s – 3.8680 Melem/s
-
----
+* **Time:** 252.92 ms – 270.54 ms – 284.65 ms
+* **Throughput:** 3.5130 Melem/s – 3.6963 Melem/s – 3.9538 Melem/s
 
 ### `SyncGeneral/Workload-Compute_Zipf_Cap-1000000_Ops-1000000_Threads-1`
 
-* **Time:** 85.899 ms – 87.578 ms – 90.336 ms
-* **Throughput:** 11.070 Melem/s – 11.418 Melem/s – 11.642 Melem/s
+* **Time:** 84.232 ms – 88.468 ms – 92.407 ms
+* **Throughput:** 10.822 Melem/s – 11.303 Melem/s – 11.872 Melem/s
 
 ### `SyncGeneral/Workload-Compute_Zipf_Cap-1000000_Ops-1000000_Threads-4`
 
-* **Time:** 36.236 ms – 38.745 ms – 42.203 ms
-* **Throughput:** 23.695 Melem/s – 25.810 Melem/s – 27.597 Melem/s
+* **Time:** 36.603 ms – 39.661 ms – 42.492 ms
+* **Throughput:** 23.534 Melem/s – 25.214 Melem/s – 27.321 Melem/s
 
 ### `SyncGeneral/Workload-Compute_Zipf_Cap-1000000_Ops-1000000_Threads-8`
 
-* **Time:** 34.062 ms – 34.465 ms – 34.884 ms
-* **Throughput:** 28.666 Melem/s – 29.015 Melem/s – 29.358 Melem/s
+* **Time:** 32.287 ms – 32.629 ms – 33.021 ms
+* **Throughput:** 30.283 Melem/s – 30.648 Melem/s – 30.972 Melem/s
