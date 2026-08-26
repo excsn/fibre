@@ -44,13 +44,14 @@ fn extract_config(combo: &AbstractCombination) -> Result<BenchConfig, String> {
 // --- Benchmark Functions ---
 
 fn setup_fn(cfg: &BenchConfig) -> Result<(BenchContext, BenchState), String> {
-  let cache = Arc::new(
-    CacheBuilder::default()
-      .capacity(cfg.capacity)
-      .maintenance_chance(maintenance_frequency::LOW_OVERHEAD)
-      .build()
-      .unwrap(),
-  );
+  let mut builder = CacheBuilder::default()
+    .capacity(cfg.capacity)
+    .maintenance_chance(maintenance_frequency::LOW_OVERHEAD);
+  if cfg.op_type == "InsertTtl" {
+    // TTL far past the run: every insert arms a timer, none fire mid-measurement.
+    builder = builder.time_to_live(Duration::from_secs(3600));
+  }
+  let cache = Arc::new(builder.build().unwrap());
 
   // 1. Pre-populate the cache with num_items *in a single thread* for a consistent start.
   for i in 0..cfg.num_items {
@@ -61,7 +62,7 @@ fn setup_fn(cfg: &BenchConfig) -> Result<(BenchContext, BenchState), String> {
   let mut workload_keys: Vec<u64> = match cfg.op_type.as_str() {
     "GetHit" => (0..cfg.num_items as u64).collect(),
     "GetMiss" => (cfg.num_items as u64..2 * cfg.num_items as u64).collect(),
-    "Insert" => (cfg.num_items as u64..2 * cfg.num_items as u64).collect(),
+    "Insert" | "InsertTtl" => (cfg.num_items as u64..2 * cfg.num_items as u64).collect(),
     _ => return Err("Invalid operation type".to_string()),
   };
 
@@ -107,7 +108,7 @@ fn benchmark_logic(
               black_box(cache_clone.get(key, |_v| ()));
             }
           }
-          "Insert" => {
+          "Insert" | "InsertTtl" => {
             for key in thread_keys {
               cache_clone.insert(*key, *key, 1);
             }
@@ -128,6 +129,7 @@ fn sync_benches(c: &mut Criterion) {
       MatrixCellValue::String("GetHit".to_string()),
       MatrixCellValue::String("GetMiss".to_string()),
       MatrixCellValue::String("Insert".to_string()),
+      MatrixCellValue::String("InsertTtl".to_string()),
     ], // Operation Type
     vec![
       MatrixCellValue::Unsigned(10_000),

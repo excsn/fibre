@@ -455,7 +455,7 @@ where
 
       for p_entry in snap.entries {
         let expires_at = p_entry.ttl_remaining.map(|ttl| now_duration + ttl);
-        let entry = crate::entry::CacheEntry::new_with_expiry(
+        let mut entry = crate::entry::CacheEntry::new_with_expiry(
           p_entry.value,
           p_entry.cost,
           expires_at,
@@ -464,6 +464,7 @@ where
         total_cost += p_entry.cost;
 
         let hash = hash_key(&self.hasher, &p_entry.key);
+        entry.key_hash = hash;
         let index = hash as usize % self.shards;
         entries_by_shard[index].insert(p_entry.key, Arc::new(entry));
       }

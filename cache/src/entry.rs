@@ -16,6 +16,9 @@ pub(crate) struct CacheEntry<V> {
   pub(crate) expires_at: AtomicU64,
   /// The last access timestamp in nanoseconds. 0 means no TTI.
   pub(crate) last_accessed: AtomicU64,
+  /// The key's hash under the cache's hasher; 0 until a timer is attached. Lets the
+  /// TTL sweep match wheel hashes without re-hashing every key in the shard.
+  pub(crate) key_hash: u64,
   /// A handle to the TTL timer in the timer wheel, for cancellation.
   pub(crate) ttl_timer_handle: Option<TimerHandle>, // We will use the key's hash for the timer
   /// A handle to the TTI timer in the timer wheel.
@@ -34,6 +37,7 @@ impl<V> CacheEntry<V> {
       cost,
       expires_at: AtomicU64::new(expires_at),
       last_accessed: AtomicU64::new(last_accessed),
+      key_hash: 0,
       ttl_timer_handle: None,
       tti_timer_handle: None,
     }
@@ -58,6 +62,7 @@ impl<V> CacheEntry<V> {
       cost,
       expires_at: AtomicU64::new(expires_at_nanos),
       last_accessed: AtomicU64::new(last_accessed_nanos),
+      key_hash: 0,
       ttl_timer_handle: None,
       tti_timer_handle: None,
     }
@@ -76,6 +81,7 @@ impl<V> CacheEntry<V> {
       cost,
       expires_at: AtomicU64::new(expires_at),
       last_accessed: AtomicU64::new(last_accessed),
+      key_hash: 0,
       ttl_timer_handle: None,
       tti_timer_handle: None,
     }
@@ -89,6 +95,7 @@ impl<V> CacheEntry<V> {
       cost,
       expires_at: AtomicU64::new(0),
       last_accessed: AtomicU64::new(0),
+      key_hash: 0,
       ttl_timer_handle: None,
       tti_timer_handle: None,
     }
@@ -142,9 +149,11 @@ impl<V> CacheEntry<V> {
   /// Attaches timer handles to the entry after it has been created.
   pub(crate) fn set_timer_handles(
     &mut self,
+    key_hash: u64,
     ttl_handle: Option<TimerHandle>,
     tti_handle: Option<TimerHandle>,
   ) {
+    self.key_hash = key_hash;
     self.ttl_timer_handle = ttl_handle;
     self.tti_timer_handle = tti_handle;
   }

@@ -221,7 +221,7 @@ where
         .time_to_live
         .map(|ttl| wheel.schedule(key_hash, ttl));
       let tti_handle = None;
-      new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
+      new_cache_entry.set_timer_handles(key_hash, ttl_handle, tti_handle);
     }
 
     let old_entry: Option<Arc<CacheEntry<V>>>;
@@ -293,7 +293,7 @@ where
       let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
       let ttl_handle = Some(wheel.schedule(key_hash, ttl));
       let tti_handle = None;
-      new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
+      new_cache_entry.set_timer_handles(key_hash, ttl_handle, tti_handle);
     }
 
     let old_entry: Option<Arc<CacheEntry<V>>>;
@@ -1011,7 +1011,7 @@ where
               .time_to_live
               .map(|ttl| wheel.schedule(key_hash, ttl));
             let tti_handle = None; // TTI handled by janitor sampling
-            new_cache_entry.set_timer_handles(ttl_handle, tti_handle);
+            new_cache_entry.set_timer_handles(key_hash, ttl_handle, tti_handle);
           }
 
           // Insert and handle any replaced entry.
