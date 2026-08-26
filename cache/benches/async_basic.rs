@@ -52,13 +52,14 @@ fn setup_fn(
 ) -> Pin<Box<dyn Future<Output = Result<(BenchContext, BenchState), String>> + Send>> {
   let cfg = cfg.clone();
   Box::pin(async move {
-    let cache = Arc::new(
-      CacheBuilder::default()
-        .capacity(cfg.capacity)
-        .maintenance_chance(maintenance_frequency::LOW_OVERHEAD)
-        .build_async()
-        .unwrap(),
-    );
+    let mut builder = CacheBuilder::default()
+      .capacity(cfg.capacity)
+      .maintenance_chance(maintenance_frequency::LOW_OVERHEAD);
+    if cfg.op_type == "InsertTtl" {
+      // TTL far past the run: every insert arms a timer, none fire mid-measurement.
+      builder = builder.time_to_live(Duration::from_secs(3600));
+    }
+    let cache = Arc::new(builder.build_async().unwrap());
 
     // Pre-populate the cache.
     for i in 0..cfg.num_items {
@@ -68,7 +69,7 @@ fn setup_fn(
     let mut workload_keys: Vec<u64> = match cfg.op_type.as_str() {
       "GetHit" => (0..cfg.num_items as u64).collect(),
       "GetMiss" => (cfg.num_items as u64..2 * cfg.num_items as u64).collect(),
-      "Insert" => (cfg.num_items as u64..2 * cfg.num_items as u64).collect(),
+      "Insert" | "InsertTtl" => (cfg.num_items as u64..2 * cfg.num_items as u64).collect(),
       _ => return Err("Invalid operation type".to_string()),
     };
 
@@ -118,7 +119,7 @@ fn benchmark_logic(
               black_box(cache_clone.get(key, |_v| ()).await);
             }
           }
-          "Insert" => {
+          "Insert" | "InsertTtl" => {
             for key in &task_keys {
               cache_clone.insert(*key, *key, 1).await;
             }
@@ -152,6 +153,7 @@ fn async_benches(c: &mut Criterion) {
       MatrixCellValue::String("GetHit".to_string()),
       MatrixCellValue::String("GetMiss".to_string()),
       MatrixCellValue::String("Insert".to_string()),
+      MatrixCellValue::String("InsertTtl".to_string()),
     ], // Operation Type
     vec![
       MatrixCellValue::Unsigned(10_000),
