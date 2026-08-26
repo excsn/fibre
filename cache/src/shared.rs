@@ -22,6 +22,7 @@ use fibre::mpsc;
 /// The internal, thread-safe core of the cache.
 pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) store: Arc<ShardedStore<K, V, H>>,
+  pub(crate) clock: Arc<crate::time::CoarseClock>,
   pub(crate) metrics: Arc<Metrics>,
   pub(crate) cache_policy: Box<[Arc<dyn CachePolicy<K, V>>]>,
   pub(crate) janitor: Option<Janitor>,
@@ -86,6 +87,7 @@ where
       capacity: self.capacity,
       time_to_idle: self.time_to_idle,
       notification_sender: self.notification_sender.as_ref().map(|s| s.clone()),
+      clock: Arc::clone(&self.clock),
     };
     for (i, shard) in self.store.shards.iter().enumerate() {
       let _guard = shard.maintenance_lock.lock();

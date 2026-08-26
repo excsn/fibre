@@ -122,13 +122,36 @@ impl<V> CacheEntry<V> {
       .store(time::now_duration().as_nanos() as u64, Ordering::Relaxed);
   }
 
-  /// Checks if the entry is expired based on its TTL or TTI.
+  /// Updates the last accessed timestamp from the coarse clock.
+  #[inline]
+  pub(crate) fn update_last_accessed_coarse(&self, clock: &time::CoarseClock) {
+    self.last_accessed.store(clock.now(), Ordering::Relaxed);
+  }
+
+  /// Checks if the entry is expired based on its TTL or TTI, on the precise clock.
   #[inline]
   pub(crate) fn is_expired(&self, tti: Option<Duration>) -> bool {
-    let now_nanos = time::now_duration().as_nanos() as u64;
-
-    // Check for TTL expiration.
     let expires_at = self.expires_at.load(Ordering::Relaxed);
+    if expires_at == 0 && tti.is_none() {
+      return false;
+    }
+    self.is_expired_at(tti, expires_at, time::now_duration().as_nanos() as u64)
+  }
+
+  /// Checks expiry against the coarse clock: hot read paths trade at most one
+  /// janitor tick of masking lateness for skipping the syscall.
+  #[inline]
+  pub(crate) fn is_expired_coarse(&self, tti: Option<Duration>, clock: &time::CoarseClock) -> bool {
+    let expires_at = self.expires_at.load(Ordering::Relaxed);
+    if expires_at == 0 && tti.is_none() {
+      return false;
+    }
+    self.is_expired_at(tti, expires_at, clock.now())
+  }
+
+  #[inline]
+  fn is_expired_at(&self, tti: Option<Duration>, expires_at: u64, now_nanos: u64) -> bool {
+    // Check for TTL expiration.
     if expires_at > 0 && now_nanos >= expires_at {
       return true;
     }

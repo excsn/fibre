@@ -479,8 +479,10 @@ where
       }
     }
 
+    let clock = Arc::new(crate::time::CoarseClock::default());
     let janitor_context = JanitorContext {
       store: Arc::clone(&store),
+      clock: Arc::clone(&clock),
       metrics: Arc::clone(&metrics),
       cache_policy: cache_policy.clone(),
       capacity: self.capacity,
@@ -517,6 +519,7 @@ where
 
     Ok(Arc::new(CacheShared {
       store,
+      clock,
       metrics,
       cache_policy,
       janitor,

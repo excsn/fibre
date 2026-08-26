@@ -23,3 +23,27 @@ pub(crate) fn duration_to_instant(duration: Duration) -> Instant {
 pub(crate) fn now_duration() -> Duration {
   instant_to_duration(Instant::now())
 }
+
+/// A coarse clock for hot read paths: the janitor refreshes it once per tick, so
+/// reads cost an atomic load instead of a syscall. Reads lag real time by at most
+/// one janitor tick; 0 means never refreshed and falls back to the precise clock.
+#[derive(Default)]
+pub(crate) struct CoarseClock {
+  nanos: std::sync::atomic::AtomicU64,
+}
+
+impl CoarseClock {
+  pub(crate) fn refresh(&self) {
+    self
+      .nanos
+      .store(now_duration().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+  }
+
+  #[inline]
+  pub(crate) fn now(&self) -> u64 {
+    match self.nanos.load(std::sync::atomic::Ordering::Relaxed) {
+      0 => now_duration().as_nanos() as u64,
+      n => n,
+    }
+  }
+}

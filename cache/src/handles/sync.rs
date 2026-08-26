@@ -89,7 +89,7 @@ where
     {
       let guard = shard.map.read();
       if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
-        if !entry_in_guard.is_expired(self.shared.time_to_idle) {
+        if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
           result = Some(f(entry_in_guard.value().as_ref()));
           self.on_hit(found_key, hash, entry_in_guard, shard_index);
         }
@@ -125,7 +125,7 @@ where
     {
       let guard = shard.map.read();
       if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
-        if !entry_in_guard.is_expired(self.shared.time_to_idle) {
+        if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
           self.on_hit(found_key, hash, entry_in_guard, shard_index);
           value = Some(entry_in_guard.value());
         }
@@ -158,7 +158,7 @@ where
     let guard = shard.map.read();
 
     if let Some(entry) = guard.get(key) {
-      if entry.is_expired(self.shared.time_to_idle) {
+      if entry.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
         // Do not update miss count for a peek
         None
       } else {
@@ -632,7 +632,7 @@ where
   #[inline]
   fn on_hit(&self, key: &K, hash: u64, entry: &Arc<CacheEntry<V>>, shard_idx: usize) {
     if self.shared.time_to_idle.is_some() {
-      entry.update_last_accessed();
+      entry.update_last_accessed_coarse(&self.shared.clock);
     }
 
     if self.shared.track_reads {
@@ -664,6 +664,7 @@ where
       let shard_index = hash as usize & (self.shared.store.shards.len() - 1);
       let janitor_context = crate::task::janitor::JanitorContext {
         store: Arc::clone(&self.shared.store),
+        clock: Arc::clone(&self.shared.clock),
         metrics: Arc::clone(&self.shared.metrics),
         cache_policy: self.shared.cache_policy.clone(),
         capacity: self.shared.capacity,
@@ -705,7 +706,7 @@ where
         let expires_at_nanos = entry.expires_at.load(Ordering::Relaxed);
         if expires_at_nanos == 0 {
           // No TTL, fresh hit.
-          if !entry.is_expired(self.shared.time_to_idle) {
+          if !entry.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
             self.on_hit(found_key, hash, entry, shard_index);
             self.shared.metrics.record_hits(shard_index, 1);
             Some(entry.value())
@@ -716,7 +717,7 @@ where
           let now_nanos = crate::time::now_duration().as_nanos() as u64;
           if now_nanos < expires_at_nanos {
             // CASE A: Fresh Hit
-            if !entry.is_expired(self.shared.time_to_idle) {
+            if !entry.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
               self.on_hit(found_key, hash, entry, shard_index);
               self.shared.metrics.record_hits(shard_index, 1);
               Some(entry.value())
@@ -857,6 +858,7 @@ where
 
     let janitor_context = JanitorContext {
       store: Arc::clone(&self.shared.store),
+      clock: Arc::clone(&self.shared.clock),
       metrics: Arc::clone(&self.shared.metrics),
       cache_policy: self.shared.cache_policy.clone(),
       capacity: self.shared.capacity,
@@ -922,7 +924,7 @@ where
           let hit_value: Option<(K, Arc<V>)> = {
             let guard = shard.map.read();
             if let Some((found_key, entry)) = guard.get_key_value(q) {
-              if !entry.is_expired(self.shared.time_to_idle) {
+              if !entry.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
                 self.on_hit(found_key, hash, entry, shard_index);
                 Some((found_key.clone(), entry.value()))
               } else {

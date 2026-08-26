@@ -32,6 +32,7 @@ const JANITOR_CHECKS_PER_TICK: usize = 2;
 /// janitor needs to access.
 pub(crate) struct JanitorContext<K: Send, V: Send + Sync, H> {
   pub(crate) store: Arc<ShardedStore<K, V, H>>,
+  pub(crate) clock: Arc<crate::time::CoarseClock>,
   pub(crate) metrics: Arc<Metrics>,
   pub(crate) cache_policy: Box<[Arc<dyn CachePolicy<K, V>>]>,
   pub(crate) capacity: u64,
@@ -73,6 +74,7 @@ impl Janitor {
         if stop_clone.load(Ordering::Relaxed) {
           break;
         }
+        context.clock.refresh();
         match signal_rx.recv_timeout(tick_interval) {
           Ok(shard_index) => {
             if stop_clone.load(Ordering::Relaxed) {

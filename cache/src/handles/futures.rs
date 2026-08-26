@@ -89,7 +89,7 @@ where
     {
       let guard = shard.map.read_async().await;
       if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
-        if !entry_in_guard.is_expired(self.shared.time_to_idle) {
+        if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
           result = Some(f(entry_in_guard.value().as_ref()));
           deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
         }
@@ -129,7 +129,7 @@ where
     {
       let guard = shard.map.read_async().await;
       if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
-        if !entry_in_guard.is_expired(self.shared.time_to_idle) {
+        if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
           deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
           value = Some(entry_in_guard.value());
         }
@@ -166,7 +166,7 @@ where
     let guard = shard.map.read_async().await;
 
     if let Some(entry) = guard.get(key) {
-      if entry.is_expired(self.shared.time_to_idle) {
+      if entry.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
         None
       } else {
         Some(entry.value())
@@ -563,7 +563,7 @@ where
     K: Clone,
   {
     if self.shared.time_to_idle.is_some() {
-      entry.update_last_accessed();
+      entry.update_last_accessed_coarse(&self.shared.clock);
     }
 
     if self.shared.track_reads {
@@ -723,9 +723,9 @@ where
 
           for key in shard_keys {
             if let Some(entry) = guard.get(key.borrow()) {
-              if !entry.is_expired(shared.time_to_idle) {
+              if !entry.is_expired_coarse(shared.time_to_idle, &shared.clock) {
                 if shared.time_to_idle.is_some() {
-                  entry.update_last_accessed();
+                  entry.update_last_accessed_coarse(&self.shared.clock);
                 }
                 shared.get_cache_policy(&key).on_access(&key, entry.cost());
                 found.insert(key.clone(), entry.value());
@@ -930,6 +930,7 @@ where
 
     let janitor_context = JanitorContext {
       store: Arc::clone(&self.shared.store),
+      clock: Arc::clone(&self.shared.clock),
       metrics: Arc::clone(&self.shared.metrics),
       cache_policy: self.shared.cache_policy.clone(),
       capacity: self.shared.capacity,
@@ -970,7 +971,7 @@ where
 
         if expires_at_nanos == 0 {
           // No TTL, fresh if TTI has not expired.
-          if !entry_in_guard.is_expired(self.shared.time_to_idle) {
+          if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
             deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
             self.shared.metrics.record_hits(shard_index, 1);
             Some(entry_in_guard.value())
@@ -981,7 +982,7 @@ where
           let now_nanos = crate::time::now_duration().as_nanos() as u64;
           if now_nanos < expires_at_nanos {
             // CASE A: Fresh Hit
-            if !entry_in_guard.is_expired(self.shared.time_to_idle) {
+            if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
               deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
               self.shared.metrics.record_hits(shard_index, 1);
               Some(entry_in_guard.value())
