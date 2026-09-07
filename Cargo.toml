@@ -6,6 +6,7 @@ members = [
   "cache",
   "ioc",
   "logging",
+  "tracing",
 ]
 exclude = []
 

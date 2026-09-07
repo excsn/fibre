@@ -1,0 +1,22 @@
+[package]
+name = "fibre_tracing"
+version = "0.5.0"
+
+description = "Span collection for the tracing ecosystem: one unit of work becomes a trace you can read back in process, keep in a ring and forward to an exporter."
+readme = "README.md"
+keywords = ["tracing", "telemetry", "spans", "observability", "opentelemetry"]
+categories = ["development-tools::debugging"]
+
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+tracing = "^0.1"
+tracing-subscriber = { version = "^0.3", features = ["registry", "std"] }
+parking_lot = "^0.12"
+
+[dev-dependencies]
+tracing-subscriber = { version = "^0.3", features = ["registry", "std"] }

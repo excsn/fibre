@@ -16,7 +16,8 @@ use tracing_subscriber::{
 /// This layer is a thin adapter that receives events from the `tracing`
 /// system, converts them to an internal `LogEvent`, and then passes
 /// that event to the central `EventProcessor`.
-pub(crate) struct DispatchLayer {
+#[derive(Clone)]
+pub struct DispatchLayer {
   processor: Arc<EventProcessor>,
 }
 

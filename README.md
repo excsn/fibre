@@ -20,6 +20,7 @@
 *   **[`fibre_cache`](./cache/README.md)**: A comprehensive, flexible, and high-performance concurrent caching library with modern eviction policies.
 *   **[`fibre_ioc`](./ioc/README.md)**: A flexible, thread-safe, and dynamic Inversion of Control (IoC) container with support for optional dependencies and a single-threaded, non-`Send`/`Sync` variant.
 *   **[`fibre_logging`](./logging/README.md)**: A flexible, multimode sync/async logging library that unifies the log and tracing ecosystems, driven by external configuration and featuring powerful debug instrumentation.
+*   **[`fibre_tracing`](./tracing/README.md)**: Span collection for the tracing ecosystem, turning one unit of work into a trace an application can read back while it runs, keep in memory and hand to an exporter.
 
 ## Notable Users
 
@@ -33,6 +34,7 @@ Detailed documentation and usage guides can be found within each crate's directo
 *   **`fibre_cache` (Cache)**: [Usage Guide](./cache/README.GUIDE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_cache)
 *   **`fibre_ioc` (IoC Container)**: [Usage Guide](./ioc/README.GUIDE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_ioc)
 *   **`fibre_logging` (Logging)**: [Usage Guide](./logging/README.GUIDE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_logging)
+*   **`fibre_tracing` (Tracing)**: [Usage Guide](./tracing/README.USAGE.md) | [API Reference](./tracing/API_REFERENCE.md) | [docs.rs](https://docs.rs/fibre_tracing)
 
 ## License
 

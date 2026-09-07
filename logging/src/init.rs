@@ -90,7 +90,28 @@ pub fn find_config_file(environment_suffix: Option<&str>) -> Result<PathBuf> {
 }
 
 /// Initializes `fibre_logging` from a configuration file path.
+/// The logging layer and its guard, with no global subscriber set, so a
+/// caller composes it with layers of its own:
+///
+/// ```ignore
+/// let (logging, guard) = fibre_logging::init::layer_from_file(&config)?;
+/// tracing_subscriber::registry().with(logging).with(mine).init();
+/// ```
+///
+/// The guard still has to be held: its `Drop` flushes the appenders. The
+/// `log` bridge is installed here too, since it is independent of which
+/// subscriber ends up global.
+pub fn layer_from_file(config_path: &Path) -> Result<(DispatchLayer, InitResult)> {
+  build_from_file(config_path, false)
+}
+
+/// The layer, composed into a registry and set as the global subscriber. What
+/// an application that needs nothing else calls.
 pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
+  build_from_file(config_path, true).map(|(_, result)| result)
+}
+
+fn build_from_file(config_path: &Path, set_global: bool) -> Result<(DispatchLayer, InitResult)> {
   vlog!(
     "[fibre_logging] Initializing from config file: {:?}",
     config_path
@@ -308,17 +329,19 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
 
   let dispatch_layer = DispatchLayer::new(Arc::clone(&processor));
 
-  #[cfg(feature = "tokio-console")]
-  let subscriber = tracing_subscriber::registry()
-    .with(dispatch_layer)
-    .with(console_subscriber::spawn()); // Attaches the console layer and starts its server
+  if set_global {
+    #[cfg(feature = "tokio-console")]
+    let subscriber = tracing_subscriber::registry()
+      .with(dispatch_layer.clone())
+      .with(console_subscriber::spawn()); // Attaches the console layer and starts its server
 
-  #[cfg(not(feature = "tokio-console"))]
-  let subscriber = tracing_subscriber::registry().with(dispatch_layer);
+    #[cfg(not(feature = "tokio-console"))]
+    let subscriber = tracing_subscriber::registry().with(dispatch_layer.clone());
 
-  tracing::subscriber::set_global_default(subscriber)
-    .map_err(|e| Error::GlobalSubscriberSet(e.to_string()))?;
-  vlog!("[fibre_logging] Global tracing subscriber set.");
+    tracing::subscriber::set_global_default(subscriber)
+      .map_err(|e| Error::GlobalSubscriberSet(e.to_string()))?;
+    vlog!("[fibre_logging] Global tracing subscriber set.");
+  }
 
   let log_handler = LogHandler::new(Arc::clone(&processor));
   log::set_boxed_logger(Box::new(log_handler))
@@ -327,14 +350,17 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
   vlog!("[fibre_logging] Custom log handler initialized.");
 
   vlog!("[fibre_logging] Initialization complete.");
-  Ok(InitResult {
-    appender_task_handles,
-    appender_task_names,
-    shutdown_signal, // Return the signal for the shutdown function
-    processor: Some(processor),
-    internal_error_rx: error_rx_channel,
-    custom_streams,
-  })
+  Ok((
+    dispatch_layer,
+    InitResult {
+      appender_task_handles,
+      appender_task_names,
+      shutdown_signal, // Return the signal for the shutdown function
+      processor: Some(processor),
+      internal_error_rx: error_rx_channel,
+      custom_streams,
+    },
+  ))
 }
 
 /// Maps the config-derived tracing max level to the `log` crate's filter so

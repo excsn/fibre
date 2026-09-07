@@ -7,6 +7,6 @@ mod processor;
 pub mod visitor;
 
 // Re-exports
-pub(crate) use dispatch::DispatchLayer;
+pub use dispatch::DispatchLayer;
 pub(crate) use log_handler::LogHandler;
 pub(crate) use processor::EventProcessor;
