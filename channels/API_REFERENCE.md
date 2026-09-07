@@ -488,7 +488,7 @@ A multi-consumer "topic" or "publish-subscribe" channel. This channel allows a s
 
 ### Struct `TopicSender<K, T>`
 
-The synchronous, cloneable sending handle.
+The synchronous, non-cloneable sending handle.
 
 *   **Methods**:
     *   `pub fn send(&self, topic: K, value: T) -> Result<(), SendError>`: Non-blocking send. Drops message for slow consumers.
@@ -514,7 +514,7 @@ The synchronous, cloneable receiving handle.
 
 ### Struct `AsyncTopicSender<K, T>`
 
-The asynchronous, cloneable sending handle.
+The asynchronous, non-cloneable sending handle.
 
 *   **Methods**:
     *   `pub fn send(&self, topic: K, value: T) -> Result<(), SendError>`: Non-blocking, fire-and-forget send.

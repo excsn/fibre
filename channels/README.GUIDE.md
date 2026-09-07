@@ -325,8 +325,8 @@ A flexible publish-subscribe channel for one-to-many communication. Messages are
     *   `pub fn channel<K, T>(mailbox_capacity: usize) -> (TopicSender<K, T>, TopicReceiver<K, T>)`
     *   `pub fn channel_async<K, T>(mailbox_capacity: usize) -> (AsyncTopicSender<K, T>, AsyncTopicReceiver<K, T>)`
 *   **Handles:**
-    *   `TopicSender<K, T>` (sync, `Clone`) and `TopicReceiver<K, T>` (sync, `Clone`).
-    *   `AsyncTopicSender<K, T>` (async, `Clone`) and `AsyncTopicReceiver<K, T>` (async, `Clone`). `AsyncTopicReceiver` implements `futures::Stream`.
+    *   `TopicSender<K, T>` (sync, `!Clone`) and `TopicReceiver<K, T>` (sync, `Clone`).
+    *   `AsyncTopicSender<K, T>` (async, `!Clone`) and `AsyncTopicReceiver<K, T>` (async, `Clone`). `AsyncTopicReceiver` implements `futures::Stream`.
 *   **Key Methods:**
     *   `send(&self, topic: K, value: T)`: Non-blocking. Drops messages for slow consumers.
     *   `subscribe(&self, topic: K)` and `unsubscribe(&self, topic: &Q)`.

@@ -63,7 +63,7 @@ The following tables summarize the consistent API surface across all channel sen
 | `is_empty()` | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | `is_full()` | ✅ | ✅ (bounded) | ✅ | ❌ | ✅ | N/A |
 | `capacity()` | ✅ | ✅ (bounded) | ✅ | ❌ | ✅ | N/A |
-| `clone()` | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
+| `clone()` | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
 | `send_batch()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
 | `try_send_batch()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |
 | `send_batch_mut()` | ✅ | ✅ | ✅ | ❌ | ✅ | N/A |

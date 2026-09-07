@@ -22,9 +22,6 @@ use parking_lot::Mutex;
 // --- Sync Sender ---
 
 /// The synchronous sending-half of a topic-based SPMC channel.
-///
-/// The sender is cloneable. Note that there is only one logical producer, but
-/// the handle can be cloned to be used from multiple threads.
 #[derive(Debug)]
 pub struct TopicSender<K, T>
 where
@@ -126,19 +123,6 @@ where
     let closed = unsafe { std::ptr::read(&self.closed) };
     mem::forget(self);
     AsyncTopicSender { dispatcher, closed }
-  }
-}
-
-impl<K, T> Clone for TopicSender<K, T>
-where
-  K: Eq + Hash + Clone + Send + Sync + 'static,
-  T: Send + Clone + 'static,
-{
-  fn clone(&self) -> Self {
-    Self {
-      dispatcher: self.dispatcher.clone(),
-      closed: AtomicBool::new(false),
-    }
   }
 }
 
