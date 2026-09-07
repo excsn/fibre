@@ -34,7 +34,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fibre_tracing = "0.5"
+fibre_tracing = "0" # Replace with the latest version
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 ```

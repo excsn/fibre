@@ -429,7 +429,7 @@ The `tokio-console` feature integrates this transparently: when enabled, `init_f
 ```toml
 # Cargo.toml
 [dependencies]
-fibre_logging = { version = "0.5", features = ["tokio-console"] }
+fibre_logging = { version = "0", features = ["tokio-console"] } # Replace with the latest version
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -491,7 +491,7 @@ The feature is typically only enabled in development. Use a Cargo profile or con
 debug-console = ["fibre_logging/tokio-console"]
 
 [dependencies]
-fibre_logging = "0.5.5"       # no tokio-console by default
+fibre_logging = "0"       # no tokio-console by default
 ```
 
 Then build with `cargo run --features debug-console` during development.

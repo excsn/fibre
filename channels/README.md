@@ -143,7 +143,7 @@ Add Fibre to your project by including it in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fibre = "0.5.0" # Replace with the latest version
+fibre = "0" # Replace with the latest version
 ```
 
 Or by using the command line:

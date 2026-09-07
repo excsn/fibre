@@ -44,7 +44,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fibre_logging = "0.5"
+fibre_logging = "0" # Replace with the latest version
 log = "0.4"
 tracing = "0.1"
 ```
@@ -53,7 +53,7 @@ To enable async runtime debugging with [tokio-console](https://github.com/tokio-
 
 ```toml
 [dependencies]
-fibre_logging = { version = "0.5.5", features = ["tokio-console"] }
+fibre_logging = { version = "0", features = ["tokio-console"] } # Replace with the latest version
 ```
 
 > **Note:** tokio-console requires the `tokio_unstable` cfg flag. See the [Usage Guide](README.USAGE.md#async-runtime-debugging-tokio-console) for setup details.
