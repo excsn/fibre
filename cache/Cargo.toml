@@ -12,7 +12,9 @@ keywords = ["cache", "caching", "tinylfu", "lfu", "concurrent"]
 categories = ["caching", "concurrency", "asynchronous", "data-structures", "memory-management"]
 
 exclude = [
-  "/docs/"
+  "/benches/",
+  "/docs/",
+  "/tests/",
 ]
 
 [features]

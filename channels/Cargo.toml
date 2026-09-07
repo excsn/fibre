@@ -14,7 +14,14 @@ homepage.workspace = true
 repository.workspace = true
 
 exclude = [
-  "/docs/"
+  "/arena/",
+  "/bench/",
+  "/benches/",
+  "/docs/",
+  "/miri/",
+  "/scripts/",
+  "/tests/",
+  "nextest.toml",
 ]
 
 [features]
