@@ -1,6 +1,6 @@
 [package]
 name = "fibre_tracing"
-version = "0.5.0"
+version = "0.5.1"
 
 description = "Span collection for the tracing ecosystem: one unit of work becomes a trace you can read back in process, keep in a ring and forward to an exporter."
 readme = "README.md"

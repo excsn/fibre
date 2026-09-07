@@ -543,7 +543,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fibre"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "bench_matrix",
  "criterion",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "fibre_cache"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "ahash",
  "bench_matrix",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "fibre_ioc"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "dashmap",
  "once_cell",
@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "fibre_logging"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "chrono",
  "console-subscriber",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "fibre_tracing"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "parking_lot",
  "tracing",

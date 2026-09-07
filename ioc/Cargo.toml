@@ -1,6 +1,6 @@
 [package]
 name = "fibre_ioc"
-version = "0.5.2"
+version = "0.5.3"
 description = "A flexible, thread-safe and dynamic Inversion of Control (IoC) container for Rust."
 readme = "README.md"
 keywords = ["ioc", "di", "dependency-injection", "inversion-of-control"]
