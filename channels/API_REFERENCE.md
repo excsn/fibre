@@ -11,7 +11,7 @@
     *   `mpmc`: **M**ulti-**P**roducer, **M**ulti-**C**onsumer. The most flexible channel for many-to-many communication, supporting both bounded and unbounded modes.
     *   `oneshot`: A channel for sending a single value, exactly once.
 
-*   **Hybrid Sync/Async Model**: A core feature of `fibre` is the seamless interoperability between synchronous (`std::thread`) and asynchronous (`tokio`) code. All `Sender` and `Receiver` handles provide `to_sync()` or `to_async()` methods that perform a zero-cost conversion. This allows, for example, a synchronous thread to send data to an asynchronous task on the same channel.
+*   **Hybrid Sync/Async Model**: A core feature of `fibre` is the seamless interoperability between synchronous (`std::thread`) and asynchronous (`tokio`) code. All `Sender` and `Receiver` handles provide `to_sync()` or `to_async()` methods that perform a zero-cost conversion. This allows, for example, a synchronous thread to send data to an asynchronous task on the same channel. The locks in `fibre::sync` (§9) follow the same model: one `HybridMutex` or `HybridRwLock` serves blocking callers and futures at once.
 
 *   **Sender and Receiver Handles**: Interaction with channels is done through `Sender` and `Receiver` handles. These handles control access and lifetime. When all `Sender` handles for a channel are dropped, it becomes "disconnected." When all `Receiver` handles are dropped, it becomes "closed." Handle cloning semantics vary by channel type (e.g., `mpmc::Sender` is `Clone`, but `spsc::BoundedSyncSender` is not).
 
@@ -536,3 +536,49 @@ The asynchronous, cloneable receiving handle. Implements `futures::Stream`.
     *   `pub fn capacity(&self) -> usize`: Returns the capacity of this receiver's mailbox.
     *   `pub fn is_empty(&self) -> bool`: Returns `true` if this receiver's mailbox is empty.
     *   `pub fn to_sync(self) -> TopicReceiver<K, T>`
+## 9. Module `fibre::sync`
+
+Locks that wait either way: a synchronous caller parks its thread, an asynchronous caller yields to its executor with a waker, on the same lock at the same time. Both locks share one FIFO wait list and one contention strategy: an acquisition spins with `yield_now` before it queues, a caller that arrives while the lock is free takes it without queueing (barging) and an unlock releases the lock first and then wakes waiters to contend again. Ownership is never handed to a waiter, so it is never parked inside a suspended task and a blocking waiter on an executor thread always makes progress.
+
+*   **Behavior**:
+    *   **One lock, two waits**: `lock`, `read` and `write` block the calling thread; `lock_async`, `read_async` and `write_async` return futures. Any mix of the two may contend on one lock.
+    *   **Guards may cross an `.await`**: a guard is a reference to the lock, so it is `Send` whenever the lock is `Sync` and a task may hold one across a suspension. The release-then-wake protocol keeps that from stalling other waiters, since nobody is waiting for a handoff from the parked task.
+    *   **Cancellation**: dropping a pending lock future unlinks its waiter. A wake it had already received is passed on to the next waiter, so a cancelled acquisition never strands the queue.
+    *   **Fairness**: wakes go to the queue head, which stays linked while it contends again; a loser re-arms and waits for the next wake. The read-write lock is write-preferring: while a writer is queued, new readers are gated behind it, so a stream of readers cannot starve a writer. A workload of reads alone never touches the queue.
+    *   **No poisoning**: a panic while holding a guard releases the lock on unwind, the same as `parking_lot`.
+
+### Struct `HybridMutex<T>`
+
+A mutual-exclusion lock. `Send` when `T: Send`; `Sync` when `T: Send`.
+
+*   **Methods**:
+    *   `pub fn new(data: T) -> Self`
+    *   `pub fn lock(&self) -> MutexGuard<'_, T>`: Blocks the calling thread until the lock is held.
+    *   `pub async fn lock_async(&self) -> MutexGuard<'_, T>`: Waits without blocking the executor. The future is `Send` when `T: Send`.
+    *   `pub fn try_lock(&self) -> Option<MutexGuard<'_, T>>`: One acquisition attempt, never waits.
+    *   `pub fn get_mut(&mut self) -> &mut T`: The data without locking; `&mut self` proves no other reference exists.
+
+### Struct `MutexGuard<'a, T>`
+
+Holds the lock until dropped. Implements `Deref<Target = T>` and `DerefMut`.
+
+### Struct `HybridRwLock<T>`
+
+A reader-writer lock: any number of readers or one writer. `Send` when `T: Send`; `Sync` when `T: Send + Sync`.
+
+*   **Methods**:
+    *   `pub fn new(data: T) -> Self`
+    *   `pub fn read(&self) -> ReadGuard<'_, T>`: Blocks the calling thread until a shared hold is granted.
+    *   `pub fn write(&self) -> WriteGuard<'_, T>`: Blocks the calling thread until the exclusive hold is granted.
+    *   `pub async fn read_async(&self) -> ReadGuard<'_, T>`: Waits without blocking the executor. The future is `Send` when `T: Send + Sync`.
+    *   `pub async fn write_async(&self) -> WriteGuard<'_, T>`: Likewise, for the exclusive hold.
+    *   `pub fn try_read(&self) -> Option<ReadGuard<'_, T>>`: One attempt, never waits.
+    *   `pub fn try_write(&self) -> Option<WriteGuard<'_, T>>`: One attempt, never waits.
+
+### Struct `ReadGuard<'a, T>`
+
+A shared hold, released on drop. Implements `Deref<Target = T>`.
+
+### Struct `WriteGuard<'a, T>`
+
+The exclusive hold, released on drop. Implements `Deref<Target = T>` and `DerefMut`.
