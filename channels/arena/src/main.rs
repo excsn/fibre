@@ -3,7 +3,8 @@ use channels_arena::driver::RunError;
 use channels_arena::matrix;
 use channels_arena::measure::{Budget, Measurement, format_throughput};
 use channels_arena::registry::registry;
-use channels_arena::report::{Record, Report};
+use channels_arena::machine;
+use channels_arena::report::{Record, Report, RunInfo};
 use channels_arena::spec::{Api, BatchSupport, Capacity, Flavor, Mode, Pairing, Stage};
 
 use std::io::Write as _;
@@ -52,7 +53,9 @@ OPTIONS:
     --machine <label>  machine label recorded in the docs
     --out <dir>        output directory (default docs)
     --list             list the matrix and exit
-    --rerender <tsv>   rewrite the pages from a previous run's results.tsv, measuring nothing
+    --rerender <tsv>   rewrite the pages from a previous run's results.tsv, measuring nothing;
+                       a results.json beside it keeps that run's machine state and versions,
+                       otherwise versions come from this crate's Cargo.lock
     --help             this message
 
 Sample rounds are interleaved across implementations within a cell, so drift in
@@ -228,10 +231,19 @@ fn main() {
       eprintln!("cannot read {}: {}", path.display(), e);
       std::process::exit(1);
     });
-    let report = Report::from_tsv(args.machine, &text).unwrap_or_else(|e| {
+    let mut report = Report::from_tsv(args.machine, &text).unwrap_or_else(|e| {
       eprintln!("cannot parse {}: {}", path.display(), e);
       std::process::exit(1);
     });
+    if let Some(run) = std::fs::read_to_string(path.with_file_name("results.json"))
+      .ok()
+      .and_then(|text| RunInfo::from_json(&text))
+    {
+      report.run = run;
+    }
+    if report.run.versions.is_empty() {
+      report.run.versions = machine::versions();
+    }
     write_report(&report, &args.out);
     return;
   }
@@ -276,6 +288,7 @@ fn main() {
   }
 
   let _lock = RunLock::claim(&args.out);
+  let run = machine::capture();
 
   let runtime = tokio::runtime::Builder::new_multi_thread()
     .enable_all()
@@ -359,6 +372,7 @@ fn main() {
 
   let report = Report {
     machine: args.machine,
+    run,
     records,
   };
   write_report(&report, &args.out);

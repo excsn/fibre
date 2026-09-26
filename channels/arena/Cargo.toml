@@ -21,6 +21,7 @@ oneshot = "0.1"
 async-oneshot = "0.5"
 lite-sync = "0.3"
 sync-oneshot = "0.2"
+serde_json = "1"
 
 [profile.release]
 debug = true

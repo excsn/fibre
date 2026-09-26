@@ -1,6 +1,8 @@
 use crate::measure::{Measurement, format_throughput};
 use crate::spec::{Api, BatchSupport, Capacity, Cell, Flavor, Mode, Pairing, Stage};
 
+use serde_json::{Value, json};
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -16,13 +18,75 @@ pub struct Record {
 
 pub struct Report {
   pub machine: String,
+  pub run: RunInfo,
   pub records: Vec<Record>,
 }
 
-type RowKey = (Stage, Capacity, Pairing);
-type Rows = BTreeMap<RowKey, BTreeMap<&'static str, f64>>;
+/// What a run knows about itself beyond the machine label. A report rebuilt
+/// from a TSV has none of it unless a previous `results.json` carried it.
+#[derive(Default)]
+pub struct RunInfo {
+  pub measured_at: Option<String>,
+  pub power_mode: Option<String>,
+  pub load_at_start: Option<f64>,
+  pub rustc: Option<String>,
+  /// Library name to the version of the crate it was measured at.
+  pub versions: BTreeMap<String, String>,
+}
 
-fn rows(records: &[Record], flavor: Flavor, mode: Mode, batched: bool) -> Rows {
+type RowKey = (Stage, Capacity, Pairing);
+type Rows<'a> = BTreeMap<RowKey, BTreeMap<&'static str, &'a Measurement>>;
+
+struct Table {
+  heads: &'static [&'static str],
+  libraries: Vec<&'static str>,
+  rows: Vec<TableRow>,
+}
+
+struct TableRow {
+  head: Vec<String>,
+  cells: Vec<Option<TableCell>>,
+}
+
+struct TableCell {
+  median: f64,
+  min: f64,
+  max: f64,
+  gain: Option<f64>,
+  best: bool,
+}
+
+impl TableCell {
+  fn display(&self) -> String {
+    match self.gain {
+      Some(gain) => format!("{} ({:.1}x)", format_throughput(self.median), gain),
+      None => format_throughput(self.median),
+    }
+  }
+}
+
+struct Section {
+  id: String,
+  title: String,
+  mode: Mode,
+  batched: bool,
+  table: Table,
+  notes: Vec<String>,
+}
+
+const SUMMARY: &str = "fibre against tokio, crossbeam, crossfire, flume, kanal, async-channel, futures, the `oneshot` crate and std, through one workload driver.";
+
+const METHOD: [&str; 5] = [
+  "Each cell moves `u64` items through one channel with P producer threads (or tasks) and C consumers. Producers send an equal share each and drop their handle; consumers receive until the channel disconnects. Item count is calibrated per cell to a wall-clock target.",
+  "Timing starts once every worker has reached a barrier, excluding spawn and channel construction. Item accounting is verified per run; a cell whose counts do not balance is dropped. Sample rounds are interleaved across implementations.",
+  "Pairings are clamped to what each shape allows, so only MPMC shows all seven. A general-purpose MPMC library is measured under the SPSC, MPSC and MPMC shapes; fibre uses its specialized channel per shape.",
+  "Capacities are rendezvous, 1, 128, 1024 and unbounded, with a lower item ceiling on unbounded cells. Batched cells run at capacity 128 and above, for implementations with a batch API.",
+  "Oneshot is the exception to all of that: its channel is spent by a single op, so capacity, pairing and batching have one legal value each and the axis that remains is whether channel construction sits inside the timed region. See that page for the two stages.",
+];
+
+const REPRODUCIBILITY: &str = "1×1 rows reproduce within a few percent. Rows at 16 and 64 threads oversubscribe a 14-core machine and do not: over four runs of MPSC/sync/cap-128/64×1, fibre held 0.579-0.601 Melem/s, kanal 0.359-0.640, crossbeam 8.43-11.9, with crossbeam's spread inside one run reaching 1.24-18.6.";
+
+fn rows(records: &[Record], flavor: Flavor, mode: Mode, batched: bool) -> Rows<'_> {
   let mut out: Rows = BTreeMap::new();
   for record in records {
     let cell = &record.cell;
@@ -35,7 +99,7 @@ fn rows(records: &[Record], flavor: Flavor, mode: Mode, batched: bool) -> Rows {
     out
       .entry((cell.stage, cell.capacity, cell.pairing))
       .or_default()
-      .insert(record.library, record.measurement.median());
+      .insert(record.library, &record.measurement);
   }
   out
 }
@@ -47,11 +111,52 @@ const SPREAD_LIMIT: f64 = 2.0;
 
 /// A oneshot's capacity and pairing have one legal value each, so the stage is
 /// the only thing worth naming on its rows.
-fn row_head(flavor: Flavor, key: &RowKey) -> String {
+fn row_head(flavor: Flavor, key: &RowKey) -> Vec<String> {
   match flavor {
-    Flavor::Oneshot => format!("| {} |", key.0),
-    _ => format!("| {} | {} |", key.1, key.2.label()),
+    Flavor::Oneshot => vec![key.0.to_string()],
+    _ => vec![key.1.to_string(), key.2.label()],
   }
+}
+
+fn markdown_table(table: &Table) -> String {
+  let mut out = String::new();
+  let _ = write!(out, "|");
+  for head in table.heads {
+    let _ = write!(out, " {} |", head);
+  }
+  for lib in &table.libraries {
+    let _ = write!(out, " {} |", lib);
+  }
+  let _ = write!(out, "\n|");
+  for _ in table.heads {
+    let _ = write!(out, " :--- |");
+  }
+  for _ in &table.libraries {
+    let _ = write!(out, " ---: |");
+  }
+  out.push('\n');
+
+  for row in &table.rows {
+    let _ = write!(out, "|");
+    for head in &row.head {
+      let _ = write!(out, " {} |", head);
+    }
+    for cell in &row.cells {
+      match cell {
+        Some(cell) if cell.best => {
+          let _ = write!(out, " **{}** |", cell.display());
+        }
+        Some(cell) => {
+          let _ = write!(out, " {} |", cell.display());
+        }
+        None => {
+          let _ = write!(out, " - |");
+        }
+      }
+    }
+    out.push('\n');
+  }
+  out
 }
 
 fn cell_name(flavor: Flavor, cell: &Cell) -> String {
@@ -89,9 +194,9 @@ impl Report {
     libs
   }
 
-  fn table(&self, flavor: Flavor, mode: Mode, batched: bool) -> Option<String> {
-    let libs = self.libraries_for(flavor, mode, batched);
-    if libs.is_empty() {
+  fn table(&self, flavor: Flavor, mode: Mode, batched: bool) -> Option<Table> {
+    let libraries = self.libraries_for(flavor, mode, batched);
+    if libraries.is_empty() {
       return None;
     }
     let rows = rows(&self.records, flavor, mode, batched);
@@ -100,62 +205,88 @@ impl Report {
     }
     let baseline = batched.then(|| self::rows(&self.records, flavor, mode, false));
 
-    let heads: &[&str] = match flavor {
+    let heads: &'static [&'static str] = match flavor {
       Flavor::Oneshot => &["Stage"],
       _ => &["Capacity", "P×C"],
     };
 
-    let mut out = String::new();
-    let _ = write!(out, "|");
-    for head in heads {
-      let _ = write!(out, " {} |", head);
-    }
-    for lib in &libs {
-      let _ = write!(out, " {} |", lib);
-    }
-    let _ = write!(out, "\n|");
-    for _ in heads {
-      let _ = write!(out, " :--- |");
-    }
-    for _ in &libs {
-      let _ = write!(out, " ---: |");
-    }
-    out.push('\n');
-
+    let mut table_rows = Vec::new();
     for (key, values) in &rows {
       // Marking a winner needs someone to win against.
       let best = if values.len() > 1 {
-        values.values().cloned().fold(f64::NEG_INFINITY, f64::max)
+        values.values().map(|m| m.median()).fold(f64::NEG_INFINITY, f64::max)
       } else {
         f64::NAN
       };
-      let _ = write!(out, "{}", row_head(flavor, key));
-      for lib in &libs {
-        match values.get(lib) {
-          Some(value) => {
-            let speedup = baseline
-              .as_ref()
-              .and_then(|b| b.get(key))
-              .and_then(|b| b.get(lib))
-              .filter(|single| **single > 0.0)
-              .map(|single| format!(" ({:.1}x)", value / single))
-              .unwrap_or_default();
-            let rendered = format!("{}{}", format_throughput(*value), speedup);
-            if *value == best {
-              let _ = write!(out, " **{}** |", rendered);
-            } else {
-              let _ = write!(out, " {} |", rendered);
+      let cells = libraries
+        .iter()
+        .map(|lib| {
+          values.get(lib).map(|measurement| {
+            let median = measurement.median();
+            TableCell {
+              median,
+              min: measurement.min(),
+              max: measurement.max(),
+              gain: baseline
+                .as_ref()
+                .and_then(|b| b.get(key))
+                .and_then(|b| b.get(lib))
+                .map(|single| single.median())
+                .filter(|single| *single > 0.0)
+                .map(|single| median / single),
+              best: median == best,
             }
-          }
-          None => {
-            let _ = write!(out, " - |");
-          }
-        }
-      }
-      out.push('\n');
+          })
+        })
+        .collect();
+      table_rows.push(TableRow {
+        head: row_head(flavor, key),
+        cells,
+      });
     }
 
-    Some(out)
+    Some(Table {
+      heads,
+      libraries,
+      rows: table_rows,
+    })
+  }
+
+  fn sections(&self, flavor: Flavor) -> Vec<Section> {
+    let mut sections = Vec::new();
+    for mode in Mode::ALL {
+      if let Some(table) = self.table(flavor, mode, false) {
+        sections.push(Section {
+          id: mode.to_string(),
+          title: mode.to_string(),
+          mode,
+          batched: false,
+          table,
+          notes: self.spread_note(flavor, mode, false).into_iter().collect(),
+        });
+      }
+      if let Some(table) = self.table(flavor, mode, true) {
+        let title = match self.batch_size() {
+          Some(size) => format!("{}, batched ({} items per call)", mode, size),
+          None => format!("{}, batched", mode),
+        };
+        sections.push(Section {
+          id: format!("{}-batched", mode),
+          title,
+          mode,
+          batched: true,
+          table,
+          notes: [
+            self.batch_support_note(flavor, mode),
+            self.spread_note(flavor, mode, true),
+          ]
+          .into_iter()
+          .flatten()
+          .collect(),
+        });
+      }
+    }
+    sections
   }
 
   fn spread_note(&self, flavor: Flavor, mode: Mode, batched: bool) -> Option<String> {
@@ -211,31 +342,11 @@ impl Report {
   }
 
   fn flavor_doc(&self, flavor: Flavor) -> Option<String> {
-    let mut sections: Vec<(String, String, Option<String>)> = Vec::new();
-    let mut any_batched = false;
-    for mode in Mode::ALL {
-      if let Some(table) = self.table(flavor, mode, false) {
-        sections.push((mode.to_string(), table, self.spread_note(flavor, mode, false)));
-      }
-      if let Some(table) = self.table(flavor, mode, true) {
-        any_batched = true;
-        let title = match self.batch_size() {
-          Some(size) => format!("{}, batched ({} items per call)", mode, size),
-          None => format!("{}, batched", mode),
-        };
-        let notes: Vec<String> = [
-          self.batch_support_note(flavor, mode),
-          self.spread_note(flavor, mode, true),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        sections.push((title, table, (!notes.is_empty()).then(|| notes.join(" "))));
-      }
-    }
+    let sections = self.sections(flavor);
     if sections.is_empty() {
       return None;
     }
+    let any_batched = sections.iter().any(|s| s.batched);
 
     let mut out = String::new();
     let _ = writeln!(out, "# Channel Arena: {}", flavor.as_str().to_uppercase());
@@ -257,14 +368,14 @@ impl Report {
       let _ = writeln!(out, "{}", caveat);
     }
 
-    for (title, table, note) in sections {
+    for section in sections {
       let _ = writeln!(out);
-      let _ = writeln!(out, "## {}", title);
+      let _ = writeln!(out, "## {}", section.title);
       let _ = writeln!(out);
-      let _ = write!(out, "{}", table);
-      if let Some(note) = note {
+      let _ = write!(out, "{}", markdown_table(&section.table));
+      if !section.notes.is_empty() {
         let _ = writeln!(out);
-        let _ = writeln!(out, "{}", note);
+        let _ = writeln!(out, "{}", section.notes.join(" "));
       }
     }
 
@@ -281,7 +392,8 @@ impl Report {
     let _ = writeln!(out);
     let _ = writeln!(
       out,
-      "fibre against tokio, crossbeam, crossfire, flume, kanal, async-channel, futures, the `oneshot` crate and std, through one workload driver. Re-run with `cargo run --release` in `channels/arena`."
+      "{} Re-run with `cargo run --release` in `channels/arena`.",
+      SUMMARY
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "## Results");
@@ -301,37 +413,17 @@ impl Report {
     let _ = writeln!(out, "Raw per-cell data: [raw/results.tsv](./raw/results.tsv).");
     let _ = writeln!(out);
     let _ = writeln!(out, "## Method");
-    let _ = writeln!(out);
-    let _ = writeln!(
-      out,
-      "Each cell moves `u64` items through one channel with P producer threads (or tasks) and C consumers. Producers send an equal share each and drop their handle; consumers receive until the channel disconnects. Item count is calibrated per cell to a wall-clock target."
-    );
-    let _ = writeln!(out);
-    let _ = writeln!(
-      out,
-      "Timing starts once every worker has reached a barrier, excluding spawn and channel construction. Item accounting is verified per run; a cell whose counts do not balance is dropped. Sample rounds are interleaved across implementations."
-    );
-    let _ = writeln!(out);
-    let _ = writeln!(
-      out,
-      "Pairings are clamped to what each shape allows, so only MPMC shows all seven. A general-purpose MPMC library is measured under the SPSC, MPSC and MPMC shapes; fibre uses its specialized channel per shape."
-    );
-    let _ = writeln!(out);
-    let _ = writeln!(
-      out,
-      "Capacities are rendezvous, 1, 128, 1024 and unbounded, with a lower item ceiling on unbounded cells. Batched cells run at capacity 128 and above, for implementations with a batch API."
-    );
-    let _ = writeln!(out);
-    let _ = writeln!(
-      out,
-      "Oneshot is the exception to all of that: its channel is spent by a single op, so capacity, pairing and batching have one legal value each and the axis that remains is whether channel construction sits inside the timed region. See that page for the two stages."
-    );
+    for paragraph in METHOD {
+      let _ = writeln!(out);
+      let _ = writeln!(out, "{}", paragraph);
+    }
     let _ = writeln!(out);
     let _ = writeln!(out, "## Reproducibility");
     let _ = writeln!(out);
     let _ = writeln!(
       out,
-      "1×1 rows reproduce within a few percent. Rows at 16 and 64 threads oversubscribe a 14-core machine and do not: over four runs of MPSC/sync/cap-128/64×1, fibre held 0.579-0.601 Melem/s, kanal 0.359-0.640, crossbeam 8.43-11.9, with crossbeam's spread inside one run reaching 1.24-18.6. Per-cell min and max are in [raw/results.tsv](./raw/results.tsv)."
+      "{} Per-cell min and max are in [raw/results.tsv](./raw/results.tsv).",
+      REPRODUCIBILITY
     );
     out
   }
@@ -406,7 +498,11 @@ impl Report {
         },
       });
     }
-    Ok(Report { machine, records })
+    Ok(Report {
+      machine,
+      run: RunInfo::default(),
+      records,
+    })
   }
 
   pub fn write(&self, dir: &Path) -> io::Result<Vec<String>> {
@@ -428,16 +524,187 @@ impl Report {
     written.push("README.md".to_string());
     fs::write(dir.join("raw/results.tsv"), self.tsv())?;
     written.push("raw/results.tsv".to_string());
+    fs::write(dir.join("raw/results.json"), self.json())?;
+    written.push("raw/results.json".to_string());
 
     Ok(written)
+  }
+}
+
+impl Report {
+  /// The whole report as data: the tables and caveats the pages show, plus
+  /// every record for a reader that wants to slice the matrix itself.
+  pub fn json(&self) -> String {
+    let groups: Vec<Value> = Flavor::ALL
+      .into_iter()
+      .filter_map(|flavor| {
+        let sections = self.sections(flavor);
+        if sections.is_empty() {
+          return None;
+        }
+        Some(json!({
+          "id": flavor.as_str(),
+          "title": match flavor {
+            Flavor::Oneshot => "Oneshot".to_owned(),
+            _ => flavor.as_str().to_uppercase(),
+          },
+          "blurb": flavor_blurb(flavor),
+          "caveats": flavor_caveat(flavor).map_or(Vec::new(), |c| c.split("\n\n").collect()),
+          "sections": sections.iter().map(section_json).collect::<Vec<_>>(),
+        }))
+      })
+      .collect();
+
+    let mut libraries: Vec<&'static str> = Vec::new();
+    for record in &self.records {
+      if !libraries.contains(&record.library) {
+        libraries.push(record.library);
+      }
+    }
+    libraries.sort_unstable_by_key(|l| (!l.starts_with("fibre"), *l));
+
+    let records: Vec<Value> = self
+      .records
+      .iter()
+      .map(|r| {
+        json!({
+          "library": r.library,
+          "d": [
+            r.cell.flavor.as_str(),
+            r.cell.mode.as_str(),
+            r.cell.capacity.to_string(),
+            r.cell.pairing.label(),
+            r.cell.api.to_string(),
+            r.cell.stage.as_str(),
+          ],
+          "median": round3(r.measurement.median()),
+          "min": round3(r.measurement.min()),
+          "max": round3(r.measurement.max()),
+        })
+      })
+      .collect();
+
+    let dimension = |id: &str, label: &str, index: usize| {
+      let mut values: Vec<String> = Vec::new();
+      for record in &records {
+        let value = record["d"][index].as_str().unwrap_or_default().to_string();
+        if !values.contains(&value) {
+          values.push(value);
+        }
+      }
+      json!({ "id": id, "label": label, "values": values })
+    };
+
+    let report = json!({
+      "format": 1,
+      "id": "channels",
+      "title": "Channel Arena",
+      "summary": SUMMARY,
+      "unit": { "label": "Melem/s", "description": "Million items per second per item sent, median of samples." },
+      "run": {
+        "machine": self.machine,
+        "measured_at": self.run.measured_at,
+        "power_mode": self.run.power_mode,
+        "load_at_start": self.run.load_at_start,
+        "rustc": self.run.rustc,
+      },
+      "libraries": libraries.iter().map(|name| json!({
+        "name": name,
+        "crate": library_crate(name),
+        "version": self.run.versions.get(*name),
+      })).collect::<Vec<_>>(),
+      "method": METHOD,
+      "caveats": [REPRODUCIBILITY],
+      "groups": groups,
+      "explore": {
+        "dimensions": [
+          dimension("flavor", "Shape", 0),
+          dimension("mode", "Mode", 1),
+          dimension("capacity", "Capacity", 2),
+          dimension("pairing", "P×C", 3),
+          dimension("api", "API", 4),
+          dimension("stage", "Stage", 5),
+        ],
+        "records": records,
+      },
+    });
+    let mut out = serde_json::to_string_pretty(&report).expect("report serializes");
+    out.push('\n');
+    out
+  }
+}
+
+impl RunInfo {
+  /// Reads the run fields back from an earlier `results.json`, so a rerender
+  /// keeps what the measuring run recorded.
+  pub fn from_json(text: &str) -> Option<RunInfo> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let run = value.get("run")?;
+    let text = |key: &str| run.get(key).and_then(Value::as_str).map(str::to_owned);
+    let versions = value
+      .get("libraries")
+      .and_then(Value::as_array)
+      .map(|libs| {
+        libs
+          .iter()
+          .filter_map(|lib| Some((lib.get("name")?.as_str()?.to_owned(), lib.get("version")?.as_str()?.to_owned())))
+          .collect()
+      })
+      .unwrap_or_default();
+    Some(RunInfo {
+      measured_at: text("measured_at"),
+      power_mode: text("power_mode"),
+      load_at_start: run.get("load_at_start").and_then(Value::as_f64),
+      rustc: text("rustc"),
+      versions,
+    })
+  }
+}
+
+fn section_json(section: &Section) -> Value {
+  json!({
+    "id": section.id,
+    "title": section.title,
+    "mode": section.mode.as_str(),
+    "batched": section.batched,
+    "heads": section.table.heads,
+    "libraries": section.table.libraries,
+    "rows": section.table.rows.iter().map(|row| json!({
+      "head": row.head,
+      "cells": row.cells.iter().map(|cell| cell.as_ref().map(|c| json!({
+        "display": c.display(),
+        "median": round3(c.median),
+        "min": round3(c.min),
+        "max": round3(c.max),
+        "best": c.best,
+      }))).collect::<Vec<_>>(),
+    })).collect::<Vec<_>>(),
+    "notes": section.notes,
+  })
+}
+
+fn round3(value: f64) -> f64 {
+  (value * 1000.0).round() / 1000.0
+}
+
+/// The crate a library name was measured from; `std` is the toolchain's.
+pub fn library_crate(name: &str) -> &'static str {
+  match name {
+    "fibre" | "fibre-exclusive" | "fibre-pool" | "fibre-pool-host" => "fibre",
+    "crossbeam" => "crossbeam-channel",
+    "futures" => "futures-channel",
+    "std" => "std",
+    other => known_library(other),
   }
 }
 
 /// Library names are `&'static str` throughout; a name read back from a file
 /// has to be matched against the set the registry uses.
 fn known_library(name: &str) -> &'static str {
-  const LIBRARIES: [&str; 14] = [
+  const LIBRARIES: [&str; 16] = [
     "fibre",
+    "crossfire",
+    "oneshot",
     "fibre-exclusive",
     "fibre-pool",
     "fibre-pool-host",

@@ -8,6 +8,7 @@ pub mod adapters;
 pub mod bench;
 pub mod channel;
 pub mod driver;
+pub mod machine;
 pub mod matrix;
 pub mod measure;
 pub mod registry;
