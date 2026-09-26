@@ -441,3 +441,71 @@ fn sync_try_send_false_full() {
   tx.try_send(CAP)
     .expect("try_send returned Full with free space");
 }
+
+// A sender blocked on a full channel must resume once the receiver frees a
+// slot, without waiting for further drains. The blocking send path gates on
+// `progress`, published every K drains or when the receiver sees empty.
+
+/// Each single recv must release exactly one blocked send.
+#[test]
+fn sync_blocked_send_resumes_per_freed_slot() {
+  const CAP: usize = 4;
+  const ROUNDS: usize = 2 * CAP;
+  let (tx, rx) = bounded::<usize>(CAP);
+  for i in 0..CAP {
+    tx.try_send(i).unwrap();
+  }
+
+  let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+  thread::spawn(move || {
+    for i in CAP..CAP + ROUNDS {
+      if tx.send(i).is_err() {
+        return;
+      }
+      let _ = ack_tx.send(i);
+    }
+  });
+
+  for r in 0..ROUNDS {
+    // Lets the producer finish its pre-park spin so the recv meets a parked sender.
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(rx.recv().unwrap(), r);
+    assert_eq!(
+      ack_rx.recv_timeout(Duration::from_secs(1)),
+      Ok(CAP + r),
+      "round {r}: sender stayed blocked with a free slot"
+    );
+  }
+}
+
+/// Async flavor: K = cap, so the burst spans the whole capacity.
+#[tokio::test]
+async fn async_blocked_send_resumes_per_freed_slot() {
+  const CAP: usize = 4;
+  const ROUNDS: usize = 2 * CAP;
+  let (tx, rx) = bounded_async::<usize>(CAP);
+  for i in 0..CAP {
+    tx.try_send(i).unwrap();
+  }
+
+  let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel();
+  tokio::spawn(async move {
+    for i in CAP..CAP + ROUNDS {
+      if tx.send(i).await.is_err() {
+        return;
+      }
+      let _ = ack_tx.send(i);
+    }
+  });
+
+  for r in 0..ROUNDS {
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(rx.recv().await.unwrap(), r);
+    let ack = tokio::time::timeout(Duration::from_secs(1), ack_rx.recv()).await;
+    assert_eq!(
+      ack,
+      Ok(Some(CAP + r)),
+      "round {r}: sender stayed blocked with a free slot"
+    );
+  }
+}

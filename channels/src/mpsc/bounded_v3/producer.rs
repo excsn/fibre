@@ -9,14 +9,14 @@ use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use crate::internal::sync::{fence, thread, Arc, AtomicBool, Ordering};
+use crate::internal::sync::{fence, hint, thread, Arc, AtomicBool, Ordering};
 
 use crate::error::{
   BatchSendErrorReason, CloseError, SendBatchError, SendError, TrySendBatchError, TrySendError,
 };
 use crate::sync_util;
 
-use super::shared::{spin_before_park_cap1, Shared, SYNC_SPIN_LIMIT};
+use super::shared::{spin_before_park_cap1, Shared, Step, ELECT, SYNC_SPIN_LIMIT};
 
 pub struct Sender<T: Send> {
   pub(crate) shared: Arc<Shared<T>>,
@@ -87,33 +87,84 @@ impl<T: Send> Sender<T> {
     let mut my_id = None;
     let notified = AtomicBool::new(false);
     let notified_ptr = &notified as *const AtomicBool;
+    let mut token = false;
+    let mut cold_recheck = false;
+    let mut spins = 0u32;
+    let mut last = u32::MAX;
+    let mut bo = 0u32;
 
     loop {
       if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
-        if let Some(id) = my_id {
-          self.shared.finish_sync_send(id, &notified);
-        }
+        self.leave(my_id, &notified, token);
         return Err(item); // no claim held - nothing to tombstone
       }
 
       item = match self.shared.try_send_now(item) {
         Ok(()) => {
-          if let Some(id) = my_id {
-            self.shared.finish_sync_send(id, &notified);
-          }
+          self.leave(my_id, &notified, token);
           return Ok(());
         }
         Err(v) => v,
       };
 
+      if cold_recheck {
+        item = match self.shared.try_send_now_cold(item) {
+          Ok(()) => {
+            self.leave(my_id, &notified, token);
+            return Ok(());
+          }
+          Err(v) => v,
+        };
+      }
+
+      if ELECT && !token && !is_registered && self.shared.awake_acquire() {
+        token = true;
+        spins = 0;
+        last = u32::MAX;
+        bo = 0;
+      }
+
+      if token {
+        match self.shared.awake_step(item, &mut spins, &mut last) {
+          Step::Sent => {
+            self.leave(my_id, &notified, token);
+            return Ok(());
+          }
+          Step::Yield(v) => {
+            item = v;
+            let n = 1usize;
+            spins += n as u32;
+            for _ in 0..n {
+              if self.shared.cap() <= 4 {
+                hint::spin_loop();
+              } else {
+                thread::yield_now();
+              }
+            }
+            continue;
+          }
+          Step::Stalled(v) => {
+            item = v;
+            token = false;
+            self.shared.awake_release();
+            cold_recheck = true;
+          }
+        }
+      }
+
       if is_registered {
         spin_before_park_cap1(self.shared.cap(), &notified);
+        cold_recheck = false;
         if !notified.load(Ordering::Relaxed) {
           sync_util::park_thread();
         }
         if notified.swap(false, Ordering::Acquire) {
           is_registered = false;
           my_id = None;
+          token = true;
+          spins = 0;
+          last = u32::MAX;
+          bo = 0;
         }
         continue;
       }
@@ -124,6 +175,21 @@ impl<T: Send> Sender<T> {
       is_registered = true;
       my_id = Some(id);
       fence(Ordering::SeqCst);
+    }
+  }
+
+  /// Leave the wait: settle the registration and give back the awake count
+  /// this sender holds (a token, or a wake the consumer counted).
+  #[inline]
+  fn leave(&self, my_id: Option<u64>, notified: &AtomicBool, token: bool) {
+    if let Some(id) = my_id {
+      self.shared.finish_sync_send(id, notified);
+      if notified.load(Ordering::Acquire) {
+        self.shared.awake_release();
+      }
+    }
+    if token {
+      self.shared.awake_release();
     }
   }
 
@@ -149,7 +215,8 @@ impl<T: Send> Sender<T> {
   /// out - never reused across a `finish_sync_send` (bounded_queue's
   /// `allocate_node` lifetime discipline; reusing one `notified` across the whole
   /// batch loop is a stack-lifetime UAF the miri suite caught).
-  fn wait_for_window(&self) -> Result<(), ()> {
+  fn wait_for_window(&self) -> Result<bool, ()> {
+    let mut held = false;
     let mut is_registered = false;
     let mut my_id: Option<u64> = None;
     let notified = AtomicBool::new(false);
@@ -157,16 +224,22 @@ impl<T: Send> Sender<T> {
 
     loop {
       if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
-        if let Some(id) = my_id {
-          self.shared.finish_sync_send(id, &notified);
+        self.leave(my_id, &notified, false);
+        if held {
+          self.shared.awake_release();
         }
         return Err(());
       }
+      if !self.shared.window_open() && self.shared.window_open_cold() {
+        self.shared.publish_from_drained();
+      }
       if self.shared.window_open() {
-        if let Some(id) = my_id {
-          self.shared.finish_sync_send(id, &notified);
-        }
-        return Ok(());
+        self.leave(my_id, &notified, false);
+        return Ok(held);
+      }
+      if held {
+        self.shared.awake_release();
+        held = false;
       }
       if is_registered {
         spin_before_park_cap1(self.shared.cap(), &notified);
@@ -176,6 +249,7 @@ impl<T: Send> Sender<T> {
         if notified.swap(false, Ordering::Acquire) {
           is_registered = false;
           my_id = None;
+          held = true;
         }
         continue;
       }
@@ -205,6 +279,7 @@ impl<T: Send> Sender<T> {
 
     let mut iter = items.into_iter();
     let mut sent = 0;
+    let mut held = false;
 
     while sent < total {
       if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
@@ -219,10 +294,22 @@ impl<T: Send> Sender<T> {
           .shared
           .resolve_run(t, valid, m, &mut iter.by_ref().take(valid));
         sent += valid;
+        if held {
+          self.shared.awake_release();
+          held = false;
+        }
         continue;
       }
+      if held {
+        self.shared.awake_release();
+        held = false;
+      }
       // Window closed - block until it reopens (fresh notified, finish-on-exit).
-      if self.wait_for_window().is_err() {
+      let waited = self.wait_for_window();
+      if let Ok(h) = waited {
+        held = h;
+      }
+      if waited.is_err() {
         return Err(SendBatchError {
           sent,
           unsent: iter.collect(),
@@ -263,6 +350,7 @@ impl<T: Send> Sender<T> {
     let total = items.len();
     let mut drain = items.drain(..);
     let mut sent = 0;
+    let mut held = false;
     while sent < total {
       if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
         break;
@@ -273,10 +361,22 @@ impl<T: Send> Sender<T> {
           .shared
           .resolve_run(t, valid, m, &mut drain.by_ref().take(valid));
         sent += valid;
+        if held {
+          self.shared.awake_release();
+          held = false;
+        }
         continue;
       }
+      if held {
+        self.shared.awake_release();
+        held = false;
+      }
       // Window closed - block until it reopens.
-      if self.wait_for_window().is_err() {
+      let waited = self.wait_for_window();
+      if let Ok(h) = waited {
+        held = h;
+      }
+      if waited.is_err() {
         break;
       }
     }
@@ -472,6 +572,8 @@ impl<T: Send> AsyncSender<T> {
       total,
       sent: 0,
       my_id: None,
+      notified: AtomicBool::new(false),
+      woken: false,
       _phantom: PhantomPinned,
     }
   }
@@ -482,6 +584,8 @@ impl<T: Send> AsyncSender<T> {
       items,
       sent: 0,
       my_id: None,
+      notified: AtomicBool::new(false),
+      woken: false,
       _phantom: PhantomPinned,
     }
   }
@@ -506,12 +610,13 @@ impl<T: Send> Drop for AsyncSender<T> {
 // --- Futures ---
 
 /// Cancel-safe by construction: a Pending send holds no ticket, so dropping it
-/// only has to clean up the waiter registration.
+/// only has to clean up the waiter registration and the awake count.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T: Send> {
   sender: &'a AsyncSender<T>,
   item: Option<T>,
   my_id: Option<u64>,
+  notified: AtomicBool,
   _phantom: PhantomPinned,
 }
 
@@ -521,7 +626,30 @@ impl<'a, T: Send> SendFuture<'a, T> {
       sender,
       item: Some(item),
       my_id: None,
+      notified: AtomicBool::new(false),
       _phantom: PhantomPinned,
+    }
+  }
+
+  #[inline(always)]
+  fn leave(&mut self) {
+    if self.my_id.is_some() {
+      self.leave_slow();
+    }
+  }
+
+  #[inline(never)]
+  fn leave_slow(&mut self) {
+    let sender = self.sender;
+    let shared = &sender.shared;
+    if let Some(id) = self.my_id.take() {
+      if !shared.unregister_async_send(id) {
+        while !self.notified.load(Ordering::Acquire) {
+          hint::spin_loop();
+        }
+        self.notified.store(false, Ordering::Relaxed);
+        shared.awake_release();
+      }
     }
   }
 }
@@ -531,13 +659,21 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
-    let shared = &this.sender.shared;
+    let sender = this.sender;
+    let shared = &sender.shared;
+    let notified_ptr = &this.notified as *const AtomicBool;
+
+    let mut woken = this.my_id.is_some() && this.notified.swap(false, Ordering::Acquire);
+    if woken {
+      this.my_id = None;
+    }
 
     loop {
-      if this.sender.closed.load(Ordering::Relaxed) || !shared.receivers_alive() {
-        if let Some(id) = this.my_id.take() {
-          shared.unregister_async_send(id);
+      if sender.closed.load(Ordering::Relaxed) || !shared.receivers_alive() {
+        if woken {
+          shared.awake_release();
         }
+        this.leave();
         return Poll::Ready(Err(SendError::Closed));
       }
 
@@ -545,22 +681,45 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
         Some(it) => it,
         None => return Poll::Ready(Ok(())),
       };
-      match shared.try_send_now(item) {
+      let item = match shared.try_send_now(item) {
+        Ok(()) => Ok(()),
+        Err(v) if woken || shared.cold_on_miss() => shared.try_send_now_cold(v),
+        Err(v) => Err(v),
+      };
+      match item {
         Ok(()) => {
-          if let Some(id) = this.my_id.take() {
-            shared.unregister_async_send(id);
+          if woken {
+            shared.awake_release();
           }
+          this.leave();
           return Poll::Ready(Ok(()));
         }
         Err(v) => this.item = Some(v),
       }
+      if woken {
+        woken = false;
+        shared.awake_release();
+      }
 
-      let id = shared.register_async_send(this.my_id, cx.waker().clone());
-      this.my_id = Some(id);
+      match shared.register_async_send(this.my_id, cx.waker().clone(), notified_ptr) {
+        Some(id) => this.my_id = Some(id),
+        None => {
+          while !this.notified.load(Ordering::Acquire) {
+            hint::spin_loop();
+          }
+          this.notified.store(false, Ordering::Relaxed);
+          this.my_id = None;
+          woken = true;
+          continue;
+        }
+      }
       fence(Ordering::SeqCst);
 
-      if shared.window_open() || !shared.receivers_alive() {
-        continue; // won the race after registering - resolve above
+      if shared.window_open()
+        || (shared.cold_on_miss() && shared.window_open_cold())
+        || !shared.receivers_alive()
+      {
+        continue;
       }
       return Poll::Pending;
     }
@@ -569,9 +728,7 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
 
 impl<'a, T: Send> Drop for SendFuture<'a, T> {
   fn drop(&mut self) {
-    if let Some(id) = self.my_id.take() {
-      self.sender.shared.unregister_async_send(id);
-    }
+    self.leave();
   }
 }
 
@@ -584,6 +741,8 @@ pub struct BoundedSendBatchFuture<'a, T: Send> {
   total: usize,
   sent: usize,
   my_id: Option<u64>,
+  notified: AtomicBool,
+  woken: bool,
   _phantom: PhantomPinned,
 }
 
@@ -593,18 +752,42 @@ impl<'a, T: Send> Future for BoundedSendBatchFuture<'a, T> {
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
     let shared = &this.sender.shared;
+    if this.my_id.is_some() && this.notified.swap(false, Ordering::Acquire) {
+      this.my_id = None;
+      this.woken = true;
+    }
 
     loop {
       if this.sent == this.total {
         if let Some(id) = this.my_id.take() {
-          shared.unregister_async_send(id);
+          if !shared.unregister_async_send(id) {
+            while !this.notified.load(Ordering::Acquire) {
+              hint::spin_loop();
+            }
+            this.notified.store(false, Ordering::Relaxed);
+            shared.awake_release();
+          }
+        }
+        if this.woken {
+          this.woken = false;
+          shared.awake_release();
         }
         return Poll::Ready(Ok(this.total));
       }
 
       if this.sender.closed.load(Ordering::Relaxed) || !shared.receivers_alive() {
         if let Some(id) = this.my_id.take() {
-          shared.unregister_async_send(id);
+          if !shared.unregister_async_send(id) {
+            while !this.notified.load(Ordering::Acquire) {
+              hint::spin_loop();
+            }
+            this.notified.store(false, Ordering::Relaxed);
+            shared.awake_release();
+          }
+        }
+        if this.woken {
+          this.woken = false;
+          shared.awake_release();
         }
         return Poll::Ready(Err(SendBatchError {
           sent: this.sent,
@@ -612,21 +795,48 @@ impl<'a, T: Send> Future for BoundedSendBatchFuture<'a, T> {
         }));
       }
 
+      if !shared.window_open() && shared.window_open_cold() {
+        shared.publish_from_drained();
+      }
       let (t, valid, m) = shared.claim_run(this.total - this.sent);
       if m > 0 {
         shared.resolve_run(t, valid, m, &mut this.iter.by_ref().take(valid));
         this.sent += valid;
         if let Some(id) = this.my_id.take() {
-          shared.unregister_async_send(id);
+          if !shared.unregister_async_send(id) {
+            while !this.notified.load(Ordering::Acquire) {
+              hint::spin_loop();
+            }
+            this.notified.store(false, Ordering::Relaxed);
+            shared.awake_release();
+          }
+        }
+        if this.woken {
+          this.woken = false;
+          shared.awake_release();
         }
         continue;
       }
 
-      let id = shared.register_async_send(this.my_id, cx.waker().clone());
-      this.my_id = Some(id);
+      if this.woken {
+        this.woken = false;
+        shared.awake_release();
+      }
+      match shared.register_async_send(this.my_id, cx.waker().clone(), &this.notified as *const AtomicBool) {
+        Some(id) => this.my_id = Some(id),
+        None => {
+          while !this.notified.load(Ordering::Acquire) {
+            hint::spin_loop();
+          }
+          this.notified.store(false, Ordering::Relaxed);
+          this.my_id = None;
+          this.woken = true;
+          continue;
+        }
+      }
       fence(Ordering::SeqCst);
 
-      if shared.window_open() || !shared.receivers_alive() {
+      if shared.window_open() || shared.window_open_cold() || !shared.receivers_alive() {
         continue;
       }
       return Poll::Pending;
@@ -637,7 +847,17 @@ impl<'a, T: Send> Future for BoundedSendBatchFuture<'a, T> {
 impl<'a, T: Send> Drop for BoundedSendBatchFuture<'a, T> {
   fn drop(&mut self) {
     if let Some(id) = self.my_id.take() {
-      self.sender.shared.unregister_async_send(id);
+      if !self.sender.shared.unregister_async_send(id) {
+        while !self.notified.load(Ordering::Acquire) {
+          hint::spin_loop();
+        }
+        self.notified.store(false, Ordering::Relaxed);
+        self.sender.shared.awake_release();
+      }
+    }
+    if self.woken {
+      self.woken = false;
+      self.sender.shared.awake_release();
     }
   }
 }
@@ -648,6 +868,8 @@ pub struct BoundedSendBatchMutFuture<'a, T: Send> {
   items: &'a mut Vec<T>,
   sent: usize,
   my_id: Option<u64>,
+  notified: AtomicBool,
+  woken: bool,
   _phantom: PhantomPinned,
 }
 
@@ -657,23 +879,50 @@ impl<'a, T: Send> Future for BoundedSendBatchMutFuture<'a, T> {
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
     let shared = &this.sender.shared;
+    if this.my_id.is_some() && this.notified.swap(false, Ordering::Acquire) {
+      this.my_id = None;
+      this.woken = true;
+    }
 
     loop {
       if this.items.is_empty() {
         if let Some(id) = this.my_id.take() {
-          shared.unregister_async_send(id);
+          if !shared.unregister_async_send(id) {
+            while !this.notified.load(Ordering::Acquire) {
+              hint::spin_loop();
+            }
+            this.notified.store(false, Ordering::Relaxed);
+            shared.awake_release();
+          }
+        }
+        if this.woken {
+          this.woken = false;
+          shared.awake_release();
         }
         return Poll::Ready(Ok(this.sent));
       }
 
       if this.sender.closed.load(Ordering::Relaxed) || !shared.receivers_alive() {
         if let Some(id) = this.my_id.take() {
-          shared.unregister_async_send(id);
+          if !shared.unregister_async_send(id) {
+            while !this.notified.load(Ordering::Acquire) {
+              hint::spin_loop();
+            }
+            this.notified.store(false, Ordering::Relaxed);
+            shared.awake_release();
+          }
+        }
+        if this.woken {
+          this.woken = false;
+          shared.awake_release();
         }
         return Poll::Ready(Err(SendError::Closed));
       }
 
       let remaining = this.items.len();
+      if !shared.window_open() && shared.window_open_cold() {
+        shared.publish_from_drained();
+      }
       let (t, valid, m) = shared.claim_run(remaining);
       if m > 0 {
         {
@@ -682,16 +931,40 @@ impl<'a, T: Send> Future for BoundedSendBatchMutFuture<'a, T> {
         }
         this.sent += valid;
         if let Some(id) = this.my_id.take() {
-          shared.unregister_async_send(id);
+          if !shared.unregister_async_send(id) {
+            while !this.notified.load(Ordering::Acquire) {
+              hint::spin_loop();
+            }
+            this.notified.store(false, Ordering::Relaxed);
+            shared.awake_release();
+          }
+        }
+        if this.woken {
+          this.woken = false;
+          shared.awake_release();
         }
         continue;
       }
 
-      let id = shared.register_async_send(this.my_id, cx.waker().clone());
-      this.my_id = Some(id);
+      if this.woken {
+        this.woken = false;
+        shared.awake_release();
+      }
+      match shared.register_async_send(this.my_id, cx.waker().clone(), &this.notified as *const AtomicBool) {
+        Some(id) => this.my_id = Some(id),
+        None => {
+          while !this.notified.load(Ordering::Acquire) {
+            hint::spin_loop();
+          }
+          this.notified.store(false, Ordering::Relaxed);
+          this.my_id = None;
+          this.woken = true;
+          continue;
+        }
+      }
       fence(Ordering::SeqCst);
 
-      if shared.window_open() || !shared.receivers_alive() {
+      if shared.window_open() || shared.window_open_cold() || !shared.receivers_alive() {
         continue;
       }
       return Poll::Pending;
@@ -702,7 +975,17 @@ impl<'a, T: Send> Future for BoundedSendBatchMutFuture<'a, T> {
 impl<'a, T: Send> Drop for BoundedSendBatchMutFuture<'a, T> {
   fn drop(&mut self) {
     if let Some(id) = self.my_id.take() {
-      self.sender.shared.unregister_async_send(id);
+      if !self.sender.shared.unregister_async_send(id) {
+        while !self.notified.load(Ordering::Acquire) {
+          hint::spin_loop();
+        }
+        self.notified.store(false, Ordering::Relaxed);
+        self.sender.shared.awake_release();
+      }
+    }
+    if self.woken {
+      self.woken = false;
+      self.sender.shared.awake_release();
     }
   }
 }

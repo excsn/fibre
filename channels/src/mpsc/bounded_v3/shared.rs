@@ -37,7 +37,7 @@ use std::collections::VecDeque;
 use std::task::Waker;
 
 use crate::internal::sync::{
-  fence, hint, Arc, AtomicBool, AtomicU8, AtomicUsize, Mutex, Ordering, Thread,
+  fence, hint, thread, Arc, AtomicBool, AtomicU8, AtomicUsize, Mutex, Ordering, Thread,
 };
 
 use crate::internal::cache_padded::CachePadded;
@@ -137,12 +137,75 @@ impl<W> SendWaiters<W> {
 
 /// Consumer-owned drain cursor. `publish_chunk` (the flush cadence K) lives here
 /// so runtime `to_async`/`to_sync` conversions can retune it.
+struct HeadLock {
+  locked: AtomicBool,
+  head: UnsafeCell<Head>,
+}
+
+unsafe impl Send for HeadLock {}
+unsafe impl Sync for HeadLock {}
+
+impl HeadLock {
+  fn new(head: Head) -> Self {
+    HeadLock {
+      locked: AtomicBool::new(false),
+      head: UnsafeCell::new(head),
+    }
+  }
+
+  #[inline]
+  fn lock(&self) -> HeadGuard<'_> {
+    while self
+      .locked
+      .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+      .is_err()
+    {
+      hint::spin_loop();
+    }
+    HeadGuard { l: self }
+  }
+}
+
+struct HeadGuard<'a> {
+  l: &'a HeadLock,
+}
+
+impl std::ops::Deref for HeadGuard<'_> {
+  type Target = Head;
+  #[inline]
+  fn deref(&self) -> &Head {
+    unsafe { &*self.l.head.get() }
+  }
+}
+
+impl std::ops::DerefMut for HeadGuard<'_> {
+  #[inline]
+  fn deref_mut(&mut self) -> &mut Head {
+    unsafe { &mut *self.l.head.get() }
+  }
+}
+
+impl Drop for HeadGuard<'_> {
+  #[inline]
+  fn drop(&mut self) {
+    self.l.locked.swap(false, Ordering::SeqCst);
+  }
+}
+
 struct Head {
   cid: usize,
   idx: usize,
   pos: usize,
   unpublished: usize,
   publish_chunk: usize,
+}
+
+pub(crate) const ELECT: bool = true;
+
+pub(crate) enum Step<T> {
+  Sent,
+  Yield(T),
+  Stalled(T),
 }
 
 pub(crate) enum Deq<T> {
@@ -176,7 +239,7 @@ pub struct Shared<T> {
   /// batch run cap (`MAX_RUN`). Updated alongside `Head::publish_chunk`.
   run_cap: CachePadded<AtomicUsize>,
 
-  head: CachePadded<Mutex<Head>>,
+  head: CachePadded<HeadLock>,
 
   sender_count: CachePadded<AtomicUsize>,
   receiver_dropped: CachePadded<AtomicBool>,
@@ -191,6 +254,9 @@ pub struct Shared<T> {
   async_recv_waiter: Mutex<Option<Waker>>,
   sync_recv_waiter_count: CachePadded<AtomicUsize>,
   async_recv_waiter_count: CachePadded<AtomicUsize>,
+  /// Senders currently running because the consumer woke them or they
+  /// elected themselves; the consumer wakes one only when this is zero.
+  awake: CachePadded<AtomicUsize>,
 }
 
 // SAFETY: per-slot Release/Acquire handshake for payloads, a
@@ -231,7 +297,7 @@ impl<T> Shared<T> {
       n,
       table,
       run_cap: CachePadded::new(AtomicUsize::new(publish_chunk)),
-      head: CachePadded::new(Mutex::new(Head {
+      head: CachePadded::new(HeadLock::new(Head {
         cid: 0,
         idx: 0,
         pos: 0,
@@ -248,6 +314,7 @@ impl<T> Shared<T> {
       async_recv_waiter: Mutex::new(None),
       sync_recv_waiter_count: CachePadded::new(AtomicUsize::new(0)),
       async_recv_waiter_count: CachePadded::new(AtomicUsize::new(0)),
+      awake: CachePadded::new(AtomicUsize::new(0)),
     })
   }
 
@@ -295,8 +362,16 @@ impl<T> Shared<T> {
     ticket.wrapping_sub(self.drained.load(Ordering::Acquire)) < self.cap
   }
 
+  /// A sender whose hot window is closed may claim against `drained` right
+  /// away only while the publish cadence K is short; with a long K it parks
+  /// and leaves the refill to the publish burst.
   #[inline]
-  fn window_open_cold(&self) -> bool {
+  pub(crate) fn cold_on_miss(&self) -> bool {
+    self.run_cap.load(Ordering::Relaxed) <= 128
+  }
+
+  #[inline]
+  pub(crate) fn window_open_cold(&self) -> bool {
     self
       .g_tail
       .load(Ordering::Relaxed)
@@ -316,6 +391,45 @@ impl<T> Shared<T> {
       self.write_slot(ticket, None);
     }
     Err(v)
+  }
+
+  /// `claim_run`, then `claim_run_cold` when the hot window is closed.
+  pub(crate) fn claim_run_hot_then_cold(&self, remaining: usize) -> (usize, usize, usize) {
+    let r = self.claim_run(remaining);
+    if r.2 > 0 {
+      return r;
+    }
+    self.claim_run_cold(remaining)
+  }
+
+  /// Publish `progress` from the consumer's `drained`, as the single-send
+  /// token holder does.
+  #[inline]
+  pub(crate) fn publish_from_drained(&self) {
+    let d = self.drained.load(Ordering::Acquire);
+    self.progress.fetch_max(d, Ordering::AcqRel);
+  }
+
+  /// Batch token hold: wait on `drained` until `want` slots are free or the
+  /// spin budget is spent, publish `progress`, give the token back.
+  pub(crate) fn batch_hold(&self, want: usize) {
+    let want = want.min(self.run_cap.load(Ordering::Relaxed)).max(1);
+    for _ in 0..SYNC_SPIN_LIMIT {
+      let d = self.drained.load(Ordering::Acquire);
+      let free = self
+        .cap
+        .saturating_sub(self.g_tail.load(Ordering::Relaxed).wrapping_sub(d));
+      if free >= want {
+        break;
+      }
+      if self.cap <= 4 {
+        hint::spin_loop();
+      } else {
+        thread::yield_now();
+      }
+    }
+    self.publish_from_drained();
+    self.awake_release();
   }
 
   /// Cold-path mirror of `claim_run` for the try-batch paths. See the section
@@ -421,64 +535,100 @@ impl<T> Shared<T> {
     }
   }
 
-  pub(crate) fn register_async_send(&self, prev_id: Option<u64>, waker: Waker) -> u64 {
+  /// `None` when `prev_id` was already popped by the consumer: the caller is
+  /// being woken and must not register again.
+  pub(crate) fn register_async_send(
+    &self,
+    prev_id: Option<u64>,
+    waker: Waker,
+    notified: *const AtomicBool,
+  ) -> Option<u64> {
     let mut g = self.async_send_waiters.lock();
     if let Some(id) = prev_id {
+      let prev = g.queue.len();
       g.queue.retain(|(sid, _, _)| *sid != id);
+      if g.queue.len() == prev {
+        return None;
+      }
     }
     let id = g.next_id;
     g.next_id = g.next_id.wrapping_add(1);
-    g.queue.push_back((id, waker, std::ptr::null()));
+    g.queue.push_back((id, waker, notified));
     self
       .async_send_waiter_count
       .store(g.queue.len(), Ordering::Release);
-    id
+    Some(id)
   }
 
-  pub(crate) fn unregister_async_send(&self, id: u64) {
+  /// `false` when the consumer already popped `id`: it counted the waiter awake
+  /// and is about to store through its `notified` pointer.
+  pub(crate) fn unregister_async_send(&self, id: u64) -> bool {
     let mut g = self.async_send_waiters.lock();
     let prev = g.queue.len();
     g.queue.retain(|(sid, _, _)| *sid != id);
-    if g.queue.len() != prev {
+    let removed = g.queue.len() != prev;
+    if removed {
       self
         .async_send_waiter_count
         .store(g.queue.len(), Ordering::Release);
     }
+    removed
   }
 
   /// fibre's wake policies verbatim: sync = batch wake sized by freed credits;
   /// async = the H2 metered drip (exactly one). Caller has published `progress`.
   fn notify_senders(&self, freed: usize) {
     fence(Ordering::SeqCst);
+    let freed = freed.min(1);
+    let mut sync_to_wake: Vec<(Thread, *const AtomicBool)> = Vec::new();
     if self.sync_send_waiter_count.load(Ordering::Relaxed) != 0 {
       let mut g = self.sync_send_waiters.lock();
-      let mut to_wake = Vec::with_capacity(g.queue.len().min(freed));
-      while to_wake.len() < freed {
+      while sync_to_wake.len() < freed {
         let Some((_id, thread, notified)) = g.queue.pop_front() else {
           break;
         };
-        if !notified.is_null() {
-          unsafe { (*notified).store(true, Ordering::Release) };
-        }
-        to_wake.push(thread);
+        sync_to_wake.push((thread, notified));
       }
       self
         .sync_send_waiter_count
         .store(g.queue.len(), Ordering::Release);
-      drop(g);
-      for t in to_wake {
-        t.unpark();
-      }
     }
+    let mut async_to_wake: Option<(Waker, *const AtomicBool)> = None;
     if self.async_send_waiter_count.load(Ordering::Relaxed) != 0 {
       let mut g = self.async_send_waiters.lock();
-      if let Some((_id, waker, _)) = g.queue.pop_front() {
+      if let Some((_id, waker, notified)) = g.queue.pop_front() {
         self
           .async_send_waiter_count
           .store(g.queue.len(), Ordering::Release);
-        drop(g);
-        waker.wake();
+        async_to_wake = Some((waker, notified));
       }
+    }
+    self.wake_popped(sync_to_wake, async_to_wake);
+  }
+
+  /// Counts the popped waiters awake before any of them can run; a waiter with
+  /// a null `notified` (batch futures) is woken but not counted.
+  fn wake_popped(
+    &self,
+    sync_to_wake: Vec<(Thread, *const AtomicBool)>,
+    async_to_wake: Option<(Waker, *const AtomicBool)>,
+  ) {
+    let n = sync_to_wake.iter().filter(|(_, p)| !p.is_null()).count()
+      + async_to_wake.as_ref().map_or(0, |(_, p)| !p.is_null() as usize);
+    if n > 0 {
+      self.awake.fetch_add(n, Ordering::AcqRel);
+    }
+    for (t, p) in sync_to_wake {
+      if !p.is_null() {
+        unsafe { (*p).store(true, Ordering::Release) };
+      }
+      t.unpark();
+    }
+    if let Some((w, p)) = async_to_wake {
+      if !p.is_null() {
+        unsafe { (*p).store(true, Ordering::Release) };
+      }
+      w.wake();
     }
   }
 
@@ -487,26 +637,107 @@ impl<T> Shared<T> {
     {
       let mut g = self.sync_send_waiters.lock();
       while let Some((_id, thread, notified)) = g.queue.pop_front() {
-        if !notified.is_null() {
-          unsafe { (*notified).store(true, Ordering::Release) };
-        }
-        sync_to_wake.push(thread);
+        sync_to_wake.push((thread, notified));
       }
       self.sync_send_waiter_count.store(0, Ordering::Release);
     }
     let mut async_to_wake = Vec::new();
     {
       let mut g = self.async_send_waiters.lock();
-      while let Some((_id, waker, _)) = g.queue.pop_front() {
-        async_to_wake.push(waker);
+      while let Some((_id, waker, notified)) = g.queue.pop_front() {
+        async_to_wake.push((waker, notified));
       }
       self.async_send_waiter_count.store(0, Ordering::Release);
     }
-    for t in sync_to_wake {
-      t.unpark();
+    let n = async_to_wake.iter().filter(|(_, p)| !p.is_null()).count();
+    if n > 0 {
+      self.awake.fetch_add(n, Ordering::AcqRel);
     }
-    for w in async_to_wake {
+    self.wake_popped(sync_to_wake, None);
+    for (w, p) in async_to_wake {
+      if !p.is_null() {
+        unsafe { (*p).store(true, Ordering::Release) };
+      }
       w.wake();
+    }
+  }
+
+  /// Wake only when no sender is awake and at least one is parked.
+  #[inline]
+  fn gated_notify(&self, freed: usize) {
+    fence(Ordering::SeqCst);
+    if self.awake.load(Ordering::Relaxed) != 0 {
+      return;
+    }
+    if self.sync_send_waiter_count.load(Ordering::Relaxed) == 0
+      && self.async_send_waiter_count.load(Ordering::Relaxed) == 0
+    {
+      return;
+    }
+    self.notify_senders(freed);
+  }
+
+  #[inline]
+  fn early_wake(&self, h: &Head) {
+    if h.unpublished == 0 {
+      return;
+    }
+    self.drained.store(h.pos, Ordering::Release);
+    self.gated_notify(1);
+  }
+
+  #[inline]
+  pub(crate) fn awake_acquire(&self) -> bool {
+    self.awake.load(Ordering::Relaxed) == 0
+      && self
+        .awake
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+  }
+
+  #[inline]
+  pub(crate) fn awake_release(&self) {
+    self.awake.fetch_sub(1, Ordering::AcqRel);
+    fence(Ordering::SeqCst);
+    if self.g_tail.load(Ordering::Relaxed) != self.drained.load(Ordering::Relaxed) {
+      return;
+    }
+    if self.awake.load(Ordering::Relaxed) != 0 {
+      return;
+    }
+    if self.sync_send_waiter_count.load(Ordering::Relaxed) == 0
+      && self.async_send_waiter_count.load(Ordering::Relaxed) == 0
+    {
+      return;
+    }
+    self.notify_senders(1);
+  }
+
+  /// One step of the awake sender's wait. `Yield` = spin once and call again.
+  pub(crate) fn awake_step(&self, v: T, spins: &mut u32, last: &mut u32) -> Step<T> {
+    let d = self.drained.load(Ordering::Acquire);
+    let free = self
+      .cap
+      .saturating_sub(self.g_tail.load(Ordering::Relaxed).wrapping_sub(d));
+    let thr = (self.run_cap.load(Ordering::Relaxed) / 1).max(1);
+    if free >= thr {
+      self.progress.fetch_max(d, Ordering::AcqRel);
+      return match self.try_send_now(v) {
+        Ok(()) => Step::Sent,
+        Err(v) => match self.try_send_now_cold(v) {
+          Ok(()) => Step::Sent,
+          Err(v) => Step::Yield(v),
+        },
+      };
+    }
+    *last = d as u32;
+    if (*spins as usize) < SYNC_SPIN_LIMIT {
+      return Step::Yield(v);
+    }
+      self.progress.fetch_max(d, Ordering::AcqRel);
+    match self.try_send_now_cold(v) {
+      Ok(()) => Step::Sent,
+      Err(v) => Step::Stalled(v),
     }
   }
 
@@ -711,6 +942,29 @@ impl<T> Shared<T> {
   // --- consumer core (table-walking) ---
 
   pub(crate) fn deq_once(&self) -> Deq<T> {
+    let r = self.deq_once_locked();
+    if matches!(r, Deq::Got(_)) {
+      self.post_drain();
+    }
+    r
+  }
+
+  /// Runs after the head unlock, whose SeqCst swap orders the `drained` store
+  /// before these loads.
+  #[inline]
+  fn post_drain(&self) {
+    if self.awake.load(Ordering::SeqCst) != 0 {
+      return;
+    }
+    if self.sync_send_waiter_count.load(Ordering::SeqCst) == 0
+      && self.async_send_waiter_count.load(Ordering::SeqCst) == 0
+    {
+      return;
+    }
+    self.notify_senders(1);
+  }
+
+  fn deq_once_locked(&self) -> Deq<T> {
     let mut h = self.head.lock();
     loop {
       let entry = &self.table[h.cid % self.n];
@@ -741,10 +995,12 @@ impl<T> Shared<T> {
           h.idx += 1;
           h.pos += 1;
           h.unpublished += 1;
-          if h.unpublished >= h.publish_chunk {
+          if h.unpublished >= h.publish_chunk
+            && self.async_send_waiter_count.load(Ordering::Relaxed) != 0
+          {
             self.publish_progress(&mut h);
           }
-          self.drained.store(h.pos, Ordering::Release);
+          self.drained.store(h.pos, Ordering::SeqCst);
           return Deq::Got(v);
         }
         SKIP => {
@@ -752,7 +1008,9 @@ impl<T> Shared<T> {
           h.idx += 1;
           h.pos += 1;
           h.unpublished += 1;
-          if h.unpublished >= h.publish_chunk {
+          if h.unpublished >= h.publish_chunk
+            && self.async_send_waiter_count.load(Ordering::Relaxed) != 0
+          {
             self.publish_progress(&mut h);
           }
           continue;
@@ -773,6 +1031,14 @@ impl<T> Shared<T> {
   /// every K crossed inside the run so large batches never sit on credits.
   /// Returns the number of items pushed to `out`.
   pub(crate) fn deq_run(&self, out: &mut Vec<T>, max: usize) -> usize {
+    let got = self.deq_run_locked(out, max);
+    if got > 0 {
+      self.post_drain();
+    }
+    got
+  }
+
+  fn deq_run_locked(&self, out: &mut Vec<T>, max: usize) -> usize {
     if max == 0 {
       return 0;
     }
@@ -800,7 +1066,9 @@ impl<T> Shared<T> {
           h.idx += 1;
           h.pos += 1;
           h.unpublished += 1;
-          if h.unpublished >= h.publish_chunk {
+          if h.unpublished >= h.publish_chunk
+            && self.async_send_waiter_count.load(Ordering::Relaxed) != 0
+          {
             self.publish_progress(&mut h);
           }
         }
@@ -809,14 +1077,16 @@ impl<T> Shared<T> {
           h.idx += 1;
           h.pos += 1;
           h.unpublished += 1;
-          if h.unpublished >= h.publish_chunk {
+          if h.unpublished >= h.publish_chunk
+            && self.async_send_waiter_count.load(Ordering::Relaxed) != 0
+          {
             self.publish_progress(&mut h);
           }
         }
         _ => break,
       }
     }
-    self.drained.store(h.pos, Ordering::Release);
+    self.drained.store(h.pos, Ordering::SeqCst);
     got
   }
 
@@ -838,7 +1108,7 @@ impl<T> Shared<T> {
     // `drained` first so no observer ever sees `drained < progress`.
     self.drained.store(h.pos, Ordering::Release);
     self.progress.store(h.pos, Ordering::Release);
-    self.notify_senders(freed);
+    self.gated_notify(freed);
   }
 
   pub(crate) fn flush_progress(&self) {

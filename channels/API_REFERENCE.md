@@ -320,7 +320,7 @@ An optimized channel for multiple producers and one consumer.
 ### Bounded MPSC Types
 
 *   **Struct `BoundedSyncSender<T: Send>`**: A cloneable, sync handle for the bounded channel.
-    *   `send(&self, value: T) -> Result<(), SendError>`: Blocks if full.
+    *   `send(&self, value: T) -> Result<(), SendError>`: Blocks if full and resumes as soon as the receiver frees a slot. A blocked sender spins briefly (bounded) before parking.
     *   `send_batch(&self, items: Vec<T>) -> Result<usize, SendBatchError<T>>`: Acquires capacity permits in bulk; blocks for the remainder.
     *   `try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`: Sends as many items as permits are available.
     *   `send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError>` / `try_send_batch_mut(...)`: In-place variants.
@@ -332,7 +332,7 @@ An optimized channel for multiple producers and one consumer.
     *   `recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError>` / `try_recv_batch_mut(...)`: Append to `out`.
     *   Methods: `try_recv`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `capacity`, `is_full`, `to_async`.
 *   **Struct `BoundedAsyncSender<T: Send>`**: A cloneable, async handle.
-    *   `send(&self, value: T) -> BoundedSendFuture<'_, T>`: Returns a future that waits for capacity.
+    *   `send(&self, value: T) -> BoundedSendFuture<'_, T>`: Returns a future that waits for capacity and resumes as soon as the receiver frees a slot.
     *   `send_batch(&self, items: Vec<T>) -> BoundedSendBatchFuture<'_, T>` / `send_batch_mut(...) -> BoundedSendBatchMutFuture<'_, T>`: Acquire permits in bulk, re-arming for the remainder.
     *   Methods: `try_send`, `try_send_batch`, `try_send_batch_mut`, `clone`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `capacity`, `is_full`, `to_sync`.
 *   **Struct `BoundedAsyncReceiver<T: Send>`**: A non-cloneable, async handle. Implements `futures::Stream`.
