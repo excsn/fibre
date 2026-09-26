@@ -7,7 +7,9 @@
 //! unconsumed notify - benign on std, but loom asserts on it, and the race is
 //! inherent to broadcast-wake so it can't be interleaved away.
 
-use crate::spmc::bounded;
+#![cfg(loom)]
+
+use fibre::spmc::bounded;
 use loom::thread;
 
 /// Producer publishes one item; a single consumer (which may race ahead and

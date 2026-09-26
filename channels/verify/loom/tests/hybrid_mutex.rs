@@ -9,7 +9,9 @@
 //! spin/queue/park/barge/wake-to-recontend lock is a *lost wakeup*, which loom
 //! surfaces as a deadlock.
 
-use crate::sync::HybridMutex;
+#![cfg(loom)]
+
+use fibre::sync::HybridMutex;
 use loom::sync::Arc;
 use loom::thread;
 

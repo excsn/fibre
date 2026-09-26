@@ -11,8 +11,10 @@
 //! report. The shim is ordering-stronger than `futures_util`'s internals, so
 //! these models verify the pool's protocol, not AtomicWaker's.
 
-use crate::error::{TryRecvError, TrySendError};
-use crate::oneshot::pair_pool;
+#![cfg(loom)]
+
+use fibre::error::{TryRecvError, TrySendError};
+use fibre::oneshot::pair_pool;
 use loom::thread;
 
 use std::sync::atomic::{AtomicUsize, Ordering};

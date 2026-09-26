@@ -2,7 +2,9 @@
 //! handoff through `internal::rendezvous` (the FIFO multi-waiter configuration)
 //! and the sender/receiver park/unpark.
 
-use crate::mpmc::rendezvous::rendezvous;
+#![cfg(loom)]
+
+use fibre::mpmc::rendezvous::rendezvous;
 use loom::thread;
 
 /// One value handed off sender -> receiver; either side may park waiting for

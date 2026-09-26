@@ -14,11 +14,11 @@ homepage.workspace = true
 repository.workspace = true
 
 exclude = [
+  "/verify/",
   "/arena/",
   "/bench/",
   "/benches/",
   "/docs/",
-  "/miri/",
   "/scripts/",
   "/tests/",
   "nextest.toml",
@@ -44,9 +44,13 @@ papaya = { version = "^0", optional = true }
 [target.'cfg(loom)'.dependencies]
 loom = { version = "0.7", features = ["futures"] }
 
-# `Don't warn `unexpected_cfgs` on every #[cfg(loom)] gate.
+# Shuttle: only compiled under `RUSTFLAGS="--cfg shuttle"`
+[target.'cfg(shuttle)'.dependencies]
+shuttle = "0.9"
+
+# `Don't warn `unexpected_cfgs` on every #[cfg(loom)] / #[cfg(shuttle)] gate.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(shuttle)"] }
 
 [dev-dependencies]
 criterion = { workspace = true }

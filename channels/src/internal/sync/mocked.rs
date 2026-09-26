@@ -20,7 +20,7 @@ pub(crate) use self::thread::Thread;
 /// `loom::thread` plus panicking stubs for the time-based APIs loom doesn't
 /// model. The stubs exist so `#[cfg(test)]` std-thread tests and timeout code
 /// paths still COMPILE under `--cfg loom` (they are never run there - loom.sh
-/// filters to `loom_tests`); if a loom model actually reaches one, failing
+/// runs only the channels/verify/loom crate); if a loom model actually reaches one, failing
 /// loudly at the call site beats degrading to an untimed park and reporting a
 /// deadlock miles from the cause.
 pub(crate) mod thread {

@@ -21,7 +21,7 @@
 #
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 
 SEEDS="${1:-0..64}"
 FILTER="${2-sync::}"

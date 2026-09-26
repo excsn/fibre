@@ -7,7 +7,9 @@
 //! branch cap. The lock's own contention is modeled in `hybrid_mutex`; these
 //! single-producer models cover the channel's park/wake and close logic.
 
-use crate::mpmc::bounded;
+#![cfg(loom)]
+
+use fibre::mpmc::bounded;
 use loom::thread;
 
 /// Cap-1 backpressure: the producer's second send must block until the consumer

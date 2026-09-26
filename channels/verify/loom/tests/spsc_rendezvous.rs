@@ -3,7 +3,9 @@
 //! the sender/receiver park/unpark in `internal::rendezvous` (the same core
 //! MPMC rendezvous uses, in its MPSC single-slot configuration).
 
-use crate::spsc::rendezvous::rendezvous;
+#![cfg(loom)]
+
+use fibre::spsc::rendezvous::rendezvous;
 use loom::thread;
 
 /// One value handed off sender -> receiver. Either side may arrive first; loom

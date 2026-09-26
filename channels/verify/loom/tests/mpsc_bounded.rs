@@ -8,8 +8,10 @@
 //! allocate atomics they never touch; chunk REUSE itself is miri's job (too many
 //! items to reach under loom's exponential exploration).
 
-use crate::error::TrySendError;
-use crate::mpsc::bounded;
+#![cfg(loom)]
+
+use fibre::error::TrySendError;
+use fibre::mpsc::bounded;
 use loom::thread;
 
 /// The cap-2 (window-has-slack) models keep two items in flight at once, so the
@@ -135,6 +137,55 @@ fn disconnect_after_send_drains_then_errors() {
     assert_eq!(rx.recv().unwrap(), 7);
     assert!(rx.recv().is_err());
     t.join().unwrap();
+  });
+}
+
+// --- awake-gate models: a parked sender resumes on a single drain ---
+
+/// Cap 2 with K = 2, so one drain never publishes `progress`: the parked sync
+/// sender must be woken by `post_drain` and finish through the cold window
+/// before the consumer takes anything else. The join before the second recv
+/// is the liveness assertion; the shipped hoard fails it as a loom deadlock.
+#[test]
+fn blocked_sync_send_resumes_on_single_drain() {
+  model_slack(|| {
+    let (tx, rx) = bounded::<u32>(2);
+    tx.try_send(1).unwrap();
+    tx.try_send(2).unwrap();
+    let t = thread::spawn(move || tx.send(3).unwrap());
+    assert_eq!(rx.recv().unwrap(), 1);
+    t.join().unwrap();
+    assert_eq!(rx.recv().unwrap(), 2);
+    assert_eq!(rx.recv().unwrap(), 3);
+  });
+}
+
+/// An async send polled once and then dropped, racing the consumer's drain.
+/// When the poll parked, the drain popped and counted it, and `Drop` must give
+/// the awake count back or the next parked sender is never woken (a
+/// deadlock). When the poll ran after the drain it simply sent.
+#[test]
+fn cancelled_counted_async_send_returns_awake() {
+  loom::model(|| {
+    let (tx, rx) = bounded::<u32>(1);
+    tx.try_send(1).unwrap();
+    let atx = tx.clone().to_async();
+    let t = thread::spawn(move || {
+      let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+      let mut fut = Box::pin(atx.send(2));
+      let sent = fut.as_mut().poll(&mut cx).is_ready();
+      drop(fut);
+      sent
+    });
+    assert_eq!(rx.recv().unwrap(), 1);
+    if t.join().unwrap() {
+      assert_eq!(rx.recv().unwrap(), 2);
+    }
+    tx.try_send(3).unwrap();
+    let t2 = thread::spawn(move || tx.send(4).unwrap());
+    assert_eq!(rx.recv().unwrap(), 3);
+    t2.join().unwrap();
+    assert_eq!(rx.recv().unwrap(), 4);
   });
 }
 

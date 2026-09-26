@@ -4,7 +4,9 @@
 //! `&mut self` (each keeps its own slab), so multi-producer models clone a
 //! sender per thread.
 
-use crate::mpsc::unbounded;
+#![cfg(loom)]
+
+use fibre::mpsc::unbounded;
 use loom::thread;
 
 /// Two producers each publish one item into the chain; the single consumer

@@ -9,7 +9,9 @@
 //! `mpsc_unbounded::two_producers_one_item_each` (whose receiver uses the cheap
 //! facade `Mutex`, so it fits).
 
-use crate::mpmc::unbounded;
+#![cfg(loom)]
+
+use fibre::mpmc::unbounded;
 use loom::thread;
 
 /// Producer publishes then drops: the consumer drains the item, then observes

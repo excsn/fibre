@@ -2,7 +2,11 @@
 members = [
   "channels",
   "channels/bench",
-  "channels/miri",
+  "channels/verify/bolero",
+  "channels/verify/loom",
+  "channels/verify/miri",
+  "channels/verify/shuttle",
+  "channels/verify/stress",
   "cache",
   "ioc",
   "logging",

@@ -3,7 +3,9 @@
 //! with cached counterpart indices) and the sync park/notify handshake
 //! (`register` / `notify_senders` / `notify_receivers`, both directions).
 
-use crate::spsc::bounded_sync;
+#![cfg(loom)]
+
+use fibre::spsc::bounded_sync;
 use loom::thread;
 
 /// Producer sends two items through a cap-2 ring; the consumer drains them.

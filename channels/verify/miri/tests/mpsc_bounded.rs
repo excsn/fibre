@@ -298,3 +298,20 @@ fn batch_mut_reused_buffers() {
   }
   producer.join().unwrap();
 }
+
+/// Async sender parked on a full cap-2 channel, released by one sync recv.
+/// Weak-memory counterpart of loom's `blocked_async_send_resumes_on_single_drain`:
+/// if the consumer and the sender both read stale values, both park and miri
+/// reports a deadlock. See `channels/verify/MODEL.md`.
+#[test]
+fn async_send_parked_on_full_sync_receiver_resumes_on_single_drain() {
+  let (tx, rx) = mpsc::bounded::<u32>(2);
+  tx.try_send(1).unwrap();
+  tx.try_send(2).unwrap();
+  let atx = tx.to_async();
+  let producer = thread::spawn(move || block_on(atx.send(3)).unwrap());
+  assert_eq!(rx.recv().unwrap(), 1);
+  producer.join().unwrap();
+  assert_eq!(rx.recv().unwrap(), 2);
+  assert_eq!(rx.recv().unwrap(), 3);
+}

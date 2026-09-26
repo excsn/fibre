@@ -10,8 +10,10 @@
 //! real-world visibility the waker's RMWs guarantee. Async coverage is the
 //! tokio tests and the miri suite.
 
-use crate::error::TryRecvError;
-use crate::oneshot::{exclusive, oneshot};
+#![cfg(loom)]
+
+use fibre::error::TryRecvError;
+use fibre::oneshot::{exclusive, oneshot};
 use loom::thread;
 
 use std::sync::atomic::{AtomicUsize, Ordering};

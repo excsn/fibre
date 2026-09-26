@@ -1,0 +1,14 @@
+[package]
+name = "fibre_loom"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+fibre = { path = "../.." }
+
+[target.'cfg(loom)'.dependencies]
+loom = { version = "0.7", features = ["futures"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }

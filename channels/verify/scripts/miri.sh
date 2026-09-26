@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 
 TEST="${1:?usage: miri.sh <test-file> [seed-range] [name-filter]}"
 SEEDS="${2:-0..64}"
