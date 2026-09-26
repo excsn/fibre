@@ -1,5 +1,5 @@
 use crate::adapters::{
-  async_channel_ch, crossbeam_ch, fibre_ch, flume_ch, kanal_ch, oneshot_ch, std_ch, tokio_ch,
+  async_channel_ch, crossbeam_ch, crossfire_ch, fibre_ch, flume_ch, kanal_ch, oneshot_ch, std_ch, tokio_ch,
 };
 use crate::bench::{AsyncEntry, Bench, OneshotAsyncEntry, OneshotSyncEntry, SyncEntry};
 use crate::spec::Flavor;
@@ -50,6 +50,27 @@ pub fn registry() -> Vec<Box<dyn Bench>> {
       flavor,
     ));
   }
+
+  entries.push(SyncEntry::<crossfire_ch::MpscSync>::boxed(crossfire_ch::LIBRARY, Flavor::Mpsc));
+  entries.push(SyncEntry::<crossfire_ch::MpscUnboundedSync>::boxed(
+    crossfire_ch::LIBRARY,
+    Flavor::Mpsc,
+  ));
+  entries.push(AsyncEntry::<crossfire_ch::MpscAsync>::boxed(crossfire_ch::LIBRARY, Flavor::Mpsc));
+  entries.push(AsyncEntry::<crossfire_ch::MpscUnboundedAsync>::boxed(
+    crossfire_ch::LIBRARY,
+    Flavor::Mpsc,
+  ));
+  entries.push(SyncEntry::<crossfire_ch::MpmcSync>::boxed(crossfire_ch::LIBRARY, Flavor::Mpmc));
+  entries.push(SyncEntry::<crossfire_ch::MpmcUnboundedSync>::boxed(
+    crossfire_ch::LIBRARY,
+    Flavor::Mpmc,
+  ));
+  entries.push(AsyncEntry::<crossfire_ch::MpmcAsync>::boxed(crossfire_ch::LIBRARY, Flavor::Mpmc));
+  entries.push(AsyncEntry::<crossfire_ch::MpmcUnboundedAsync>::boxed(
+    crossfire_ch::LIBRARY,
+    Flavor::Mpmc,
+  ));
 
   for flavor in SINGLE_CONSUMER {
     entries.push(SyncEntry::<std_ch::Sync_>::boxed(std_ch::LIBRARY, flavor));

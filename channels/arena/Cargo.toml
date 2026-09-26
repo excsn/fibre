@@ -12,6 +12,7 @@ publish = false
 fibre = { path = ".." }
 tokio = { version = "1", features = ["full"] }
 crossbeam-channel = "0.5"
+crossfire = "3"
 flume = "0.11"
 kanal = "0.1"
 async-channel = "2"

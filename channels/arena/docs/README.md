@@ -1,7 +1,7 @@
 # Channel Arena
 **Test Machine:** MacBook M4 Pro (14 cores)
 
-fibre against tokio, crossbeam, flume, kanal, async-channel, futures, the `oneshot` crate and std, through one workload driver. Re-run with `cargo run --release` in `channels/arena`.
+fibre against tokio, crossbeam, crossfire, flume, kanal, async-channel, futures, the `oneshot` crate and std, through one workload driver. Re-run with `cargo run --release` in `channels/arena`.
 
 ## Results
 

@@ -11,6 +11,7 @@ pub mod macros;
 
 pub mod async_channel_ch;
 pub mod crossbeam_ch;
+pub mod crossfire_ch;
 pub mod fibre_ch;
 pub mod flume_ch;
 pub mod kanal_ch;

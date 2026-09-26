@@ -281,7 +281,7 @@ impl Report {
     let _ = writeln!(out);
     let _ = writeln!(
       out,
-      "fibre against tokio, crossbeam, flume, kanal, async-channel, futures, the `oneshot` crate and std, through one workload driver. Re-run with `cargo run --release` in `channels/arena`."
+      "fibre against tokio, crossbeam, crossfire, flume, kanal, async-channel, futures, the `oneshot` crate and std, through one workload driver. Re-run with `cargo run --release` in `channels/arena`."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "## Results");

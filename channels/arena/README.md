@@ -1,6 +1,6 @@
 # channels_arena
 
-Cross-implementation channel benchmarks: fibre against tokio, crossbeam-channel, flume, kanal, async-channel, futures, the `oneshot`, `async-oneshot`, `lite-sync` and `sync-oneshot` crates and `std::sync::mpsc`, through one shared workload harness.
+Cross-implementation channel benchmarks: fibre against tokio, crossbeam-channel, crossfire, flume, kanal, async-channel, futures, the `oneshot`, `async-oneshot`, `lite-sync` and `sync-oneshot` crates and `std::sync::mpsc`, through one shared workload harness.
 
 Results live in [docs/](./docs/).
 
