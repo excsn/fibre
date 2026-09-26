@@ -15,6 +15,8 @@
 
 *   **Sender and Receiver Handles**: Interaction with channels is done through `Sender` and `Receiver` handles. These handles control access and lifetime. When all `Sender` handles for a channel are dropped, it becomes "disconnected." When all `Receiver` handles are dropped, it becomes "closed." Handle cloning semantics vary by channel type (e.g., `mpmc::Sender` is `Clone`, but `spsc::BoundedSyncSender` is not).
 
+*   **Cancel Safety**: a cancel-safe future can be dropped while pending without losing anything. A dropped receive future leaves the message receivable by a later receive; a dropped send future has not sent. Futures documented as cancel-safe below carry the note on their method.
+
 *   **Stream API**: All asynchronous receivers that can yield multiple items (`mpmc::AsyncReceiver`, `mpsc::UnboundedAsyncReceiver`, `mpsc::BoundedAsyncReceiver`, `spmc::AsyncReceiver`, `spsc::BoundedAsyncReceiver`, `spmc::topic::AsyncTopicReceiver`) implement the `futures::Stream` trait, allowing them to be used with the rich combinator library from `futures-util`.
 
 ## 2. Error Handling
@@ -130,7 +132,7 @@ The sending side of a oneshot channel. Can be cloned. `send` consumes the handle
 The receiving side of a oneshot channel. Cannot be cloned.
 
 *   **Methods**:
-    *   `pub fn recv(&self) -> ReceiveFuture<'_, T>`
+    *   `pub fn recv(&self) -> ReceiveFuture<'_, T>`: Cancel-safe.
     *   `pub fn recv_blocking(&self) -> Result<T, RecvError>` (for synchronous callers; returns without parking, and without allocating a parker, when the value has already arrived)
     *   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
     *   `pub fn close(&self) -> Result<(), CloseError>`
@@ -150,7 +152,7 @@ The sending side of an `exclusive()` channel. Cannot be cloned; `send` consumes 
 The receiving side of an `exclusive()` channel. Cannot be cloned; receive methods take `&mut self`.
 
 *   **Methods**:
-    *   `pub fn recv(&mut self) -> ExclusiveReceiveFuture<'_, T>`
+    *   `pub fn recv(&mut self) -> ExclusiveReceiveFuture<'_, T>`: Cancel-safe.
     *   `pub fn recv_blocking(&mut self) -> Result<T, RecvError>` (for synchronous callers; returns without parking, and without allocating a parker, when the value has already arrived)
     *   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>` (`Disconnected` once the value was taken, the sender dropped without sending, or this handle was closed)
     *   `pub fn close(&mut self)`
@@ -180,7 +182,7 @@ The sending side of a pooled channel. Cannot be cloned; same contract as `Exclus
 The receiving side of a pooled channel. Cannot be cloned; same contract as `ExclusiveReceiver`.
 
 *   **Methods**:
-    *   `pub fn recv(&mut self) -> PooledReceiveFuture<'_, T>`
+    *   `pub fn recv(&mut self) -> PooledReceiveFuture<'_, T>`: Cancel-safe.
     *   `pub fn recv_blocking(&mut self) -> Result<T, RecvError>` (for synchronous callers; returns without parking, and without allocating a parker, when the value has already arrived)
     *   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
     *   `pub fn close(&mut self)`
@@ -258,7 +260,7 @@ The asynchronous, non-cloneable sending handle. All send methods take `&mut self
 
 *   **Methods**:
     *   `pub fn to_sync(self) -> BoundedSyncSender<T>`
-    *   `pub fn send(&mut self, item: T) -> SendFuture<'_, T>`
+    *   `pub fn send(&mut self, item: T) -> SendFuture<'_, T>`: Cancel-safe.
     *   `pub fn try_send(&mut self, item: T) -> Result<(), TrySendError<T>>`
     *   `pub fn send_batch(&mut self, items: Vec<T>) -> SendBatchFuture<'_, T>`: Resolves with `Result<usize, SendBatchError<T>>`.
     *   `pub fn send_batch_mut<'a>(&'a mut self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T>`: Cancel-safe; resolves with `Result<usize, SendError>`.
@@ -272,7 +274,7 @@ The asynchronous, non-cloneable receiving handle. Implements `futures::Stream`. 
 
 *   **Methods**:
     *   `pub fn to_sync(self) -> BoundedSyncReceiver<T>`
-    *   `pub fn recv(&mut self) -> ReceiveFuture<'_, T>`
+    *   `pub fn recv(&mut self) -> ReceiveFuture<'_, T>`: Cancel-safe.
     *   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
     *   `pub fn recv_batch(&mut self, max: usize) -> RecvBatchFuture<'_, T>`: Resolves with `Result<Vec<T>, RecvError>`.
     *   `pub fn recv_batch_mut<'a>(&'a mut self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T>`: Resolves with `Result<usize, RecvError>`.
@@ -309,11 +311,11 @@ An optimized channel for multiple producers and one consumer.
     *   `recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError>` / `try_recv_batch_mut(...)`: Append to `out`.
     *   Methods: `try_recv`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `to_async`.
 *   **Struct `UnboundedAsyncSender<T: Send>`**: A cloneable, async handle. Sends take `&mut self`; clone a sender per task.
-    *   `send(&mut self, value: T) -> UnboundedSendFuture<'_, T>`: Non-blocking future.
+    *   `send(&mut self, value: T) -> UnboundedSendFuture<'_, T>`: Non-blocking future. Cancel-safe.
     *   `send_batch(&mut self, items: Vec<T>) -> UnboundedSendBatchFuture<'_, T>` / `send_batch_mut(...) -> UnboundedSendBatchMutFuture<'_, T>`: Complete on first poll (unbounded).
     *   Methods: `try_send` (`&mut self`), `try_send_batch` (`&mut self`), `try_send_batch_mut` (`&mut self`), `close` (`&mut self`), `is_closed`, `sender_count`, `len`, `is_empty`, `to_sync`.
 *   **Struct `UnboundedAsyncReceiver<T: Send>`**: A non-cloneable, async handle. Implements `futures::Stream`.
-    *   `recv(&mut self) -> UnboundedRecvFuture<'_, T>`: Returns a future that waits for an item.
+    *   `recv(&mut self) -> UnboundedRecvFuture<'_, T>`: Returns a future that waits for an item. Cancel-safe.
     *   `recv_batch(&mut self, max: usize) -> UnboundedRecvBatchFuture<'_, T>` / `recv_batch_mut(...) -> UnboundedRecvBatchMutFuture<'_, T>`: Cancel-safe batch receives.
     *   Methods: `try_recv` (`&mut self`), `try_recv_batch` (`&mut self`), `try_recv_batch_mut` (`&mut self`), `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `to_sync`.
 
@@ -332,11 +334,11 @@ An optimized channel for multiple producers and one consumer.
     *   `recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError>` / `try_recv_batch_mut(...)`: Append to `out`.
     *   Methods: `try_recv`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `capacity`, `is_full`, `to_async`.
 *   **Struct `BoundedAsyncSender<T: Send>`**: A cloneable, async handle.
-    *   `send(&self, value: T) -> BoundedSendFuture<'_, T>`: Returns a future that waits for capacity and resumes as soon as the receiver frees a slot.
+    *   `send(&self, value: T) -> BoundedSendFuture<'_, T>`: Returns a future that waits for capacity and resumes as soon as the receiver frees a slot. Cancel-safe.
     *   `send_batch(&self, items: Vec<T>) -> BoundedSendBatchFuture<'_, T>` / `send_batch_mut(...) -> BoundedSendBatchMutFuture<'_, T>`: Acquire permits in bulk, re-arming for the remainder.
     *   Methods: `try_send`, `try_send_batch`, `try_send_batch_mut`, `clone`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `capacity`, `is_full`, `to_sync`.
 *   **Struct `BoundedAsyncReceiver<T: Send>`**: A non-cloneable, async handle. Implements `futures::Stream`.
-    *   `recv(&self) -> BoundedRecvFuture<'_, T>`: Returns a future that waits for an item.
+    *   `recv(&self) -> BoundedRecvFuture<'_, T>`: Returns a future that waits for an item. Cancel-safe.
     *   `recv_batch(&self, max: usize) -> BoundedRecvBatchFuture<'_, T>` / `recv_batch_mut(...) -> BoundedRecvBatchMutFuture<'_, T>`: Cancel-safe batch receives.
     *   Methods: `try_recv`, `try_recv_batch`, `try_recv_batch_mut`, `is_closed`, `close`, `sender_count`, `len`, `is_empty`, `capacity`, `is_full`, `to_sync`.
 
@@ -380,7 +382,7 @@ The synchronous, cloneable receiving handle.
 The asynchronous, non-cloneable sending handle.
 
 *   **Methods**:
-    *   `send(&self, value: T) -> SendFuture<'_, T>`
+    *   `send(&self, value: T) -> SendFuture<'_, T>`: Cancel-safe.
     *   `send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T>` / `send_batch_mut(...) -> SendBatchMutFuture<'_, T>`
     *   `try_send`, `try_send_batch`, `try_send_batch_mut`, `close(&mut self)`, `to_sync`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
 
@@ -389,7 +391,7 @@ The asynchronous, non-cloneable sending handle.
 The asynchronous, cloneable receiving handle. Implements `futures::Stream`.
 
 *   **Methods**:
-    *   `recv(&self) -> RecvFuture<'_, T>`
+    *   `recv(&self) -> RecvFuture<'_, T>`: Cancel-safe.
     *   `recv_batch(&self, max: usize) -> RecvBatchFuture<'_, T>` / `recv_batch_mut(...) -> RecvBatchMutFuture<'_, T>`
     *   `try_recv`, `try_recv_batch`, `try_recv_batch_mut`, `close`, `to_sync`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
 
@@ -436,7 +438,7 @@ The synchronous, cloneable receiving handle of the bounded channel.
 The asynchronous, cloneable sending handle of the bounded channel.
 
 *   **Methods**:
-    *   `send(&self, item: T) -> SendFuture<'_, T>`
+    *   `send(&self, item: T) -> SendFuture<'_, T>`: Cancel-safe.
     *   `send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T>` / `send_batch_mut(...) -> SendBatchMutFuture<'_, T>`: The `_mut` variant is cancel-safe and recovers a parked rendezvous payload on drop.
     *   `try_send`, `try_send_batch`, `try_send_batch_mut`, `close`, `to_sync`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
 
@@ -445,7 +447,7 @@ The asynchronous, cloneable sending handle of the bounded channel.
 The asynchronous, cloneable receiving handle of the bounded channel. Implements `futures::Stream`.
 
 *   **Methods**:
-    *   `recv(&self) -> RecvFuture<'_, T>`
+    *   `recv(&self) -> RecvFuture<'_, T>`: Cancel-safe.
     *   `recv_batch(&self, max: usize) -> RecvBatchFuture<'_, T>` / `recv_batch_mut(...) -> RecvBatchMutFuture<'_, T>`
     *   `try_recv`, `try_recv_batch`, `try_recv_batch_mut`, `close`, `to_sync`, `is_closed`, `capacity`, `len`, `is_empty`, `is_full`.
 
@@ -463,11 +465,11 @@ The unbounded channel is a dedicated implementation (lock-free slab-chain produc
     *   `recv_batch(&mut self, max: usize) -> Result<Vec<T>, RecvError>` / `recv_batch_mut(...)`: Block until at least one item.
     *   Methods: `try_recv`, `try_recv_batch`, `try_recv_batch_mut`, `close`, `is_closed`, `sender_count`, `capacity`, `len`, `is_empty`, `is_full`, `to_async` (non-waiting methods stay `&self`).
 *   **Struct `UnboundedAsyncSender<T: Send>`**:
-    *   `send(&mut self, value: T) -> UnboundedSendFuture<'_, T>`: Resolves on first poll.
+    *   `send(&mut self, value: T) -> UnboundedSendFuture<'_, T>`: Resolves on first poll. Cancel-safe.
     *   `send_batch(&mut self, items: Vec<T>) -> UnboundedSendBatchFuture<'_, T>` / `send_batch_mut(...) -> UnboundedSendBatchMutFuture<'_, T>`
     *   Methods: `try_send` (`&mut self`), `try_send_batch` (`&mut self`), `try_send_batch_mut` (`&mut self`), `close` (`&mut self`), `is_closed`, `sender_count`, `capacity`, `len`, `is_empty`, `is_full`, `to_sync`.
 *   **Struct `UnboundedAsyncReceiver<T: Send>`**: Implements `futures::Stream`.
-    *   `recv(&mut self) -> UnboundedRecvFuture<'_, T>`
+    *   `recv(&mut self) -> UnboundedRecvFuture<'_, T>`: Cancel-safe.
     *   `recv_batch(&mut self, max: usize) -> UnboundedRecvBatchFuture<'_, T>` / `recv_batch_mut(...) -> UnboundedRecvBatchMutFuture<'_, T>`: Cancel-safe; a fulfilled-then-cancelled receive reinserts its item.
     *   Methods: `try_recv`, `try_recv_batch`, `try_recv_batch_mut`, `close`, `is_closed`, `sender_count`, `capacity`, `len`, `is_empty`, `is_full`, `to_sync` (non-waiting methods stay `&self`).
 
@@ -529,7 +531,7 @@ The asynchronous, cloneable receiving handle. Implements `futures::Stream`.
 *   **Methods**:
     *   `pub fn subscribe(&self, topic: K)`
     *   `pub fn unsubscribe<Q: ?Sized>(&self, topic: &Q)`
-    *   `pub fn recv(&self) -> RecvFuture<'_, (K, T)>`: Returns a future that waits for a message.
+    *   `pub fn recv(&self) -> RecvFuture<'_, (K, T)>`: Returns a future that waits for a message. Cancel-safe.
     *   `pub fn try_recv(&self) -> Result<(K, T), TryRecvError>`
     *   `pub fn close(&self) -> Result<(), CloseError>`
     *   `pub fn is_closed(&self) -> bool`

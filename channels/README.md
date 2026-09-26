@@ -4,13 +4,17 @@
 [![docs.rs](https://docs.rs/fibre/badge.svg)](https://docs.rs/fibre)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 
-`fibre` provides a suite of high-performance, memory-efficient sync/async channels for Rust. It is designed to offer the best possible performance for a given concurrency pattern by providing specialized channel implementations rather than a single, general-purpose one. This allows developers to solve concurrency problems with tools that are tailored for their specific needs, from blazing-fast SPSC queues to flexible MPMC channels.
+`fibre` provides a suite of high-performance, memory-efficient sync/async channels for Rust.
+
+It is designed to offer the best possible performance for a given concurrency pattern by providing specialized channel implementations rather than a single, general-purpose one.
+
+This allows developers to solve concurrency problems with tools that are tailored for their specific needs, from blazing-fast SPSC queues to flexible MPMC channels.
 
 ## Current Status: Stable
 
 `fibre` is stable. The API is stable, but minor breaking changes may occur before version 1.0 as feedback is incorporated and improvements are made.
 
-**Performance highlights** (Apple M4 Pro) - **SPSC** 44 / 183 Melem/s (sync/async, Cap-1024; batch up to ~185 Melem/s) · **MPSC** ~37 / ~60-63 Melem/s (sync/async, Cap-128, 4-14P) · **SPMC** 15–20 Melem/s broadcast · **SPMC Topic** up to 15 Melem/s async (14 subs) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128 1P/1C) · **Oneshot** ~45 Melem/s async, `exclusive()` ~55 (~98 transfer-only), `pair_pool()` ~145 (~199 transfer-only) - [details](#performance) · [bench data](./docs/benches/)
+**Performance highlights** (Apple M4 Pro) - **SPSC** 44 / 183 Melem/s (sync/async, Cap-1024, 1P / 1C; batch up to ~185 Melem/s) · **MPSC** ~37 / ~60-63 Melem/s (sync/async, Cap-128, 4-14P / 1C) · **SPMC** 15–20 Melem/s broadcast (Cap-128, 1P / 1-4C) · **SPMC Topic** up to 15 Melem/s async (1P / 14C) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128, 1P / 1C) · **Oneshot** ~45 Melem/s async, `exclusive()` ~55 (~98 transfer-only), `pair_pool()` ~145 (~199 transfer-only) - [details](#performance) · [bench data](./docs/benches/)
 
 ## Notable Users
 
@@ -26,7 +30,7 @@ Fibre offers a wide range of channel types, each optimized for a specific produc
 *   **`mpsc`**: A lock-free Multi-Producer, Single-Consumer channel, perfect for scenarios where many tasks need to send work to a single processing task. Supports bounded, unbounded, and zero-capacity `mpsc::rendezvous` modes. Requires `T: Send`.
 *   **`spmc`**: A "broadcast" style Single-Producer, Multi-Consumer channel where each message is cloned and delivered to every active consumer. Bounded. Requires `T: Send + Clone`.
 *   **`spmc::topic`**: A "publish-subscribe" variant of SPMC where the producer sends messages to named topics, and consumers subscribe to the topics they're interested in. The sender is non-blocking, dropping messages for slow consumers. Requires `K: Send + Sync + Hash + Eq + Clone` and `T: Send + Clone`.
-*   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic. Supports bounded, "unbounded", and zero-capacity `mpmc::rendezvous` modes. Both `send` and `recv` futures are cancel-safe. Requires `T: Send`.
+*   **`mpmc`**: A flexible and robust Multi-Producer, Multi-Consumer channel for general-purpose use where producer and consumer counts are dynamic. Supports bounded, "unbounded", and zero-capacity `mpmc::rendezvous` modes. Requires `T: Send`.
 *   **`oneshot`**: A channel for sending a single value once, perfect for futures and promise-style patterns. `oneshot()` gives a clonable sender (first send wins); `oneshot::exclusive()` gives a leaner single-sender variant; `oneshot::pair_pool()` gives a pool of recycled single-sender channels for allocation-free request/response, and `oneshot::OneshotHostPool` pools whole request records with the reply channel embedded. Requires `T: Send`.
 
 **Capacity modes by channel type**
@@ -37,7 +41,21 @@ Fibre offers a wide range of channel types, each optimized for a specific produc
 | Unbounded | ❌ | ✅ | ❌ | ❌ | ✅ | N/A |
 | Rendezvous (zero-capacity) | ✅ | ✅ | ❌ | ❌ | ✅ | N/A |
 
-Rendezvous channels are a dedicated, zero-capacity family with their own cancel-safe direct-handoff semantics.
+Rendezvous channels are a dedicated, zero-capacity family that hand each item directly from sender to receiver.
+
+**Guarantees by channel type**
+
+| Guarantee | SPSC | MPSC | SPMC | SPMC Topic | MPMC | Oneshot |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Cancel-safe `recv` future | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Cancel-safe `send` future | ✅ | ✅ | ✅ | N/A | ✅ | N/A |
+| Cancel-safe on rendezvous | ❌ | ❌ | N/A | N/A | ❌ | N/A |
+| Order | FIFO | Total order, FIFO per producer | Every consumer sees send order | Send order per consumer, with gaps when its mailbox is full | Total order; each consumer gets an increasing subsequence; FIFO per producer | Single value |
+
+- Cancel-safe means dropping a pending future loses nothing. A dropped `recv` future leaves the message receivable. A dropped `send` future has not sent.
+- Rendezvous is the exception: a dropped receive future can lose an item already handed to it. A dropped send can still be delivered.
+- Batch sends: dropping a pending `send_batch` future leaves the items already sent delivered and drops the rest. `send_batch_mut` leaves the unsent items in the caller's vector.
+- SPMC Topic and Oneshot sends are not futures.
 
 ### Hybrid Sync/Async API
 
@@ -117,24 +135,24 @@ Benchmarks on Apple M4 Pro; full results in [`docs/benches/`](./docs/benches/).
 | Channel | Configuration | Sync | Async |
 | :--- | :--- | ---: | ---: |
 | **SPSC** | Cap-1024, 1P / 1C | 44.5 Melem/s | 183 Melem/s |
-| **SPSC** | Cap-1024, batch 512 | 180 Melem/s | 146 Melem/s |
-| **MPSC** | Cap-128, 4P | 37.9 Melem/s | 60.2 Melem/s |
-| **MPSC** | Cap-128, 14P | 37.4 Melem/s | 63.4 Melem/s |
-| **SPMC** | Cap-128, 1C (broadcast) | 15.0 Melem/s | 14.8 Melem/s |
-| **SPMC** | Cap-128, 4C (broadcast) | 15.7 Melem/s | 19.5 Melem/s |
-| **SPMC Topic** | 1 subscriber | 18.1 Melem/s | 7.8 Melem/s |
-| **SPMC Topic** | 14 subscribers | 726 Kelem/s | 14.9 Melem/s |
+| **SPSC** | Cap-1024, 1P / 1C, batch 512 | 180 Melem/s | 146 Melem/s |
+| **MPSC** | Cap-128, 4P / 1C | 37.9 Melem/s | 60.2 Melem/s |
+| **MPSC** | Cap-128, 14P / 1C | 37.4 Melem/s | 63.4 Melem/s |
+| **SPMC** | Cap-128, 1P / 1C | 15.0 Melem/s | 14.8 Melem/s |
+| **SPMC** | Cap-128, 1P / 4C | 15.7 Melem/s | 19.5 Melem/s |
+| **SPMC Topic** | 1P / 1C | 18.1 Melem/s | 7.8 Melem/s |
+| **SPMC Topic** | 1P / 14C | 726 Kelem/s | 14.9 Melem/s |
 | **MPMC** | Cap-128, 1P / 1C | 42.1 Melem/s | 73.2 Melem/s |
 | **MPMC** | Cap-128, 14P / 14C | 18.9 Melem/s | 19.9 Melem/s |
 | **Oneshot** | clonable / exclusive | - | 44.6 / 54.7 Melem/s |
 | **Oneshot Pool** | pair / host | - | 145.2 / 144.9 Melem/s |
 
 - SPSC numbers are measured with a real spawned producer and consumer (thread or task) per iteration, so they include genuine cross-core synchronization; throughput scales with buffer size (Cap-128: 27 / 139 Melem/s sync/async, Cap-1024: 44.5 / 183 Melem/s). Batch APIs at Cap-1024 reach 150–185 Melem/s sync.
-- MPSC throughput at Cap-128 stays level as producers are added: sync ~37-38 Melem/s at 4P and 14P (~71 at 1P), async ~60-67 Melem/s from 1P to 14P.
-- SPMC figures are per-message sent; each message is cloned and delivered to every consumer.
+- MPSC throughput at Cap-128 stays level as producers are added: sync ~37-38 Melem/s at 4P / 1C and 14P / 1C (~71 at 1P / 1C), async ~60-67 Melem/s from 1P / 1C to 14P / 1C.
+- SPMC and SPMC Topic are broadcast: figures are per message sent. Each message is cloned and delivered to every consumer (for Topic, every consumer subscribed to its topic).
 - Oneshot figures are create+send+recv per op. Transfer-only (pre-created channels): clonable ~69.5, exclusive ~98 Melem/s, vs tokio's oneshot at ~41 full / ~70 transfer-only ([data](./docs/benches/oneshot.md)).
 - Oneshot Pool figures are the same full cycle over recycled slots: no allocation per channel, ~199 Melem/s transfer-only, ~186-189 Melem/s cross-thread at 10k ops, and a record-carrying request/reply through the host pool at 86 Melem/s vs 42 with a per-request allocation ([data](./docs/benches/oneshot_pool.md)).
-- SPMC Topic's async 14-subscriber result (14.9 Melem/s) is ~20× faster than the sync equivalent (726 Kelem/s) because the non-blocking sender fully decouples producers from slow subscribers.
+- SPMC Topic's async 1P / 14C result (14.9 Melem/s) is ~20× faster than the sync equivalent (726 Kelem/s) because the non-blocking sender fully decouples producers from slow consumers.
 - MPMC async at 73 Melem/s (Cap-128, 1P / 1C) avoids lock overhead when the buffer has slack.
 
 ## Installation

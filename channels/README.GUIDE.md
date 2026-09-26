@@ -18,6 +18,7 @@ This guide provides detailed examples and an overview of the core concepts and A
     *   [Module: `fibre::spsc`](#module-fibrespsc)
     *   [Module: `fibre::oneshot`](#module-fibreoneshot)
 *   [Batch Operations](#batch-operations)
+*   [Cancelling a Pending Send or Receive](#cancelling-a-pending-send-or-receive)
 *   [Error Handling](#error-handling)
 *   [Testing and Debugging](#testing-and-debugging)
 
@@ -473,6 +474,37 @@ fn main() {
     }
 }
 ```
+
+## Cancelling a Pending Send or Receive
+
+Dropping a pending single-item future is safe on the bounded and unbounded channels, SPMC, `spmc::topic` and `oneshot`. A dropped receive leaves the message for the next receive. A dropped send has not sent. The losing branch of `select!` drops its future this way.
+
+```rust
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() {
+    let (tx, rx) = fibre::mpsc::bounded_async::<u32>(4);
+
+    tokio::select! {
+        _ = rx.recv() => unreachable!("nothing has been sent yet"),
+        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+    }
+    tx.send(7).await.unwrap();
+    assert_eq!(rx.recv().await.unwrap(), 7);
+
+    let (tx, rx) = fibre::mpsc::bounded_async::<u32>(1);
+    tx.send(1).await.unwrap();
+    tokio::select! {
+        _ = tx.send(2) => unreachable!("the channel is full"),
+        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+    }
+    assert_eq!(rx.recv().await.unwrap(), 1);
+    assert!(rx.try_recv().is_err());
+}
+```
+
+Where a batch send may be cancelled, use `send_batch_mut`: the items it has not sent stay in your vector. Dropping a pending `send_batch` drops its unsent items.
 
 ## Error Handling
 
