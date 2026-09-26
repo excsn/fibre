@@ -10,7 +10,7 @@
 
 `fibre` is stable. The API is stable, but minor breaking changes may occur before version 1.0 as feedback is incorporated and improvements are made.
 
-**Performance highlights** (Apple M4 Pro) - **SPSC** 44 / 183 Melem/s (sync/async, Cap-1024; batch up to ~185 Melem/s) · **MPSC** ~4–21 / ~67 Melem/s (sync/async, Cap-128, 4–14P) · **SPMC** 15–20 Melem/s broadcast · **SPMC Topic** up to 15 Melem/s async (14 subs) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128 1P/1C) · **Oneshot** ~45 Melem/s async, `exclusive()` ~55 (~98 transfer-only), `pair_pool()` ~145 (~199 transfer-only) - [details](#performance) · [bench data](./docs/benches/)
+**Performance highlights** (Apple M4 Pro) - **SPSC** 44 / 183 Melem/s (sync/async, Cap-1024; batch up to ~185 Melem/s) · **MPSC** ~37 / ~60-63 Melem/s (sync/async, Cap-128, 4-14P) · **SPMC** 15–20 Melem/s broadcast · **SPMC Topic** up to 15 Melem/s async (14 subs) · **MPMC** 22 / 73 Melem/s (sync/async, Cap-128 1P/1C) · **Oneshot** ~45 Melem/s async, `exclusive()` ~55 (~98 transfer-only), `pair_pool()` ~145 (~199 transfer-only) - [details](#performance) · [bench data](./docs/benches/)
 
 ## Notable Users
 
@@ -118,8 +118,8 @@ Benchmarks on Apple M4 Pro; full results in [`docs/benches/`](./docs/benches/).
 | :--- | :--- | ---: | ---: |
 | **SPSC** | Cap-1024, 1P / 1C | 44.5 Melem/s | 183 Melem/s |
 | **SPSC** | Cap-1024, batch 512 | 180 Melem/s | 146 Melem/s |
-| **MPSC** | Cap-128, 4P | 21.0 Melem/s | 67.6 Melem/s |
-| **MPSC** | Cap-128, 14P | 3.7 Melem/s | 67.2 Melem/s |
+| **MPSC** | Cap-128, 4P | 37.9 Melem/s | 60.2 Melem/s |
+| **MPSC** | Cap-128, 14P | 37.4 Melem/s | 63.4 Melem/s |
 | **SPMC** | Cap-128, 1C (broadcast) | 15.0 Melem/s | 14.8 Melem/s |
 | **SPMC** | Cap-128, 4C (broadcast) | 15.7 Melem/s | 19.5 Melem/s |
 | **SPMC Topic** | 1 subscriber | 18.1 Melem/s | 7.8 Melem/s |
@@ -130,7 +130,7 @@ Benchmarks on Apple M4 Pro; full results in [`docs/benches/`](./docs/benches/).
 | **Oneshot Pool** | pair / host | - | 145.2 / 144.9 Melem/s |
 
 - SPSC numbers are measured with a real spawned producer and consumer (thread or task) per iteration, so they include genuine cross-core synchronization; throughput scales with buffer size (Cap-128: 27 / 139 Melem/s sync/async, Cap-1024: 44.5 / 183 Melem/s). Batch APIs at Cap-1024 reach 150–185 Melem/s sync.
-- MPSC async throughput at Cap-128 is remarkably consistent across producer counts (~67 Melem/s from 4P to 14P); sync bounded throughput is lower and falls off under contention (~21 Melem/s at 4P down to ~3.7 at 14P, and ~82 Melem/s at 1P).
+- MPSC throughput at Cap-128 stays level as producers are added: sync ~37-38 Melem/s at 4P and 14P (~71 at 1P), async ~60-67 Melem/s from 1P to 14P.
 - SPMC figures are per-message sent; each message is cloned and delivered to every consumer.
 - Oneshot figures are create+send+recv per op. Transfer-only (pre-created channels): clonable ~69.5, exclusive ~98 Melem/s, vs tokio's oneshot at ~41 full / ~70 transfer-only ([data](./docs/benches/oneshot.md)).
 - Oneshot Pool figures are the same full cycle over recycled slots: no allocation per channel, ~199 Melem/s transfer-only, ~186-189 Melem/s cross-thread at 10k ops, and a record-carrying request/reply through the host pool at 86 Melem/s vs 42 with a per-request allocation ([data](./docs/benches/oneshot_pool.md)).
