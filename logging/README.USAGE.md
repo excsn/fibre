@@ -34,7 +34,8 @@ This guide provides a detailed overview of `fibre_logging`'s core concepts, conf
 *   A logger has a `level` (e.g., `info`, `debug`, `trace`). An event is only processed if its level is at or above the logger's level.
 *   Each logger is associated with one or more `appenders`.
 *   The `root` logger is the fallback for any target that doesn't match a more specific logger.
-*   The `additive` flag (default: `true`) controls whether an event handled by a specific logger is also passed to the `root` logger's appenders. Setting `additive: false` is useful for isolating a module's logs to a specific file.
+*   The `additive` flag (default: `true`) controls whether an event accepted by a specific logger is also passed to the appenders of its ancestor loggers and of `root`, at the specific logger's level. A logger with a `level` and no `appenders` therefore only changes the level for its targets: `orders::db: { level: debug }` sends `orders::db` debug events to root's appenders and `hyper: { level: warn }` keeps `hyper` info events out of them. Setting `additive: false` is useful for isolating a module's logs to a specific file.
+*   An appender receives an event once, however many loggers list it. Listing `console` on both `root` and a module logger does not print the event twice.
 
 ### Appenders
 

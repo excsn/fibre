@@ -194,7 +194,7 @@ $defs:
         items:
           type: string
       additive:
-        description: "If false, logs matching this logger will NOT be sent to the appenders of the parent (root) logger."
+        description: "If true, events accepted by this logger are also sent to the appenders of its ancestor loggers and of root, at this logger's level. If false, they go only to this logger's own appenders."
         type: boolean
         default: true
     required: [ "level" ]

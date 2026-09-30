@@ -45,7 +45,7 @@ Contains the primary public functions for initializing the library.
 **Public Functions:**
 
 *   `pub fn find_config_file(environment_suffix: Option<&str>) -> Result<std::path::PathBuf>`
-    *   Finds a configuration file in the current directory. It searches for `fibre_logging.yaml` and `fibre_logging.{env}.yaml` based on the `FIBRE_ENV` or `APP_ENV` environment variables, or the provided suffix.
+    *   Finds a configuration file in the current directory. The environment comes from the provided suffix, then `FIBRE_ENV`, then `APP_ENV`. It looks for `fibre_logging.{env}.yaml` first and falls back to `fibre_logging.yaml` when the environment-specific file does not exist, so a missing `fibre_logging.prod.yaml` silently loads the plain file. It returns `Error::ConfigNotFound` only when neither exists.
 *   `pub fn init_from_file(config_path: &std::path::Path) -> Result<InitResult>`
     *   Initializes the log system from a specific configuration file path. This is the main entry point for the library.
 

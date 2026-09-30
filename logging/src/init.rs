@@ -525,15 +525,24 @@ fn build_filter_for_appender(
     }
   }
 
+  let owners: Vec<&str> = loggers
+    .values()
+    .filter(|l| l.appender_names.iter().any(|a| a == appender_name_to_build))
+    .map(|l| l.name.as_str())
+    .collect();
+
   for (logger_name, logger_config) in loggers {
     if logger_name == "root" {
       continue;
     }
 
-    if logger_config
-      .appender_names
-      .contains(&appender_name_to_build.to_string())
-    {
+    let owned = owners.contains(&logger_config.name.as_str());
+    let inherited = logger_config.additive
+      && owners
+        .iter()
+        .any(|owner| *owner == "root" || is_ancestor_logger(owner, &logger_config.name));
+
+    if owned || inherited {
       rules.insert(
         logger_config.name.clone(),
         (logger_config.min_level, logger_config.additive),
@@ -542,6 +551,12 @@ fn build_filter_for_appender(
   }
 
   PerAppenderFilter::new(rules, default_level)
+}
+
+fn is_ancestor_logger(ancestor: &str, logger: &str) -> bool {
+  logger
+    .strip_prefix(ancestor)
+    .map_or(false, |rest| rest.starts_with("::"))
 }
 
 #[cfg(test)]
@@ -755,9 +770,9 @@ mod tests {
     send(Level::INFO, "a::b::x");
     assert_eq!((drain_count(&rx1), drain_count(&rx2), drain_count(&rx3)), (1, 1, 1));
 
-    // DEBUG passes the "a"/"a::b" rules but not root's INFO default.
+    // Additive "a::b" carries its DEBUG level to root's appender too.
     send(Level::DEBUG, "a::b::x");
-    assert_eq!((drain_count(&rx1), drain_count(&rx2), drain_count(&rx3)), (1, 1, 0));
+    assert_eq!((drain_count(&rx1), drain_count(&rx2), drain_count(&rx3)), (1, 1, 1));
 
     // Unmatched target: only root's appender.
     send(Level::INFO, "other");
@@ -766,6 +781,141 @@ mod tests {
     // Boundary check flows through dispatch: "aa" must not match logger "a".
     send(Level::DEBUG, "aa::x");
     assert_eq!((drain_count(&rx1), drain_count(&rx2), drain_count(&rx3)), (0, 0, 0));
+  }
+
+  #[test]
+  fn additive_level_only_logger_reaches_root_appenders() {
+    let mut loggers = HashMap::new();
+    loggers.insert(
+      "root".to_string(),
+      LoggerInternal {
+        name: "root".to_string(),
+        min_level: LevelFilter::INFO,
+        appender_names: vec!["console".to_string(), "file".to_string()],
+        additive: true,
+      },
+    );
+    loggers.insert(
+      "orders::db".to_string(),
+      LoggerInternal {
+        name: "orders::db".to_string(),
+        min_level: LevelFilter::DEBUG,
+        appender_names: vec![],
+        additive: true,
+      },
+    );
+    loggers.insert(
+      "hyper".to_string(),
+      LoggerInternal {
+        name: "hyper".to_string(),
+        min_level: LevelFilter::WARN,
+        appender_names: vec![],
+        additive: true,
+      },
+    );
+    let (console, rx_console) = make_event_actor("console", &loggers, 16, OverflowPolicy::DropNewest);
+    let (file, rx_file) = make_event_actor("file", &loggers, 16, OverflowPolicy::DropNewest);
+    let processor = EventProcessor::new(vec![console, file], None);
+
+    assert_eq!(processor.max_level(), LevelFilter::DEBUG);
+    assert!(processor.event_enabled(&mock_metadata(Level::DEBUG, "orders::db::queries")));
+    assert!(!processor.event_enabled(&mock_metadata(Level::DEBUG, "orders")));
+
+    let send = |level: Level, target: &'static str| {
+      let md = mock_metadata(level, target);
+      processor.process_event(LogEvent::new(level, target, "test", None), &md);
+    };
+
+    send(Level::DEBUG, "orders::db::queries");
+    assert_eq!((drain_count(&rx_console), drain_count(&rx_file)), (1, 1));
+    send(Level::TRACE, "orders::db::queries");
+    assert_eq!((drain_count(&rx_console), drain_count(&rx_file)), (0, 0));
+    send(Level::DEBUG, "orders");
+    assert_eq!((drain_count(&rx_console), drain_count(&rx_file)), (0, 0));
+
+    send(Level::INFO, "hyper::client");
+    assert_eq!((drain_count(&rx_console), drain_count(&rx_file)), (0, 0));
+    send(Level::WARN, "hyper::client");
+    assert_eq!((drain_count(&rx_console), drain_count(&rx_file)), (1, 1));
+  }
+
+  #[test]
+  fn additive_logger_level_carries_to_ancestor_appenders() {
+    let mut loggers = HashMap::new();
+    loggers.insert(
+      "root".to_string(),
+      LoggerInternal {
+        name: "root".to_string(),
+        min_level: LevelFilter::INFO,
+        appender_names: vec!["console".to_string()],
+        additive: true,
+      },
+    );
+    loggers.insert(
+      "a".to_string(),
+      LoggerInternal {
+        name: "a".to_string(),
+        min_level: LevelFilter::DEBUG,
+        appender_names: vec!["console".to_string(), "file_a".to_string()],
+        additive: true,
+      },
+    );
+    loggers.insert(
+      "a::b".to_string(),
+      LoggerInternal {
+        name: "a::b".to_string(),
+        min_level: LevelFilter::TRACE,
+        appender_names: vec!["file_b".to_string()],
+        additive: true,
+      },
+    );
+    loggers.insert(
+      "quiet".to_string(),
+      LoggerInternal {
+        name: "quiet".to_string(),
+        min_level: LevelFilter::DEBUG,
+        appender_names: vec!["file_quiet".to_string()],
+        additive: false,
+      },
+    );
+    let (console, rx_console) = make_event_actor("console", &loggers, 16, OverflowPolicy::DropNewest);
+    let (file_a, rx_a) = make_event_actor("file_a", &loggers, 16, OverflowPolicy::DropNewest);
+    let (file_b, rx_b) = make_event_actor("file_b", &loggers, 16, OverflowPolicy::DropNewest);
+    let (file_quiet, rx_quiet) = make_event_actor("file_quiet", &loggers, 16, OverflowPolicy::DropNewest);
+    let processor = EventProcessor::new(vec![console, file_a, file_b, file_quiet], None);
+
+    let send = |level: Level, target: &'static str| {
+      let md = mock_metadata(level, target);
+      processor.process_event(LogEvent::new(level, target, "test", None), &md);
+    };
+    let counts = || {
+      (
+        drain_count(&rx_console),
+        drain_count(&rx_a),
+        drain_count(&rx_b),
+        drain_count(&rx_quiet),
+      )
+    };
+
+    // console is listed by both "a" and root: one copy.
+    send(Level::INFO, "a::x");
+    assert_eq!(counts(), (1, 1, 0, 0));
+    send(Level::DEBUG, "a::x");
+    assert_eq!(counts(), (1, 1, 0, 0));
+    send(Level::TRACE, "a::x");
+    assert_eq!(counts(), (0, 0, 0, 0));
+
+    send(Level::TRACE, "a::b::x");
+    assert_eq!(counts(), (1, 1, 1, 0));
+
+    // Non-additive: root's appender never sees it, at any level.
+    send(Level::DEBUG, "quiet::x");
+    assert_eq!(counts(), (0, 0, 0, 1));
+    send(Level::ERROR, "quiet::x");
+    assert_eq!(counts(), (0, 0, 0, 1));
+
+    send(Level::DEBUG, "other");
+    assert_eq!(counts(), (0, 0, 0, 0));
   }
 
   #[test]
