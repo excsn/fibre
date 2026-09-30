@@ -111,6 +111,10 @@ where
 
   /// Asynchronously fetches a value from the cache, returning a clone of the `Arc`.
   ///
+  /// Expiry is judged on the janitor's clock, refreshed once per tick, so an
+  /// entry can still be returned for up to one tick past its deadline. See
+  /// `CacheBuilder::janitor_tick_interval`.
+  ///
   /// This operation is fast and does not block other readers. It will increment
   /// the reference count of the value's `Arc`.
   ///

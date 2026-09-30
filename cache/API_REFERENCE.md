@@ -90,9 +90,11 @@ The fluent builder for creating `Cache` and `AsyncCache` instances.
 *   `pub fn shards(mut self, shards: usize) -> Self`
     *   Sets the number of concurrent shards. The value is rounded up to the next power of two. Defaults to a value based on CPU count.
 *   `pub fn time_to_live(mut self, duration: Duration) -> Self`
-    *   Sets a default time-to-live (TTL) for all entries in the cache.
+    *   Sets a default time-to-live (TTL) for all entries in the cache. Reads check expiry against a clock the janitor refreshes once per tick, 1 s by default, so `get`, `fetch` and `peek` can return an entry for up to one tick after its TTL or TTI deadline. `iter()` and snapshots use the exact clock. `janitor_tick_interval` tightens the bound.
 *   `pub fn time_to_idle(mut self, duration: Duration) -> Self`
-    *   Sets a default time-to-idle (TTI) for all entries. An entry is evicted if it's not accessed for this duration.
+    *   Sets a default time-to-idle (TTI) for all entries. An entry is evicted if it's not accessed for this duration. The same one-tick read bound as `time_to_live` applies.
+*   `pub fn janitor_tick_interval(mut self, duration: Duration) -> Self`
+    *   Sets how often the janitor wakes, refreshes the clock reads check expiry against and runs cleanup. Defaults to 1 s. A shorter tick makes reads see TTL and TTI deadlines sooner at the cost of more frequent background work.
 *   `pub fn stale_while_revalidate(mut self, duration: Duration) -> Self`
     *   Sets a duration after an entry's TTL expires during which the cache can serve the stale value while asynchronously refreshing it in the background. Requires a `loader` to be configured.
 *   `pub fn eviction_listener<Listener>(mut self, listener: Listener) -> Self`
@@ -156,7 +158,7 @@ A handle to the cache for synchronous operations.
     *   *where `F: FnOnce(&V) -> R`*
     *   Looks up an entry and, if found, applies a closure to the value without cloning it. This is the most efficient read operation.
 *   `pub fn fetch<Q>(&self, key: &Q) -> Option<Arc<V>>`
-    *   Retrieves a clone of the `Arc` pointing to the value if the key is found and not expired.
+    *   Retrieves a clone of the `Arc` pointing to the value if the key is found and not expired. Expiry is judged on the janitor's clock, so an entry can still be returned for up to one janitor tick past its deadline; see `time_to_live`.
 *   `pub fn peek<Q>(&self, key: &Q) -> Option<Arc<V>>`
     *   Retrieves a value without updating its recency or access time (i.e., does not affect LRU, TTI, etc.).
 *   `pub fn fetch_with(&self, key: &K) -> Arc<V>`

@@ -108,6 +108,11 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
   }
 
   /// Sets a time-to-live (TTL) for all entries in the cache.
+  ///
+  /// Reads check expiry against a clock the janitor refreshes once per tick
+  /// (1 s by default), so `get`, `fetch` and `peek` can return an entry for up
+  /// to one tick past its deadline. `iter()` and snapshots use the exact clock.
+  /// See [`janitor_tick_interval`](Self::janitor_tick_interval).
   pub fn time_to_live(mut self, duration: Duration) -> Self {
     self.time_to_live = Some(duration);
     self
@@ -191,9 +196,12 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
     self
   }
 
-  /// Sets the tick interval for the background cleanup task (janitor).
-  /// (Primarily for testing purposes).
-  #[doc(hidden)] // Hide from public docs unless we want to make it a first-class feature
+  /// Sets how often the janitor wakes to refresh the clock reads check expiry
+  /// against and to run cleanup. Defaults to 1 s.
+  ///
+  /// Reads can return an entry for up to one tick past its TTL or TTI
+  /// deadline. A shorter tick tightens that bound at the cost of more frequent
+  /// background work.
   pub fn janitor_tick_interval(mut self, duration: Duration) -> Self {
     self.janitor_tick_interval = Some(duration);
     self

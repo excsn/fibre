@@ -27,7 +27,7 @@ This guide provides a detailed overview of `fibre_cache`'s features, core concep
 *   **`Cache` and `AsyncCache` Handles**: These are the two primary structs for interacting with the cache. `Cache` provides a synchronous, blocking API, while `AsyncCache` provides a non-blocking, `async` API. They are lightweight handles that can be cloned cheaply and share the same underlying cache instance.
 *   **Sharding**: To achieve high concurrency, the cache's data is partitioned across multiple shards. Each shard is managed by its own lock, minimizing contention when different keys are accessed by different threads.
 *   **Capacity and Cost**: A `fibre_cache` instance can be "bounded" by a `capacity`. Each item inserted into the cache has a `cost` (a `u64` value). The cache is considered over capacity when the sum of all item costs exceeds the configured capacity. For simple cases where all items are the same size, a cost of `1` per item is common.
-*   **Background Janitor**: A dedicated background thread, the "janitor," is responsible for all cleanup tasks. This includes removing items that have expired due to Time-to-Live (TTL) or Time-to-Idle (TTI), and evicting items when the cache is over capacity. This design ensures that user-facing operations like `get` and `insert` remain fast and predictable.
+*   **Background Janitor**: A dedicated background thread, the "janitor," is responsible for all cleanup tasks. This includes removing items that have expired due to Time-to-Live (TTL) or Time-to-Idle (TTI), and evicting items when the cache is over capacity. This design ensures that user-facing operations like `get` and `insert` remain fast and predictable. Reads check expiry against a clock the janitor refreshes once per tick, 1 s by default, so `get`, `fetch` and `peek` can return an entry for up to one tick after its TTL or TTI deadline. `iter()` and snapshots use the exact clock. `janitor_tick_interval` tightens the bound.
 *   **Eviction Policies**: The logic for deciding which items to evict when the cache is full is determined by a `CachePolicy`. The library provides a wide range of modern and classic policies and allows for custom implementations. For bounded caches, the default is `TinyLfuPolicy`, a high-performance, scan-resistant policy suitable for most workloads.
 
 ## API Patterns
@@ -186,6 +186,7 @@ All caches must be configured and created via the `CacheBuilder`. It provides a 
 *   `.unbounded()`: Creates a cache with no capacity limit. This is the default.
 *   `.time_to_live(Duration)`: Sets a global Time-to-Live for all items.
 *   `.time_to_idle(Duration)`: Sets a global Time-to-Idle for all items.
+*   `.janitor_tick_interval(Duration)`: Sets how often the janitor wakes, defaulting to 1 s. Reads can return an entry for up to one tick past its TTL or TTI deadline, so a shorter tick tightens that bound at the cost of more background work.
 *   `.stale_while_revalidate(Duration)`: Configures a grace period after TTL for serving stale data while refreshing it in the background. Requires a loader.
 *   `.cache_policy_factory(impl Fn)`: Sets a custom eviction policy via a factory function. See [Eviction Policies](#eviction-policies).
 *   `.null_policy()`: Sets the eviction policy to the no-op `NullPolicy`, which never evicts. Shorthand for `.cache_policy_factory(|| Box::new(NullPolicy))`.
@@ -209,7 +210,7 @@ These are the primary handles for interacting with the cache. Their APIs are lar
     *   The most efficient read method. Looks up an entry and, if found, applies the closure `f` to the value *without* cloning the value's `Arc`. The closure is executed while a read lock is held on the shard, so it should be fast.
     *   **Note**: This method uses a generic `&Q` key, allowing you to use borrowed types for lookups (e.g., `&str` for a `String` key).
 *   `fetch<Q>(&self, key: &Q) -> Option<Arc<V>>`
-    *   Retrieves a clone of the `Arc` containing the value if the key exists and is not expired. Also uses the `&Q` pattern for efficient lookups.
+    *   Retrieves a clone of the `Arc` containing the value if the key exists and is not expired. Expiry is judged on the janitor's clock, so an entry can still be returned for up to one janitor tick past its deadline. Also uses the `&Q` pattern for efficient lookups.
 *   `peek<Q>(&self, key: &Q) -> Option<Arc<V>>`
     *   Retrieves a value without updating its recency or access time. This is useful for inspecting the cache without affecting the eviction policy's state (e.g., LRU order). Also uses the `&Q` pattern.
 *   `insert(&self, key: K, value: V, cost: u64)`
