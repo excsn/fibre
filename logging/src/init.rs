@@ -105,6 +105,17 @@ pub fn layer_from_file(config_path: &Path) -> Result<(DispatchLayer, InitResult)
   build_from_file(config_path, false)
 }
 
+/// The tokio-console layer, with its gRPC server started. `init_from_file`
+/// attaches it itself; a caller composing `layer_from_file` into its own
+/// registry adds this beside it to keep tokio-console.
+#[cfg(feature = "tokio-console")]
+pub fn console_layer<S>() -> impl tracing_subscriber::Layer<S> + Send + Sync + 'static
+where
+  S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+  console_subscriber::spawn()
+}
+
 /// The layer, composed into a registry and set as the global subscriber. What
 /// an application that needs nothing else calls.
 pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
@@ -333,7 +344,7 @@ fn build_from_file(config_path: &Path, set_global: bool) -> Result<(DispatchLaye
     #[cfg(feature = "tokio-console")]
     let subscriber = tracing_subscriber::registry()
       .with(dispatch_layer.clone())
-      .with(console_subscriber::spawn()); // Attaches the console layer and starts its server
+      .with(console_layer());
 
     #[cfg(not(feature = "tokio-console"))]
     let subscriber = tracing_subscriber::registry().with(dispatch_layer.clone());

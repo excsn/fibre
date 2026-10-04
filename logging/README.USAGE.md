@@ -463,6 +463,16 @@ fn main() {
 }
 ```
 
+If you compose `layer_from_file` into your own registry instead, add the console layer yourself:
+
+```rust
+let (logging, _guard) = fibre_logging::init::layer_from_file(Path::new("fibre_logging.yaml"))?;
+tracing_subscriber::registry()
+    .with(logging)
+    .with(fibre_logging::init::console_layer())
+    .init();
+```
+
 #### Step 4 - Install and run `tokio-console`
 
 ```bash

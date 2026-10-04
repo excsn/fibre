@@ -48,6 +48,10 @@ Contains the primary public functions for initializing the library.
     *   Finds a configuration file in the current directory. The environment comes from the provided suffix, then `FIBRE_ENV`, then `APP_ENV`. It looks for `fibre_logging.{env}.yaml` first and falls back to `fibre_logging.yaml` when the environment-specific file does not exist, so a missing `fibre_logging.prod.yaml` silently loads the plain file. It returns `Error::ConfigNotFound` only when neither exists.
 *   `pub fn init_from_file(config_path: &std::path::Path) -> Result<InitResult>`
     *   Initializes the log system from a specific configuration file path. This is the main entry point for the library.
+*   `pub fn layer_from_file(config_path: &std::path::Path) -> Result<(DispatchLayer, InitResult)>`
+    *   Builds the same pipeline as `init_from_file` and installs the `log` bridge, but sets no global subscriber. The caller composes the returned layer into its own registry beside other layers and sets that as the subscriber. The `InitResult` must be held, since its `Drop` flushes the appenders.
+*   `pub fn console_layer<S>() -> impl tracing_subscriber::Layer<S> + Send + Sync + 'static` where `S: tracing::Subscriber + for<'a> LookupSpan<'a>`, with the `tokio-console` feature
+    *   The tokio-console layer, with its gRPC server started. `init_from_file` attaches it itself; a caller composing `layer_from_file` adds it to keep tokio-console.
 
 ### 3. Core Data Types
 
