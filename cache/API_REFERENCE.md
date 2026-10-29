@@ -48,8 +48,8 @@ Both handles are lightweight wrappers around a shared cache core, and converting
 
 *   **Builder Pattern**: Caches are created exclusively through the `CacheBuilder`, which provides a fluent API for configuration.
 *   **Sharded Concurrency**: The cache is internally partitioned into multiple "shards," each with its own lock, eviction policy, and timer wheel. This design minimizes lock contention and allows for high-throughput concurrent access.
-*   **Background Maintenance**: A background "janitor" thread is responsible for all periodic cleanup, including enforcing capacity and expiring items based on Time-to-Live (TTL) or Time-to-Idle (TTI). This keeps user-facing operations fast and predictable.
-*   **Pluggable Policies**: Eviction logic is abstracted via the `CachePolicy` trait, with a sensible default (`TinyLfuPolicy`) for bounded caches.
+*   **Capacity at insert**: An insert evicts what it must before it returns, so the cache is never over capacity between operations. A background "janitor" thread expires items by Time-to-Live (TTL) or Time-to-Idle (TTI).
+*   **Pluggable Policies**: Eviction logic is abstracted via the `CachePolicy` trait. A bounded cache runs S3-FIFO by default, TinyLFU with `tinylfu()` or any policy given through `cache_policy_factory`.
 
 #### Pervasive Patterns
 
@@ -88,7 +88,7 @@ The fluent builder for creating `Cache` and `AsyncCache` instances.
 *   `pub fn unbounded(mut self) -> Self`
     *   Sets the cache to have "unbounded" capacity (`u64::MAX`). This is the default.
 *   `pub fn shards(mut self, shards: usize) -> Self`
-    *   Sets the number of concurrent shards. The value is rounded up to the next power of two. Defaults to a value based on CPU count.
+    *   Sets the number of concurrent shards. The value is rounded up to the next power of two. Defaults to eight times the CPU count, lowered for a bounded cache so that each shard holds at least `MIN_COST_PER_SHARD` (64) cost units; calling this method disables that derivation.
 *   `pub fn time_to_live(mut self, duration: Duration) -> Self`
     *   Sets a default time-to-live (TTL) for all entries in the cache. Reads check expiry against a clock the janitor refreshes once per tick, 1 s by default, so `get`, `fetch` and `peek` can return an entry for up to one tick after its TTL or TTI deadline. `iter()` and snapshots use the exact clock. `janitor_tick_interval` tightens the bound.
 *   `pub fn time_to_idle(mut self, duration: Duration) -> Self`
@@ -102,7 +102,11 @@ The fluent builder for creating `Cache` and `AsyncCache` instances.
     *   Registers a listener to receive notifications when entries are evicted. The listener is called on a dedicated background task.
 *   `pub fn cache_policy_factory<F>(mut self, factory: F) -> Self`
     *   *where `F: Fn() -> Box<dyn CachePolicy<K, V>> + Send + Sync + 'static`*
-    *   Sets a custom eviction policy via a factory function that is called for each shard. Defaults to `TinyLfuPolicy` for bounded caches and `NullPolicy` for unbounded ones.
+    *   Sets a custom eviction policy via a factory function that is called for each shard. Without a factory a bounded cache runs S3-FIFO (TinyLFU after `tinylfu()`) and an unbounded cache runs `NullPolicy`.
+*   `pub fn s3fifo(self) -> Self`
+    *   Sets the eviction policy to S3-FIFO, run inside each shard. This is the default for a bounded cache. Makes the same decisions as `S3FifoPolicy` through `cache_policy_factory`. Replaces a factory or `tinylfu()` set before it.
+*   `pub fn tinylfu(self) -> Self`
+    *   Sets the eviction policy to W-TinyLFU, run inside each shard. Makes the same decisions as `TinyLfuPolicy` through `cache_policy_factory`. Replaces a factory or `s3fifo()` set before it.
 *   `pub fn null_policy(self) -> Self`
     *   Sets the eviction policy to the no-op `NullPolicy`, which never evicts. Shorthand for `cache_policy_factory(|| Box::new(NullPolicy))`.
 *   `pub fn loader(mut self, f: impl Fn(K) -> (V, u64) + Send + Sync + 'static) -> Self`
@@ -197,7 +201,7 @@ A handle to the cache for synchronous operations.
 *   `pub fn iter_snapshot(&self) -> SnapshotIter<'_, K, V, H>`
     *   Returns a semi-consistent iterator that snapshots keys one shard at a time. If `maintenance_on_introspection` is enabled, pending read-access events are flushed first.
 *   `pub fn run_maintenance(&self)`
-    *   Forces a complete, blocking maintenance pass across all shards. Guarantees that all pending write admissions, read accesses, TTL/TTI expirations, and capacity evictions are processed before returning. Unlike opportunistic maintenance (which is probabilistic and skippable), this method is deterministic. Primarily useful for testing and manual cache management.
+    *   Forces a blocking maintenance pass across all shards: every pending read-access event reaches the policies and TTL/TTI expiration runs. Capacity needs no pass, since an insert evicts before it returns. Primarily useful for testing and manual cache management.
 *   `pub fn multiget<I, Q>(&self, keys: I) -> HashMap<K, Arc<V>>`
     *   *(feature: `bulk`)*
     *   Retrieves multiple values from the cache, parallelizing lookups across shards.
@@ -297,7 +301,8 @@ A trait for receiving notifications when entries are evicted from the cache.
 
 The core trait for implementing an eviction policy. The following policies are provided:
 
-*   **`TinyLfuPolicy`**: (Default for bounded caches) A sophisticated policy that protects frequently used items from being evicted by infrequently used items, making it scan-resistant. It combines an LRU window with an SLRU main cache.
+*   **`S3FifoPolicy`**: (Default for bounded caches) A small and a main FIFO queue with a ghost set of recently evicted keys. Scan-resistant and cheaper per operation than TinyLFU.
+*   **`TinyLfuPolicy`**: A sophisticated policy that protects frequently used items from being evicted by infrequently used items, making it scan-resistant. It combines an LRU window with an SLRU main cache.
 *   **`ArcPolicy`**: Adaptive Replacement Cache. A sophisticated policy that balances between recency (LRU) and frequency (LFU) to offer high hit rates under mixed workloads.
 *   **`SlruPolicy`**: Segmented LRU. Divides the cache into probationary and protected segments to provide better scan resistance than plain LRU.
 *   **`SievePolicy`**: A very simple and efficient eviction algorithm that provides good scan resistance with low overhead.
@@ -346,7 +351,7 @@ A point-in-time, public-facing snapshot of the cache's performance metrics. This
 *   `pub invalidations: u64`
     *   The total number of items that have been manually removed via `invalidate` or `multi_invalidate`.
 *   `pub evicted_by_capacity: u64`
-    *   The number of items evicted by the janitor or opportunistic maintenance because the cache's total cost exceeded its capacity.
+    *   The number of items evicted by an insert because the cache's total cost would otherwise have exceeded its capacity.
 *   `pub evicted_by_ttl: u64`
     *   The number of items evicted because their Time-To-Live (TTL) expired.
 *   `pub evicted_by_tti: u64`

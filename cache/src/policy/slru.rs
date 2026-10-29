@@ -29,7 +29,7 @@ impl<K: Eq + Hash + Clone> SlruState<K> {
   fn maintain_capacities(&mut self, prot_capacity: u64) {
     while self.protected.current_total_cost() > prot_capacity {
       if let Some((key, cost)) = self.protected.pop_back() {
-        self.probationary.push_front(key, cost);
+        self.probationary.push_new(key, cost);
       } else {
         break;
       }
@@ -47,23 +47,28 @@ impl<K: Eq + Hash + Clone> SlruState<K> {
   }
 
   pub(crate) fn admit_internal(&mut self, key: K, cost: u64) {
-    if !self.protected.contains(&key) && !self.probationary.contains(&key) {
-      self.probationary.push_front(key, cost);
-    } else if self.probationary.contains(&key) {
+    // If already in protected, on_access handles it.
+    if !self.protected.contains(&key) {
       self.probationary.push_front(key, cost);
     }
-    // If already in protected, on_access handles it.
   }
 
   pub(crate) fn access_internal(&mut self, key: &K, cost: u64, prot_capacity: u64) {
-    if self.protected.contains(key) {
-      self.protected.push_front(key.clone(), cost);
-      return;
+    self.touch(key, cost, prot_capacity);
+  }
+
+  /// Applies an access to `key` and returns whether it was in either segment.
+  pub(crate) fn touch(&mut self, key: &K, cost: u64, prot_capacity: u64) -> bool {
+    if let Some(&index) = self.protected.lookup.get(key) {
+      self.protected.touch_index(index, cost);
+      return true;
     }
     if self.probationary.remove(key).is_some() {
-      self.protected.push_front(key.clone(), cost);
+      self.protected.push_new(key.clone(), cost);
       self.maintain_capacities(prot_capacity);
+      return true;
     }
+    false
   }
 
   pub(crate) fn evict_items(&mut self, mut cost_to_free: u64, prot_capacity: u64) -> (Vec<K>, u64) {
@@ -125,13 +130,6 @@ impl<K: Eq + Hash + Clone> SlruPolicy<K> {
     self.state.lock().peek_lru()
   }
 
-  pub(crate) fn admit_internal(&self, key: K, cost: u64) {
-    self.state.lock().admit_internal(key, cost);
-  }
-
-  pub(crate) fn access_internal(&self, key: &K, cost: u64) {
-    self.state.lock().access_internal(key, cost, self.prot_capacity);
-  }
 }
 
 impl<K, V> CachePolicy<K, V> for SlruPolicy<K>

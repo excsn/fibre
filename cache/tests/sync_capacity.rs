@@ -4,7 +4,7 @@ use std::time::Duration;
 const JANITOR_TICK: Duration = Duration::from_millis(50);
 
 #[test]
-fn test_sync_janitor_evicts_on_capacity() {
+fn test_sync_insert_evicts_on_capacity() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(10)
     .shards(1)
@@ -14,18 +14,10 @@ fn test_sync_janitor_evicts_on_capacity() {
     .build()
     .unwrap();
 
-  // 1. Fill the cache up to its capacity + 1.
-  // The insert calls will succeed and the cache will be temporarily over capacity.
   for i in 0..11 {
     cache.insert(i, i, 1);
   }
-  assert_eq!(cache.metrics().current_cost, 11);
-
-  // 2. Force a maintenance pass to perform eviction.
-  cache.run_maintenance();
-
-  // 3. Assert the cache is back to its target capacity.
-  assert_eq!(cache.metrics().current_cost, 10);
+  assert_eq!(cache.metrics().current_cost, 10, "the eleventh insert evicts before it returns");
   assert!(
     cache.fetch(&0).is_none(),
     "Key 0 should have been evicted"
@@ -35,7 +27,7 @@ fn test_sync_janitor_evicts_on_capacity() {
 }
 
 #[test]
-fn test_sync_insert_is_non_blocking_and_janitor_cleans_up() {
+fn test_sync_insert_evicts_what_it_cannot_fit() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(5)
     .shards(1)
@@ -49,40 +41,18 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up() {
   cache.insert(1, 1, 5);
   assert_eq!(cache.metrics().current_cost, 5);
 
-  // 2. This insert should complete immediately and push the cache over capacity.
-  // There is no spawned thread needed as insert is non-blocking.
+  // 2. An item of cost 10 cannot fit in a cache of capacity 5. LRU evicts
+  // item 1 (cost 5) and then the new item itself (cost 10) before returning.
   cache.insert(2, 2, 10);
 
-  // 3. Assert that the cache is now temporarily over its capacity.
-  assert_eq!(
-    cache.metrics().current_cost,
-    15,
-    "Cache should be temporarily over capacity"
-  );
-  assert!(cache.fetch(&1).is_some());
-  assert!(cache.fetch(&2).is_some());
-
-  // 4. Force maintenance to evict. LRU will evict item 1 (cost 5) then item 2 (cost 10).
-  cache.run_maintenance();
-
-  // 5. Assert the final state.
-  let final_cost = cache.metrics().current_cost;
-  assert!(
-    final_cost <= 5,
-    "run_maintenance should bring cost at or below capacity. Final cost: {}",
-    final_cost
-  );
-
-  let final_evictions = cache.metrics().evicted_by_capacity;
-  assert!(
-    final_evictions > 0,
-    "At least one item should have been evicted"
-  );
+  assert_eq!(cache.metrics().current_cost, 0);
+  assert!(cache.fetch(&1).is_none());
+  assert!(cache.fetch(&2).is_none());
+  assert_eq!(cache.metrics().evicted_by_capacity, 2);
 }
 
 #[test]
-fn test_sync_janitor_evicts_on_capacity_with_lru() {
-  // Renamed slightly for clarity if we add more LRU tests
+fn test_sync_insert_evicts_on_capacity_with_lru() {
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(10)
     .shards(1)
@@ -99,18 +69,8 @@ fn test_sync_janitor_evicts_on_capacity_with_lru() {
   }
   assert_eq!(
     cache.metrics().current_cost,
-    11,
-    "Cost should be 11 after inserting 11 items"
-  );
-
-  // 2. Force a maintenance pass to perform eviction.
-  cache.run_maintenance();
-
-  // 3. Assert the cache is back to its target capacity.
-  assert_eq!(
-    cache.metrics().current_cost,
     10,
-    "Cost should be 10 (capacity) after maintenance"
+    "Cost should be 10 (capacity) after inserting 11 items"
   );
   assert!(
     cache.fetch(&0).is_none(), // With LRU, item 0 (first in) should be evicted
@@ -128,12 +88,12 @@ fn test_sync_janitor_evicts_on_capacity_with_lru() {
 }
 
 #[test]
-fn test_sync_janitor_evicts_on_capacity_with_default_tinylfu() {
+fn test_sync_insert_evicts_on_capacity_with_tinylfu() {
   let cache_capacity = 3;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(cache_capacity)
     .shards(1)
-    // No explicit policy, should default to TinyLfu
+    .tinylfu()
     .janitor_tick_interval(JANITOR_TICK)
     .maintenance_chance(1)
     .build()
@@ -154,20 +114,15 @@ fn test_sync_janitor_evicts_on_capacity_with_default_tinylfu() {
   cache.fetch(&2);
   cache.fetch(&3);
 
-  // 2. Cause an overflow by replacing an item with a higher-cost one.
-  // This is a more reliable way to create an overflow state for the janitor with TinyLFU.
-  // current_cost will become 3 (initial) - 1 (old cost of item 1) + 2 (new cost of item 1) = 4.
+  // 2. Replacing item 1 with a cost-2 version takes the cache to 4, so the
+  // insert evicts one cost-1 item before returning.
+  let evictions_before = cache.metrics().evicted_by_capacity;
   cache.insert(1, 11, 2);
 
-  let evictions_before = cache.metrics().evicted_by_capacity;
-  cache.run_maintenance();
-
-  // 4. Assert current_cost is back to capacity.
-  // run_maintenance evicted one item of cost 1, bringing the total cost from 4 down to 3.
   assert_eq!(
     cache.metrics().current_cost,
     cache_capacity,
-    "run_maintenance should bring cost back to capacity"
+    "the insert should bring cost back to capacity"
   );
 
   let evictions_after = cache.metrics().evicted_by_capacity;
@@ -239,7 +194,7 @@ fn test_sync_no_eviction_if_at_capacity() {
 }
 
 #[test]
-fn test_sync_insert_is_non_blocking_and_janitor_cleans_up_large_overflow() {
+fn test_sync_insert_evicts_a_large_overflow() {
   let cache_capacity = 5;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(cache_capacity)
@@ -254,29 +209,15 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up_large_overflow() {
   cache.insert(1, 1, 1); // Policy now knows about item 1.
   assert_eq!(cache.metrics().current_cost, 1);
 
-  // 2. Insert a large item that significantly overflows the cache.
-  // Because maintenance_chance is 1, this call also ensures the policy
-  // is updated with item 2.
+  // 2. An item of cost 10 overflows a capacity of 5 even alone, so the insert
+  // evicts item 1 and then the new item before returning.
+  let evictions_before = cache.metrics().evicted_by_capacity;
   cache.insert(2, 2, 10);
 
-  // 3. Assert that the cache is now temporarily over its capacity.
-  assert_eq!(
-    cache.metrics().current_cost,
-    11, // 1 (for key 1) + 10 (for key 2)
-    "Cache should be temporarily over capacity"
-  );
-  assert!(cache.fetch(&1).is_some());
-  assert!(cache.fetch(&2).is_some());
-  let evictions_before = cache.metrics().evicted_by_capacity;
-
-  // 4. Force a maintenance pass to perform eviction.
-  cache.run_maintenance();
-
-  // 5. Assert the final state.
   let final_cost = cache.metrics().current_cost;
   assert!(
     final_cost <= cache_capacity,
-    "run_maintenance should bring cost at or below capacity. Final cost: {}",
+    "the insert should leave cost at or below capacity. Final cost: {}",
     final_cost
   );
 
@@ -285,4 +226,15 @@ fn test_sync_insert_is_non_blocking_and_janitor_cleans_up_large_overflow() {
     evictions_after > evictions_before,
     "At least one item should have been evicted"
   );
+}
+
+#[test]
+fn default_shards_hold_small_capacity_exactly() {
+  let cache = CacheBuilder::<u64, u64>::new().capacity(100).build().unwrap();
+  for i in 0..250 {
+    cache.insert(i, i, 1);
+  }
+  cache.run_maintenance();
+  assert_eq!(cache.iter().count(), 100);
+  assert_eq!(cache.metrics().current_cost, 100);
 }

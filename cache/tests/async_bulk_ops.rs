@@ -108,7 +108,6 @@ async fn test_async_multi_remove() {
 #[cfg(feature = "bulk")]
 async fn test_async_multi_insert_triggers_eviction() {
   use futures_util::StreamExt;
-use tokio::time;
 
   let cache = new_test_cache(10);
 
@@ -116,37 +115,17 @@ use tokio::time;
   let items: Vec<_> = (0..15).map(|i| (i, i.to_string(), 1)).collect();
   cache.multi_insert(items).await;
 
-  // The cache is temporarily over capacity.
-  assert_eq!(cache.metrics().current_cost, 15);
-
-  let deadline = time::Instant::now() + Duration::from_secs(2);
-  let mut final_cost = 0;
-
-  loop {
-    final_cost = cache.metrics().current_cost;
-    if final_cost <= 10 {
-      break; // Success! Cost is at or below capacity.
-    }
-    if time::Instant::now() > deadline {
-      panic!(
-        "Cache cost did not converge to capacity in time. Final cost: {}",
-        final_cost
-      );
-    }
-    time::sleep(Duration::from_millis(50)).await;
-  }
-
+  // Each shard evicts as it goes over its share, so the batch returns at
+  // or below capacity.
+  let final_cost = cache.metrics().current_cost;
   assert!(
     final_cost <= 10,
-    "Janitor should bring cost to at or below capacity. Final cost: {}",
+    "multi_insert should leave cost at or below capacity. Final cost: {}",
     final_cost
   );
-
-  // The eviction count is harder to assert precisely, as it depends on the overshoot.
-  // A better assertion is on the number of items remaining.
   assert!(
     cache.metrics().evicted_by_capacity >= 5,
-    "Janitor should evict at least 5 items"
+    "multi_insert should evict at least 5 items"
   );
 
   let mut total_keys = 0;

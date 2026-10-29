@@ -12,12 +12,6 @@ pub(crate) fn instant_to_duration(instant: Instant) -> Duration {
   instant.saturating_duration_since(*CACHE_EPOCH)
 }
 
-/// Converts a `Duration` from the cache's epoch back into an `Instant`.
-#[inline]
-pub(crate) fn duration_to_instant(duration: Duration) -> Instant {
-  *CACHE_EPOCH + duration
-}
-
 /// A helper to get the current time as a `Duration` since the epoch.
 #[inline]
 pub(crate) fn now_duration() -> Duration {

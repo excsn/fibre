@@ -3,15 +3,14 @@ use crate::entry_api::{OccupiedEntry, VacantEntry};
 use crate::error::ComputeResult;
 use crate::iter::{DEFAULT_ITER_BATCH_SIZE, Iter, SnapshotIter};
 use crate::loader::LoadFuture;
-use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
-use crate::task::janitor::COOPERATIVE_MAINTENANCE_DRAIN_LIMIT;
 use crate::{AsyncCache, Entry, EvictionReason, MetricsSnapshot, time};
 
 use std::borrow::Borrow;
 use std::cell::Cell;
 use std::hash::{BuildHasher, Hash};
 use std::sync::Arc;
+use crate::store::DeferredRead;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
@@ -86,20 +85,24 @@ where
     let shard = &self.shared.store.shards[shard_index];
     let mut result = None;
 
+    let mut deferred = None;
     {
       let guard = shard.map.read();
-      if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
+      if let Some((found_key, entry_in_guard)) = guard.get_key_value_hashed(key, hash) {
         if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
           result = Some(f(entry_in_guard.value().as_ref()));
-          self.on_hit(found_key, hash, entry_in_guard, shard_index);
+          deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index, &guard);
         }
       }
     }
+    if let Some(read) = deferred {
+      shard.map.write().apply_deferred(read);
+    }
 
     if result.is_some() {
-      self.shared.metrics.record_hits(shard_index, 1);
+      self.shared.metrics.record_hits(1);
     } else {
-      self.shared.metrics.record_misses(shard_index, 1);
+      self.shared.metrics.record_misses(1);
     }
 
     result
@@ -126,20 +129,24 @@ where
     let shard = &self.shared.store.shards[shard_index];
     let mut value = None;
 
+    let mut deferred = None;
     {
       let guard = shard.map.read();
-      if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
+      if let Some((found_key, entry_in_guard)) = guard.get_key_value_hashed(key, hash) {
         if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
-          self.on_hit(found_key, hash, entry_in_guard, shard_index);
+          deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index, &guard);
           value = Some(entry_in_guard.value());
         }
       }
     }
+    if let Some(read) = deferred {
+      shard.map.write().apply_deferred(read);
+    }
 
     if value.is_some() {
-      self.shared.metrics.record_hits(shard_index, 1);
+      self.shared.metrics.record_hits(1);
     } else {
-      self.shared.metrics.record_misses(shard_index, 1);
+      self.shared.metrics.record_misses(1);
     }
 
     value
@@ -215,28 +222,23 @@ where
       self.shared.time_to_idle,
     );
 
-    let shard = self.shared.store.get_shard(&key);
+    let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+    let shards = &self.shared.store.shards;
+    let shard_index = key_hash as usize & (shards.len() - 1);
+    let shard = &*shards[shard_index];
 
-    // Schedule timers on this shard's specific TimerWheel.
-    if let Some(wheel) = &shard.timer_wheel {
-      let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
-      let ttl_handle = self
-        .shared
-        .time_to_live
-        .map(|ttl| wheel.schedule(key_hash, ttl));
-      let tti_handle = None;
-      new_cache_entry.set_timer_handles(key_hash, ttl_handle, tti_handle);
-    }
-
-    let old_entry: Option<Arc<CacheEntry<V>>>;
+    let old_entry: Option<CacheEntry<V>>;
     {
       let mut guard = shard.map.write();
-      old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
-    }
-
-    if let Some(entry) = old_entry {
-      // Cancel timers on this shard's specific TimerWheel.
       if let Some(wheel) = &shard.timer_wheel {
+        let ttl_handle = self
+          .shared
+          .time_to_live
+          .map(|ttl| wheel.schedule(key_hash, ttl));
+        new_cache_entry.set_timer_handles(key_hash, ttl_handle, None);
+      }
+      old_entry = guard.insert_hashed(key, new_cache_entry, key_hash);
+      if let (Some(wheel), Some(entry)) = (&shard.timer_wheel, &old_entry) {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
         }
@@ -244,36 +246,12 @@ where
           wheel.cancel(handle);
         }
       }
-      let old_cost = entry.cost();
-      self
-        .shared
-        .metrics
-        .current_cost
-        .fetch_sub(old_cost, Ordering::Relaxed);
     }
 
-    let _ = shard
-      .event_buffer_tx
-      .try_send(AccessEvent::Write(key.clone(), cost));
 
-    self.shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .keys_admitted
-      .fetch_add(1, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .current_cost
-      .fetch_add(cost, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .total_cost_added
-      .fetch_add(cost, Ordering::Relaxed);
 
-    self._run_opportunistic_maintenance(&key, shard);
+
+    self._run_opportunistic_maintenance(shard_index, shard);
   }
 
   /// Inserts a key-value pair into the cache with a specific cost and Time-to-Live (TTL).
@@ -290,24 +268,20 @@ where
     let mut new_cache_entry =
       CacheEntry::new_with_custom_expiry(value, cost, expires_at, self.shared.time_to_idle);
 
-    let shard = self.shared.store.get_shard(&key);
+    let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+    let shards = &self.shared.store.shards;
+    let shard_index = key_hash as usize & (shards.len() - 1);
+    let shard = &*shards[shard_index];
 
-    // Schedule this specific TTL on this shard's timer wheel.
-    if let Some(wheel) = &shard.timer_wheel {
-      let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
-      let ttl_handle = Some(wheel.schedule(key_hash, ttl));
-      let tti_handle = None;
-      new_cache_entry.set_timer_handles(key_hash, ttl_handle, tti_handle);
-    }
-
-    let old_entry: Option<Arc<CacheEntry<V>>>;
+    let old_entry: Option<CacheEntry<V>>;
     {
       let mut guard = shard.map.write();
-      old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
-    }
-
-    if let Some(entry) = old_entry {
       if let Some(wheel) = &shard.timer_wheel {
+        let ttl_handle = Some(wheel.schedule(key_hash, ttl));
+        new_cache_entry.set_timer_handles(key_hash, ttl_handle, None);
+      }
+      old_entry = guard.insert_hashed(key, new_cache_entry, key_hash);
+      if let (Some(wheel), Some(entry)) = (&shard.timer_wheel, &old_entry) {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
         }
@@ -315,36 +289,12 @@ where
           wheel.cancel(handle);
         }
       }
-      let old_cost = entry.cost();
-      self
-        .shared
-        .metrics
-        .current_cost
-        .fetch_sub(old_cost, Ordering::Relaxed);
     }
 
-    let _ = shard
-      .event_buffer_tx
-      .try_send(AccessEvent::Write(key.clone(), cost));
 
-    self.shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .keys_admitted
-      .fetch_add(1, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .current_cost
-      .fetch_add(cost, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .total_cost_added
-      .fetch_add(cost, Ordering::Relaxed);
 
-    self._run_opportunistic_maintenance(&key, shard);
+
+    self._run_opportunistic_maintenance(shard_index, shard);
   }
 
   /// Atomically computes a new value for a key, waiting if necessary.
@@ -413,19 +363,12 @@ where
     let shard = self.shared.store.get_shard(key);
     let mut guard = shard.map.write();
 
-    // 1. Get mutable access to the `Arc<CacheEntry<V>>` in the map.
-    if let Some(entry_arc) = guard.get_mut(key) {
-      // 2. Try to get mutable access to the `CacheEntry` *inside* the Arc.
-      //    This should succeed if the entry is only in the map.
-      if let Some(entry) = Arc::get_mut(entry_arc) {
-        // 3. Now, try to get mutable access to the `V` *inside* the entry's `Arc<V>`.
-        //    This is the step that will fail if another thread is reading the value.
-        if let Some(value) = Arc::get_mut(&mut entry.value) {
-          // Success! We have exclusive access.
-          let user_value = f(value);
-          self.shared.metrics.updates.fetch_add(1, Ordering::Relaxed);
-          return ComputeResult::Ok(user_value);
-        }
+    if let Some(entry) = guard.get_mut(key) {
+      // Fails while another thread holds an `Arc` to the value.
+      if let Some(value) = Arc::get_mut(&mut entry.value) {
+        let user_value = f(value);
+        self.shared.metrics.updates.fetch_add(1, Ordering::Relaxed);
+        return ComputeResult::Ok(user_value);
       }
 
       // If any of the `if let` checks fail, it means we couldn't get
@@ -489,7 +432,7 @@ where
   {
     let shard = self.shared.store.get_shard(key);
 
-    let removed_entry: Option<(K, Arc<CacheEntry<V>>)>;
+    let removed_entry: Option<(K, CacheEntry<V>)>;
     {
       // New scope for the guard
       let mut guard = shard.map.write();
@@ -506,7 +449,6 @@ where
         }
       }
 
-      self.shared.get_cache_policy(key).on_remove(&found_key);
       self
         .shared
         .metrics
@@ -548,29 +490,11 @@ where
       .map(|s| s.map.write())
       .collect::<Vec<_>>();
 
-    // 2. Iterate through each shard, notify the corresponding policy for each
-    //    key being removed, and then clear the shard's map.
-    for (i, guard) in shard_guards.iter_mut().enumerate() {
-      let policy = &self.shared.cache_policy[i];
-      for key in guard.keys() {
-        // This is the crucial step you identified.
-        policy.on_remove(key);
-      }
+    // 2. Clear each shard; the shard map clears its policy.
+    for guard in shard_guards.iter_mut() {
       guard.clear();
     }
 
-    // 3. Although on_remove was called, calling policy.clear() is still a
-    //    good practice to reset any other aggregate state the policy might have.
-    for policy in self.shared.cache_policy.iter() {
-      policy.clear();
-    }
-
-    // 4. Reset metrics and cost gate.
-    self
-      .shared
-      .metrics
-      .current_cost
-      .store(0, std::sync::atomic::Ordering::Relaxed);
   }
 
   /// Returns a concurrent-safe iterator over the key-value pairs in the cache.
@@ -634,21 +558,41 @@ where
   /// Private helper method to run common logic on a cache hit.
   /// This includes updating metadata for TTI and notifying the eviction policy.
   #[inline]
-  fn on_hit(&self, key: &K, hash: u64, entry: &Arc<CacheEntry<V>>, shard_idx: usize) {
+  fn on_hit(&self, key: &K, _hash: u64, entry: &CacheEntry<V>, shard_idx: usize, map: &crate::store::ShardMap<K, V, H>) -> Option<DeferredRead<K>> {
     if self.shared.time_to_idle.is_some() {
       entry.update_last_accessed_coarse(&self.shared.clock);
     }
 
-    if self.shared.track_reads {
-      let shard = &self.shared.store.shards[shard_idx];
-      shard
-        .read_access_batcher
-        .record_access(key, hash, entry.cost());
+    match self.shared.builtin_reads {
+      crate::shared::BuiltinReads::Ring => {
+        let node = entry.node.load(Ordering::Relaxed);
+        if self.shared.store.shards[shard_idx].read_ring.push(node) {
+          None
+        } else {
+          Some(DeferredRead::Node(node))
+        }
+      }
+      crate::shared::BuiltinReads::Freq => {
+        map.touch_read(entry.node.load(Ordering::Relaxed));
+        None
+      }
+      crate::shared::BuiltinReads::None => {
+        if !self.shared.track_reads {
+          return None;
+        }
+        let cost = entry.cost();
+        if self.shared.store.shards[shard_idx].read_log.push(key, cost) {
+          None
+        } else {
+          Some(DeferredRead::Key(key.clone(), cost))
+        }
+      }
     }
   }
 
+
   /// Helper to run maintenance on a shard if the maintenance lock is not contended.
-  fn _run_opportunistic_maintenance(&self, key: &K, shard: &crate::store::Shard<K, V, H>)
+  fn _run_opportunistic_maintenance(&self, _shard_index: usize, shard: &crate::store::Shard<K, V, H>)
   where
     K: Eq + Hash + Clone + Send,
     V: Send + Sync,
@@ -663,28 +607,7 @@ where
     }
 
     if let Some(_guard) = shard.maintenance_lock.try_lock() {
-      // We need the shard_index to select the correct policy.
-      let hash = crate::store::hash_key(&self.shared.store.hasher, key);
-      let shard_index = hash as usize & (self.shared.store.shards.len() - 1);
-      let janitor_context = crate::task::janitor::JanitorContext {
-        store: Arc::clone(&self.shared.store),
-        clock: Arc::clone(&self.shared.clock),
-        metrics: Arc::clone(&self.shared.metrics),
-        cache_policy: self.shared.cache_policy.clone(),
-        capacity: self.shared.capacity,
-        time_to_idle: self.shared.time_to_idle,
-        notification_sender: self
-          .shared
-          .notification_sender
-          .as_ref()
-          .map(|val| val.clone()),
-      };
-      crate::task::janitor::perform_shard_maintenance(
-        shard,
-        shard_index,
-        &janitor_context,
-        COOPERATIVE_MAINTENANCE_DRAIN_LIMIT,
-      );
+      shard.map.write().apply_reads();
     }
   }
 }
@@ -704,15 +627,16 @@ where
     let shard_index = self.shared.get_shard_index_from_hash(hash);
     let shard = &self.shared.store.shards[shard_index];
 
+    let mut deferred = None;
     let hit_value = {
       let guard = shard.map.read();
-      if let Some((found_key, entry)) = guard.get_key_value(key) {
+      if let Some((found_key, entry)) = guard.get_key_value_hashed(key, hash) {
         let expires_at_nanos = entry.expires_at.load(Ordering::Relaxed);
         if expires_at_nanos == 0 {
           // No TTL, fresh hit.
           if !entry.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
-            self.on_hit(found_key, hash, entry, shard_index);
-            self.shared.metrics.record_hits(shard_index, 1);
+            deferred = self.on_hit(found_key, hash, entry, shard_index, &guard);
+            self.shared.metrics.record_hits(1);
             Some(entry.value())
           } else {
             None
@@ -722,8 +646,8 @@ where
           if now_nanos < expires_at_nanos {
             // CASE A: Fresh Hit
             if !entry.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
-              self.on_hit(found_key, hash, entry, shard_index);
-              self.shared.metrics.record_hits(shard_index, 1);
+              deferred = self.on_hit(found_key, hash, entry, shard_index, &guard);
+              self.shared.metrics.record_hits(1);
               Some(entry.value())
             } else {
               None
@@ -744,6 +668,9 @@ where
         None
       }
     };
+    if let Some(read) = deferred {
+      shard.map.write().apply_deferred(read);
+    }
 
     if let Some(val) = hit_value {
       return val;
@@ -805,14 +732,14 @@ where
       //    The initial optimistic raw_get in fetch_with handles the "already cached" case.
       if let Some(existing_future) = pending.get(key) {
         // We will get a value, so this counts as a HIT for us.
-        self.shared.metrics.record_hits(index, 1);
+        self.shared.metrics.record_hits(1);
         am_leader = false;
         break existing_future.clone();
       }
 
       // 3. If we reach here, we are the "leader".
       //    This is the only time a MISS is recorded for the entire operation.
-      self.shared.metrics.record_misses(index, 1);
+      self.shared.metrics.record_misses(1);
       //    Create a new future, insert it as a placeholder.
       let new_future = Arc::new(LoadFuture::new());
       pending.insert(key.clone(), new_future.clone());
@@ -850,32 +777,27 @@ where
 
   /// Forces a synchronous, complete maintenance pass across all shards.
   ///
-  /// Unlike opportunistic maintenance (which can be skipped), this guarantees
-  /// that all pending write admissions, read accesses, TTL/TTI expirations, and
-  /// capacity evictions are processed before returning.
+  /// Every pending read reaches the eviction policy and TTL/TTI expiration
+  /// runs before this returns. Capacity needs no pass: an insert evicts before
+  /// it returns.
   ///
   /// Primarily useful for deterministic testing and manual cache management.
   pub fn run_maintenance(&self) {
-    use crate::task::janitor::{
-      Janitor, JanitorContext, COOPERATIVE_MAINTENANCE_DRAIN_LIMIT, perform_shard_maintenance,
-    };
+    use crate::task::janitor::{perform_shard_maintenance, Janitor, JanitorContext};
 
     let janitor_context = JanitorContext {
       store: Arc::clone(&self.shared.store),
       clock: Arc::clone(&self.shared.clock),
       metrics: Arc::clone(&self.shared.metrics),
-      cache_policy: self.shared.cache_policy.clone(),
-      capacity: self.shared.capacity,
       time_to_idle: self.shared.time_to_idle,
       notification_sender: self.shared.notification_sender.as_ref().map(|s| s.clone()),
     };
 
     for (i, shard) in self.shared.store.shards.iter().enumerate() {
       let _guard = shard.maintenance_lock.lock();
-      perform_shard_maintenance(shard, i, &janitor_context, COOPERATIVE_MAINTENANCE_DRAIN_LIMIT);
+      perform_shard_maintenance(shard);
       Janitor::cleanup_ttl_for_shard(shard, i, &janitor_context);
       Janitor::cleanup_tti_for_shard(shard, i, &janitor_context);
-      Janitor::cleanup_capacity_for_shard(shard, i, &janitor_context);
     }
   }
 }
@@ -925,11 +847,12 @@ where
           let shard_index = self.shared.get_shard_index_from_hash(hash);
           let shard = &self.shared.store.shards[shard_index];
 
+          let mut deferred = None;
           let hit_value: Option<(K, Arc<V>)> = {
             let guard = shard.map.read();
-            if let Some((found_key, entry)) = guard.get_key_value(q) {
+            if let Some((found_key, entry)) = guard.get_key_value_hashed(q, hash) {
               if !entry.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
-                self.on_hit(found_key, hash, entry, shard_index);
+                deferred = self.on_hit(found_key, hash, entry, shard_index, &guard);
                 Some((found_key.clone(), entry.value()))
               } else {
                 None
@@ -938,6 +861,9 @@ where
               None
             }
           };
+          if let Some(read) = deferred {
+            shard.map.write().apply_deferred(read);
+          }
 
           if let Some((key_clone, value)) = hit_value {
             acc.insert(key_clone, value);
@@ -958,9 +884,9 @@ where
     // Update global metrics after all parallel work is done. This is one
     // bulk update per multiget call, so a single stripe is fine.
     let hits = final_map.len() as u64;
-    self.shared.metrics.record_hits(0, hits);
+    self.shared.metrics.record_hits(hits);
     if total_reqs > hits {
-      self.shared.metrics.record_misses(0, total_reqs - hits);
+      self.shared.metrics.record_misses(total_reqs - hits);
     }
 
     final_map
@@ -1021,7 +947,7 @@ where
           }
 
           // Insert and handle any replaced entry.
-          if let Some(old_entry) = guard.insert(key.clone(), Arc::new(new_cache_entry)) {
+          if let Some(old_entry) = guard.insert(key.clone(), new_cache_entry) {
             // Cancel timers for the replaced entry.
             if let Some(wheel) = &shard.timer_wheel {
               if let Some(handle) = &old_entry.ttl_timer_handle {
@@ -1031,23 +957,8 @@ where
                 wheel.cancel(handle);
               }
             }
-            // Adjust cost for the replaced entry.
-            self
-              .shared
-              .metrics
-              .current_cost
-              .fetch_sub(old_entry.cost(), std::sync::atomic::Ordering::Relaxed);
           }
 
-          // Update total cost and send write event to janitor.
-          self
-            .shared
-            .metrics
-            .current_cost
-            .fetch_add(cost, std::sync::atomic::Ordering::Relaxed);
-          let _ = shard
-            .event_buffer_tx
-            .try_send(AccessEvent::Write(key, cost));
         }
       });
   }
@@ -1096,7 +1007,6 @@ where
               }
             }
 
-            self.shared.get_cache_policy(&key).on_remove(&key);
             self
               .shared
               .metrics

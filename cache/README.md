@@ -106,7 +106,7 @@ async fn main() {
 | **Thundering Herd Protection**| Guarantees a loader is executed only once for concurrent misses on the same key, preventing duplicate work. |
 | **Runtime Agnostic** | The `async_loader` can be used with any async runtime (`tokio`, `async-std`, etc.) via a `TaskSpawner` trait. |
 | **Stale-While-Revalidate** | Can serve stale data for a configured grace period while refreshing it in the background, hiding latency. |
-| **Comprehensive Policies** | Includes **TinyLfu**, **SIEVE**, **SLRU**, **ARC**, **LRU**, **FIFO**, and **Random** eviction/admission policies. |
+| **Comprehensive Policies** | Includes **TinyLfu**, **S3-FIFO**, **SIEVE**, **SLRU**, **ARC**, **LRU**, **FIFO** and **Random** eviction/admission policies. |
 | **Bulk Operations** | Efficient, parallelized `multiget`, `multi_insert`, and `multi_invalidate` methods (via `bulk` feature). |
 | **In-place Mutation** | A `compute` method for safe, atomic mutation of existing values without cloning. |
 | **Eviction Listener** | Receive non-blocking notifications for every item removal on a dedicated background thread. |
@@ -121,15 +121,15 @@ async fn main() {
 | **Core Architecture** | **Concurrency Model** | Sharded | Sharded | ✅ **Sharded, Custom Lock** | Custom hybrid lock with distinct, optimized paths for sync and async. |
 | | **Sync/Async Interoperability** | Separate Caches | ✅ | ✅ **Zero-Cost Handles** | A single cache instance can be accessed via both sync and async handles seamlessly. |
 | | **`V: Clone` Required?** | **Yes** | No | ✅ **No** | `Arc<V>` storage natively supports non-cloneable values, a major ergonomic win. |
-| | **Maintenance Model** | Background Thread | Sampling-based | ✅ **Janitor + Opportunistic** | A dedicated janitor thread is augmented by opportunistic maintenance on writes. |
-| | **Contention-Free Access Batching**| Event Queue | Buffer-based | ✅ **Striped Left-Right** | A sophisticated, low-contention `AccessBatcher` for policy updates on the hot path. |
+| | **Maintenance Model** | Background Thread | Sampling-based | ✅ **Eviction at insert** | Capacity is enforced inside the insert; a janitor thread handles expiry. |
+| | **Read Delivery to the Policy**| Event Queue | Buffer-based | ✅ **Per-shard log** | Reads are logged per shard in order and applied under the shard's write lock; S3-FIFO counts them on the entry. |
 | | | | | | |
 | **Eviction & Policies**| **Cost-Based Eviction** | ✅ | ✅ | ✅ | Items can have individual `cost` towards `capacity`. |
 | | **Global TTL / TTI** | ✅ | ✅ | ✅ | Cache-wide Time-to-Live and Time-to-Idle. |
 | | **Per-Item TTL** | ✅ | ❌ | ✅ | `insert_with_ttl` provides fine-grained expiration control. |
 | | **Timer System for Expirations**| Hierarchical Wheel | ❌ (Sampling) | ✅ **Configurable Per-Shard Wheel** | High-precision, low-overhead expiration management via `TimerWheelMode`. |
 | | **Pluggable Policies** | Limited | ❌ | ✅ **Highly Flexible** | A `CachePolicy` trait allows for easy implementation of custom strategies. |
-| | **Available Policies** | Segmented-LRU | TinyLFU | ✅ **Most Comprehensive** | **TinyLFU**, **ARC**, **SLRU**, **SIEVE**, **LRU**, **FIFO**, and **Random**. |
+| | **Available Policies** | Segmented-LRU | TinyLFU | ✅ **Most Comprehensive** | **TinyLFU**, **S3-FIFO**, **ARC**, **SLRU**, **SIEVE**, **LRU**, **FIFO** and **Random**. |
 | | | | | | |
 | **API & Ergonomics** | **`entry` API** | ✅ | ❌ | ✅ | Atomic "get-or-insert" for both sync and async. |
 | | **Read API Ergonomics** | `get` (clones Arc) | `get` (returns ref) | ✅ **`get` & `fetch`** | Offers both a zero-cost `get` (with closure) and an `Arc`-cloning `fetch`. |

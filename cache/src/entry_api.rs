@@ -1,4 +1,3 @@
-use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
 use crate::sync::WriteGuard;
 use std::hash::{BuildHasher, Hash};
@@ -61,7 +60,7 @@ where
 pub struct OccupiedEntry<'a, K: Send, V: Send, H> {
   pub(crate) key: K,
   pub(crate) shard_guard:
-    WriteGuard<'a, std::collections::HashMap<K, Arc<crate::entry::CacheEntry<V>>, H>>,
+    WriteGuard<'a, crate::store::ShardMap<K, V, H>>,
 }
 
 impl<'a, K, V: Send, H> OccupiedEntry<'a, K, V, H>
@@ -85,7 +84,7 @@ pub struct VacantEntry<'a, K: Send, V: Send + Sync, H> {
   pub(crate) key: K,
   pub(crate) shared: &'a Arc<CacheShared<K, V, H>>,
   pub(crate) shard_guard:
-    WriteGuard<'a, std::collections::HashMap<K, Arc<crate::entry::CacheEntry<V>>, H>>,
+    WriteGuard<'a, crate::store::ShardMap<K, V, H>>,
 }
 
 impl<'a, K, V, H> VacantEntry<'a, K, V, H>
@@ -104,18 +103,15 @@ where
   ///
   /// Returns an `Arc` pointing to the newly inserted value.
   pub fn insert(mut self, value: V, cost: u64) -> Arc<V> {
-    let new_cache_entry = Arc::new(crate::entry::CacheEntry::new(
+    let new_cache_entry = crate::entry::CacheEntry::new(
       value,
       cost,
       self.shared.time_to_live,
       self.shared.time_to_idle,
-    ));
+    );
     let value_arc_to_return = new_cache_entry.value();
 
     // The key is cloned once for the event and once for the map insertion.
-    let key_for_event = self.key.clone();
-
-    let shard = self.shared.store.get_shard(&key_for_event);
 
     // Insert the new entry into the hash map.
     self.shard_guard.insert(self.key, new_cache_entry);
@@ -125,32 +121,7 @@ where
     // It's still good practice.
     drop(self.shard_guard);
 
-    // Record the write event for the janitor to process later.
-    let _ = shard
-      .event_buffer_tx
-      .try_send(AccessEvent::Write(key_for_event, cost));
 
-    // Update metrics
-    self
-      .shared
-      .metrics
-      .inserts
-      .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .keys_admitted
-      .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .current_cost
-      .fetch_add(cost, std::sync::atomic::Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .total_cost_added
-      .fetch_add(cost, std::sync::atomic::Ordering::Relaxed);
 
     value_arc_to_return
   }

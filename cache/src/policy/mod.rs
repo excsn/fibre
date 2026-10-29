@@ -5,16 +5,10 @@ pub mod lru;
 mod lru_list;
 pub mod null;
 pub mod random;
+pub mod s3fifo;
 pub mod sieve;
 pub mod slru;
 pub mod tinylfu;
-
-/// An event that is recorded on every access to the cache.
-/// These events are buffered and processed by a background maintenance task.
-#[derive(Debug, Clone)]
-pub(crate) enum AccessEvent<K> {
-  Write(K, u64), // Key, cost
-}
 
 #[derive(Debug)]
 pub enum AdmissionDecision<K> {

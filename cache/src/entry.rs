@@ -16,6 +16,8 @@ pub(crate) struct CacheEntry<V> {
   pub(crate) expires_at: AtomicU64,
   /// The last access timestamp in nanoseconds. 0 means no TTI.
   pub(crate) last_accessed: AtomicU64,
+  /// The built-in shard policy's node id, `hpolicy::NO_NODE` until admitted.
+  pub(crate) node: AtomicU64,
   /// The key's hash under the cache's hasher; 0 until a timer is attached. Lets the
   /// TTL sweep match wheel hashes without re-hashing every key in the shard.
   pub(crate) key_hash: u64,
@@ -28,7 +30,7 @@ pub(crate) struct CacheEntry<V> {
 impl<V> CacheEntry<V> {
   /// Creates a new `CacheEntry`.
   pub(crate) fn new(value: V, cost: u64, ttl: Option<Duration>, tti: Option<Duration>) -> Self {
-    let now = time::now_duration().as_nanos() as u64;
+    let now = if ttl.is_some() || tti.is_some() { time::now_duration().as_nanos() as u64 } else { 0 };
     let expires_at = ttl.map_or(0, |d| now + d.as_nanos() as u64);
     let last_accessed = tti.map_or(0, |_| now);
 
@@ -38,6 +40,7 @@ impl<V> CacheEntry<V> {
       expires_at: AtomicU64::new(expires_at),
       last_accessed: AtomicU64::new(last_accessed),
       key_hash: 0,
+      node: AtomicU64::new(crate::hpolicy::NO_NODE),
       ttl_timer_handle: None,
       tti_timer_handle: None,
     }
@@ -63,6 +66,7 @@ impl<V> CacheEntry<V> {
       expires_at: AtomicU64::new(expires_at_nanos),
       last_accessed: AtomicU64::new(last_accessed_nanos),
       key_hash: 0,
+      node: AtomicU64::new(crate::hpolicy::NO_NODE),
       ttl_timer_handle: None,
       tti_timer_handle: None,
     }
@@ -82,6 +86,7 @@ impl<V> CacheEntry<V> {
       expires_at: AtomicU64::new(expires_at),
       last_accessed: AtomicU64::new(last_accessed),
       key_hash: 0,
+      node: AtomicU64::new(crate::hpolicy::NO_NODE),
       ttl_timer_handle: None,
       tti_timer_handle: None,
     }
@@ -96,6 +101,7 @@ impl<V> CacheEntry<V> {
       expires_at: AtomicU64::new(0),
       last_accessed: AtomicU64::new(0),
       key_hash: 0,
+      node: AtomicU64::new(crate::hpolicy::NO_NODE),
       ttl_timer_handle: None,
       tti_timer_handle: None,
     }

@@ -29,6 +29,10 @@ mod loader;
 mod rng;
 mod shared;
 mod store;
+mod hpolicy;
+#[cfg(test)]
+mod lockstep;
+mod select;
 mod sync;
 mod task;
 mod time;

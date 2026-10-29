@@ -120,7 +120,6 @@ mod tinylfu {
     CacheBuilder::default()
       .capacity(capacity)
       .shards(1)
-      // The default policy for a bounded cache is TinyLfu, but we are explicit for clarity.
       .cache_policy_factory(move || Box::new(TinyLfuPolicy::new(capacity)))
       .janitor_tick_interval(Duration::from_millis(10))
       .maintenance_chance(1)
@@ -298,22 +297,13 @@ mod slru {
     // Policy prob: [4, 3, 1], Policy prot: [2]
     cache.fetch(&2);
 
-    // 3. Insert item 5. This will exceed total capacity.
-    // The insert itself is non-blocking and pushes the cost to 5.
+    // 3. Insert item 5. The insert applies the pending read of 2, admits 5 and
+    // evicts from the LRU end of the probationary segment, which is item 1.
     cache.insert(5, "e".to_string(), 1);
     assert_eq!(
       cache.metrics().current_cost,
-      5,
-      "Cache should be temporarily over capacity"
-    );
-
-    cache.run_maintenance();
-
-    // SLRU evicts from the LRU end of the probationary segment, which is item 1.
-    assert_eq!(
-      cache.metrics().current_cost,
       4,
-      "Cache cost should be back to capacity after janitor runs"
+      "Cache cost should be at capacity when the insert returns"
     );
 
     assert!(

@@ -1,7 +1,6 @@
 use crate::entry::CacheEntry;
 use crate::loader::{LoadFuture, Loader};
 use crate::metrics::Metrics;
-use crate::policy::{AccessEvent, CachePolicy};
 use crate::store::ShardedStore;
 use crate::sync::HybridMutex;
 use crate::task::janitor::Janitor;
@@ -9,13 +8,11 @@ use crate::task::notifier::{Notification, Notifier};
 use crate::TaskSpawner;
 
 use std::hash::{BuildHasher, Hash};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt, thread};
 
 use ahash::HashMap;
-use equivalent::Equivalent;
 use fibre::mpsc;
 
 
@@ -24,7 +21,6 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   pub(crate) store: Arc<ShardedStore<K, V, H>>,
   pub(crate) clock: Arc<crate::time::CoarseClock>,
   pub(crate) metrics: Arc<Metrics>,
-  pub(crate) cache_policy: Box<[Arc<dyn CachePolicy<K, V>>]>,
   pub(crate) janitor: Option<Janitor>,
   pub(crate) notification_sender: Option<mpsc::BoundedSyncSender<Notification<K, V>>>,
   pub(crate) notifier: Option<Notifier<K, V>>,
@@ -40,6 +36,7 @@ pub(crate) struct CacheShared<K: Send, V: Send + Sync, H> {
   // False when no shard policy uses access events, letting reads skip the
   // access batcher entirely.
   pub(crate) track_reads: bool,
+  pub(crate) builtin_reads: BuiltinReads,
   // Non-blocking maintenance requests from async paths to the janitor
   // (shard index). `Some` whenever the janitor is running. Lossy by design:
   // a full buffer means the janitor is already busy.
@@ -80,18 +77,9 @@ where
     if !self.maintenance_on_introspection {
       return;
     }
-    let janitor_context = crate::task::janitor::JanitorContext {
-      store: Arc::clone(&self.store),
-      metrics: Arc::clone(&self.metrics),
-      cache_policy: self.cache_policy.clone(),
-      capacity: self.capacity,
-      time_to_idle: self.time_to_idle,
-      notification_sender: self.notification_sender.as_ref().map(|s| s.clone()),
-      clock: Arc::clone(&self.clock),
-    };
-    for (i, shard) in self.store.shards.iter().enumerate() {
+    for shard in self.store.shards.iter() {
       let _guard = shard.maintenance_lock.lock();
-      crate::task::janitor::perform_shard_maintenance(shard, i, &janitor_context, usize::MAX);
+      crate::task::janitor::perform_shard_maintenance(shard);
     }
   }
 }
@@ -99,40 +87,8 @@ where
 impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
 
   #[inline]
-  pub fn get_shard_index<Q>(&self, key: &Q) -> usize
-  where
-    K: Hash,
-    Q: Hash + Equivalent<K> + ?Sized,
-    H: BuildHasher,
-  {
-    return self.store.get_shard_index(key);
-  }
-
-  #[inline]
-  pub fn get_shard_index_from_hash(&self, hash: u64) -> usize
-  where
-    K: Hash,
-    H: BuildHasher,
-  {
-    return hash as usize & (self.store.shards.len() - 1);
-  }
-
-  pub fn get_cache_policy<Q>(&self, key: &Q) -> &Arc<(dyn CachePolicy<K, V> + 'static)>
-  where
-    K: Hash,
-    Q: Hash + Equivalent<K> + ?Sized,
-    H: BuildHasher,
-  {
-    let shard_index = self.get_shard_index(key);
-    return &self.cache_policy[shard_index];
-  }
-
-  pub fn get_cache_policy_shard_idx(&self, shard_idx: usize) -> &Arc<(dyn CachePolicy<K, V> + 'static)>
-  where
-    K: Hash,
-    H: BuildHasher,
-  {
-    return &self.cache_policy[shard_idx];
+  pub fn get_shard_index_from_hash(&self, hash: u64) -> usize {
+    hash as usize & (self.store.shards.len() - 1)
   }
 
   pub(crate) fn spawn_loader_task(shared: Arc<Self>, key: K, future: Arc<LoadFuture<V>>)
@@ -150,42 +106,22 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
       Loader::Sync(sync_loader) => {
         thread::spawn(move || {
           let (value, cost) = sync_loader(key.clone());
-          let new_cache_entry = Arc::new(CacheEntry::new(
+          let new_cache_entry = CacheEntry::new(
             value,
             cost,
             shared.time_to_live,
             shared.time_to_idle,
-          ));
+          );
           let value_arc_to_return = new_cache_entry.value();
 
           let shard = shared.store.get_shard(&key);
           {
             let mut guard = shard.map.write();
-            let old_entry = guard.insert(key.clone(), new_cache_entry);
+            guard.insert(key.clone(), new_cache_entry);
 
-            // Update cost metrics immediately
-            let old_cost = old_entry.map_or(0, |e| e.cost());
-            shared
-              .metrics
-              .current_cost
-              .fetch_add(cost, Ordering::Relaxed);
-            shared
-              .metrics
-              .current_cost
-              .fetch_sub(old_cost, Ordering::Relaxed);
           }
 
-          // Record the write event in the buffer for the janitor to process later
-          let _ = shard
-            .event_buffer_tx
-            .try_send(AccessEvent::Write(key.clone(), cost));
 
-          shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
-          shared.metrics.keys_admitted.fetch_add(1, Ordering::Relaxed);
-          shared
-            .metrics
-            .total_cost_added
-            .fetch_add(cost, Ordering::Relaxed);
 
           let hash = crate::store::hash_key(&shared.store.hasher, &key);
           let index = hash as usize & (shared.pending_loads.len() - 1);
@@ -203,42 +139,22 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
           let shared = shared.clone();
           async move {
             let (value, cost) = async_loader(key.clone()).await;
-            let new_cache_entry = Arc::new(CacheEntry::new(
+            let new_cache_entry = CacheEntry::new(
               value,
               cost,
               shared.time_to_live,
               shared.time_to_idle,
-            ));
+            );
             let value_arc_to_return = new_cache_entry.value();
 
             let shard = shared.store.get_shard(&key);
             {
               let mut guard = shard.map.write_async().await;
-              let old_entry = guard.insert(key.clone(), new_cache_entry);
+              guard.insert(key.clone(), new_cache_entry);
 
-              // Update cost metrics immediately
-              let old_cost = old_entry.map_or(0, |e| e.cost());
-              shared
-                .metrics
-                .current_cost
-                .fetch_add(cost, Ordering::Relaxed);
-              shared
-                .metrics
-                .current_cost
-                .fetch_sub(old_cost, Ordering::Relaxed);
             }
 
-            // Record the write event
-            let _ = shard
-              .event_buffer_tx
-              .try_send(AccessEvent::Write(key.clone(), cost));
 
-            shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
-            shared.metrics.keys_admitted.fetch_add(1, Ordering::Relaxed);
-            shared
-              .metrics
-              .total_cost_added
-              .fetch_add(cost, Ordering::Relaxed);
 
             {
               let hash = crate::store::hash_key(&shared.store.hasher, &key);
@@ -252,4 +168,12 @@ impl<K: Send, V: Send + Sync, H> CacheShared<K, V, H> {
       }
     }
   }
+}
+
+/// How a hit reaches the shard's built-in policy, if there is one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuiltinReads {
+  None,
+  Ring,
+  Freq,
 }

@@ -29,7 +29,7 @@ async fn test_unbounded_async_cache_with_tti_does_not_panic() {
 }
 
 #[test]
-fn test_bounded_cache_defaults_to_tinylfu() {
+fn test_bounded_cache_defaults_to_s3fifo() {
   let cache = CacheBuilder::<i32, i32>::new()
     .shards(1)
     .capacity(2)
@@ -51,11 +51,10 @@ fn test_bounded_cache_defaults_to_tinylfu() {
   // Allow time for the read batcher to be ready for processing
   std::thread::sleep(std::time::Duration::from_millis(10));
 
-  // Trigger opportunistic maintenance to flush the read batcher
   cache.insert(1, 1, 1);
 
-  // Insert a third item. The opportunistic maintenance will run immediately,
-  // reject item 2, and remove it natively without the Janitor's help.
+  // S3-FIFO: item 1 leaves the small queue with a frequency above 1 and moves
+  // to main; item 2 leaves with none and is evicted.
   cache.insert(3, 3, 1);
 
   // Give the channels a brief moment to settle
@@ -64,7 +63,7 @@ fn test_bounded_cache_defaults_to_tinylfu() {
   assert_eq!(
     cache.metrics().current_cost,
     2,
-    "Opportunistic maintenance should hold cost at capacity"
+    "the insert holds cost at capacity"
   );
   assert!(cache.fetch(&1).is_some(), "Hot item 1 should be protected");
   assert!(cache.fetch(&2).is_none(), "Cold item 2 should be evicted");

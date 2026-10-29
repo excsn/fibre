@@ -3,7 +3,6 @@ use crate::entry_api_async::{AsyncEntry, AsyncOccupiedEntry, AsyncVacantEntry};
 use crate::error::ComputeResult;
 use crate::iter::{AsyncSnapshotIter, IterStream, DEFAULT_ITER_BATCH_SIZE};
 use crate::loader::LoadFuture;
-use crate::policy::AccessEvent;
 use crate::shared::CacheShared;
 use crate::{time, Cache, EvictionReason, MetricsSnapshot};
 
@@ -12,6 +11,7 @@ use std::cell::Cell;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use crate::store::DeferredRead;
 use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt};
@@ -88,22 +88,22 @@ where
 
     {
       let guard = shard.map.read_async().await;
-      if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
+      if let Some((found_key, entry_in_guard)) = guard.get_key_value_hashed(key, hash) {
         if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
           result = Some(f(entry_in_guard.value().as_ref()));
-          deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
+          deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index, &guard);
         }
       }
     }
 
-    if let Some((k, cost)) = deferred {
-      shard.read_access_batcher.record_access_async(k, hash, cost).await;
+    if let Some(read) = deferred {
+      shard.map.write_async().await.apply_deferred(read);
     }
 
     if result.is_some() {
-      self.shared.metrics.record_hits(shard_index, 1);
+      self.shared.metrics.record_hits(1);
     } else {
-      self.shared.metrics.record_misses(shard_index, 1);
+      self.shared.metrics.record_misses(1);
     }
 
     result
@@ -132,22 +132,22 @@ where
 
     {
       let guard = shard.map.read_async().await;
-      if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
+      if let Some((found_key, entry_in_guard)) = guard.get_key_value_hashed(key, hash) {
         if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
-          deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
+          deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index, &guard);
           value = Some(entry_in_guard.value());
         }
       }
     }
 
-    if let Some((k, cost)) = deferred {
-      shard.read_access_batcher.record_access_async(k, hash, cost).await;
+    if let Some(read) = deferred {
+      shard.map.write_async().await.apply_deferred(read);
     }
 
     if value.is_some() {
-      self.shared.metrics.record_hits(shard_index, 1);
+      self.shared.metrics.record_hits(1);
     } else {
-      self.shared.metrics.record_misses(shard_index, 1);
+      self.shared.metrics.record_misses(1);
     }
 
     value
@@ -219,26 +219,23 @@ where
       self.shared.time_to_idle,
     );
 
-    let shard = self.shared.store.get_shard(&key);
+    let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+    let shards = &self.shared.store.shards;
+    let shard_index = key_hash as usize & (shards.len() - 1);
+    let shard = &*shards[shard_index];
 
-    if let Some(wheel) = &shard.timer_wheel {
-      let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
-      let ttl_handle = self
-        .shared
-        .time_to_live
-        .map(|ttl| wheel.schedule(key_hash, ttl));
-      let tti_handle = None;
-      new_cache_entry.set_timer_handles(key_hash, ttl_handle, tti_handle);
-    }
-
-    let old_entry: Option<Arc<CacheEntry<V>>>;
+    let old_entry: Option<CacheEntry<V>>;
     {
       let mut guard = shard.map.write_async().await;
-      old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
-    }
-
-    if let Some(entry) = old_entry {
       if let Some(wheel) = &shard.timer_wheel {
+        let ttl_handle = self
+          .shared
+          .time_to_live
+          .map(|ttl| wheel.schedule(key_hash, ttl));
+        new_cache_entry.set_timer_handles(key_hash, ttl_handle, None);
+      }
+      old_entry = guard.insert_hashed(key, new_cache_entry, key_hash);
+      if let (Some(wheel), Some(entry)) = (&shard.timer_wheel, &old_entry) {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
         }
@@ -246,36 +243,12 @@ where
           wheel.cancel(handle);
         }
       }
-      let old_cost = entry.cost();
-      self
-        .shared
-        .metrics
-        .current_cost
-        .fetch_sub(old_cost, Ordering::Relaxed);
     }
 
-    let _ = shard
-      .event_buffer_tx
-      .try_send(AccessEvent::Write(key.clone(), cost));
 
-    self.shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .keys_admitted
-      .fetch_add(1, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .current_cost
-      .fetch_add(cost, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .total_cost_added
-      .fetch_add(cost, Ordering::Relaxed);
 
-    self._run_opportunistic_maintenance(&key, &shard);
+
+    self._run_opportunistic_maintenance(shard_index, shard);
   }
 
   /// Asynchronously inserts a key-value pair into the cache with a specific cost
@@ -292,23 +265,20 @@ where
     let mut new_cache_entry =
       CacheEntry::new_with_custom_expiry(value, cost, expires_at, self.shared.time_to_idle);
 
-    let shard = self.shared.store.get_shard(&key);
+    let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+    let shards = &self.shared.store.shards;
+    let shard_index = key_hash as usize & (shards.len() - 1);
+    let shard = &*shards[shard_index];
 
-    if let Some(wheel) = &shard.timer_wheel {
-      let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
-      let ttl_handle = Some(wheel.schedule(key_hash, ttl));
-      let tti_handle = None;
-      new_cache_entry.set_timer_handles(key_hash, ttl_handle, tti_handle);
-    }
-
-    let old_entry: Option<Arc<CacheEntry<V>>>;
+    let old_entry: Option<CacheEntry<V>>;
     {
       let mut guard = shard.map.write_async().await;
-      old_entry = guard.insert(key.clone(), Arc::new(new_cache_entry));
-    }
-
-    if let Some(entry) = old_entry {
       if let Some(wheel) = &shard.timer_wheel {
+        let ttl_handle = Some(wheel.schedule(key_hash, ttl));
+        new_cache_entry.set_timer_handles(key_hash, ttl_handle, None);
+      }
+      old_entry = guard.insert_hashed(key, new_cache_entry, key_hash);
+      if let (Some(wheel), Some(entry)) = (&shard.timer_wheel, &old_entry) {
         if let Some(handle) = &entry.ttl_timer_handle {
           wheel.cancel(handle);
         }
@@ -316,36 +286,12 @@ where
           wheel.cancel(handle);
         }
       }
-      let old_cost = entry.cost();
-      self
-        .shared
-        .metrics
-        .current_cost
-        .fetch_sub(old_cost, Ordering::Relaxed);
     }
 
-    let _ = shard
-      .event_buffer_tx
-      .try_send(AccessEvent::Write(key.clone(), cost));
 
-    self.shared.metrics.inserts.fetch_add(1, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .keys_admitted
-      .fetch_add(1, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .current_cost
-      .fetch_add(cost, Ordering::Relaxed);
-    self
-      .shared
-      .metrics
-      .total_cost_added
-      .fetch_add(cost, Ordering::Relaxed);
 
-    self._run_opportunistic_maintenance(&key, &shard);
+
+    self._run_opportunistic_maintenance(shard_index, shard);
   }
 
   /// Asynchronously and atomically computes a new value for a key, waiting if necessary.
@@ -405,13 +351,11 @@ where
     let shard = self.shared.store.get_shard(key);
     let mut guard = shard.map.write_async().await;
 
-    if let Some(entry_arc) = guard.get_mut(key) {
-      if let Some(entry) = Arc::get_mut(entry_arc) {
-        if let Some(value) = Arc::get_mut(&mut entry.value) {
-          let user_value = f(value);
-          self.shared.metrics.updates.fetch_add(1, Ordering::Relaxed);
-          return ComputeResult::Ok(user_value);
-        }
+    if let Some(entry) = guard.get_mut(key) {
+      if let Some(value) = Arc::get_mut(&mut entry.value) {
+        let user_value = f(value);
+        self.shared.metrics.updates.fetch_add(1, Ordering::Relaxed);
+        return ComputeResult::Ok(user_value);
       }
       // If any of the `if let` checks fail, it means we couldn't get
       // exclusive access, so the computation fails.
@@ -473,7 +417,7 @@ where
   {
     let shard = self.shared.store.get_shard(key);
 
-    let removed_entry: Option<(K, Arc<CacheEntry<V>>)>;
+    let removed_entry: Option<(K, CacheEntry<V>)>;
     {
       // New scope for the guard
       let mut guard = shard.map.write_async().await;
@@ -490,7 +434,6 @@ where
         }
       }
 
-      self.shared.get_cache_policy(key).on_remove(&found_key);
       self
         .shared
         .metrics
@@ -528,27 +471,11 @@ where
     let mut shard_guards =
       future::join_all(self.shared.store.iter_shards().map(|s| s.map.write_async())).await;
 
-    // 2. Iterate through each shard, notify the corresponding policy for each
-    //    key being removed, and then clear the shard's map.
-    for (i, guard) in shard_guards.iter_mut().enumerate() {
-      let policy = &self.shared.cache_policy[i];
-      for key in guard.keys() {
-        policy.on_remove(key);
-      }
+    // 2. Clear each shard; the shard map clears its policy.
+    for guard in shard_guards.iter_mut() {
       guard.clear();
     }
 
-    // 3. Reset all policy states.
-    for policy in self.shared.cache_policy.iter() {
-      policy.clear();
-    }
-
-    // 4. Reset metrics and cost gate.
-    self
-      .shared
-      .metrics
-      .current_cost
-      .store(0, std::sync::atomic::Ordering::Relaxed);
   }
 
   /// Private helper for cache hits. Called while the shard guard is held,
@@ -559,10 +486,11 @@ where
   fn on_hit(
     &self,
     key: &K,
-    hash: u64,
-    entry: &Arc<CacheEntry<V>>,
+    _hash: u64,
+    entry: &CacheEntry<V>,
     shard_index: usize,
-  ) -> Option<(K, u64)>
+    map: &crate::store::ShardMap<K, V, H>,
+  ) -> Option<DeferredRead<K>>
   where
     K: Clone,
   {
@@ -570,15 +498,33 @@ where
       entry.update_last_accessed_coarse(&self.shared.clock);
     }
 
-    if self.shared.track_reads {
-      let shard = &self.shared.store.shards[shard_index];
-      let cost = entry.cost();
-      if !shard.read_access_batcher.try_record_access(key, hash, cost) {
-        return Some((key.clone(), cost));
+    match self.shared.builtin_reads {
+      crate::shared::BuiltinReads::Ring => {
+        let node = entry.node.load(Ordering::Relaxed);
+        if self.shared.store.shards[shard_index].read_ring.push(node) {
+          None
+        } else {
+          Some(DeferredRead::Node(node))
+        }
+      }
+      crate::shared::BuiltinReads::Freq => {
+        map.touch_read(entry.node.load(Ordering::Relaxed));
+        None
+      }
+      crate::shared::BuiltinReads::None => {
+        if !self.shared.track_reads {
+          return None;
+        }
+        let cost = entry.cost();
+        if self.shared.store.shards[shard_index].read_log.push(key, cost) {
+          None
+        } else {
+          Some(DeferredRead::Key(key.clone(), cost))
+        }
       }
     }
-    None
   }
+
 
   /// Requests maintenance for this shard's pending events. Never blocks and
   /// never does the work here: drain/eviction takes blocking locks, which is
@@ -586,7 +532,7 @@ where
   /// thread. The rng gate keeps signal traffic at ~1/denominator inserts;
   /// a full signal buffer means the janitor is already busy, so dropping
   /// the signal is fine.
-  fn _run_opportunistic_maintenance(&self, key: &K, shard: &crate::store::Shard<K, V, H>)
+  fn _run_opportunistic_maintenance(&self, shard_index: usize, shard: &crate::store::Shard<K, V, H>)
   where
     K: Eq + Hash + Clone + Send,
     V: Send + Sync,
@@ -600,7 +546,6 @@ where
     }
 
     if let Some(signal) = &self.shared.maintenance_signal {
-      let shard_index = self.shared.get_shard_index(key);
       let _ = signal.try_send(shard_index);
     }
   }
@@ -722,18 +667,39 @@ where
         let shared = Arc::clone(&self.shared);
         async move {
           let shard = &shared.store.shards[i];
-          let guard = shard.map.read_async().await;
           let mut found = HashMap::new();
-
-          for key in shard_keys {
-            if let Some(entry) = guard.get(key.borrow()) {
-              if !entry.is_expired_coarse(shared.time_to_idle, &shared.clock) {
-                if shared.time_to_idle.is_some() {
-                  entry.update_last_accessed_coarse(&self.shared.clock);
+          let mut deferred = Vec::new();
+          {
+            let guard = shard.map.read_async().await;
+            for key in shard_keys {
+              if let Some(entry) = guard.get(key.borrow()) {
+                if !entry.is_expired_coarse(shared.time_to_idle, &shared.clock) {
+                  if shared.time_to_idle.is_some() {
+                    entry.update_last_accessed_coarse(&self.shared.clock);
+                  }
+                  match shared.builtin_reads {
+                    crate::shared::BuiltinReads::Ring => {
+                      let node = entry.node.load(Ordering::Relaxed);
+                      if !shard.read_ring.push(node) {
+                        deferred.push(DeferredRead::Node(node));
+                      }
+                    }
+                    crate::shared::BuiltinReads::Freq => guard.touch_read(entry.node.load(Ordering::Relaxed)),
+                    crate::shared::BuiltinReads::None => {
+                      if shared.track_reads && !shard.read_log.push(&key, entry.cost()) {
+                        deferred.push(DeferredRead::Key(key.clone(), entry.cost()));
+                      }
+                    }
+                  }
+                  found.insert(key.clone(), entry.value());
                 }
-                shared.get_cache_policy(&key).on_access(&key, entry.cost());
-                found.insert(key.clone(), entry.value());
               }
+            }
+          }
+          if !deferred.is_empty() {
+            let mut guard = shard.map.write_async().await;
+            for read in deferred {
+              guard.apply_deferred(read);
             }
           }
           found
@@ -749,8 +715,8 @@ where
 
     // One bulk update per multiget call, so a single stripe is fine.
     let hits = final_map.len() as u64;
-    self.shared.metrics.record_hits(0, hits);
-    self.shared.metrics.record_misses(0, total_reqs - hits);
+    self.shared.metrics.record_hits(hits);
+    self.shared.metrics.record_misses(total_reqs - hits);
 
     final_map
   }
@@ -802,7 +768,7 @@ where
             }
 
             // Insert and handle any replaced entry.
-            if let Some(old_entry) = guard.insert(key.clone(), Arc::new(new_cache_entry)) {
+            if let Some(old_entry) = guard.insert(key.clone(), new_cache_entry) {
               // Cancel timers for the replaced entry.
               if let Some(wheel) = &shard.timer_wheel {
                 if let Some(handle) = &old_entry.ttl_timer_handle {
@@ -812,21 +778,8 @@ where
                   wheel.cancel(handle);
                 }
               }
-              // Adjust cost for the replaced entry.
-              shared
-                .metrics
-                .current_cost
-                .fetch_sub(old_entry.cost(), std::sync::atomic::Ordering::Relaxed);
             }
 
-            // Update total cost and send write event to janitor.
-            shared
-              .metrics
-              .current_cost
-              .fetch_add(cost, std::sync::atomic::Ordering::Relaxed);
-            let _ = shard
-              .event_buffer_tx
-              .try_send(AccessEvent::Write(key, cost));
           }
         }
       });
@@ -875,8 +828,7 @@ where
                 }
               }
 
-              self.shared.get_cache_policy(&key).on_remove(&key);
-              shared
+                shared
                 .metrics
                 .invalidations
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -922,32 +874,27 @@ where
 {
   /// Forces a complete, task-safe maintenance pass across all shards.
   ///
-  /// Unlike opportunistic maintenance (which can be skipped), this guarantees
-  /// that all pending write admissions, read accesses, TTL/TTI expirations, and
-  /// capacity evictions are processed before returning.
+  /// Every pending read reaches the eviction policy and TTL/TTI expiration
+  /// runs before this returns. Capacity needs no pass: an insert evicts before
+  /// it returns.
   ///
   /// Primarily useful for deterministic testing and manual cache management.
   pub async fn run_maintenance(&self) {
-    use crate::task::janitor::{
-      Janitor, JanitorContext, COOPERATIVE_MAINTENANCE_DRAIN_LIMIT, perform_shard_maintenance,
-    };
+    use crate::task::janitor::{perform_shard_maintenance, Janitor, JanitorContext};
 
     let janitor_context = JanitorContext {
       store: Arc::clone(&self.shared.store),
       clock: Arc::clone(&self.shared.clock),
       metrics: Arc::clone(&self.shared.metrics),
-      cache_policy: self.shared.cache_policy.clone(),
-      capacity: self.shared.capacity,
       time_to_idle: self.shared.time_to_idle,
       notification_sender: self.shared.notification_sender.as_ref().map(|s| s.clone()),
     };
 
     for (i, shard) in self.shared.store.shards.iter().enumerate() {
       let _guard = shard.maintenance_lock.lock_async().await;
-      perform_shard_maintenance(shard, i, &janitor_context, COOPERATIVE_MAINTENANCE_DRAIN_LIMIT);
+      perform_shard_maintenance(shard);
       Janitor::cleanup_ttl_for_shard(shard, i, &janitor_context);
       Janitor::cleanup_tti_for_shard(shard, i, &janitor_context);
-      Janitor::cleanup_capacity_for_shard(shard, i, &janitor_context);
     }
   }
 
@@ -970,14 +917,14 @@ where
     let mut deferred = None;
     let hit_value = {
       let guard = shard_ref.map.read_async().await;
-      if let Some((found_key, entry_in_guard)) = guard.get_key_value(key) {
+      if let Some((found_key, entry_in_guard)) = guard.get_key_value_hashed(key, hash) {
         let expires_at_nanos = entry_in_guard.expires_at.load(Ordering::Relaxed);
 
         if expires_at_nanos == 0 {
           // No TTL, fresh if TTI has not expired.
           if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
-            deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
-            self.shared.metrics.record_hits(shard_index, 1);
+            deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index, &guard);
+            self.shared.metrics.record_hits(1);
             Some(entry_in_guard.value())
           } else {
             None
@@ -987,8 +934,8 @@ where
           if now_nanos < expires_at_nanos {
             // CASE A: Fresh Hit
             if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
-              deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index);
-              self.shared.metrics.record_hits(shard_index, 1);
+              deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index, &guard);
+              self.shared.metrics.record_hits(1);
               Some(entry_in_guard.value())
             } else {
               None
@@ -1010,11 +957,8 @@ where
       }
     };
 
-    if let Some((k, cost)) = deferred {
-      shard_ref
-        .read_access_batcher
-        .record_access_async(k, hash, cost)
-        .await;
+    if let Some(read) = deferred {
+      shard_ref.map.write_async().await.apply_deferred(read);
     }
 
     if let Some(val) = hit_value {
@@ -1068,13 +1012,13 @@ where
       //    The initial optimistic raw_get in fetch_with handles the "already cached" case.
       if let Some(existing_future) = pending.get(key) {
         // We will get a value, so this counts as a HIT for us.
-        self.shared.metrics.record_hits(index, 1);
+        self.shared.metrics.record_hits(1);
         am_leader = false;
         break existing_future.clone();
       }
 
       // 3. We are the "leader". This is the ONLY time a MISS is recorded.
-      self.shared.metrics.record_misses(index, 1);
+      self.shared.metrics.record_misses(1);
       // Create a new future, insert it.
       let new_future = Arc::new(LoadFuture::new());
       pending.insert(key.clone(), new_future.clone());

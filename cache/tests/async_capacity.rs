@@ -4,7 +4,7 @@ use std::time::Duration;
 const JANITOR_TICK: Duration = Duration::from_millis(50);
 
 #[tokio::test]
-async fn test_async_janitor_evicts_on_capacity() {
+async fn test_async_insert_evicts_on_capacity() {
   let capacity = 10;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(capacity)
@@ -18,11 +18,7 @@ async fn test_async_janitor_evicts_on_capacity() {
   for i in 0..11 {
     cache.insert(i, i, 1).await;
   }
-  assert_eq!(cache.metrics().current_cost, 11);
-
-  cache.run_maintenance().await;
-
-  assert_eq!(cache.metrics().current_cost, capacity);
+  assert_eq!(cache.metrics().current_cost, capacity, "the eleventh insert evicts before it returns");
   assert!(
     cache.fetch(&0).await.is_none(),
     "Key 0 should have been evicted"
@@ -32,7 +28,7 @@ async fn test_async_janitor_evicts_on_capacity() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
+async fn test_async_insert_evicts_what_it_cannot_fit() {
   let capacity = 5;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(capacity)
@@ -44,12 +40,9 @@ async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
     .unwrap();
 
   cache.insert(1, 1, 5).await;
+  // An item of cost 10 cannot fit in a capacity of 5: LRU evicts item 1 and
+  // then the new item before the insert returns.
   cache.insert(2, 2, 10).await;
-  assert_eq!(cache.metrics().current_cost, 15);
-
-  cache.run_maintenance().await;
-
-  // Assert the final state.
   assert_eq!(cache.metrics().current_cost, 0);
   assert!(
     cache.fetch(&1).await.is_none(),
@@ -63,7 +56,7 @@ async fn test_async_insert_is_non_blocking_and_janitor_cleans_up() {
 }
 
 #[tokio::test]
-async fn test_async_janitor_evicts_on_capacity_with_lru() {
+async fn test_async_insert_evicts_on_capacity_with_lru() {
   let capacity = 10;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(capacity)
@@ -77,10 +70,6 @@ async fn test_async_janitor_evicts_on_capacity_with_lru() {
   for i in 0..=10 {
     cache.insert(i, i, 1).await;
   }
-  assert_eq!(cache.metrics().current_cost, 11);
-
-  cache.run_maintenance().await;
-
   assert_eq!(cache.metrics().current_cost, capacity);
   assert!(
     cache.fetch(&0).await.is_none(),
@@ -97,11 +86,12 @@ async fn test_async_janitor_evicts_on_capacity_with_lru() {
 }
 
 #[tokio::test]
-async fn test_async_janitor_evicts_on_capacity_with_default_tinylfu() {
+async fn test_async_insert_evicts_on_capacity_with_tinylfu() {
   let cache_capacity = 3;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(cache_capacity)
     .shards(1)
+    .tinylfu()
     .janitor_tick_interval(JANITOR_TICK)
     .maintenance_chance(1) 
     .build_async()
@@ -111,21 +101,16 @@ async fn test_async_janitor_evicts_on_capacity_with_default_tinylfu() {
   cache.insert(2, 20, 1).await;
   cache.insert(3, 30, 1).await;
 
-  // Process initial writes so the policy knows about all three items.
-  cache.run_maintenance().await;
   assert_eq!(cache.metrics().current_cost, cache_capacity);
 
   // Make items 2 and 3 "hotter" than item 1.
   cache.fetch(&2).await;
   cache.fetch(&3).await;
 
-  // Replace item 1 with a higher-cost version, overflowing the cache.
-  // maintenance_chance(1) processes the re-admit of key 1 and the pending reads
-  // for keys 2 and 3 in the same pass, so the policy state is updated correctly.
-  cache.insert(1, 11, 2).await; // Total cost is now 2 (item 1) + 1 (item 2) + 1 (item 3) = 4.
-  assert_eq!(cache.metrics().current_cost, cache_capacity + 1);
-
-  cache.run_maintenance().await;
+  // Replacing item 1 with a cost-2 version would take the cache to 4, so the
+  // insert applies the pending reads of 2 and 3 and evicts one cost-1 item
+  // before returning.
+  cache.insert(1, 11, 2).await;
 
   let final_cost = cache.metrics().current_cost;
   assert!(
@@ -195,7 +180,7 @@ async fn test_async_no_eviction_if_at_capacity() {
 }
 
 #[tokio::test]
-async fn test_async_janitor_cleans_up_large_overflow() {
+async fn test_async_insert_evicts_a_large_overflow() {
   let capacity = 5;
   let cache = CacheBuilder::<i32, i32>::new()
     .capacity(capacity)
@@ -207,12 +192,10 @@ async fn test_async_janitor_cleans_up_large_overflow() {
     .unwrap();
 
   cache.insert(1, 1, 1).await;
-  cache.insert(2, 2, 10).await;
-  assert_eq!(cache.metrics().current_cost, 11);
-
   let evictions_before = cache.metrics().evicted_by_capacity;
-
-  cache.run_maintenance().await;
+  // An item of cost 10 overflows a capacity of 5 even alone, so the insert
+  // evicts item 1 and then the new item before returning.
+  cache.insert(2, 2, 10).await;
 
   let evictions_after = cache.metrics().evicted_by_capacity;
   assert_eq!(evictions_after - evictions_before, 2);

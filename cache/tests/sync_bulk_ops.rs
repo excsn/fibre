@@ -114,37 +114,17 @@ fn test_sync_multi_insert_triggers_eviction() {
   let items: Vec<_> = (0..15).map(|i| (i, i.to_string(), 1)).collect();
   cache.multi_insert(items);
 
-  // The cache is temporarily over capacity.
-  assert_eq!(cache.metrics().current_cost, 15);
-
-  // Use a polling loop to wait for the janitor to converge.
-  let deadline = std::time::Instant::now() + Duration::from_secs(2);
-  let mut final_cost = 0;
-  loop {
-    final_cost = cache.metrics().current_cost;
-    if final_cost <= 10 {
-      break; // Success! Cost is at or below capacity.
-    }
-    if std::time::Instant::now() > deadline {
-      panic!(
-        "Cache cost did not converge to capacity in time. Final cost: {}",
-        final_cost
-      );
-    }
-    thread::sleep(Duration::from_millis(50));
-  }
-
+  // Each shard evicts as it goes over its share, so the batch returns at
+  // or below capacity.
+  let final_cost = cache.metrics().current_cost;
   assert!(
     final_cost <= 10,
-    "Janitor should bring cost to at or below capacity. Final cost: {}",
+    "multi_insert should leave cost at or below capacity. Final cost: {}",
     final_cost
   );
-
-  // Because proportional cross-shard eviction uses ceiling math,
-  // it might occasionally evict slightly more than exactly 5 items.
   assert!(
     cache.metrics().evicted_by_capacity >= 5,
-    "Janitor should evict at least 5 items"
+    "multi_insert should evict at least 5 items"
   );
 
   let mut total_keys = 0;

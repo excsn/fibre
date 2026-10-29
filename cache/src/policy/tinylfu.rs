@@ -19,6 +19,7 @@ struct TinyLfuState<K: Eq + Hash + Clone> {
 pub struct TinyLfuPolicy<K: Eq + Hash + Clone> {
   state: Mutex<TinyLfuState<K>>,
   window_target_cost: u64,
+  main_cache_cost: u64,
   main_prot_capacity: u64,
 }
 
@@ -33,6 +34,12 @@ impl<K: Eq + Hash + Clone + std::fmt::Debug> std::fmt::Debug for TinyLfuState<K>
 
 impl<K: Eq + Hash + Clone> TinyLfuPolicy<K> {
   pub fn new(total_cache_cost_capacity: u64) -> Self {
+    Self::with_sketch_hasher(total_cache_cost_capacity, ahash::RandomState::new())
+  }
+
+  /// The sketch hashes keys with `sketch_hasher`; two policies built with the
+  /// same hasher make the same decisions on the same operations.
+  pub(crate) fn with_sketch_hasher(total_cache_cost_capacity: u64, sketch_hasher: ahash::RandomState) -> Self {
     let cms_reset_threshold = (total_cache_cost_capacity * 10).max(100);
 
     // Per the W-TinyLFU paper, the window is ~1% of the total cache.
@@ -57,9 +64,10 @@ impl<K: Eq + Hash + Clone> TinyLfuPolicy<K> {
       state: Mutex::new(TinyLfuState {
         window: LruList::new(),
         main: SlruState::new_with_capacity(main_cache_cost),
-        sketch: cms::CountMinSketch::new(cms_reset_threshold as usize),
+        sketch: cms::CountMinSketch::new(cms_reset_threshold as usize, sketch_hasher),
       }),
       window_target_cost,
+      main_cache_cost,
       main_prot_capacity,
     }
   }
@@ -73,11 +81,11 @@ where
   fn on_access(&self, key: &K, cost: u64) {
     let mut state = self.state.lock();
     state.sketch.increment(key);
-    if state.window.contains(key) {
-      state.window.push_front(key.clone(), cost);
+    if let Some(&index) = state.window.lookup.get(key) {
+      state.window.touch_index(index, cost);
       return;
     }
-    state.main.access_internal(key, cost, self.main_prot_capacity);
+    state.main.touch(key, cost, self.main_prot_capacity);
   }
 
   fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K> {
@@ -85,10 +93,7 @@ where
     state.sketch.increment(key);
 
     // If the item is already in the main cache, this is just an access/update.
-    let is_in_main =
-      state.main.probationary.contains(key) || state.main.protected.contains(key);
-    if is_in_main {
-      state.main.access_internal(key, cost, self.main_prot_capacity);
+    if state.main.touch(key, cost, self.main_prot_capacity) {
       return AdmissionDecision::Admit;
     }
 
@@ -103,7 +108,13 @@ where
         None => break,
       };
 
-      // All data is now under one lock - no drop/re-acquire needed.
+      let main_cost =
+        state.main.probationary.current_total_cost() + state.main.protected.current_total_cost();
+      if main_cost + candidate_cost <= self.main_cache_cost {
+        state.main.admit_internal(candidate_key, candidate_cost);
+        continue;
+      }
+
       let main_victim_key_opt = state.main.peek_lru();
       let admit_candidate = main_victim_key_opt
         .as_ref()
@@ -159,30 +170,40 @@ mod cms {
   pub(super) struct CountMinSketch {
     // Plain usize counters - synchronization is handled by the outer TinyLfuState Mutex.
     counters: Vec<Vec<usize>>,
-    hashers: Vec<ahash::RandomState>,
+    hasher: ahash::RandomState,
+    mask: usize,
     increments: usize,
     capacity: usize,
   }
 
   impl CountMinSketch {
-    pub fn new(reset_threshold: usize) -> Self {
+    pub fn new(reset_threshold: usize, hasher: ahash::RandomState) -> Self {
       const DEPTH: usize = 4;
       let width = (reset_threshold * 2 / DEPTH).max(256).next_power_of_two();
       let counters = (0..DEPTH).map(|_| vec![0usize; width]).collect();
-      let hashers = (0..DEPTH).map(|_| ahash::RandomState::new()).collect();
       Self {
         counters,
-        hashers,
+        hasher,
+        mask: width - 1,
         increments: 0,
         capacity: reset_threshold,
       }
     }
 
+    /// Row `i` uses `h1 + i * h2` from one hash of the key, mixed as
+    /// `hpolicy::Sketch` mixes the shard hash.
+    #[inline]
+    fn indexes<K: Hash>(&self, key: &K) -> impl Iterator<Item = (usize, usize)> + use<K> {
+      let mut hasher = self.hasher.build_hasher();
+      key.hash(&mut hasher);
+      let h = crate::hpolicy::fmix64(hasher.finish());
+      let (h1, h2) = (h as usize, ((h >> 32) as usize) | 1);
+      let (rows, mask) = (self.counters.len(), self.mask);
+      (0..rows).map(move |i| (i, h1.wrapping_add(i.wrapping_mul(h2)) & mask))
+    }
+
     pub fn increment<K: Hash>(&mut self, key: &K) {
-      for i in 0..self.counters.len() {
-        let mut hasher = self.hashers[i].build_hasher();
-        key.hash(&mut hasher);
-        let index = hasher.finish() as usize % self.counters[i].len();
+      for (i, index) in self.indexes(key) {
         self.counters[i][index] += 1;
       }
       self.increments += 1;
@@ -193,10 +214,7 @@ mod cms {
 
     pub fn estimate<K: Hash>(&self, key: &K) -> usize {
       let mut min_count = usize::MAX;
-      for i in 0..self.counters.len() {
-        let mut hasher = self.hashers[i].build_hasher();
-        key.hash(&mut hasher);
-        let index = hasher.finish() as usize % self.counters[i].len();
+      for (i, index) in self.indexes(key) {
         min_count = min_count.min(self.counters[i][index]);
       }
       min_count
@@ -244,8 +262,10 @@ mod tests {
   fn test_window_overflow_causes_rejection() {
     let policy: TinyLfuPolicy<i32> = TinyLfuPolicy::new(101); // window=1, main=100
 
-    // 1. Prime the main cache with a high-frequency item (key 100).
-    policy.state.lock().main.admit_internal(100, 1);
+    // 1. Fill the main cache, with key 100 as its high-frequency LRU victim.
+    for k in 100..200 {
+      policy.state.lock().main.admit_internal(k, 1);
+    }
     for _ in 0..5 {
       policy.state.lock().sketch.increment(&100);
     }
@@ -297,8 +317,10 @@ mod tests {
     // Setup: TinyLfu with window=1, main=100.
     let policy: TinyLfuPolicy<i32> = TinyLfuPolicy::new(101); // window_target_cost = 1
 
-    // 1. Prime the main cache with a "hot victim" (key 100, freq=10).
-    policy.state.lock().main.admit_internal(100, 1);
+    // 1. Fill the main cache, with key 100 as its hot LRU victim (freq=10).
+    for k in 100..200 {
+      policy.state.lock().main.admit_internal(k, 1);
+    }
     for _ in 0..10 {
       policy.state.lock().sketch.increment(&100);
     }

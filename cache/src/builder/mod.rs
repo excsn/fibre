@@ -17,12 +17,10 @@ use crate::task::notifier::Notifier;
 use crate::{time, EvictionListener, TaskSpawner};
 
 use core::fmt;
-use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,10 +62,12 @@ pub struct CacheBuilder<K: Send, V: Send, H = ahash::RandomState> {
   timer_wheel_size: Option<usize>,
   listener: Option<Arc<dyn EvictionListener<K, V>>>,
   policy_factory: Option<Arc<dyn Fn() -> Box<dyn CachePolicy<K, V>> + Send + Sync>>,
+  builtin_choice: crate::select::BuiltinChoice,
   loader: Option<Loader<K, V>>,
   spawner: Option<Arc<dyn TaskSpawner>>,
   maintenance_probability_denominator: u32,
   maintenance_on_introspection: bool,
+  shards_set: bool,
   _key_marker: PhantomData<K>,
   _value_marker: PhantomData<V>,
 }
@@ -104,6 +104,7 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
   pub fn shards(mut self, shards: usize) -> Self {
     // Ensure shards is at least 1 and a power of two for fast bitwise ANDing.
     self.shards = shards.max(1).next_power_of_two();
+    self.shards_set = true;
     self
   }
 
@@ -156,6 +157,23 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
     F: Fn() -> Box<dyn CachePolicy<K, V>> + Send + Sync + 'static,
   {
     self.policy_factory = Some(Arc::new(factory));
+    self
+  }
+
+  /// Sets the eviction policy to S3-FIFO, run inside each shard. This is the
+  /// default for a bounded cache; the call replaces any `cache_policy_factory`
+  /// or `tinylfu` set before it.
+  pub fn s3fifo(mut self) -> Self {
+    self.policy_factory = None;
+    self.builtin_choice = crate::select::BuiltinChoice::S3Fifo;
+    self
+  }
+
+  /// Sets the eviction policy to W-TinyLFU, run inside each shard. Replaces any
+  /// `cache_policy_factory` or `s3fifo` set before it.
+  pub fn tinylfu(mut self) -> Self {
+    self.policy_factory = None;
+    self.builtin_choice = crate::select::BuiltinChoice::TinyLfu;
     self
   }
 
@@ -303,6 +321,9 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
   }
 }
 
+/// Smallest cost per shard the default shard count allows for a bounded cache.
+pub const MIN_COST_PER_SHARD: u64 = 64;
+
 // --- Default Constructor ---
 impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
   /// Creates a new `CacheBuilder` with default settings.
@@ -319,10 +340,12 @@ impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
       timer_wheel_size: None,          // Will default to 60 if not set
       listener: None,
       policy_factory: None,
+      builtin_choice: crate::select::BuiltinChoice::S3Fifo,
       loader: None,
       spawner: None,
       maintenance_probability_denominator: maintenance_frequency::RESPONSIVE,
       maintenance_on_introspection: false,
+      shards_set: false,
       _key_marker: PhantomData,
       _value_marker: PhantomData,
     }
@@ -407,32 +430,28 @@ where
       .unwrap_or(Duration::from_secs(1));
     let wheel_size = self.timer_wheel_size.unwrap_or(60);
 
-    let store = Arc::new(ShardedStore::new(
-      self.shards,
-      self.hasher.clone(),
-      wheel_size,
-      tick_duration,
-      has_timer_logic,
-    ));
-    let metrics = Arc::new(Metrics::new(self.shards));
+    if !self.shards_set && self.capacity != u64::MAX {
+      let max_shards = (self.capacity / MIN_COST_PER_SHARD).max(1);
+      let max_shards = if max_shards.is_power_of_two() {
+        max_shards
+      } else {
+        max_shards.next_power_of_two() / 2
+      };
+      self.shards = self.shards.min(max_shards as usize);
+    }
 
+    let metrics = Arc::new(Metrics::new(self.shards));
     // Create the per-shard eviction policies using the factory.
     let has_custom_policy = self.policy_factory.is_some();
-    let factory = self.policy_factory.take().unwrap_or_else(|| {
-      // If the user did not provide a factory, create a default one
-      // that constructs our default TinyLfu policy.
-      let capacity = self.capacity;
-      let shards = self.shards;
-      Arc::new(move || {
-        if capacity == u64::MAX {
-          Box::new(crate::policy::null::NullPolicy)
-        } else {
-          // Each sharded policy is responsible for a fraction of the total capacity.
-          let shard_capacity = (capacity as f64 / shards as f64).ceil() as u64;
-          Box::new(crate::policy::tinylfu::TinyLfuPolicy::new(shard_capacity))
-        }
-      })
-    });
+    let builtin_capacity = (!has_custom_policy && self.capacity != u64::MAX)
+      .then(|| (self.capacity as f64 / self.shards as f64).ceil() as u64);
+    if builtin_capacity.is_some() {
+      self.policy_factory = Some(Arc::new(|| Box::new(crate::policy::null::NullPolicy)));
+    }
+    let factory = self
+      .policy_factory
+      .take()
+      .unwrap_or_else(|| Arc::new(|| Box::new(crate::policy::null::NullPolicy)));
 
     // Call the factory `N` times to create `N` independent policy instances.
     // The `Box` is converted to an `Arc` for internal sharing with the janitor.
@@ -442,24 +461,40 @@ where
       .into_boxed_slice();
 
     let track_reads = cache_policy.iter().any(|p| p.uses_access_events());
-
     let (notifier, notification_sender) = if let Some(listener) = &self.listener {
       let (notifier, sender) = Notifier::spawn(listener.clone());
       (Some(notifier), Some(sender))
     } else {
       (None, None)
     };
+    let store = Arc::new(ShardedStore::new(
+      self.shards,
+      self.hasher.clone(),
+      wheel_size,
+      tick_duration,
+      has_timer_logic,
+      self.capacity,
+      &cache_policy,
+      builtin_capacity.map(|c| (self.builtin_choice, c)),
+      Arc::new(crate::store::EvictCtx {
+        notify: notification_sender.as_ref().map(|s| {
+          let s = s.clone();
+          Box::new(move |k: K, v: Arc<V>| {
+            let _ = s.try_send((k, v, crate::listener::EvictionReason::Capacity));
+          }) as Box<dyn Fn(K, Arc<V>) + Send + Sync>
+        }),
+      }),
+    ));
+    metrics.attach_shards(store.shards.iter().map(|s| s.counters.clone()).collect());
+
+
 
     // --- Populate from Snapshot if it exists ---
     #[cfg(feature = "serde")]
     if let Some(snap) = snapshot {
       let now_duration = time::now_duration();
-      let mut total_cost = 0;
       // Group entries by shard to minimize locking.
-      let mut entries_by_shard: Vec<HashMap<K, Arc<crate::entry::CacheEntry<V>>, H>> = (0..self
-        .shards)
-        .map(|_| HashMap::with_hasher(self.hasher.clone()))
-        .collect();
+      let mut entries_by_shard: Vec<Vec<(K, crate::entry::CacheEntry<V>)>> = (0..self.shards).map(|_| Vec::new()).collect();
 
       for p_entry in snap.entries {
         let expires_at = p_entry.ttl_remaining.map(|ttl| now_duration + ttl);
@@ -469,20 +504,18 @@ where
           expires_at,
           self.time_to_idle,
         );
-        total_cost += p_entry.cost;
 
         let hash = hash_key(&self.hasher, &p_entry.key);
         entry.key_hash = hash;
         let index = hash as usize % self.shards;
-        entries_by_shard[index].insert(p_entry.key, Arc::new(entry));
+        entries_by_shard[index].push((p_entry.key, entry));
       }
-      metrics.current_cost.store(total_cost, Ordering::Relaxed);
 
       // Populate the store shard by shard.
       for (i, entries) in entries_by_shard.into_iter().enumerate() {
         if !entries.is_empty() {
           let mut guard = store.shards[i].map.write();
-          *guard = entries;
+          guard.replace_all(entries);
         }
       }
     }
@@ -492,8 +525,6 @@ where
       store: Arc::clone(&store),
       clock: Arc::clone(&clock),
       metrics: Arc::clone(&metrics),
-      cache_policy: cache_policy.clone(),
-      capacity: self.capacity,
       time_to_idle: self.time_to_idle,
       notification_sender: notification_sender.as_ref().map(|val| val.clone()),
     };
@@ -529,7 +560,6 @@ where
       store,
       clock,
       metrics,
-      cache_policy,
       janitor,
       capacity: self.capacity,
       time_to_live: self.time_to_live,
@@ -543,6 +573,10 @@ where
       maintenance_probability_denominator,
       maintenance_on_introspection: self.maintenance_on_introspection,
       track_reads,
+      builtin_reads: match builtin_capacity {
+        None => crate::shared::BuiltinReads::None,
+        Some(_) => crate::select::reads(self.builtin_choice),
+      },
       maintenance_signal,
     }))
   }

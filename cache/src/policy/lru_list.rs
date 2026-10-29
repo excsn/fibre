@@ -1,4 +1,5 @@
-use std::{collections::HashMap, hash::Hash};
+use ahash::HashMap;
+use std::hash::Hash;
 
 use generational_arena::{Arena, Index};
 
@@ -30,7 +31,7 @@ impl<K: Eq + Hash + Clone> LruList<K> {
   pub fn new() -> Self {
     Self {
       nodes: Arena::new(),
-      lookup: HashMap::new(),
+      lookup: HashMap::default(),
       head: None,
       tail: None,
       current_cost: 0,
@@ -88,24 +89,28 @@ impl<K: Eq + Hash + Clone> LruList<K> {
 
   pub fn push_front(&mut self, key: K, cost: u64) {
     if let Some(&index) = self.lookup.get(&key) {
-      // Item exists, update its cost and move to front.
-      let old_cost = self.nodes[index].cost;
-      self.current_cost = self.current_cost.saturating_sub(old_cost) + cost;
-      self.nodes[index].cost = cost;
-      self.move_to_front(&key);
+      self.touch_index(index, cost);
     } else {
-      // New item, insert it.
-      let new_node = Node {
-        key: key.clone(),
-        cost,
-        next: None,
-        prev: None,
-      };
-      let index = self.nodes.insert(new_node);
-      self.lookup.insert(key, index);
-      self.current_cost += cost;
+      self.push_new(key, cost);
+    }
+  }
+
+  pub(crate) fn touch_index(&mut self, index: Index, cost: u64) {
+    let old_cost = self.nodes[index].cost;
+    self.current_cost = self.current_cost.saturating_sub(old_cost) + cost;
+    self.nodes[index].cost = cost;
+    if self.head != Some(index) {
+      self.unlink(index);
       self.push_front_node(index);
     }
+  }
+
+  /// Inserts `key` at the front. The caller guarantees it is not in the list.
+  pub(crate) fn push_new(&mut self, key: K, cost: u64) {
+    let index = self.nodes.insert(Node { key: key.clone(), cost, next: None, prev: None });
+    self.lookup.insert(key, index);
+    self.current_cost += cost;
+    self.push_front_node(index);
   }
 
   pub fn move_to_front(&mut self, key: &K) {

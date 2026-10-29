@@ -27,8 +27,9 @@ This guide provides a detailed overview of `fibre_cache`'s features, core concep
 *   **`Cache` and `AsyncCache` Handles**: These are the two primary structs for interacting with the cache. `Cache` provides a synchronous, blocking API, while `AsyncCache` provides a non-blocking, `async` API. They are lightweight handles that can be cloned cheaply and share the same underlying cache instance.
 *   **Sharding**: To achieve high concurrency, the cache's data is partitioned across multiple shards. Each shard is managed by its own lock, minimizing contention when different keys are accessed by different threads.
 *   **Capacity and Cost**: A `fibre_cache` instance can be "bounded" by a `capacity`. Each item inserted into the cache has a `cost` (a `u64` value). The cache is considered over capacity when the sum of all item costs exceeds the configured capacity. For simple cases where all items are the same size, a cost of `1` per item is common.
-*   **Background Janitor**: A dedicated background thread, the "janitor," is responsible for all cleanup tasks. This includes removing items that have expired due to Time-to-Live (TTL) or Time-to-Idle (TTI), and evicting items when the cache is over capacity. This design ensures that user-facing operations like `get` and `insert` remain fast and predictable. Reads check expiry against a clock the janitor refreshes once per tick, 1 s by default, so `get`, `fetch` and `peek` can return an entry for up to one tick after its TTL or TTI deadline. `iter()` and snapshots use the exact clock. `janitor_tick_interval` tightens the bound.
-*   **Eviction Policies**: The logic for deciding which items to evict when the cache is full is determined by a `CachePolicy`. The library provides a wide range of modern and classic policies and allows for custom implementations. For bounded caches, the default is `TinyLfuPolicy`, a high-performance, scan-resistant policy suitable for most workloads.
+*   **Capacity at insert**: An insert hands the write to its shard's eviction policy under the shard lock and removes what the policy evicts before it returns, so the cache holds its capacity between operations. Reads are logged per shard and reach the policy, in order, before the next write to that shard.
+*   **Background Janitor**: A dedicated background thread, the "janitor," removes items that have expired due to Time-to-Live (TTL) or Time-to-Idle (TTI). Reads check expiry against a clock the janitor refreshes once per tick, 1 s by default, so `get`, `fetch` and `peek` can return an entry for up to one tick after its TTL or TTI deadline. `iter()` and snapshots use the exact clock. `janitor_tick_interval` tightens the bound.
+*   **Eviction Policies**: The logic for deciding which items to evict when the cache is full is determined by a `CachePolicy`. The library provides a wide range of modern and classic policies and allows for custom implementations. For bounded caches, the default is S3-FIFO, a cheap queue-based policy with a hit ratio close to TinyLFU's on skewed workloads; `tinylfu()` selects W-TinyLFU instead.
 
 ## API Patterns
 
@@ -189,11 +190,13 @@ All caches must be configured and created via the `CacheBuilder`. It provides a 
 *   `.janitor_tick_interval(Duration)`: Sets how often the janitor wakes, defaulting to 1 s. Reads can return an entry for up to one tick past its TTL or TTI deadline, so a shorter tick tightens that bound at the cost of more background work.
 *   `.stale_while_revalidate(Duration)`: Configures a grace period after TTL for serving stale data while refreshing it in the background. Requires a loader.
 *   `.cache_policy_factory(impl Fn)`: Sets a custom eviction policy via a factory function. See [Eviction Policies](#eviction-policies).
+*   `.s3fifo()`: Sets the eviction policy to S3-FIFO, run inside each shard. This is the default for a bounded cache. See [Eviction Policies](#eviction-policies).
+*   `.tinylfu()`: Sets the eviction policy to W-TinyLFU, run inside each shard.
 *   `.null_policy()`: Sets the eviction policy to the no-op `NullPolicy`, which never evicts. Shorthand for `.cache_policy_factory(|| Box::new(NullPolicy))`.
 *   `.loader(impl Fn)`: Sets a synchronous loader function for `Cache::fetch_with`.
 *   `.async_loader(impl Fn)`: Sets an asynchronous loader function for `AsyncCache::fetch_with`.
 *   `.eviction_listener(impl EvictionListener)`: Registers a callback for item evictions. See [Eviction Listener](#eviction-listener).
-*   `.shards(usize)`: Sets the number of concurrent shards (will be rounded to the next power of two). Defaults to `num_cpus * 8`.
+*   `.shards(usize)`: Sets the number of concurrent shards (will be rounded to the next power of two). Defaults to `num_cpus * 8`, lowered for a bounded cache so that each shard holds at least 64 cost units: a capacity of 100 runs on one shard, 1000 on eight, 8192 and above on the full default. Fewer shards means concurrent reads on a small cache contend more and in exchange the capacity holds exactly. Calling `.shards()` switches the derivation off.
 *   `.maintenance_on_introspection(bool)`: When `true`, introspection methods (`metrics()`, `iter()`, `iter_snapshot()`, `to_snapshot()`, and their async equivalents) will flush all pending read-access events before returning. This ensures the eviction policy's state is fully current. Disabled by default; most useful in tests or monitoring pipelines that need deterministic eviction metadata.
 
 **Build Methods:**
@@ -257,10 +260,10 @@ These methods are more efficient than calling their singular counterparts in a l
 
 ### Maintenance API
 
-By default, `fibre_cache` uses a background janitor thread for periodic cleanup and probabilistic opportunistic maintenance on writes. For scenarios that require deterministic, on-demand flushing - primarily tests - two explicit maintenance methods are provided.
+Capacity is enforced inside `insert`, so no maintenance pass is needed for it. Reads reach the eviction policy before the next write to their shard. A background janitor thread expires items by TTL and TTI. For scenarios that need the policy's view of reads to be current right now - primarily tests - two explicit maintenance methods are provided.
 
 *   `run_maintenance(&self)` / `async run_maintenance(&self)`
-    *   Forces a complete maintenance pass over all shards. This includes draining all pending write-admission and read-access events, running TTL/TTI expiration, and enforcing capacity. The call blocks (or, for `AsyncCache`, yields) until the pass completes. Unlike opportunistic maintenance, this is never skipped.
+    *   Forces a maintenance pass over all shards: every pending read-access event reaches the policy and TTL/TTI expiration runs. The call blocks (or, for `AsyncCache`, yields) until the pass completes.
 
 *   `maintenance_on_introspection(bool)` *(builder option)*
     *   When enabled, the cache automatically runs a partial flush - draining pending read-access events - before every call to `metrics()`, `iter()`, `iter_snapshot()`, `to_snapshot()`, and their async equivalents. This ensures that the eviction policy's internal state (access frequencies, recency order) reflects all reads that have been performed, giving accurate and up-to-date introspection results.
@@ -270,7 +273,7 @@ By default, `fibre_cache` uses a background janitor thread for periodic cleanup 
 | | `run_maintenance` | `maintenance_on_introspection` |
 |---|---|---|
 | Triggers | Explicit call | Automatic on each introspection |
-| Scope | All maintenance (writes, reads, TTL, capacity) | Read-access flush only |
+| Scope | Reads, TTL and TTI | Read-access flush only |
 | Primary use case | Deterministic test assertions | Monitoring / metrics pipelines |
 
 ```rust
@@ -282,9 +285,10 @@ let cache = CacheBuilder::<u32, &str>::new()
 
 cache.insert(1, "a", 1);
 cache.insert(2, "b", 1);
-cache.insert(3, "c", 1); // triggers on_hit for policy admission
+cache.insert(3, "c", 1);
+cache.fetch(&1); // logged for the policy, applied at the next write
 
-// Force all pending events to be processed before asserting.
+// Apply the pending read before asserting on the policy's view.
 cache.run_maintenance();
 assert_eq!(cache.metrics().current_cost, 3);
 
@@ -309,7 +313,8 @@ assert_eq!(m.hits, 1);
 
 You can provide a custom eviction policy to the `CacheBuilder`. The library provides several high-performance implementations, each with different trade-offs:
 
-*   **`TinyLfuPolicy`**: (Default for bounded caches) A sophisticated policy that protects frequently used items from being evicted by infrequently used items, making it scan-resistant. **Best for general-purpose workloads.**
+*   **`S3FifoPolicy`**: (Default for bounded caches) A small FIFO queue in front of a main FIFO queue with a ghost set of recently evicted keys; a key read more than once in the small queue moves to main. Cheaper per operation than TinyLFU with a similar hit ratio on skewed workloads.
+*   **`TinyLfuPolicy`**: A sophisticated policy that protects frequently used items from being evicted by infrequently used items, making it scan-resistant. Select it with `.tinylfu()` on the builder. Its reads cost more than S3-FIFO's: each one is a frequency sketch update and a list move, applied under the shard's write lock before the next write.
 *   **`SievePolicy`**: A very recent, simple, and high-performance policy that provides excellent scan resistance with minimal memory overhead. A strong alternative to TinyLFU for its simplicity and performance.
 *   **`ArcPolicy`**: Adaptive Replacement Cache. A sophisticated policy that balances between recency (LRU) and frequency (LFU) to offer high hit rates under mixed workloads.
 *   **`SlruPolicy`**: Segmented LRU. Divides the cache into probationary and protected segments to provide better scan resistance than plain LRU.
@@ -317,6 +322,25 @@ You can provide a custom eviction policy to the `CacheBuilder`. The library prov
 *   **`FifoPolicy`**: First-In, First-Out. Evicts items in the order they were inserted, ignoring access patterns.
 *   **`ClockPolicy`**: An approximation of LRU that offers better performance under high concurrency by avoiding list manipulations on access.
 *   **`RandomPolicy`**: Evicts a random item when at capacity. (Requires `random` feature).
+
+S3-FIFO and TinyLFU are also built into the cache: with no `cache_policy_factory` the cache runs the chosen one inside each shard on node handles instead of keys, which is faster than the same policy through the factory. Both forms make the same decision on every operation.
+
+```rust
+use fibre_cache::CacheBuilder;
+
+// S3-FIFO, the default for a bounded cache.
+let cache = CacheBuilder::<u64, String>::new()
+    .capacity(10_000)
+    .build()
+    .unwrap();
+
+// W-TinyLFU instead.
+let cache = CacheBuilder::<u64, String>::new()
+    .capacity(10_000)
+    .tinylfu()
+    .build()
+    .unwrap();
+```
 
 ### Eviction Listener
 
