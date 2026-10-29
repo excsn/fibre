@@ -79,4 +79,17 @@ Unreliable, sample spread over 2x on a 1×1 cell where the rest of the matrix ho
 
 Native batch: fibre none, flume receive only, tokio receive only.
 
+## Implementations
+
+| Library | Built with |
+| :--- | :--- |
+| fibre | `fibre::mpsc::bounded(n)`, `bounded_async(n)`, `unbounded()`, `unbounded_async()`, `rendezvous::rendezvous()`, `rendezvous::rendezvous_async()` |
+| async-channel | `async_channel::bounded(n)`, `unbounded()` |
+| crossbeam | `crossbeam_channel::bounded(n)`, `unbounded()`, `bounded(0)` |
+| crossfire | `crossfire::mpsc::bounded_blocking(n)`, `bounded_async(n)`, `unbounded_blocking()`, `unbounded_async()` |
+| flume | `flume::bounded(n)`, `unbounded()`, `bounded(0)` |
+| kanal | `kanal::bounded(n)`, `bounded_async(n)`, `unbounded()`, `unbounded_async()`, `bounded(0)`, `bounded_async(0)` |
+| std | `std::sync::mpsc::sync_channel(n)`, `channel()`, `sync_channel(0)` |
+| tokio | `tokio::sync::mpsc::channel(n)`, `unbounded_channel()` |
+
 Interpretation: [FINDINGS.md](./FINDINGS.md).

@@ -23,7 +23,7 @@ cargo run --release -- --rerender docs/raw/results.tsv   # rewrite pages, measur
 
 `--rerender` rebuilds the pages from a previous run's TSV, for editing page text without re-measuring.
 
-Everything writes to `--out` (default `docs/`): one Markdown page per shape, an index, and `docs/raw/results.tsv`.
+Everything writes to `--out` (default `docs/`): one Markdown page per shape, an index and `docs/raw/results.tsv`. Each shape page ends with an Implementations table naming the constructors every column was built with; `built_with` in `src/report.rs` holds them and a test fails when a registered adapter has no entry.
 
 ## The matrix
 

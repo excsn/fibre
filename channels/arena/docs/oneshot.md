@@ -27,4 +27,19 @@ Unreliable, sample spread over 2x on a 1×1 cell where the rest of the matrix ho
 | full-cycle | 42.9 | 52.4 | **120.4** | 110.6 | 53.2 | 37.7 | 59.9 | 45.6 | 39.0 |
 | handoff | 55.3 | 57.9 | 129.6 | 102.1 | 77.2 | 60.8 | **184.2** | 79.1 | 42.5 |
 
+## Implementations
+
+| Library | Built with |
+| :--- | :--- |
+| fibre | `fibre::oneshot::oneshot()` |
+| fibre-exclusive | `fibre::oneshot::exclusive()` |
+| fibre-pool | `fibre::oneshot::pair_pool(n)`, then `pair()` per op |
+| fibre-pool-host | `fibre::oneshot::OneshotHostPool::new(n, ..)`, then `pair_init()` per op |
+| async-oneshot | `async_oneshot::oneshot()` |
+| futures | `futures_channel::oneshot::channel()` |
+| lite-sync | `lite_sync::oneshot::generic::channel()` |
+| oneshot | `oneshot::channel()` |
+| sync-oneshot | `sync_oneshot::channel()` |
+| tokio | `tokio::sync::oneshot::channel()` |
+
 Interpretation: [FINDINGS.md](./FINDINGS.md).

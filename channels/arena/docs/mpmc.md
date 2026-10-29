@@ -145,4 +145,15 @@ Unreliable, sample spread over 2x on a 1×1 cell where the rest of the matrix ho
 
 Native batch: fibre none, flume receive only.
 
+## Implementations
+
+| Library | Built with |
+| :--- | :--- |
+| fibre | `fibre::mpmc::bounded(n)`, `bounded_async(n)`, `unbounded()`, `unbounded_async()`, `rendezvous::rendezvous()`, `rendezvous::rendezvous_async()` |
+| async-channel | `async_channel::bounded(n)`, `unbounded()` |
+| crossbeam | `crossbeam_channel::bounded(n)`, `unbounded()`, `bounded(0)` |
+| crossfire | `crossfire::mpmc::bounded_blocking(n)`, `bounded_async(n)`, `unbounded_blocking()`, `unbounded_async()` |
+| flume | `flume::bounded(n)`, `unbounded()`, `bounded(0)` |
+| kanal | `kanal::bounded(n)`, `bounded_async(n)`, `unbounded()`, `unbounded_async()`, `bounded(0)`, `bounded_async(0)` |
+
 Interpretation: [FINDINGS.md](./FINDINGS.md).

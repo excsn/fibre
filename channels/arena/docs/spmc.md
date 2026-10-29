@@ -61,4 +61,10 @@ Native batch: fibre send and receive.
 
 Native batch: fibre send and receive.
 
+## Implementations
+
+| Library | Built with |
+| :--- | :--- |
+| fibre | `fibre::spmc::bounded(n)`, `bounded_async(n)` |
+
 Interpretation: [FINDINGS.md](./FINDINGS.md).

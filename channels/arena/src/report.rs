@@ -379,6 +379,22 @@ impl Report {
       }
     }
 
+    let mut libs: Vec<&'static str> = Vec::new();
+    for r in self.records.iter().filter(|r| r.cell.flavor == flavor) {
+      if !libs.contains(&r.library) {
+        libs.push(r.library);
+      }
+    }
+    libs.sort_unstable_by_key(|l| (!l.starts_with("fibre"), *l));
+    let _ = writeln!(out);
+    let _ = writeln!(out, "## Implementations");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "| Library | Built with |");
+    let _ = writeln!(out, "| :--- | :--- |");
+    for lib in libs {
+      let _ = writeln!(out, "| {} | {} |", lib, built_with(lib, flavor).unwrap_or("-"));
+    }
+
     let _ = writeln!(out);
     let _ = writeln!(out, "Interpretation: [FINDINGS.md](./FINDINGS.md).");
 
@@ -725,6 +741,38 @@ fn known_library(name: &str) -> &'static str {
     .unwrap_or_else(|| Box::leak(name.to_string().into_boxed_str()))
 }
 
+/// The constructors an adapter calls for a library under a shape, in the
+/// order bounded, unbounded, rendezvous, sync before async.
+pub fn built_with(library: &str, flavor: Flavor) -> Option<&'static str> {
+  let general = matches!(flavor, Flavor::Spsc | Flavor::Mpsc | Flavor::Mpmc);
+  let single_consumer = matches!(flavor, Flavor::Spsc | Flavor::Mpsc);
+  Some(match (library, flavor) {
+    ("fibre", Flavor::Spsc) => "`fibre::spsc::bounded_sync(n)`, `bounded_async(n)`, `rendezvous::rendezvous()`, `rendezvous::rendezvous_async()`",
+    ("fibre", Flavor::Mpsc) => "`fibre::mpsc::bounded(n)`, `bounded_async(n)`, `unbounded()`, `unbounded_async()`, `rendezvous::rendezvous()`, `rendezvous::rendezvous_async()`",
+    ("fibre", Flavor::Spmc) => "`fibre::spmc::bounded(n)`, `bounded_async(n)`",
+    ("fibre", Flavor::Mpmc) => "`fibre::mpmc::bounded(n)`, `bounded_async(n)`, `unbounded()`, `unbounded_async()`, `rendezvous::rendezvous()`, `rendezvous::rendezvous_async()`",
+    ("fibre", Flavor::Oneshot) => "`fibre::oneshot::oneshot()`",
+    ("fibre-exclusive", Flavor::Oneshot) => "`fibre::oneshot::exclusive()`",
+    ("fibre-pool", Flavor::Oneshot) => "`fibre::oneshot::pair_pool(n)`, then `pair()` per op",
+    ("fibre-pool-host", Flavor::Oneshot) => "`fibre::oneshot::OneshotHostPool::new(n, ..)`, then `pair_init()` per op",
+    ("crossfire", Flavor::Mpsc) => "`crossfire::mpsc::bounded_blocking(n)`, `bounded_async(n)`, `unbounded_blocking()`, `unbounded_async()`",
+    ("crossfire", Flavor::Mpmc) => "`crossfire::mpmc::bounded_blocking(n)`, `bounded_async(n)`, `unbounded_blocking()`, `unbounded_async()`",
+    ("crossbeam", _) if general => "`crossbeam_channel::bounded(n)`, `unbounded()`, `bounded(0)`",
+    ("flume", _) if general => "`flume::bounded(n)`, `unbounded()`, `bounded(0)`",
+    ("kanal", _) if general => "`kanal::bounded(n)`, `bounded_async(n)`, `unbounded()`, `unbounded_async()`, `bounded(0)`, `bounded_async(0)`",
+    ("async-channel", _) if general => "`async_channel::bounded(n)`, `unbounded()`",
+    ("std", _) if single_consumer => "`std::sync::mpsc::sync_channel(n)`, `channel()`, `sync_channel(0)`",
+    ("tokio", _) if single_consumer => "`tokio::sync::mpsc::channel(n)`, `unbounded_channel()`",
+    ("tokio", Flavor::Oneshot) => "`tokio::sync::oneshot::channel()`",
+    ("futures", Flavor::Oneshot) => "`futures_channel::oneshot::channel()`",
+    ("oneshot", Flavor::Oneshot) => "`oneshot::channel()`",
+    ("async-oneshot", Flavor::Oneshot) => "`async_oneshot::oneshot()`",
+    ("lite-sync", Flavor::Oneshot) => "`lite_sync::oneshot::generic::channel()`",
+    ("sync-oneshot", Flavor::Oneshot) => "`sync_oneshot::channel()`",
+    _ => return None,
+  })
+}
+
 fn flavor_caveat(flavor: Flavor) -> Option<&'static str> {
   match flavor {
     Flavor::Spmc => Some(
@@ -744,5 +792,22 @@ fn flavor_blurb(flavor: Flavor) -> &'static str {
     Flavor::Spmc => "one producer broadcasting to many consumers (every consumer receives every item)",
     Flavor::Mpmc => "many producers, many consumers, work-sharing",
     Flavor::Oneshot => "one value, one time, a fresh channel per op",
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn every_registered_library_has_constructors() {
+    for entry in crate::registry::registry() {
+      assert!(
+        built_with(entry.library(), entry.flavor()).is_some(),
+        "{} {:?}",
+        entry.library(),
+        entry.flavor()
+      );
+    }
   }
 }
