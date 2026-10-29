@@ -584,3 +584,28 @@ A shared hold, released on drop. Implements `Deref<Target = T>`.
 ### Struct `WriteGuard<'a, T>`
 
 The exclusive hold, released on drop. Implements `Deref<Target = T>` and `DerefMut`.
+
+## 10. Module `fibre::sync::v2`
+
+A reader-writer lock with the same names, methods and waiting rules as `fibre::sync::HybridRwLock` (§9).
+
+### Struct `HybridRwLock<T>`
+
+A reader-writer lock whose readers write no shared memory. `Send` when `T: Send`; `Sync` when `T: Send + Sync`.
+
+*   **Methods**:
+    *   `pub fn new(data: T) -> Self`
+    *   `pub fn read(&self) -> ReadGuard<'_, T>`: Blocks the calling thread until a shared hold is granted.
+    *   `pub fn write(&self) -> WriteGuard<'_, T>`: Blocks the calling thread until the exclusive hold is granted.
+    *   `pub async fn read_async(&self) -> ReadGuard<'_, T>`: Waits without blocking the executor. The future is `Send` when `T: Send + Sync`.
+    *   `pub async fn write_async(&self) -> WriteGuard<'_, T>`: Likewise, for the exclusive hold.
+    *   `pub fn try_read(&self) -> Option<ReadGuard<'_, T>>`: One attempt, never waits.
+    *   `pub fn try_write(&self) -> Option<WriteGuard<'_, T>>`: One attempt at the lock. Once it has the lock, it waits for readers already holding to finish.
+
+### Struct `ReadGuard<'a, T>`
+
+A shared hold, released on drop. Implements `Deref<Target = T>`.
+
+### Struct `WriteGuard<'a, T>`
+
+The exclusive hold, released on drop. Implements `Deref<Target = T>` and `DerefMut`.

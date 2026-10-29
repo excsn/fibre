@@ -1,5 +1,6 @@
 mod mutex;
 mod rwlock;
+pub mod v2;
 mod wait_queue;
 
 #[cfg(all(test, miri))]
