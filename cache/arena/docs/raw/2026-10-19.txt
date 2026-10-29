@@ -1,0 +1,42 @@
+# start powermode 2 load averages: 4.23 5.83 7.69
+engine=fibre_cache cell="zipf sync 8" capacity=10000 secs=10.0 total=317951232 hits=317837658 hit_ratio=0.9996 mops=31.793 peak_len=99994 end_len=99994 settled_len=9990
+engine=moka cell="zipf sync 8" capacity=10000 secs=10.0 total=56324864 hits=44368962 hit_ratio=0.7877 mops=5.632 peak_len=10000 end_len=9999 settled_len=9999
+engine=quick_cache cell="zipf sync 8" capacity=10000 secs=10.0 total=425090816 hits=333794043 hit_ratio=0.7852 mops=42.487 peak_len=10048 end_len=10048 settled_len=10048
+engine=stretto cell="zipf sync 8" capacity=10000 secs=10.0 total=35532032 hits=22391848 hit_ratio=0.6302 mops=3.551 peak_len=10003 end_len=10000 settled_len=10000
+engine=fibre_cache cell="zipf sync 64" capacity=10000 secs=10.0 total=314514944 hits=314329446 hit_ratio=0.9994 mops=31.434 peak_len=100000 end_len=100000 settled_len=9991
+engine=moka cell="zipf sync 64" capacity=10000 secs=10.0 total=9565440 hits=7502384 hit_ratio=0.7843 mops=0.956 peak_len=10000 end_len=9999 settled_len=9999
+engine=quick_cache cell="zipf sync 64" capacity=10000 secs=10.0 total=222177024 hits=174471523 hit_ratio=0.7853 mops=22.208 peak_len=10048 end_len=10044 settled_len=10044
+engine=stretto cell="zipf sync 64" capacity=10000 secs=10.0 total=34621440 hits=20676385 hit_ratio=0.5972 mops=3.460 peak_len=10004 end_len=10000 settled_len=10000
+engine=fibre_cache cell="zipf async 8" capacity=10000 secs=10.0 total=220783104 hits=198511534 hit_ratio=0.8991 mops=22.070 peak_len=74309 end_len=64514 settled_len=52243
+engine=moka cell="zipf async 8" capacity=10000 secs=10.0 total=55329280 hits=43563084 hit_ratio=0.7873 mops=5.531 peak_len=10000 end_len=10000 settled_len=10000
+engine=quick_cache cell="zipf async 8" capacity=10000 secs=10.0 total=438617600 hits=344444159 hit_ratio=0.7853 mops=43.819 peak_len=10048 end_len=10044 settled_len=10044
+engine=stretto cell="zipf async 8" capacity=10000 secs=10.0 total=31565312 hits=19714930 hit_ratio=0.6246 mops=3.154 peak_len=10002 end_len=10000 settled_len=10000
+engine=fibre_cache cell="zipf async 64" capacity=10000 secs=10.0 total=247750912 hits=233296586 hit_ratio=0.9417 mops=24.760 peak_len=92518 end_len=80899 settled_len=65922
+engine=moka cell="zipf async 64" capacity=10000 secs=10.0 total=43306496 hits=34122303 hit_ratio=0.7879 mops=4.328 peak_len=10000 end_len=9999 settled_len=9999
+engine=quick_cache cell="zipf async 64" capacity=10000 secs=10.0 total=239587584 hits=188147700 hit_ratio=0.7853 mops=23.954 peak_len=10048 end_len=10048 settled_len=10048
+engine=stretto cell="zipf async 64" capacity=10000 secs=10.0 total=36594176 hits=23415941 hit_ratio=0.6399 mops=3.658 peak_len=10003 end_len=10000 settled_len=10000
+engine=fibre_cache cell="zipf mixed 64" capacity=10000 secs=10.0 total=130645760 hits=122936912 hit_ratio=0.9410 mops=13.057 peak_len=89263 end_len=69210 settled_len=52555
+engine=moka cell="zipf mixed 64" unsupported
+engine=quick_cache cell="zipf mixed 64" capacity=10000 secs=10.0 total=257181440 hits=201950624 hit_ratio=0.7852 mops=25.690 peak_len=10048 end_len=10048 settled_len=10048
+engine=stretto cell="zipf mixed 64" unsupported
+engine=fibre_cache cell="insert sync 1" capacity=10000 secs=10.0 total=35454864 hits=0 hit_ratio=0.0000 mops=3.544 peak_len=20000 end_len=20000 settled_len=10000
+engine=moka cell="insert sync 1" capacity=10000 secs=10.0 total=28313072 hits=0 hit_ratio=0.0000 mops=2.831 peak_len=10000 end_len=10000 settled_len=10000
+engine=quick_cache cell="insert sync 1" capacity=10000 secs=10.0 total=425838960 hits=0 hit_ratio=0.0000 mops=42.566 peak_len=10048 end_len=10048 settled_len=10048
+engine=stretto cell="insert sync 1" capacity=10000 secs=10.0 total=80123584 hits=0 hit_ratio=0.0000 mops=8.010 peak_len=10002 end_len=10000 settled_len=10000
+engine=fibre_cache cell="insert sync 64" capacity=10000 secs=10.0 total=46973382 hits=0 hit_ratio=0.0000 mops=4.696 peak_len=20000 end_len=19907 settled_len=10000
+engine=moka cell="insert sync 64" capacity=10000 secs=10.1 total=2934828 hits=0 hit_ratio=0.0000 mops=0.291 peak_len=10000 end_len=10000 settled_len=10000
+engine=quick_cache cell="insert sync 64" capacity=10000 secs=10.0 total=484434658 hits=0 hit_ratio=0.0000 mops=48.439 peak_len=10048 end_len=10048 settled_len=10048
+engine=stretto cell="insert sync 64" capacity=10000 secs=10.0 total=44296520 hits=0 hit_ratio=0.0000 mops=4.428 peak_len=10002 end_len=10000 settled_len=10000
+engine=fibre_cache cell="insert async 64" capacity=10000 secs=10.0 total=66743293 hits=0 hit_ratio=0.0000 mops=6.669 peak_len=13701 end_len=10000 settled_len=10000
+engine=moka cell="insert async 64" capacity=10000 secs=10.0 total=13463454 hits=0 hit_ratio=0.0000 mops=1.345 peak_len=10000 end_len=10000 settled_len=10000
+engine=quick_cache cell="insert async 64" capacity=10000 secs=10.0 total=510898095 hits=0 hit_ratio=0.0000 mops=51.086 peak_len=10048 end_len=10048 settled_len=10048
+engine=stretto cell="insert async 64" capacity=10000 secs=10.0 total=27824933 hits=0 hit_ratio=0.0000 mops=2.781 peak_len=10002 end_len=10000 settled_len=10000
+engine=fibre_cache cell="hit sync 1" capacity=10000 secs=10.0 total=449350256 hits=449350256 hit_ratio=1.0000 mops=44.914 peak_len=10000 end_len=10000 settled_len=10000
+engine=moka cell="hit sync 1" capacity=10000 secs=10.0 total=132218192 hits=132218192 hit_ratio=1.0000 mops=13.220 peak_len=10000 end_len=10000 settled_len=10000
+engine=quick_cache cell="hit sync 1" capacity=10000 secs=10.0 total=1594116144 hits=1543742058 hit_ratio=0.9684 mops=159.361 peak_len=9684 end_len=9684 settled_len=9684
+engine=stretto cell="hit sync 1" capacity=10000 secs=10.0 total=250615632 hits=250615632 hit_ratio=1.0000 mops=25.049 peak_len=10000 end_len=10000 settled_len=10000
+engine=fibre_cache cell="hit async 64" capacity=10000 secs=10.0 total=529014127 hits=529014127 hit_ratio=1.0000 mops=52.884 peak_len=10000 end_len=10000 settled_len=9983
+engine=moka cell="hit async 64" capacity=10000 secs=10.1 total=312466919 hits=312466919 hit_ratio=1.0000 mops=30.905 peak_len=10000 end_len=10000 settled_len=10000
+engine=quick_cache cell="hit async 64" capacity=10000 secs=10.0 total=942176100 hits=915059909 hit_ratio=0.9712 mops=94.188 peak_len=9712 end_len=9712 settled_len=9712
+engine=stretto cell="hit async 64" capacity=10000 secs=10.0 total=39844782 hits=39844782 hit_ratio=1.0000 mops=3.982 peak_len=10000 end_len=10000 settled_len=10000
+# end powermode 2 load averages: 47.71 28.39 17.54

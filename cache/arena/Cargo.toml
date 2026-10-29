@@ -1,0 +1,19 @@
+[package]
+name = "cache_arena"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Empty [workspace] table: detaches this crate from the parent fibre workspace
+# so it builds standalone without being a member.
+[workspace]
+
+[dependencies]
+fibre_cache = { path = ".." }
+moka = { version = "0.12", features = ["sync", "future"] }
+quick_cache = "0.6"
+stretto = { version = "0.8", features = ["async"] }
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+debug = true
