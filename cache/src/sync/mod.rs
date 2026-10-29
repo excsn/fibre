@@ -1,5 +1,5 @@
-//! Hybrid sync/async locking primitives. These now live in the `fibre`
-//! (channels) crate and are re-exported here so `fibre_cache` and `fibre` share
-//! one implementation. See `fibre::sync`.
+//! Locking primitives from the `fibre` (channels) crate. Shards use the
+//! reader-biased `fibre::sync::v2::HybridRwLock`.
 
-pub use fibre::sync::{HybridMutex, HybridRwLock, MutexGuard, ReadGuard, WriteGuard};
+pub use fibre::sync::HybridMutex;
+pub use fibre::sync::v2::{HybridRwLock, WriteGuard};
