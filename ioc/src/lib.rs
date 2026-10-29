@@ -21,7 +21,7 @@
 //! use std::sync::Arc;
 //!
 //! // Define a trait and a concrete implementation.
-//! trait Greeter {
+//! trait Greeter: Send + Sync {
 //!     fn greet(&self) -> String;
 //! }
 //!
@@ -37,13 +37,13 @@
 //!
 //! fn main() {
 //!     // Register a simple value from anywhere in your app.
-//!     global().add_singleton(Some("greeting_message"), || String::from("Hello, World!"));
+//!     global().add_singleton_with_name("greeting_message", || String::from("Hello, World!"));
 //!
 //!     // Register a service that implements a trait.
 //!     // The factory can itself resolve other dependencies.
-//!     global().add_singleton_trait::<dyn Greeter, _>(None, || {
+//!     global().add_singleton_trait::<dyn Greeter>(|| {
 //!         let message = resolve!(String, "greeting_message");
-//!         EnglishGreeter { message: (*message).clone() }
+//!         Arc::new(EnglishGreeter { message: (*message).clone() })
 //!     });
 //!
 //!     // In another part of your application, resolve the service by its trait.

@@ -178,7 +178,7 @@ macro_rules! maybe_resolve {
 /// use std::sync::Arc;
 ///
 /// // Register a simple type
-/// global().add_singleton(None, || String::from("hello"));
+/// global().add_singleton(|| String::from("hello"));
 ///
 /// // Resolve it
 /// let message = resolve!(String);
