@@ -28,7 +28,7 @@ impl Container {
       None => InjectionKey::new::<T>(),
     };
     let provider = Provider::Singleton {
-      cell: once_cell::sync::OnceCell::with_value(Box::new(Arc::new(instance))),
+      cell: std::sync::OnceLock::from(Box::new(Arc::new(instance)) as Box<dyn Any + Send + Sync>),
       factory: Box::new(|| panic!("Pre-initialized singleton factory should not be called")),
     };
     self.providers.insert(key, provider);
@@ -44,7 +44,7 @@ impl Container {
       None => InjectionKey::new::<T>(),
     };
     let provider = Provider::Singleton {
-      cell: once_cell::sync::OnceCell::new(),
+      cell: std::sync::OnceLock::new(),
       factory: Box::new(move || Box::new(Arc::new(factory()))),
     };
     self.providers.insert(key, provider);
@@ -75,7 +75,7 @@ impl Container {
       None => InjectionKey::new::<I>(),
     };
     let provider = Provider::Singleton {
-      cell: once_cell::sync::OnceCell::new(),
+      cell: std::sync::OnceLock::new(),
       factory: Box::new(move || Box::new(factory())),
     };
     self.providers.insert(key, provider);

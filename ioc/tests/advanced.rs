@@ -134,8 +134,7 @@ fn test_singleton_factory_is_called_only_once_under_concurrency() {
 #[should_panic(expected = "Circular dependency detected")]
 fn test_circular_dependency_panics() {
   // This test ensures that a direct circular dependency causes a panic instead of
-  // a stack overflow or a deadlock. `once_cell`'s sync primitives panic if
-  // a thread tries to re-enter `get_or_init` for a cell it's already initializing.
+  // a stack overflow or a deadlock.
 
   struct ServiceA {
     _b: Arc<ServiceB>,

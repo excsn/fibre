@@ -3,6 +3,7 @@ pub mod enabled {
   use std::cell::UnsafeCell;
   use std::collections::HashMap;
   use std::fmt;
+  use std::sync::LazyLock;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use parking_lot::Mutex;
   use std::thread::{self, ThreadId};
@@ -124,9 +125,7 @@ pub mod enabled {
     }
   }
 
-  lazy_static::lazy_static! {
-      static ref GLOBAL_COLLECTOR: Mutex<CollectorData> = Mutex::new(CollectorData::new());
-  }
+  static GLOBAL_COLLECTOR: LazyLock<Mutex<CollectorData>> = LazyLock::new(|| Mutex::new(CollectorData::new()));
 
   fn record_event_internal(
     item_id: Option<usize>,

@@ -77,7 +77,7 @@ impl fmt::Debug for InjectionKey {
 
 pub(crate) enum Provider {
   Singleton {
-    cell: once_cell::sync::OnceCell<Box<dyn Any + Send + Sync>>,
+    cell: std::sync::OnceLock<Box<dyn Any + Send + Sync>>,
     factory: Box<dyn Fn() -> Box<dyn Any + Send + Sync> + Send + Sync>,
   },
   Transient {

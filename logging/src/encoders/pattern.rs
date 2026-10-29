@@ -2,13 +2,13 @@ use super::{util, EventFormatter};
 use crate::error::Result;
 use crate::model::LogEvent;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use std::fmt::Write;
 
 // Regex now uses a main capture group for the specifier part, and an alternative for `%%`.
 // This makes it easy to distinguish which one matched.
-static PATTERN_REGEX: Lazy<Regex> = Lazy::new(|| {
+static PATTERN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
   Regex::new(r"(?P<specifier>%(?P<padding>-?\d+)?(?P<converter>[a-zA-Z])(?:\{(?P<options>[^}]+)\})?)|(?P<escaped>%%)")
     .expect("Pattern regex should be valid")
 });

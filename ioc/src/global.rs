@@ -1,11 +1,11 @@
 //! The global IoC container instance and access functions.
 
 use crate::container::Container;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 // The one and only global container instance.
 // It will be created on its first access in a thread-safe manner.
-static GLOBAL_CONTAINER: Lazy<Container> = Lazy::new(Container::default);
+static GLOBAL_CONTAINER: LazyLock<Container> = LazyLock::new(Container::default);
 
 /// Provides a reference to the global container instance.
 ///

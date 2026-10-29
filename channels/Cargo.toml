@@ -30,7 +30,6 @@ topic = ["dep:papaya"]
 diagnostics = ["dep:tokio"]
 
 [dependencies]
-lazy_static = "^1"
 
 futures-core = { version = "^0.3", default-features = false, features = ["alloc", "std"] }
 futures-intrusive = "^0.5"

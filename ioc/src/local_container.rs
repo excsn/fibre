@@ -3,13 +3,13 @@
 //! A single-threaded, non-thread-safe Inversion of Control container.
 
 use crate::core::{InjectionKey, ResolutionGuard};
-use once_cell::unsync::OnceCell;
+use std::cell::OnceCell;
 use std::any::Any;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 // A local, non-thread-safe version of the Provider enum.
-// It uses `Rc` and `unsync::OnceCell`.
+// It uses `Rc` and `std::cell::OnceCell`.
 enum LocalProvider {
   Singleton {
     cell: OnceCell<Box<dyn Any>>,

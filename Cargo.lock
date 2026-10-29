@@ -688,7 +688,6 @@ dependencies = [
  "futures-executor",
  "futures-intrusive",
  "futures-util",
- "lazy_static",
  "loom",
  "papaya",
  "parking_lot",
@@ -731,7 +730,6 @@ dependencies = [
  "generational-arena",
  "hashbrown 0.16.1",
  "num_cpus",
- "once_cell",
  "parking_lot",
  "rand 0.9.5",
  "rand_distr",
@@ -747,7 +745,6 @@ name = "fibre_ioc"
 version = "0.5.3"
 dependencies = [
  "dashmap",
- "once_cell",
 ]
 
 [[package]]
@@ -760,7 +757,6 @@ dependencies = [
  "flate2",
  "humantime",
  "log",
- "once_cell",
  "parking_lot",
  "pretty_assertions",
  "regex",

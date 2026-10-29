@@ -6,7 +6,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 use fibre::mpsc::BoundedSyncSender;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Write};
@@ -16,7 +16,7 @@ const DEFAULT_COMPRESSED_SUFFIX: &str = ".gz";
 
 // Regex to parse filenames like: "prefix.YYYY-MM-DD_HH-MM-SS.1.log"
 // Captures: 1=timestamp, 2=sequence
-static ROLLED_FILE_REGEX: Lazy<Regex> = Lazy::new(|| {
+static ROLLED_FILE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
   Regex::new(r"\.((?:\d{4}-\d{2}-\d{2})|(?:\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}))\.(\d+)").unwrap()
 });
 

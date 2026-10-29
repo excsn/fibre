@@ -1,9 +1,9 @@
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 // The single, static reference point for all time calculations in the cache.
 // It is initialized lazily on its first use.
-static CACHE_EPOCH: Lazy<Instant> = Lazy::new(Instant::now);
+static CACHE_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// Converts an `Instant` into a `Duration` since the cache's epoch.
 /// This duration is serializable.

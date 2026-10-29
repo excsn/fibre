@@ -1,7 +1,7 @@
 // This entire module will only be compiled when debug_assertions are enabled.
 #![cfg(debug_assertions)]
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use parking_lot::{Mutex, MutexGuard};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -9,8 +9,8 @@ use std::time::Instant;
 use crate::LogValue;
 
 // --- The Global Collector for the Debug Report Appender ---
-pub(super) static DEBUG_REPORT_COLLECTOR: Lazy<Mutex<DebugReportData>> =
-  Lazy::new(|| Mutex::new(Default::default()));
+pub(super) static DEBUG_REPORT_COLLECTOR: LazyLock<Mutex<DebugReportData>> =
+  LazyLock::new(|| Mutex::new(Default::default()));
 
 // --- New Structs for the Debug Report Appender ---
 #[derive(Debug, Clone)]

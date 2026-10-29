@@ -2,7 +2,7 @@
 
 use crate::{config::processed::OverflowPolicy, encoders::EventFormatter, LogEvent};
 use fibre::mpsc::BoundedSyncSender;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -79,7 +79,7 @@ fn target_matches_prefix(target: &str, prefix: &str) -> bool {
     .map_or(false, |rest| rest.is_empty() || rest.starts_with("::"))
 }
 
-static PROCESS_START: Lazy<Instant> = Lazy::new(Instant::now);
+static PROCESS_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// Counts dropped messages per appender and reports them to stderr at most
 /// once per second, instead of one line per dropped message.
