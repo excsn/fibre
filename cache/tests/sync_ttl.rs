@@ -56,6 +56,76 @@ fn test_sync_ttl_frees_memory_under_default_maintenance_chance() {
   assert_eq!(cache.metrics().evicted_by_ttl, 1);
 }
 
+/// With the default shard count every shard's expired entries must leave within a
+/// few janitor ticks, however rarely the maintenance gate lets a shard through.
+#[test]
+fn test_sync_ttl_frees_every_shard_within_a_few_ticks() {
+  const KEYS: u64 = 200;
+  let ttl = Duration::from_millis(200);
+  let cache = CacheBuilder::<u64, String>::new()
+    .time_to_live(ttl)
+    .timer_mode(TimerWheelMode::HighPrecisionShortLived)
+    .janitor_tick_interval(JANITOR_TICK)
+    .build()
+    .unwrap();
+
+  let weak: Vec<_> = (0..KEYS)
+    .map(|k| {
+      cache.insert(k, k.to_string(), 1);
+      std::sync::Arc::downgrade(&cache.fetch(&k).unwrap())
+    })
+    .collect();
+
+  let deadline = std::time::Instant::now() + ttl + Duration::from_millis(800);
+  loop {
+    let resident = weak.iter().filter(|w| w.upgrade().is_some()).count();
+    if resident == 0 {
+      break;
+    }
+    assert!(
+      std::time::Instant::now() < deadline,
+      "{resident} of {KEYS} TTL-expired values still resident 800ms after a 200ms TTL with a 10ms janitor tick"
+    );
+    thread::sleep(Duration::from_millis(20));
+  }
+  assert_eq!(cache.metrics().evicted_by_ttl, KEYS);
+  assert_eq!(cache.metrics().current_cost, 0);
+}
+
+#[test]
+fn test_sync_ttl_frees_entry_api_and_loader_inserts() {
+  let ttl = Duration::from_millis(200);
+  let cache = CacheBuilder::<u64, String>::new()
+    .time_to_live(ttl)
+    .timer_mode(TimerWheelMode::HighPrecisionShortLived)
+    .janitor_tick_interval(JANITOR_TICK)
+    .loader(|k| (k.to_string(), 1))
+    .build()
+    .unwrap();
+
+  let mut weak = Vec::new();
+  for k in 0..50u64 {
+    weak.push(std::sync::Arc::downgrade(&cache.entry(k).or_insert(k.to_string(), 1)));
+  }
+  for k in 50..100u64 {
+    weak.push(std::sync::Arc::downgrade(&cache.fetch_with(&k)));
+  }
+
+  let deadline = std::time::Instant::now() + ttl + Duration::from_millis(800);
+  loop {
+    let resident = weak.iter().filter(|w| w.upgrade().is_some()).count();
+    if resident == 0 {
+      break;
+    }
+    assert!(
+      std::time::Instant::now() < deadline,
+      "{resident} of 100 entry-API and loader values still resident 800ms after a 200ms TTL"
+    );
+    thread::sleep(Duration::from_millis(20));
+  }
+  assert_eq!(cache.metrics().evicted_by_ttl, 100);
+}
+
 /// A TTL far longer than one wheel revolution exercises the lap arithmetic of the
 /// catch-up path: sparse sweeps must burn the correct number of laps, no more.
 #[test]

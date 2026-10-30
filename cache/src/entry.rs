@@ -18,13 +18,11 @@ pub(crate) struct CacheEntry<V> {
   pub(crate) last_accessed: AtomicU64,
   /// The built-in shard policy's node id, `hpolicy::NO_NODE` until admitted.
   pub(crate) node: AtomicU64,
-  /// The key's hash under the cache's hasher; 0 until a timer is attached. Lets the
-  /// TTL sweep match wheel hashes without re-hashing every key in the shard.
+  /// The key's hash under the cache's hasher, set when the entry enters a shard.
+  /// Lets the TTL sweep match wheel hashes without re-hashing keys.
   pub(crate) key_hash: u64,
   /// A handle to the TTL timer in the timer wheel, for cancellation.
   pub(crate) ttl_timer_handle: Option<TimerHandle>, // We will use the key's hash for the timer
-  /// A handle to the TTI timer in the timer wheel.
-  pub(crate) tti_timer_handle: Option<TimerHandle>,
 }
 
 impl<V> CacheEntry<V> {
@@ -42,7 +40,6 @@ impl<V> CacheEntry<V> {
       key_hash: 0,
       node: AtomicU64::new(crate::hpolicy::NO_NODE),
       ttl_timer_handle: None,
-      tti_timer_handle: None,
     }
   }
 
@@ -68,7 +65,6 @@ impl<V> CacheEntry<V> {
       key_hash: 0,
       node: AtomicU64::new(crate::hpolicy::NO_NODE),
       ttl_timer_handle: None,
-      tti_timer_handle: None,
     }
   }
 
@@ -88,7 +84,6 @@ impl<V> CacheEntry<V> {
       key_hash: 0,
       node: AtomicU64::new(crate::hpolicy::NO_NODE),
       ttl_timer_handle: None,
-      tti_timer_handle: None,
     }
   }
 
@@ -103,7 +98,6 @@ impl<V> CacheEntry<V> {
       key_hash: 0,
       node: AtomicU64::new(crate::hpolicy::NO_NODE),
       ttl_timer_handle: None,
-      tti_timer_handle: None,
     }
   }
 
@@ -175,15 +169,4 @@ impl<V> CacheEntry<V> {
     false
   }
 
-  /// Attaches timer handles to the entry after it has been created.
-  pub(crate) fn set_timer_handles(
-    &mut self,
-    key_hash: u64,
-    ttl_handle: Option<TimerHandle>,
-    tti_handle: Option<TimerHandle>,
-  ) {
-    self.key_hash = key_hash;
-    self.ttl_timer_handle = ttl_handle;
-    self.tti_timer_handle = tti_handle;
-  }
 }

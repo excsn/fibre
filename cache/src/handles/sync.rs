@@ -215,7 +215,7 @@ where
     V: Sync,
     H: Sync,
   {
-    let mut new_cache_entry = CacheEntry::new(
+    let new_cache_entry = CacheEntry::new(
       value,
       cost,
       self.shared.time_to_live,
@@ -227,25 +227,9 @@ where
     let shard_index = key_hash as usize & (shards.len() - 1);
     let shard = &*shards[shard_index];
 
-    let old_entry: Option<CacheEntry<V>>;
     {
       let mut guard = shard.map.write();
-      if let Some(wheel) = &shard.timer_wheel {
-        let ttl_handle = self
-          .shared
-          .time_to_live
-          .map(|ttl| wheel.schedule(key_hash, ttl));
-        new_cache_entry.set_timer_handles(key_hash, ttl_handle, None);
-      }
-      old_entry = guard.insert_hashed(key, new_cache_entry, key_hash);
-      if let (Some(wheel), Some(entry)) = (&shard.timer_wheel, &old_entry) {
-        if let Some(handle) = &entry.ttl_timer_handle {
-          wheel.cancel(handle);
-        }
-        if let Some(handle) = &entry.tti_timer_handle {
-          wheel.cancel(handle);
-        }
-      }
+      guard.insert_hashed(key, new_cache_entry, key_hash);
     }
 
 
@@ -265,7 +249,7 @@ where
   {
     let expires_at = time::now_duration().as_nanos() as u64 + ttl.as_nanos() as u64;
 
-    let mut new_cache_entry =
+    let new_cache_entry =
       CacheEntry::new_with_custom_expiry(value, cost, expires_at, self.shared.time_to_idle);
 
     let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
@@ -273,22 +257,9 @@ where
     let shard_index = key_hash as usize & (shards.len() - 1);
     let shard = &*shards[shard_index];
 
-    let old_entry: Option<CacheEntry<V>>;
     {
       let mut guard = shard.map.write();
-      if let Some(wheel) = &shard.timer_wheel {
-        let ttl_handle = Some(wheel.schedule(key_hash, ttl));
-        new_cache_entry.set_timer_handles(key_hash, ttl_handle, None);
-      }
-      old_entry = guard.insert_hashed(key, new_cache_entry, key_hash);
-      if let (Some(wheel), Some(entry)) = (&shard.timer_wheel, &old_entry) {
-        if let Some(handle) = &entry.ttl_timer_handle {
-          wheel.cancel(handle);
-        }
-        if let Some(handle) = &entry.tti_timer_handle {
-          wheel.cancel(handle);
-        }
-      }
+      guard.insert_hashed(key, new_cache_entry, key_hash);
     }
 
 
@@ -440,15 +411,6 @@ where
     } // `guard` (and L_shard) is released here.
 
     if let Some((found_key, entry)) = removed_entry {
-      if let Some(wheel) = &shard.timer_wheel {
-        if let Some(handle) = &entry.ttl_timer_handle {
-          wheel.cancel(handle);
-        }
-        if let Some(handle) = &entry.tti_timer_handle {
-          wheel.cancel(handle);
-        }
-      }
-
       self
         .shared
         .metrics
@@ -928,36 +890,13 @@ where
         let mut guard = shard.map.write();
 
         for (key, value, cost) in shard_items {
-          let mut new_cache_entry = CacheEntry::new(
+          let new_cache_entry = CacheEntry::new(
             value,
             cost,
             self.shared.time_to_live,
             self.shared.time_to_idle,
           );
-
-          // Schedule timers for the new entry.
-          if let Some(wheel) = &shard.timer_wheel {
-            let key_hash = crate::store::hash_key(&self.shared.store.hasher, &key);
-            let ttl_handle = self
-              .shared
-              .time_to_live
-              .map(|ttl| wheel.schedule(key_hash, ttl));
-            let tti_handle = None; // TTI handled by janitor sampling
-            new_cache_entry.set_timer_handles(key_hash, ttl_handle, tti_handle);
-          }
-
-          // Insert and handle any replaced entry.
-          if let Some(old_entry) = guard.insert(key.clone(), new_cache_entry) {
-            // Cancel timers for the replaced entry.
-            if let Some(wheel) = &shard.timer_wheel {
-              if let Some(handle) = &old_entry.ttl_timer_handle {
-                wheel.cancel(handle);
-              }
-              if let Some(handle) = &old_entry.tti_timer_handle {
-                wheel.cancel(handle);
-              }
-            }
-          }
+                    guard.insert(key.clone(), new_cache_entry);
 
         }
       });
@@ -997,16 +936,6 @@ where
 
         for key in shard_keys {
           if let Some(entry) = guard.remove(&key) {
-            // Cancel any timers associated with the removed entry.
-            if let Some(wheel) = &shard.timer_wheel {
-              if let Some(handle) = &entry.ttl_timer_handle {
-                wheel.cancel(handle);
-              }
-              if let Some(handle) = &entry.tti_timer_handle {
-                wheel.cancel(handle);
-              }
-            }
-
             self
               .shared
               .metrics

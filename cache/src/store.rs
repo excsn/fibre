@@ -33,7 +33,8 @@ pub(crate) fn hash_key<K: Hash + ?Sized, H: BuildHasher>(hasher: &H, key: &K) ->
 /// A single, independently locked partition of the cache.
 pub(crate) struct Shard<K: Send, V, H> {
   pub(crate) map: HybridRwLock<ShardMap<K, V, H>>,
-  pub(crate) timer_wheel: Option<TimerWheel>,
+  /// When the shard's earliest TTL timer is due; `ShardMap::expire_due` keeps it current.
+  pub(crate) ttl_due: Arc<AtomicU64>,
   /// Reads for a key-based policy, applied under the write lock.
   pub(crate) read_log: Arc<ReadLog<K>>,
   /// Reads for the built-in policy, by node id.
@@ -43,6 +44,13 @@ pub(crate) struct Shard<K: Send, V, H> {
   pub(crate) maintenance_lock: HybridMutex<()>,
   // This holds the RNG state for this thread.
   pub(crate) rng: FastRng,
+}
+
+impl<K: Send, V, H> Shard<K, V, H> {
+  /// Whether a TTL timer is due, read without taking the shard lock.
+  pub(crate) fn ttl_is_due(&self, now: u64) -> bool {
+    now >= self.ttl_due.load(Ordering::Relaxed)
+  }
 }
 
 /// A cache store that is partitioned into multiple, independently locked shards.
@@ -86,7 +94,10 @@ where
       let reads = Arc::new(ReadLog::new());
       let ring = Arc::new(ReadRing::new());
       let counters = Arc::new(ShardCounters::new());
+      let ttl_due = Arc::new(AtomicU64::new(u64::MAX));
+      let wheel = has_timer_logic.then(|| TimerWheel::new(timer_wheel_size, timer_tick_duration, ttl_due.clone()));
       let shard_map = ShardMap {
+        wheel,
         local: counters.clone(),
         builtin: builtin.map(|(choice, cap)| crate::select::builtin(choice, cap)),
         ring: ring.clone(),
@@ -101,17 +112,10 @@ where
       };
       let lock = HybridRwLock::new(shard_map);
 
-      // Each shard gets its own independent TimerWheel.
-      let timer_wheel = if has_timer_logic {
-        Some(TimerWheel::new(timer_wheel_size, timer_tick_duration))
-      } else {
-        None
-      };
-
       let initial_seed = rand::rng().random();
       let shard = Shard {
         map: lock,
-        timer_wheel,
+        ttl_due,
         read_log: reads,
         read_ring: ring,
         counters,
@@ -212,6 +216,7 @@ pub(crate) struct ShardMap<K, V, H> {
   ring: Arc<ReadRing>,
   victims: Vec<Victim>,
   local: Arc<ShardCounters>,
+  wheel: Option<TimerWheel>,
 }
 
 impl<K, V, H> ShardMap<K, V, H>
@@ -263,6 +268,11 @@ where
   }
 
   #[cfg(test)]
+  pub(crate) fn timer_count(&self) -> usize {
+    self.wheel.as_ref().map_or(0, |w| w.len())
+  }
+
+  #[cfg(test)]
   pub(crate) fn s3fifo_state(&self) -> Option<(Vec<(u64, u8)>, Vec<(u64, u8)>, Vec<u64>, Vec<u64>)> {
     self.builtin.as_ref().and_then(|b| b.s3fifo_state())
   }
@@ -302,17 +312,70 @@ where
     Q: Hash + Equivalent<K> + ?Sized,
   {
     let hash = self.hash(k);
-    match self.table.find_entry(hash, |(kk, _)| k.equivalent(kk)) {
-      Ok(o) => Some(o.remove().0),
-      Err(_) => None,
-    }
+    let (key, e) = match self.table.find_entry(hash, |(kk, _)| k.equivalent(kk)) {
+      Ok(o) => o.remove().0,
+      Err(_) => return None,
+    };
+    self.disarm(&e);
+    Some((key, e))
   }
 
   fn take_victim(&mut self, (hash, node): Victim) -> Option<(K, CacheEntry<V>)> {
-    match self.table.find_entry(hash, |(_, e)| e.node.load(Ordering::Relaxed) == node) {
-      Ok(o) => Some(o.remove().0),
-      Err(_) => None,
+    let (key, e) = match self.table.find_entry(hash, |(_, e)| e.node.load(Ordering::Relaxed) == node) {
+      Ok(o) => o.remove().0,
+      Err(_) => return None,
+    };
+    self.disarm(&e);
+    Some((key, e))
+  }
+
+  fn arm(&mut self, hash: u64, entry: &mut CacheEntry<V>) {
+    entry.key_hash = hash;
+    let expires_at = entry.expires_at.load(Ordering::Relaxed);
+    if let Some(w) = &mut self.wheel {
+      if expires_at > 0 {
+        entry.ttl_timer_handle = Some(w.schedule(hash, expires_at));
+      }
     }
+  }
+
+  fn disarm(&mut self, entry: &CacheEntry<V>) {
+    if let (Some(w), Some(h)) = (&mut self.wheel, &entry.ttl_timer_handle) {
+      w.cancel(h);
+    }
+  }
+
+  /// Advances the TTL timers to `now` (nanos since the cache epoch) and removes
+  /// the entries that have expired, returning them.
+  pub(crate) fn expire_due(&mut self, now: u64) -> Vec<(K, CacheEntry<V>)> {
+    let fired = match &mut self.wheel {
+      Some(w) => w.advance(now),
+      None => return Vec::new(),
+    };
+    if fired.is_empty() {
+      return Vec::new();
+    }
+    self.apply_reads();
+    let mut out = Vec::new();
+    for hash in fired {
+      while let Ok(o) = self.table.find_entry(hash, |(_, e)| e.key_hash == hash && e.is_expired(None)) {
+        let (key, e) = o.remove().0;
+        self.cost -= e.cost();
+        self.disarm(&e);
+        self.forget(&key, &e);
+        out.push((key, e));
+      }
+      // A timer can fire before its entry expires, from clock skew or a hash
+      // shared with another key; that entry is armed again for the rest of its TTL.
+      if let Some(w) = &mut self.wheel {
+        let stale = |e: &CacheEntry<V>| e.ttl_timer_handle.as_ref().is_some_and(|h| !w.is_armed(h));
+        if let Some((_, e)) = self.table.find_mut(hash, |(_, e)| e.key_hash == hash && stale(e)) {
+          let expires_at = e.expires_at.load(Ordering::Relaxed);
+          e.ttl_timer_handle = Some(w.schedule(hash, expires_at));
+        }
+      }
+    }
+    out
   }
 
   /// Puts `key` in the table and returns the entry it replaced.
@@ -337,10 +400,14 @@ where
     self.insert_inner(key, entry, hash, true)
   }
 
-  fn insert_inner(&mut self, key: K, entry: CacheEntry<V>, hash: u64, count: bool) -> Option<CacheEntry<V>> {
+  fn insert_inner(&mut self, key: K, mut entry: CacheEntry<V>, hash: u64, count: bool) -> Option<CacheEntry<V>> {
     let before = self.cost;
     let cost = entry.cost();
+    self.arm(hash, &mut entry);
     let old = if self.builtin.is_some() { self.insert_builtin(key, entry, hash) } else { self.insert_policy(key, entry, hash) };
+    if let Some(o) = &old {
+      self.disarm(o);
+    }
     let c = &self.local;
     if count {
       ShardCounters::add(&c.inserts, 1);
@@ -461,27 +528,11 @@ where
     Some((key, e))
   }
 
-  pub(crate) fn retain<F: FnMut(&K, &mut CacheEntry<V>) -> bool>(&mut self, mut f: F) {
-    self.apply_reads();
-    let mut freed = 0;
-    let policy = &self.policy;
-    let mut builtin = self.builtin.as_mut();
-    self.table.retain(|(k, e)| {
-      let keep = f(k, e);
-      if !keep {
-        freed += e.cost();
-        match builtin.as_deref_mut() {
-          Some(b) => ShardPolicy::<K, V>::remove(b, e.node.load(Ordering::Relaxed)),
-          None => policy.on_remove(k),
-        }
-      }
-      keep
-    });
-    self.cost -= freed;
-  }
-
   pub(crate) fn clear(&mut self) {
     self.table.clear();
+    if let Some(w) = &mut self.wheel {
+      w.clear();
+    }
     ShardCounters::add(&self.local.cost_delta, 0u64.wrapping_sub(self.cost));
     self.cost = 0;
     match &mut self.builtin {

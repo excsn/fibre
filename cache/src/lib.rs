@@ -32,6 +32,8 @@ mod store;
 mod hpolicy;
 #[cfg(test)]
 mod lockstep;
+#[cfg(test)]
+mod timer_lifetime;
 mod select;
 mod sync;
 mod task;

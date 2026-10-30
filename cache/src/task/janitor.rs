@@ -5,7 +5,6 @@ use crate::task::notifier::Notification;
 
 use fibre::mpsc;
 use rand::Rng;
-use std::collections::HashSet;
 use std::hash::{BuildHasher, Hash};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -156,9 +155,13 @@ impl Janitor {
       if let Some(_guard) = shard.maintenance_lock.try_lock() {
         // We got the lock. Perform all maintenance for this single shard.
         perform_shard_maintenance(shard);
-        Self::cleanup_ttl_for_shard(shard, shard_index, context);
         Self::cleanup_tti_for_shard(shard, shard_index, context);
       }
+    }
+
+    // TTL removal is not gated: every shard with a timer due is swept each tick.
+    for (shard_index, shard) in context.store.shards.iter().enumerate() {
+      Self::cleanup_ttl_for_shard(shard, shard_index, context);
     }
   }
 
@@ -172,59 +175,16 @@ impl Janitor {
     V: Send + Sync,
     H: BuildHasher + Clone + Send + Sync,
   {
-    let expired_hashes = match &shard.timer_wheel {
-      Some(wheel) => wheel.advance(),
-      None => return,
-    };
-
-    if expired_hashes.is_empty() {
+    let now = crate::time::now_duration().as_nanos() as u64;
+    if !shard.ttl_is_due(now) {
       return;
     }
-
-    let expired_set: HashSet<u64> = expired_hashes.into_iter().collect();
-    let mut premature: Vec<(u64, Duration)> = Vec::new();
-    let mut guard = shard.map.write();
-
-    guard.retain(|key, entry| {
-      // 0 means no hash was recorded (the entry never armed a timer); only then hash.
-      let key_hash = match entry.key_hash {
-        0 => crate::store::hash_key(&context.store.hasher, key),
-        h => h,
-      };
-
-      if expired_set.contains(&key_hash) {
-        // The entry's own expires_at is the truth; the wheel only says where to look.
-        // A hash-collision hit or clock skew must never evict a live entry, so re-arm
-        // it for the remainder instead of removing or stranding it.
-        if !entry.is_expired(None) {
-          let now = crate::time::now_duration().as_nanos() as u64;
-          let expires_at = entry.expires_at.load(Ordering::Relaxed);
-          if expires_at > 0 {
-            premature.push((key_hash, Duration::from_nanos(expires_at.saturating_sub(now).max(1))));
-          }
-          return true;
-        }
-        context
-          .metrics
-          .evicted_by_ttl
-          .fetch_add(1, Ordering::Relaxed);
-        context
-          .metrics
-          .current_cost
-          .fetch_sub(entry.cost(), Ordering::Relaxed);
-        if let Some(sender) = &context.notification_sender {
-          let _ = sender.try_send((key.clone(), entry.value(), EvictionReason::Expired));
-        }
-        false // Remove from map.
-      } else {
-        true // Keep in map.
-      }
-    });
-    drop(guard);
-
-    if let Some(wheel) = &shard.timer_wheel {
-      for (key_hash, remaining) in premature {
-        wheel.schedule(key_hash, remaining);
+    let expired = shard.map.write().expire_due(now);
+    for (key, entry) in expired {
+      context.metrics.evicted_by_ttl.fetch_add(1, Ordering::Relaxed);
+      context.metrics.current_cost.fetch_sub(entry.cost(), Ordering::Relaxed);
+      if let Some(sender) = &context.notification_sender {
+        let _ = sender.try_send((key, entry.value(), EvictionReason::Expired));
       }
     }
   }
@@ -266,12 +226,6 @@ impl Janitor {
           .metrics
           .current_cost
           .fetch_sub(entry.cost(), Ordering::Relaxed);
-
-        if let Some(wheel) = &shard.timer_wheel {
-          if let Some(handle) = &entry.ttl_timer_handle {
-            wheel.cancel(handle);
-          }
-        }
 
         if let Some(sender) = &context.notification_sender {
           let _ = sender.try_send((key, entry.value(), EvictionReason::Expired));
