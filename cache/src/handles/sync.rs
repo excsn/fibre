@@ -227,10 +227,10 @@ where
     let shard_index = key_hash as usize & (shards.len() - 1);
     let shard = &*shards[shard_index];
 
-    {
+    let _replaced = {
       let mut guard = shard.map.write();
-      guard.insert_hashed(key, new_cache_entry, key_hash);
-    }
+      guard.insert_hashed(key, new_cache_entry, key_hash)
+    };
 
 
 
@@ -257,10 +257,10 @@ where
     let shard_index = key_hash as usize & (shards.len() - 1);
     let shard = &*shards[shard_index];
 
-    {
+    let _replaced = {
       let mut guard = shard.map.write();
-      guard.insert_hashed(key, new_cache_entry, key_hash);
-    }
+      guard.insert_hashed(key, new_cache_entry, key_hash)
+    };
 
 
 
