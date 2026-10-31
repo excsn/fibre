@@ -1,0 +1,41 @@
+[package]
+name = "fibre_stats"
+version = "0.1.0"
+
+description = "Metrics for applications and libraries: counters, gauges, timers and states defined once with metric!, aggregated per second in process and handed to a sink in batches."
+readme = "README.md"
+keywords = ["metrics", "telemetry", "statistics", "histogram", "observability"]
+categories = ["development-tools::profiling"]
+
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+exclude = [
+  "/tests/",
+]
+
+[features]
+default = []
+high_res = []
+wasm-bindgen = ["dep:web-time"]
+collect-process = ["dep:sysinfo"]
+collect-host = ["dep:sysinfo"]
+collect-tokio = ["dep:tokio"]
+xs_foundation = ["dep:xs_foundation"]
+
+[dependencies]
+fixed = "^1"
+inventory = "^0.3"
+num-rational = { version = "^0.4", default-features = false, features = ["std"] }
+parking_lot = "^0.12"
+
+sysinfo = { version = "^0.40", optional = true }
+tokio = { version = "^1", optional = true, default-features = false, features = ["rt"] }
+web-time = { version = "^1", optional = true }
+xs_foundation = { version = "^0.4", optional = true, default-features = false, features = ["time"] }
+
+[package.metadata.docs.rs]
+all-features = true
