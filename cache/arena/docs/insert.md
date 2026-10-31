@@ -3,15 +3,15 @@
 
 every operation inserts a key not yet seen, into a full cache.
 
-Mops/s: operations completed per second across all workers over a 10 s run at capacity 10000. Best per row in bold. `-` means the engine has no API for that mode.
+Mops/s: operations completed per second across all workers over a 10 s run at capacity 10000. Best per row in bold, leaving out quick_cache, which is a yardstick and is not ranked. Italics mean quick_cache is above the best ranked engine. `-` means the engine has no API for that mode.
 
 ## Throughput
 
 | Mode | Workers | fibre_cache.s3fifo | fibre_cache.tinylfu | moka | quick_cache | stretto |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
-| sync | 1 | 13.99 | 7.88 | 2.86 | **43.59** | 8.17 |
-| sync | 64 | 34.74 | 22.43 | 0.32 | **50.05** | 4.85 |
-| async | 64 | 38.99 | 24.96 | 1.38 | **53.74** | 3.11 |
+| sync | 1 | **13.92** | 8.06 | 2.80 | *42.50* | 8.26 |
+| sync | 64 | **34.17** | 21.54 | 0.29 | *52.28* | 4.37 |
+| async | 64 | **38.09** | 22.48 | 1.34 | *50.20* | 2.89 |
 
 ## Peak entries
 

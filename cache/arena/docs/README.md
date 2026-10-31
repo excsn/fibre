@@ -16,9 +16,9 @@ Raw per-cell data: [raw/results.tsv](./raw/results.tsv).
 
 ## Run
 
-- Measured at 2026-10-29T11:15:40Z.
+- Measured at 2026-10-31T04:12:05Z.
 - Power mode: high power.
-- Load average 5.29 at the start, 19.02 at the end (the end figure is the run's own workers).
+- Load average 6.18 at the start, 20.08 at the end (the end figure is the run's own workers).
 - Versions: fibre_cache.s3fifo 0.4.12, fibre_cache.tinylfu 0.4.12, moka 0.12.16, quick_cache 0.6.24, stretto 0.8.4.
 
 ## Engines

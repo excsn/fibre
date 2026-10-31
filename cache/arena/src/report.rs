@@ -102,6 +102,9 @@ fn fmt3(v: f64) -> String {
   format!("{:.2}", v)
 }
 
+/// Shown in every table but never ranked: it has no expiry and no cache-level loader.
+const YARDSTICK: &str = "quick_cache";
+
 impl Pages {
   fn engines(&self) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -148,7 +151,8 @@ impl Pages {
     self.records.first().map(|r| r.secs)
   }
 
-  /// Mops/s table with the best engine per row in bold.
+  /// Mops/s table with the best engine per row in bold, leaving out the yardstick.
+  /// The yardstick is in italics where it is above that best.
   fn throughput_table(&self, op: Op) -> String {
     let engines = self.engines_for(op);
     let mut out = String::new();
@@ -166,13 +170,22 @@ impl Pages {
         .iter()
         .map(|e| self.record(e, op, mode, workers).map(|r| r.report.mops()))
         .collect();
-      let present = values.iter().flatten().count();
-      let best = values.iter().flatten().fold(f64::NEG_INFINITY, |a, b| a.max(*b));
+      let ranked: Vec<f64> = engines
+        .iter()
+        .zip(&values)
+        .filter(|(e, _)| e.as_str() != YARDSTICK)
+        .filter_map(|(_, v)| *v)
+        .collect();
+      let present = ranked.len();
+      let best = ranked.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b));
       let _ = write!(out, "| {} | {} |", mode_name(mode), workers);
-      for v in values {
+      for (e, v) in engines.iter().zip(values) {
         match v {
-          Some(v) if present > 1 && v == best => {
+          Some(v) if present > 1 && v == best && e.as_str() != YARDSTICK => {
             let _ = write!(out, " **{}** |", fmt3(v));
+          }
+          Some(v) if present > 0 && v > best && e.as_str() == YARDSTICK => {
+            let _ = write!(out, " *{}* |", fmt3(v));
           }
           Some(v) => {
             let _ = write!(out, " {} |", fmt3(v));
@@ -234,7 +247,7 @@ impl Pages {
     let _ = writeln!(out);
     let _ = writeln!(
       out,
-      "Mops/s: operations completed per second across all workers over a {} s run at capacity {}. Best per row in bold. `-` means the engine has no API for that mode.",
+      "Mops/s: operations completed per second across all workers over a {} s run at capacity {}. Best per row in bold, leaving out quick_cache, which is a yardstick and is not ranked. Italics mean quick_cache is above the best ranked engine. `-` means the engine has no API for that mode.",
       self.secs().map_or("?".to_owned(), |s| format!("{:.0}", s)),
       self.capacity().map_or("?".to_owned(), |c| c.to_string())
     );

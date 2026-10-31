@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 pub enum Op {
   /// Every key is resident; each operation is a get.
   Hit,
-  /// Each operation inserts a key not yet seen, after a prefill to capacity.
+  /// Workers cycle through `capacity` keys outside the prefill, inserting each one.
   Insert,
   /// Keys drawn from a Zipf distribution (exponent 0.99) over ten times the
   /// capacity, starting from an empty cache; a miss inserts the key.

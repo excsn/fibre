@@ -8,7 +8,7 @@ Results live in [docs/](./docs/).
 
 ```sh
 cd cache/arena
-cargo run --release                                              # ten default cells, every engine, 10 s each
+cargo run --release                                              # thirteen default cells, every engine, 10 s each
 cargo run --release -- --list                                    # print the cells, run nothing
 cargo run --release -- --engine fibre_cache.s3fifo,quick_cache   # head-to-head
 cargo run --release -- --cell "zipf async 64" --secs 30          # one cell, longer
@@ -28,7 +28,7 @@ A cell is `<op> <mode> <workers>`.
 | Op | Workload |
 | :--- | :--- |
 | `hit` | The cache is filled to capacity first; every operation is a get of a resident key. |
-| `insert` | The cache is filled to capacity first; every operation inserts a key outside it. |
+| `insert` | The cache is filled to capacity first; workers then cycle through `capacity` keys outside the prefill, so the first pass evicts the prefill and later passes mostly replace resident keys. |
 | `zipf` | Keys from a Zipf distribution (exponent 0.99) over ten times the capacity, starting empty; a miss inserts the key. |
 | `hot` | The cache is filled to capacity first; every worker reads the key filled last on every operation. |
 
@@ -68,6 +68,6 @@ quick_cache has no async API, so its async workers call the sync methods from in
 
 ## Before a run
 
-`cargo test` runs every engine through every op and mode for a few milliseconds and checks that each one completes operations. It is not a benchmark.
+`cargo test` runs every engine through the `hit`, `insert` and `zipf` ops in every mode for 50 ms and checks that each one completes operations. It is not a benchmark.
 
 Nothing else should be running. Check the power mode and load first.

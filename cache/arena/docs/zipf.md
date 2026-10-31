@@ -3,17 +3,17 @@
 
 Zipf-distributed reads over ten times the capacity, inserting on a miss.
 
-Mops/s: operations completed per second across all workers over a 10 s run at capacity 10000. Best per row in bold. `-` means the engine has no API for that mode.
+Mops/s: operations completed per second across all workers over a 10 s run at capacity 10000. Best per row in bold, leaving out quick_cache, which is a yardstick and is not ranked. Italics mean quick_cache is above the best ranked engine. `-` means the engine has no API for that mode.
 
 ## Throughput
 
 | Mode | Workers | fibre_cache.s3fifo | fibre_cache.tinylfu | moka | quick_cache | stretto |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
-| sync | 8 | 32.36 | 23.62 | 5.58 | **45.77** | 3.35 |
-| sync | 64 | **32.47** | 23.61 | 1.13 | 25.05 | 4.44 |
-| async | 8 | 25.85 | 18.84 | 5.67 | **46.95** | 3.75 |
-| async | 64 | **33.39** | 25.74 | 4.24 | 26.34 | 3.98 |
-| mixed | 64 | 25.71 | 18.46 | - | **27.27** | - |
+| sync | 8 | **30.15** | 23.57 | 5.57 | *42.44* | 3.66 |
+| sync | 64 | **31.34** | 23.91 | 1.11 | 21.02 | 3.59 |
+| async | 8 | **30.72** | 20.88 | 5.39 | *47.01* | 3.86 |
+| async | 64 | **31.28** | 25.87 | 4.01 | 24.85 | 3.75 |
+| mixed | 64 | **26.20** | 19.39 | - | 21.30 | - |
 
 ## Hit ratio and peak entries
 
@@ -21,10 +21,10 @@ Hit ratio over the run, then the highest entry count the sampler saw against the
 
 | Mode | Workers | fibre_cache.s3fifo | fibre_cache.tinylfu | moka | quick_cache | stretto |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
-| sync | 8 | 0.777 / 9984 | 0.774 / 9984 | 0.788 / 10000 | 0.785 / 10048 | 0.590 / 10002 |
-| sync | 64 | 0.777 / 9984 | 0.774 / 9984 | 0.785 / 10000 | 0.785 / 10048 | 0.638 / 10002 |
-| async | 8 | 0.777 / 9984 | 0.774 / 9984 | 0.787 / 10000 | 0.785 / 10048 | 0.644 / 10002 |
-| async | 64 | 0.777 / 9984 | 0.774 / 9984 | 0.788 / 10000 | 0.785 / 10048 | 0.648 / 10002 |
+| sync | 8 | 0.777 / 9984 | 0.774 / 9984 | 0.788 / 10000 | 0.785 / 10048 | 0.652 / 10002 |
+| sync | 64 | 0.778 / 9984 | 0.774 / 9984 | 0.785 / 10000 | 0.785 / 10048 | 0.615 / 10003 |
+| async | 8 | 0.777 / 9984 | 0.774 / 9984 | 0.787 / 10000 | 0.785 / 10048 | 0.668 / 10002 |
+| async | 64 | 0.777 / 9984 | 0.774 / 9984 | 0.788 / 10000 | 0.785 / 10048 | 0.650 / 10002 |
 | mixed | 64 | 0.777 / 9984 | 0.774 / 9984 | - | 0.785 / 10048 | - |
 
 ## Expected
