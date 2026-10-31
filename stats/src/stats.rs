@@ -6,7 +6,9 @@
 //! [`Sink`] as one [`Batch`]. Collectors run on their own thread at their own
 //! interval and record like anything else.
 
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -87,6 +89,7 @@ pub struct Stats {
 }
 
 struct Inner {
+  key_hasher: RandomState,
   config: StatsConfig,
   book: Mutex<Book>,
   sink: Mutex<Option<Arc<dyn Sink>>>,
@@ -106,6 +109,62 @@ struct SeriesKey {
 struct Header {
   kind: Kind,
   encoding: Encoding,
+}
+
+/// A series key with its hash, computed before the book's lock is taken and
+/// reused by every map lookup under it.
+#[derive(Clone)]
+struct HashedKey {
+  hash: u64,
+  key: SeriesKey,
+}
+
+impl PartialEq for HashedKey {
+  fn eq(&self, other: &Self) -> bool {
+    self.hash == other.hash && self.key == other.key
+  }
+}
+
+impl Eq for HashedKey {}
+
+impl Hash for HashedKey {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    state.write_u64(self.hash);
+  }
+}
+
+impl std::ops::Deref for HashedKey {
+  type Target = SeriesKey;
+
+  fn deref(&self) -> &SeriesKey {
+    &self.key
+  }
+}
+
+#[derive(Default)]
+struct PassThroughHasher(u64);
+
+impl Hasher for PassThroughHasher {
+  fn finish(&self) -> u64 {
+    self.0
+  }
+
+  fn write(&mut self, _bytes: &[u8]) {
+    unreachable!("only HashedKey is hashed with this hasher")
+  }
+
+  fn write_u64(&mut self, hash: u64) {
+    self.0 = hash;
+  }
+}
+
+type KeyMap<V> = HashMap<HashedKey, V, BuildHasherDefault<PassThroughHasher>>;
+
+/// One series in one window. The header is here so a recording to a series
+/// already in the window needs one lookup.
+struct Slot {
+  header: Header,
+  agg: Agg,
 }
 
 enum Agg {
@@ -176,16 +235,17 @@ impl HighRes {
 
 #[derive(Default)]
 struct Book {
-  headers: HashMap<SeriesKey, Header>,
-  windows: BTreeMap<u64, HashMap<SeriesKey, Agg>>,
-  totals: HashMap<SeriesKey, u64>,
-  high_res: HashMap<SeriesKey, HighRes>,
+  headers: KeyMap<Header>,
+  windows: BTreeMap<u64, KeyMap<Slot>>,
+  totals: KeyMap<u64>,
+  high_res: KeyMap<HighRes>,
   refused: u64,
   last_refusal: Option<Refusal>,
 }
 
 impl Book {
-  fn refuse(&mut self, key: SeriesKey, reason: RefusalReason) {
+  fn refuse(&mut self, key: HashedKey, reason: RefusalReason) {
+    let key = key.key;
     self.refused += 1;
     self.last_refusal = Some(Refusal {
       name: key.name,
@@ -252,6 +312,7 @@ impl Stats {
   pub fn new(config: StatsConfig) -> Stats {
     Stats {
       inner: Arc::new(Inner {
+        key_hasher: RandomState::new(),
         config,
         book: Mutex::new(Book::default()),
         sink: Mutex::new(None),
@@ -416,11 +477,18 @@ impl Inner {
       .max(1)
   }
 
-  fn key(&self, name: Name, mut tags: Tags) -> SeriesKey {
-    let mut all = self.config.common_tags.clone();
-    all.append(&mut tags);
-    normalize(&mut all);
-    SeriesKey { name, tags: all }
+  fn key(&self, name: Name, mut tags: Tags) -> HashedKey {
+    let tags = if self.config.common_tags.is_empty() {
+      normalize(&mut tags);
+      tags
+    } else {
+      let mut all = self.config.common_tags.clone();
+      all.append(&mut tags);
+      normalize(&mut all);
+      all
+    };
+    let key = SeriesKey { name, tags };
+    HashedKey { hash: self.key_hasher.hash_one(&key), key }
   }
 
   fn record(&self, observation: Observation) {
@@ -436,7 +504,7 @@ impl Inner {
     self.ingest(key, kind, at_ns, sample, resolution);
   }
 
-  fn ingest(&self, key: SeriesKey, kind: Kind, at_ns: u64, sample: Sample, resolution: Option<Duration>) {
+  fn ingest(&self, key: HashedKey, kind: Kind, at_ns: u64, sample: Sample, resolution: Option<Duration>) {
     let encoding = sample.encoding();
     let mut guard = self.book.lock();
     let book = &mut *guard;
@@ -445,6 +513,23 @@ impl Inner {
       book.refuse(key, RefusalReason::SampleKind { kind, encoding });
       return;
     }
+
+    let window = at_ns / self.resolution_ns();
+    if let Some(slot) = book.windows.get_mut(&window).and_then(|series| series.get_mut(&key)) {
+      let header = slot.header;
+      if header.kind != kind {
+        book.refuse(key, RefusalReason::KindChanged { was: header.kind, now: kind });
+        return;
+      }
+      if header.encoding != encoding {
+        book.refuse(key, RefusalReason::EncodingChanged { was: header.encoding, now: encoding });
+        return;
+      }
+      slot.agg.absorb(&sample);
+      self.keep_high_res(book, key, at_ns, sample, resolution);
+      return;
+    }
+
     match book.headers.get(&key).copied() {
       Some(header) if header.kind != kind => {
         book.refuse(
@@ -472,20 +557,17 @@ impl Inner {
       }
     }
 
-    let window = at_ns / self.resolution_ns();
-    let series = book.windows.entry(window).or_default();
-    match series.get_mut(&key) {
-      Some(agg) => agg.absorb(&sample),
-      None => {
-        series.insert(key.clone(), Agg::start(&sample));
-      }
-    }
+    let slot = Slot {
+      header: Header { kind, encoding },
+      agg: Agg::start(&sample),
+    };
+    book.windows.entry(window).or_default().insert(key.clone(), slot);
 
     self.keep_high_res(book, key, at_ns, sample, resolution);
   }
 
   #[cfg(feature = "high_res")]
-  fn keep_high_res(&self, book: &mut Book, key: SeriesKey, at_ns: u64, sample: Sample, resolution: Option<Duration>) {
+  fn keep_high_res(&self, book: &mut Book, key: HashedKey, at_ns: u64, sample: Sample, resolution: Option<Duration>) {
     let Some(resolution) = resolution else {
       return;
     };
@@ -498,7 +580,7 @@ impl Inner {
   }
 
   #[cfg(not(feature = "high_res"))]
-  fn keep_high_res(&self, _book: &mut Book, _key: SeriesKey, _at_ns: u64, _sample: Sample, _resolution: Option<Duration>) {}
+  fn keep_high_res(&self, _book: &mut Book, _key: HashedKey, _at_ns: u64, _sample: Sample, _resolution: Option<Duration>) {}
 
   fn total(&self, name: Name, tags: Tags, total: u64) {
     let key = self.key(name, tags);
@@ -546,11 +628,11 @@ impl Inner {
       series: Vec::new(),
       dropped: Vec::new(),
     };
-    let mut index: HashMap<SeriesKey, usize> = HashMap::new();
+    let mut index: KeyMap<usize> = KeyMap::default();
 
     for (window, series) in closed {
       let at_ns = window.saturating_mul(res_ns);
-      for (key, agg) in series {
+      for (key, slot) in series {
         let Some(header) = headers.get(&key).copied() else {
           continue;
         };
@@ -570,7 +652,7 @@ impl Inner {
             at
           }
         };
-        push_point(&mut batch.series[at].points, at_ns, agg);
+        push_point(&mut batch.series[at].points, at_ns, slot.agg);
       }
     }
 
@@ -589,7 +671,7 @@ impl Inner {
       }
       if !samples.is_empty() {
         batch.series.push(SeriesBatch {
-          name: key.name,
+          name: key.name.clone(),
           kind: header.kind,
           encoding: header.encoding,
           tags: strip_common(&key.tags, common),
@@ -903,6 +985,32 @@ mod tests {
     assert_eq!(series.points.numbers(), Some(&[(SECOND, NumberValue::count(7))][..]));
     assert!(stats.remove_collector(id));
     assert!(!stats.remove_collector(id));
+    stats.stop();
+  }
+
+  #[test]
+  fn a_kind_or_encoding_change_is_refused_inside_a_window_and_in_the_next() {
+    let clock = clock_at(100 * SECOND);
+    let stats = stats_with(&clock, vec![]);
+    stats.gauge("level", vec![], 1u64);
+
+    stats.incr("level", vec![]);
+    assert_eq!(
+      stats.last_refusal().unwrap().reason,
+      RefusalReason::KindChanged { was: Kind::Gauge, now: Kind::Counter }
+    );
+    stats.gauge("level", vec![], NumberValue::ratio_of(1, 2));
+    assert_eq!(stats.refused(), 2);
+
+    clock.0.store(101 * SECOND, Ordering::Relaxed);
+    stats.incr("level", vec![]);
+    stats.gauge("level", vec![], NumberValue::ratio_of(1, 2));
+    assert_eq!(stats.refused(), 4);
+
+    let batch = stats.drain(true);
+    assert_eq!(batch.series.len(), 1);
+    assert_eq!(batch.series[0].kind, Kind::Gauge);
+    assert_eq!(batch.series[0].points.numbers().unwrap().len(), 1);
     stats.stop();
   }
 
