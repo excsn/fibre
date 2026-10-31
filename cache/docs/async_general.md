@@ -6,75 +6,75 @@
 
 ### `AsyncGeneral/Workload-Read100_Zipf_Cap-1000000_Ops-1000000_Tasks-1`
 
-* **Time:** 78.022 ms – 79.423 ms – 81.513 ms
-* **Throughput:** 12.268 Melem/s – 12.591 Melem/s – 12.817 Melem/s
+* **Time:** 65.073 ms – 67.063 ms – 69.041 ms
+* **Throughput:** 14.484 Melem/s – 14.911 Melem/s – 15.367 Melem/s
 
 ### `AsyncGeneral/Workload-Read100_Zipf_Cap-1000000_Ops-1000000_Tasks-4`
 
-* **Time:** 37.790 ms – 38.480 ms – 39.743 ms
-* **Throughput:** 25.162 Melem/s – 25.988 Melem/s – 26.462 Melem/s
+* **Time:** 32.492 ms – 32.925 ms – 33.339 ms
+* **Throughput:** 29.995 Melem/s – 30.372 Melem/s – 30.776 Melem/s
 
 ### `AsyncGeneral/Workload-Read100_Zipf_Cap-1000000_Ops-1000000_Tasks-8`
 
-* **Time:** 22.398 ms – 22.714 ms – 23.158 ms
-* **Throughput:** 43.182 Melem/s – 44.026 Melem/s – 44.647 Melem/s
+* **Time:** 18.058 ms – 19.449 ms – 20.932 ms
+* **Throughput:** 47.773 Melem/s – 51.415 Melem/s – 55.378 Melem/s
 
 ### `AsyncGeneral/Workload-Read75Write25_Zipf_Cap-1000000_Ops-1000000_Tasks-1`
 
-* **Time:** 111.73 ms – 113.00 ms – 115.06 ms
-* **Throughput:** 8.6914 Melem/s – 8.8497 Melem/s – 8.9498 Melem/s
+* **Time:** 103.26 ms – 107.11 ms – 109.92 ms
+* **Throughput:** 9.0975 Melem/s – 9.3360 Melem/s – 9.6847 Melem/s
 
 ### `AsyncGeneral/Workload-Read75Write25_Zipf_Cap-1000000_Ops-1000000_Tasks-4`
 
-* **Time:** 40.051 ms – 40.376 ms – 40.825 ms
-* **Throughput:** 24.495 Melem/s – 24.767 Melem/s – 24.968 Melem/s
+* **Time:** 35.047 ms – 36.122 ms – 36.956 ms
+* **Throughput:** 27.059 Melem/s – 27.684 Melem/s – 28.533 Melem/s
 
 ### `AsyncGeneral/Workload-Read75Write25_Zipf_Cap-1000000_Ops-1000000_Tasks-8`
 
-* **Time:** 35.293 ms – 35.412 ms – 35.632 ms
-* **Throughput:** 28.064 Melem/s – 28.239 Melem/s – 28.334 Melem/s
+* **Time:** 27.398 ms – 27.990 ms – 28.723 ms
+* **Throughput:** 34.815 Melem/s – 35.727 Melem/s – 36.498 Melem/s
 
 ### `AsyncGeneral/Workload-Write100_Zipf_Cap-1000000_Ops-1000000_Tasks-1`
 
-* **Time:** 175.56 ms – 178.78 ms – 182.84 ms
-* **Throughput:** 5.4692 Melem/s – 5.5934 Melem/s – 5.6961 Melem/s
+* **Time:** 161.19 ms – 166.15 ms – 171.98 ms
+* **Throughput:** 5.8145 Melem/s – 6.0185 Melem/s – 6.2040 Melem/s
 
 ### `AsyncGeneral/Workload-Write100_Zipf_Cap-1000000_Ops-1000000_Tasks-4`
 
-* **Time:** 70.592 ms – 75.678 ms – 81.644 ms
-* **Throughput:** 12.248 Melem/s – 13.214 Melem/s – 14.166 Melem/s
+* **Time:** 74.682 ms – 81.758 ms – 87.079 ms
+* **Throughput:** 11.484 Melem/s – 12.231 Melem/s – 13.390 Melem/s
 
 ### `AsyncGeneral/Workload-Write100_Zipf_Cap-1000000_Ops-1000000_Tasks-8`
 
-* **Time:** 64.177 ms – 69.337 ms – 75.172 ms
-* **Throughput:** 13.303 Melem/s – 14.422 Melem/s – 15.582 Melem/s
+* **Time:** 68.772 ms – 74.719 ms – 86.953 ms
+* **Throughput:** 11.501 Melem/s – 13.383 Melem/s – 14.541 Melem/s
 
 ### `AsyncGeneral/Workload-Compute_SameKey_Cap-1000000_Ops-1000000_Tasks-1`
 
-* **Time:** 11.181 ms – 11.219 ms – 11.292 ms
-* **Throughput:** 88.561 Melem/s – 89.132 Melem/s – 89.435 Melem/s
+* **Time:** 11.170 ms – 11.253 ms – 11.457 ms
+* **Throughput:** 87.279 Melem/s – 88.865 Melem/s – 89.526 Melem/s
 
 ### `AsyncGeneral/Workload-Compute_SameKey_Cap-1000000_Ops-1000000_Tasks-4`
 
-* **Time:** 31.263 ms – 31.752 ms – 32.259 ms
-* **Throughput:** 30.999 Melem/s – 31.494 Melem/s – 31.987 Melem/s
+* **Time:** 31.588 ms – 32.607 ms – 33.976 ms
+* **Throughput:** 29.433 Melem/s – 30.668 Melem/s – 31.657 Melem/s
 
 ### `AsyncGeneral/Workload-Compute_SameKey_Cap-1000000_Ops-1000000_Tasks-8`
 
-* **Time:** 73.627 ms – 74.898 ms – 76.134 ms
-* **Throughput:** 13.135 Melem/s – 13.352 Melem/s – 13.582 Melem/s
+* **Time:** 77.496 ms – 79.756 ms – 81.026 ms
+* **Throughput:** 12.342 Melem/s – 12.538 Melem/s – 12.904 Melem/s
 
 ### `AsyncGeneral/Workload-Compute_Zipf_Cap-1000000_Ops-1000000_Tasks-1`
 
-* **Time:** 84.195 ms – 85.314 ms – 87.812 ms
-* **Throughput:** 11.388 Melem/s – 11.721 Melem/s – 11.877 Melem/s
+* **Time:** 84.918 ms – 87.021 ms – 91.599 ms
+* **Throughput:** 10.917 Melem/s – 11.491 Melem/s – 11.776 Melem/s
 
 ### `AsyncGeneral/Workload-Compute_Zipf_Cap-1000000_Ops-1000000_Tasks-4`
 
-* **Time:** 39.313 ms – 39.992 ms – 40.435 ms
-* **Throughput:** 24.731 Melem/s – 25.005 Melem/s – 25.437 Melem/s
+* **Time:** 39.299 ms – 39.836 ms – 40.560 ms
+* **Throughput:** 24.655 Melem/s – 25.103 Melem/s – 25.446 Melem/s
 
 ### `AsyncGeneral/Workload-Compute_Zipf_Cap-1000000_Ops-1000000_Tasks-8`
 
-* **Time:** 25.198 ms – 25.838 ms – 26.798 ms
-* **Throughput:** 37.316 Melem/s – 38.703 Melem/s – 39.685 Melem/s
+* **Time:** 25.781 ms – 26.456 ms – 27.334 ms
+* **Throughput:** 36.585 Melem/s – 37.799 Melem/s – 38.789 Melem/s
