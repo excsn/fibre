@@ -1,0 +1,30 @@
+const fs = require('fs');
+
+let now = 1_700_000_000_000;
+const host = { now_ms: () => (now += 5) };
+const wasmModule = new WebAssembly.Module(fs.readFileSync(process.argv[2]));
+const e = new WebAssembly.Instance(wasmModule, { host }).exports;
+const line = (key, value) => console.log(`${key}=${value}`);
+
+line('ctors_exported', '__wasm_call_ctors' in e);
+line('first_call_count', e.registry_count());
+line('listed_local', e.listed_local());
+line('listed_recorded', e.listed_recorded());
+line('listed_handle', e.listed_handle());
+line('listed_unreferenced', e.listed_unreferenced());
+line('listed_unnamed', e.listed_unnamed());
+e.call_dependency();
+e.record_before_global();
+e.setup();
+e.record();
+now += 5000;
+e.tick();
+line('batches_first', e.batches());
+line('series_first', e.series());
+line('timer_max_ms', e.timer_max_ms());
+e.record();
+now += 5000;
+e.tick();
+line('batches_second', e.batches());
+line('series_second', e.series());
+line('refused', e.refused());

@@ -52,6 +52,17 @@
 //! # }
 //! ```
 
+#[cfg(all(
+  doctest,
+  feature = "high_res",
+  feature = "collect-process",
+  feature = "collect-host",
+  feature = "collect-tokio",
+  feature = "xs_foundation"
+))]
+#[doc = include_str!("../README.USAGE.md")]
+pub struct UsageGuide;
+
 pub mod collect;
 pub mod error;
 pub mod histogram;

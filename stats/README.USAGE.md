@@ -482,13 +482,16 @@ Each feature adds a collector whose metrics are defined with `metric!`, so a pro
 fibre_stats = { version = "0", features = ["collect-process", "collect-host", "collect-tokio"] }
 ```
 
-```rust,ignore
+```rust
 use std::time::Duration;
-use fibre_stats::{collect, tags};
+use fibre_stats::{CollectError, Stats, collect, tags};
 
-stats.add_collector(Duration::from_secs(10), collect::host()?);
-stats.add_collector_with_tags(tags!("instance" => "shop_1"), Duration::from_secs(10), collect::process(1234)?);
-stats.add_collector(Duration::from_secs(10), collect::tokio(tokio::runtime::Handle::current()));
+fn add_collectors(stats: &Stats, runtime: tokio::runtime::Handle) -> Result<(), CollectError> {
+  stats.add_collector(Duration::from_secs(10), collect::host()?);
+  stats.add_collector_with_tags(tags!("instance" => "shop_1"), Duration::from_secs(10), collect::process(1234)?);
+  stats.add_collector(Duration::from_secs(10), collect::tokio(runtime));
+  Ok(())
+}
 ```
 
 `collect::process` records `process.alive`, `process.cpu_pct` as a share of every core, `process.memory_bytes`, `process.virtual_memory_bytes`, `process.threads` on Linux, `process.open_fds` where the platform says, `process.disk.read_bytes`, `process.disk.written_bytes` and `process.run_time_secs`. `collect::host` records memory, swap, CPU, load, uptime, network counters per interface, disk space per mount and temperatures per component under `host.*`. `collect::tokio` records workers, alive tasks, the global queue depth and per worker busy percentage and parks under `tokio.*`, from what stable tokio exposes. CPU percentages are zero on the first read, since they need two reads to measure.
@@ -519,13 +522,13 @@ use fibre_stats::{metric, registry};
 metric! {
   /// Requests answered.
   #[tags("status")]
-  pub static REQUESTS: Counter = "http.requests";
+  pub static REQUESTS: Counter = "catalogue.requests";
 }
 
 for metric in registry() {
   println!("{} {} {} {:?}", metric.name, metric.kind, metric.unit.as_str(), metric.tags);
 }
-let requests = fibre_stats::find("http.requests").unwrap();
+let requests = fibre_stats::find("catalogue.requests").unwrap();
 assert_eq!(requests.description_text(), "Requests answered.");
 ```
 
@@ -535,7 +538,7 @@ This is what a program sends to whatever stores its metrics, so names, kinds, un
 
 `StatsConfig::clock` is where timestamps come from. The default reads the system clock. A test passes a fixed one. With the `xs_foundation` feature, `XsClock` wraps an `xs_foundation::time::Clock`.
 
-```rust,ignore
+```rust
 use std::sync::Arc;
 use fibre_stats::{Stats, StatsConfig, XsClock};
 
@@ -558,13 +561,15 @@ The feature reads `Date.now()` and `Performance.now()` through `web-time`, so `S
 fibre_stats = { version = "0", features = ["wasm-bindgen"] }
 ```
 
-```rust,ignore
+```rust
 use std::sync::Arc;
 use fibre_stats::{Batch, Stats, StatsConfig};
 
+fn send_beacon(_batch: Batch) {}
+
 let stats = Stats::new(StatsConfig::default());
 stats.set_sink(Arc::new(|batch: Batch| send_beacon(batch)));
-fibre_stats::set_global(Arc::new(stats.clone()))?;
+fibre_stats::set_global(Arc::new(stats.clone())).ok().unwrap();
 
 // From a setInterval callback once a second:
 stats.collect_due();
@@ -575,19 +580,20 @@ stats.flush();
 
 For a module whose JavaScript is written by hand, the host passes a clock. There is no `SystemClock` and no `StatsConfig::default()`, so forgetting it is a compile error. Timers measure with the same clock.
 
-```rust,ignore
+```rust
 use std::sync::Arc;
 use fibre_stats::{Clock, Stats, StatsConfig};
 
-unsafe extern "C" {
-  fn date_now_ms() -> f64;
+// In a real module this is an `unsafe extern "C"` import from the host.
+fn date_now_ms() -> f64 {
+  1_700_000_000_000.0
 }
 
 struct HostClock;
 
 impl Clock for HostClock {
   fn now_ns(&self) -> u64 {
-    (unsafe { date_now_ms() } * 1_000_000.0) as u64
+    (date_now_ms() * 1_000_000.0) as u64
   }
 }
 
