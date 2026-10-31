@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 /// A view into a single entry in the cache from an async context, which may either be occupied or vacant.
 ///
-/// This enum is constructed by the [`AsyncCache::entry_async`] method.
+/// This enum is constructed by the `AsyncCache::entry` method.
 // The lifetime 'a is the lifetime of the write guard on the shard.
 pub enum AsyncEntry<'a, K: Send, V: Send + Sync, H> {
   /// An occupied entry.

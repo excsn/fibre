@@ -65,3 +65,29 @@ async fn test_async_ttl_is_not_reset_on_access() {
     "Item should have expired despite access"
   );
 }
+
+#[tokio::test]
+async fn test_async_ttl_removal_continues_under_steady_inserts() {
+  let cache = CacheBuilder::<u64, u64>::new()
+    .capacity(1_000_000)
+    .time_to_live(std::time::Duration::from_millis(100))
+    .timer_mode(fibre_cache::builder::TimerWheelMode::HighPrecisionShortLived)
+    .janitor_tick_interval(std::time::Duration::from_millis(20))
+    .maintenance_chance(1)
+    .build_async()
+    .unwrap();
+
+  let start = std::time::Instant::now();
+  let mut key = 0;
+  while start.elapsed() < std::time::Duration::from_secs(1) {
+    cache.insert(key, key, 1).await;
+    key += 1;
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+  }
+
+  assert!(
+    cache.metrics().evicted_by_ttl > 0,
+    "{key} inserts with a 100 ms TTL over 1 s removed nothing"
+  );
+}
+

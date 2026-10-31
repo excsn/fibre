@@ -82,7 +82,6 @@ where
     hasher: H,
     timer_wheel_size: usize,
     timer_tick_duration: Duration,
-    has_timer_logic: bool,
     capacity: u64,
     policies: &[Arc<dyn CachePolicy<K, V>>],
     builtin: Option<(crate::select::BuiltinChoice, u64)>,
@@ -95,7 +94,7 @@ where
       let ring = Arc::new(ReadRing::new());
       let counters = Arc::new(ShardCounters::new());
       let ttl_due = Arc::new(AtomicU64::new(u64::MAX));
-      let wheel = has_timer_logic.then(|| TimerWheel::new(timer_wheel_size, timer_tick_duration, ttl_due.clone()));
+      let wheel = TimerWheel::new(timer_wheel_size, timer_tick_duration, ttl_due.clone());
       let shard_map = ShardMap {
         wheel,
         local: counters.clone(),
@@ -196,6 +195,35 @@ pub(crate) enum DeferredRead<K> {
 /// What a shard needs to account for the entries it evicts on insert.
 pub(crate) struct EvictCtx<K, V> {
   pub(crate) notify: Option<Box<dyn Fn(K, Arc<V>) + Send + Sync>>,
+  /// Nanos past `expires_at` an entry stays for `stale_while_revalidate`.
+  pub(crate) grace_ns: u64,
+  /// Nanos an entry may stay unread, 0 when the cache has no time-to-idle.
+  pub(crate) tti_ns: u64,
+}
+
+/// Which limit removed an entry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ExpiredBy {
+  Ttl,
+  Tti,
+}
+
+#[inline]
+fn is_idle<V>(e: &CacheEntry<V>, now: u64, tti_ns: u64) -> bool {
+  tti_ns > 0 && now >= e.last_accessed.load(Ordering::Relaxed).saturating_add(tti_ns)
+}
+
+#[inline]
+fn expired_by<V>(e: &CacheEntry<V>, now: u64, grace_ns: u64, tti_ns: u64) -> Option<ExpiredBy> {
+  let expires_at = e.expires_at.load(Ordering::Relaxed);
+  if expires_at > 0 && now >= expires_at.saturating_add(grace_ns) {
+    return Some(ExpiredBy::Ttl);
+  }
+  if is_idle(e, now, tti_ns) {
+    // Past its TTL and waiting on the grace period, the TTL is what ended it.
+    return Some(if expires_at > 0 && now >= expires_at { ExpiredBy::Ttl } else { ExpiredBy::Tti });
+  }
+  None
 }
 
 /// A shard's entries, its cost and its policy. An insert hands the write to
@@ -216,7 +244,7 @@ pub(crate) struct ShardMap<K, V, H> {
   ring: Arc<ReadRing>,
   victims: Vec<Victim>,
   local: Arc<ShardCounters>,
-  wheel: Option<TimerWheel>,
+  wheel: TimerWheel,
 }
 
 impl<K, V, H> ShardMap<K, V, H>
@@ -269,7 +297,7 @@ where
 
   #[cfg(test)]
   pub(crate) fn timer_count(&self) -> usize {
-    self.wheel.as_ref().map_or(0, |w| w.len())
+    self.wheel.len()
   }
 
   #[cfg(test)]
@@ -332,50 +360,73 @@ where
   fn arm(&mut self, hash: u64, entry: &mut CacheEntry<V>) {
     entry.key_hash = hash;
     let expires_at = entry.expires_at.load(Ordering::Relaxed);
-    if let Some(w) = &mut self.wheel {
-      if expires_at > 0 {
-        entry.ttl_timer_handle = Some(w.schedule(hash, expires_at));
-      }
+    if expires_at > 0 {
+      entry.ttl_timer_handle = Some(self.wheel.schedule(hash, expires_at.saturating_add(self.ctx.grace_ns)));
     }
   }
 
   fn disarm(&mut self, entry: &CacheEntry<V>) {
-    if let (Some(w), Some(h)) = (&mut self.wheel, &entry.ttl_timer_handle) {
-      w.cancel(h);
+    if let Some(h) = &entry.ttl_timer_handle {
+      self.wheel.cancel(h);
     }
   }
 
   /// Advances the TTL timers to `now` (nanos since the cache epoch) and removes
-  /// the entries that have expired, returning them.
-  pub(crate) fn expire_due(&mut self, now: u64) -> Vec<(K, CacheEntry<V>)> {
-    let fired = match &mut self.wheel {
-      Some(w) => w.advance(now),
-      None => return Vec::new(),
-    };
+  /// the entries past a limit.
+  pub(crate) fn expire_due(&mut self, now: u64) -> Vec<(K, CacheEntry<V>, ExpiredBy)> {
+    let fired = self.wheel.advance(now);
     if fired.is_empty() {
       return Vec::new();
     }
     self.apply_reads();
+    let grace = self.ctx.grace_ns;
     let mut out = Vec::new();
     for hash in fired {
-      while let Ok(o) = self.table.find_entry(hash, |(_, e)| e.key_hash == hash && e.is_expired(None)) {
-        let (key, e) = o.remove().0;
-        self.cost -= e.cost();
-        self.disarm(&e);
-        self.forget(&key, &e);
-        out.push((key, e));
-      }
+      self.remove_expired(hash, now, &mut out);
       // A timer can fire before its entry expires, from clock skew or a hash
       // shared with another key; that entry is armed again for the rest of its TTL.
-      if let Some(w) = &mut self.wheel {
-        let stale = |e: &CacheEntry<V>| e.ttl_timer_handle.as_ref().is_some_and(|h| !w.is_armed(h));
-        if let Some((_, e)) = self.table.find_mut(hash, |(_, e)| e.key_hash == hash && stale(e)) {
-          let expires_at = e.expires_at.load(Ordering::Relaxed);
-          e.ttl_timer_handle = Some(w.schedule(hash, expires_at));
-        }
+      let w = &mut self.wheel;
+      if let Some((_, e)) = self.table.find_mut(hash, |(_, e)| e.key_hash == hash && e.ttl_timer_handle.as_ref().is_some_and(|h| !w.is_armed(h))) {
+        let expires_at = e.expires_at.load(Ordering::Relaxed);
+        e.ttl_timer_handle = Some(w.schedule(hash, expires_at.saturating_add(grace)));
       }
     }
     out
+  }
+
+  /// Removes every entry past a limit at `now`, whatever the wheel's position.
+  pub(crate) fn expire_all(&mut self, now: u64) -> Vec<(K, CacheEntry<V>, ExpiredBy)> {
+    let (grace, tti) = (self.ctx.grace_ns, self.ctx.tti_ns);
+    let hashes: Vec<u64> = self.table.iter().filter(|(_, e)| expired_by(e, now, grace, tti).is_some()).map(|(_, e)| e.key_hash).collect();
+    self.remove_expired_hashes(hashes, now)
+  }
+
+  /// The hashes of the entries idle at `now`. Takes only a read lock.
+  pub(crate) fn idle_hashes(&self, now: u64) -> Vec<u64> {
+    let tti = self.ctx.tti_ns;
+    self.table.iter().filter(|(_, e)| is_idle(e, now, tti)).map(|(_, e)| e.key_hash).collect()
+  }
+
+  /// Removes the entries under `hashes` still past a limit at `now`.
+  pub(crate) fn remove_expired_hashes(&mut self, hashes: Vec<u64>, now: u64) -> Vec<(K, CacheEntry<V>, ExpiredBy)> {
+    self.apply_reads();
+    let mut out = Vec::with_capacity(hashes.len());
+    for hash in hashes {
+      self.remove_expired(hash, now, &mut out);
+    }
+    out
+  }
+
+  fn remove_expired(&mut self, hash: u64, now: u64, out: &mut Vec<(K, CacheEntry<V>, ExpiredBy)>) {
+    let (grace, tti) = (self.ctx.grace_ns, self.ctx.tti_ns);
+    while let Ok(o) = self.table.find_entry(hash, |(_, e)| e.key_hash == hash && expired_by(e, now, grace, tti).is_some()) {
+      let by = expired_by(&o.get().1, now, grace, tti).expect("matched as expired");
+      let (key, e) = o.remove().0;
+      self.cost -= e.cost();
+      self.disarm(&e);
+      self.forget(&key, &e);
+      out.push((key, e, by));
+    }
   }
 
   /// Puts `key` in the table and returns the entry it replaced.
@@ -530,9 +581,7 @@ where
 
   pub(crate) fn clear(&mut self) {
     self.table.clear();
-    if let Some(w) = &mut self.wheel {
-      w.clear();
-    }
+    self.wheel.clear();
     ShardCounters::add(&self.local.cost_delta, 0u64.wrapping_sub(self.cost));
     self.cost = 0;
     match &mut self.builtin {

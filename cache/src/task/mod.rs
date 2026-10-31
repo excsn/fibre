@@ -2,6 +2,7 @@
 //! janitor for handling TTL/TTI and the notifier for eviction callbacks.
 
 pub(crate) mod janitor;
+pub(crate) mod load_pool;
 pub(crate) mod notifier;
 pub(crate) mod read_log;
 pub(crate) mod timer;

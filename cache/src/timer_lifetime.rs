@@ -67,3 +67,35 @@ fn replacing_and_invalidating_keep_one_timer_per_entry() {
   assert_eq!(entries(&cache), 50);
   assert_eq!(timers(&cache), 50);
 }
+
+#[test]
+fn an_entry_in_its_grace_period_stays_with_its_timer() {
+  let cache = CacheBuilder::<u64, u64>::new()
+    .time_to_live(Duration::from_millis(50))
+    .stale_while_revalidate(TTL)
+    .timer_mode(crate::builder::TimerWheelMode::HighPrecisionShortLived)
+    .janitor_tick_interval(Duration::from_millis(10))
+    .build()
+    .unwrap();
+  for k in 0..100 {
+    cache.insert(k, k, 1);
+  }
+  std::thread::sleep(Duration::from_millis(300));
+  assert_eq!(entries(&cache), 100);
+  assert_eq!(timers(&cache), 100);
+}
+
+
+#[test]
+fn a_cache_with_no_ttl_starts_no_janitor_until_an_entry_needs_one() {
+  use std::sync::atomic::Ordering;
+  let cache = CacheBuilder::<u64, u64>::new().build().unwrap();
+  for k in 0..1000 {
+    cache.insert(k, k, 1);
+  }
+  assert!(!cache.shared.janitor_running.load(Ordering::Relaxed));
+  assert_eq!(timers(&cache), 0);
+  cache.insert_with_ttl(1, 1, 1, TTL);
+  assert!(cache.shared.janitor_running.load(Ordering::Relaxed));
+  assert_eq!(timers(&cache), 1);
+}

@@ -1,10 +1,16 @@
-use parking_lot::Mutex;
+use crate::sync::HybridMutex;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Waker};
-use std::thread::Thread;
+use std::thread::{Thread, ThreadId};
+
+pub(crate) const NO_LOADER: &str = "fibre_cache: fetch_with missed and the cache has no loader";
+pub(crate) const LOADER_PANICKED: &str = "fibre_cache: the loader panicked for this key";
+pub(crate) const LOAD_DROPPED: &str = "fibre_cache: the task running the loader was dropped, as when its runtime shuts down";
+pub(crate) const LOADER_REENTERED: &str = "fibre_cache: a loader called fetch_with on the key it is loading";
 
 /// Represents a waiter in the queue for a `LoadFuture`.
 pub(crate) enum Waiter {
@@ -25,6 +31,8 @@ impl Waiter {
 pub(crate) enum State<V> {
   Computing,
   Complete(Arc<V>),
+  Panicked,
+  Dropped,
 }
 
 /// The internal, mutex-protected core of the LoadFuture.
@@ -33,30 +41,90 @@ pub(crate) struct Inner<V> {
   pub(crate) waiters: VecDeque<Waiter>,
 }
 
+impl<V> Inner<V> {
+  fn finish(&mut self, state: State<V>) {
+    self.state = state;
+    for waiter in self.waiters.drain(..) {
+      waiter.wake();
+    }
+  }
+}
+
 /// A future that represents a value being computed for the cache.
 /// It can be awaited by multiple sync threads and async tasks simultaneously.
 pub(crate) struct LoadFuture<V> {
-  pub(crate) inner: Mutex<Inner<V>>,
+  pub(crate) inner: HybridMutex<Inner<V>>,
+  /// The thread running the loader, when it runs on its caller's thread.
+  pub(crate) leader: OnceLock<ThreadId>,
+  /// Cleared while a refresh waits in the queue. Whoever sets it runs the load.
+  started: AtomicBool,
+  /// Set when the task running the loader was dropped. A waiter holding `inner`
+  /// at that moment sees this after releasing it and finishes the future.
+  pub(crate) dropped: AtomicBool,
 }
 
 impl<V> LoadFuture<V> {
   /// Creates a new `LoadFuture` in the "Computing" state.
-  pub fn new() -> Self {
+  pub fn new(leader: Option<ThreadId>) -> Self {
+    let future = Self::queued();
+    future.started.store(true, Ordering::Relaxed);
+    if let Some(leader) = leader {
+      let _ = future.leader.set(leader);
+    }
+    future
+  }
+
+  /// A load waiting in the refresh queue, not yet run by anyone.
+  pub fn queued() -> Self {
     Self {
-      inner: Mutex::new(Inner {
+      inner: HybridMutex::new(Inner {
         state: State::Computing,
         waiters: VecDeque::new(),
       }),
+      leader: OnceLock::new(),
+      started: AtomicBool::new(false),
+      dropped: AtomicBool::new(false),
     }
   }
 
-  /// Completes the future with a value, waking all waiters.
-  pub fn complete(&self, value: Arc<V>) {
-    let mut inner = self.inner.lock();
-    inner.state = State::Complete(value);
-    for waiter in inner.waiters.drain(..) {
-      waiter.wake();
+  /// True for the one caller that takes a queued load and must run it.
+  pub fn claim(&self) -> bool {
+    !self.started.swap(true, Ordering::SeqCst)
+  }
+
+  pub fn is_dropped(&self) -> bool {
+    self.dropped.load(Ordering::SeqCst)
+  }
+
+  /// Marks the load as dropped and wakes its waiters. Never waits, since a task
+  /// can be dropped on an executor thread.
+  pub fn drop_load(&self) {
+    self.dropped.store(true, Ordering::SeqCst);
+    if let Some(mut inner) = self.inner.try_lock() {
+      if matches!(inner.state, State::Computing) {
+        inner.finish(State::Dropped);
+      }
     }
+  }
+
+  pub(crate) fn drop_load_locked(&self, inner: &mut Inner<V>) {
+    inner.finish(State::Dropped);
+  }
+
+  pub fn complete(&self, value: Arc<V>) {
+    self.inner.lock().finish(State::Complete(value));
+  }
+
+  pub fn fail(&self) {
+    self.inner.lock().finish(State::Panicked);
+  }
+
+  pub async fn complete_async(&self, value: Arc<V>) {
+    self.inner.lock_async().await.finish(State::Complete(value));
+  }
+
+  pub async fn fail_async(&self) {
+    self.inner.lock_async().await.finish(State::Panicked);
   }
 }
 
@@ -64,11 +132,24 @@ impl<V> Future for &LoadFuture<V> {
   type Output = Arc<V>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let mut inner = self.inner.lock();
+    let Some(mut inner) = self.inner.try_lock() else {
+      cx.waker().wake_by_ref();
+      return Poll::Pending;
+    };
     match &inner.state {
       State::Complete(value) => Poll::Ready(value.clone()),
+      State::Panicked => panic!("{}", LOADER_PANICKED),
+      State::Dropped => panic!("{}", LOAD_DROPPED),
       State::Computing => {
+        if self.is_dropped() {
+          inner.finish(State::Dropped);
+          panic!("{}", LOAD_DROPPED);
+        }
         inner.waiters.push_back(Waiter::Async(cx.waker().clone()));
+        drop(inner);
+        if self.is_dropped() {
+          cx.waker().wake_by_ref();
+        }
         Poll::Pending
       }
     }

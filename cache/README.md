@@ -1,151 +1,50 @@
-# **`fibre_cache`**
+# `fibre_cache`
 
 [![crates.io](https://img.shields.io/crates/v/fibre_cache.svg)](https://crates.io/crates/fibre_cache)
 [![docs.rs](https://docs.rs/fibre_cache/badge.svg)](https://docs.rs/fibre_cache)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 
-`fibre_cache` offers a best-in-class, most flexible, high-performance, concurrent, multimode sync/async cache for Rust. It is built from the heart and soul of a Java-turned-Rust engineer to bring the comprehensive, flexible, and ergonomic "it just works" feeling of top-tier Java caches (like Caffeine) to the Rust ecosystem.
+`fibre_cache` is a sharded concurrent cache for Rust with sync and async handles on one instance, built-in S3-FIFO and W-TinyLFU eviction, TTL and TTI, a self-populating loader and no `V: Clone` requirement. The task guide is [README.USAGE.md](README.USAGE.md) and the call surface is [API_REFERENCE.md](API_REFERENCE.md).
 
-## Current Status: STABLE
-
-Please note that `fibre_cache` is currently stable. The core functionality is robust and well-tested, but the public API may change.
-
-* **Production Use:** While we strive for stability, using this library in a mission-critical production environment is **at your own risk**. Please be prepared to adapt to changes and conduct thorough testing for your specific use case.
-
-We highly encourage you to try it out, provide feedback and report any issues. Contributions are always welcome as we work towards a stable release
-
-## Notable Users
-
-[Hi Stakes Markets Game](https://www.histakesgame.com) -  The world's most advanced financial simulator, available on iPhone and Android.
-
-## Motivation
-
-The current state of caching in Rust, while offering some excellent high-performance options, often feels specialized and inflexible. Caches can be brilliant but opinionated, while others lack the rich, general-purpose feature set needed for complex applications.
-
-`fibre_cache` was born from the desire for a cache that is **both incredibly fast and uncompromisingly flexible**. It aims to be the definitive, general-purpose caching library for Rust, providing a complete toolset that feels both powerful to experts and intuitive to newcomers.
-
-## Core Philosophy
-*   **No Compromises:** Get the raw speed of a systems language without sacrificing the rich, ergonomic APIs you love.
-*   **Flexibility First:** From swappable eviction policies to runtime-agnostic async loaders, the cache adapts to your needs, not the other way around.
-*   **Performance by Design:** Built from first principles with a sharded, hybrid-locking concurrent core to minimize contention and maximize throughput.
-*   **Idiomatic Rust:** Embrace Rust's strengths, like the ownership model, to provide features impossible in other languages, such as first-class support for non-`Clone` values.
-
----
-
-## Quickstart
-
-Get started quickly by adding `fibre_cache` to your `Cargo.toml`:
+## Install
 
 ```toml
 [dependencies]
-# From crates.io:
-# fibre_cache = "^0"
-
-tokio = { version = "1", features = ["full"] }
+fibre_cache = "0.4"
 ```
 
-A simple example using the `CacheBuilder` and the self-populating async loader:
+| Feature | Default | Enables |
+| :--- | :--- | :--- |
+| `serde` | yes | `to_snapshot`, `build_from_snapshot` and `build_from_snapshot_async` |
+| `random` | yes | `RandomPolicy` |
+| `bulk` | yes | `multi_insert`, `multi_remove`, `multi_invalidate` and the sync `multiget` |
+| `tokio` | yes | `TokioSpawner`, the default spawner for an `async_loader`. The crate currently needs this feature to compile. |
+| `rapidhash` | no | `CacheBuilder::rapidhash` |
+| `full` | no | All of the above |
 
-```rust
-use fibre_cache::CacheBuilder;
-use std::time::Duration;
+## What to reach for
 
-#[tokio::main]
-async fn main() {
-    // Build a cache that can hold up to 10,000 items.
-    // Configure it with a 10-minute TTL and an async loader.
-    let cache = CacheBuilder::default()
-        .capacity(10_000)
-        .time_to_live(Duration::from_secs(600))
-        .async_loader(|key: String| async move {
-            println!("CacheLoader: Simulating fetch for key '{}'...", key);
-            // In a real app, this would be a database call or API request.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            (format!("Value for {}", key), 1) // Return (value, cost)
-        })
-        .build_async()
-        .expect("Failed to build cache");
-
-    // 1. First access to "my-key": miss. The loader is called automatically.
-    // The .get_with() method handles the thundering herd problem.
-    let value1 = cache.get_with(&"my-key".to_string()).await;
-    println!("Received: {}", value1);
-    assert_eq!(*value1, "Value for my-key");
-
-    // 2. Second access to "my-key": hit. The value is returned instantly.
-    let value2 = cache.get_with(&"my-key".to_string()).await;
-    println!("Received: {}", value2);
-    assert_eq!(*value2, "Value for my-key");
-
-    // Check the metrics
-    let metrics = cache.metrics();
-    assert_eq!(metrics.hits, 1);
-    assert_eq!(metrics.misses, 1);
-    println!("\nCache Metrics: {:#?}", metrics);
-}
-```
-
----
-
-## Feature Overview
-
-`fibre_cache` combines the best features from across the caching landscape into one comprehensive package.
-
-#### **Key Architectural Pillars**
-*   **High Concurrency via Sharding:** Partitions data across independently locked shards to minimize contention.
-*   **Hybrid Locking:** A custom `HybridRwLock` provides raw, blocking speed for sync operations and true, non-blocking suspension for async operations.
-*   **No `V: Clone` Required:** Stores values in an `Arc<V>`, making `V: Clone` unnecessary for most operations-a core advantage over many other Rust caches.
-*   **Unified Sync/Async API:** Zero-cost `to_sync()` and `to_async()` methods allow seamless conversion between handles.
-*   **Trait-Based Policies:** A flexible `CachePolicy` trait allows for swapping out admission and eviction algorithms.
-
-### **Implemented Features**
-| Feature | Details |
+| Problem | Piece |
 | :--- | :--- |
-| **Atomic `entry` API** | A fully atomic get-or-insert API mimicking `HashMap`, safe for concurrent use in both sync and async contexts. |
-| **`CacheLoader`** | Self-populating cache via `get_with`. Supports both sync (`loader`) and async (`async_loader`) functions. |
-| **Thundering Herd Protection**| Guarantees a loader is executed only once for concurrent misses on the same key, preventing duplicate work. |
-| **Runtime Agnostic** | The `async_loader` can be used with any async runtime (`tokio`, `async-std`, etc.) via a `TaskSpawner` trait. |
-| **Stale-While-Revalidate** | Can serve stale data for a configured grace period while refreshing it in the background, hiding latency. |
-| **Comprehensive Policies** | Includes **TinyLfu**, **S3-FIFO**, **SIEVE**, **SLRU**, **ARC**, **LRU**, **FIFO** and **Random** eviction/admission policies. |
-| **Bulk Operations** | Efficient, parallelized `multiget`, `multi_insert`, and `multi_invalidate` methods (via `bulk` feature). |
-| **In-place Mutation** | A `compute` method for safe, atomic mutation of existing values without cloning. |
-| **Eviction Listener** | Receive non-blocking notifications for every item removal on a dedicated background thread. |
-| **Persistence (`serde`)**| An opt-in `serde` feature provides a flexible `to_snapshot()` and `build_from_snapshot()` API. |
-| **Metrics & Stats** | A zero-dependency, queryable metrics system for deep observability. |
+| Build a cache with a capacity | `CacheBuilder::capacity`, then `build` or `build_async` |
+| Use one cache from sync and async code | `Cache::to_async`, `AsyncCache::to_sync` |
+| Read without taking an `Arc` | `get` with a closure |
+| Read and keep the value | `fetch` |
+| Read without touching recency or TTI | `peek` |
+| Fill the cache on a miss with one load per key | `loader` or `async_loader`, then `fetch_with` |
+| Serve a stale value while refreshing it | `stale_while_revalidate`, then `fetch_with` |
+| Expire entries | `time_to_live`, `time_to_idle`, `insert_with_ttl` |
+| Tighten expiry timing | `janitor_tick_interval`, `timer_mode` |
+| Get or insert atomically | `entry` |
+| Mutate a value in place | `compute`, `try_compute`, `compute_val`, `try_compute_val` |
+| Operate on many keys | `multiget`, `multi_insert`, `multi_remove`, `multi_invalidate` |
+| Change the eviction policy | `tinylfu`, `s3fifo`, `null_policy`, `cache_policy_factory` |
+| Be told about removals | `eviction_listener` |
+| Save and restore the contents | `to_snapshot`, `build_from_snapshot` |
+| Walk the contents | `iter`, `iter_snapshot`, `iter_stream`, `iter_snapshot_async` |
+| Read hit ratio and eviction counts | `metrics` |
+| Run the loader on a runtime other than Tokio | `spawner` with a `TaskSpawner` |
 
+## Notable Users
 
-## Feature Comparison
-
-| Feature Group | Feature | Moka / Caffeine | Stretto / Ristretto | **`fibre_cache`** | Notes |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Core Architecture** | **Concurrency Model** | Sharded | Sharded | ✅ **Sharded, Custom Lock** | Custom hybrid lock with distinct, optimized paths for sync and async. |
-| | **Sync/Async Interoperability** | Separate Caches | ✅ | ✅ **Zero-Cost Handles** | A single cache instance can be accessed via both sync and async handles seamlessly. |
-| | **`V: Clone` Required?** | **Yes** | No | ✅ **No** | `Arc<V>` storage natively supports non-cloneable values, a major ergonomic win. |
-| | **Maintenance Model** | Background Thread | Sampling-based | ✅ **Eviction at insert** | Capacity is enforced inside the insert; a janitor thread handles expiry. |
-| | **Read Delivery to the Policy**| Event Queue | Buffer-based | ✅ **Per-shard log** | Reads are logged per shard in order and applied under the shard's write lock; S3-FIFO counts them on the entry. |
-| | | | | | |
-| **Eviction & Policies**| **Cost-Based Eviction** | ✅ | ✅ | ✅ | Items can have individual `cost` towards `capacity`. |
-| | **Global TTL / TTI** | ✅ | ✅ | ✅ | Cache-wide Time-to-Live and Time-to-Idle. |
-| | **Per-Item TTL** | ✅ | ❌ | ✅ | `insert_with_ttl` provides fine-grained expiration control. |
-| | **Timer System for Expirations**| Hierarchical Wheel | ❌ (Sampling) | ✅ **Configurable Per-Shard Wheel** | High-precision, low-overhead expiration management via `TimerWheelMode`. |
-| | **Pluggable Policies** | Limited | ❌ | ✅ **Highly Flexible** | A `CachePolicy` trait allows for easy implementation of custom strategies. |
-| | **Available Policies** | Segmented-LRU | TinyLFU | ✅ **Most Comprehensive** | **TinyLFU**, **S3-FIFO**, **ARC**, **SLRU**, **SIEVE**, **LRU**, **FIFO** and **Random**. |
-| | | | | | |
-| **API & Ergonomics** | **`entry` API** | ✅ | ❌ | ✅ | Atomic "get-or-insert" for both sync and async. |
-| | **Read API Ergonomics** | `get` (clones Arc) | `get` (returns ref) | ✅ **`get` & `fetch`** | Offers both a zero-cost `get` (with closure) and an `Arc`-cloning `fetch`. |
-| | **`compute`** | ✅ | ❌ | ✅ | Safe, atomic, in-place mutation of values. |
-| | **Bulk Operations** | ✅ | ✅ | ✅ | Parallelized `multiget`, `multi_insert`, etc. (via `bulk` feature) |
-| | | | | | |
-| **Advanced Patterns**| **`CacheLoader`** | ✅ | ❌ | ✅ **Runtime Agnostic** | `TaskSpawner` trait makes it work with any async runtime. |
-| | **Thundering Herd Protection** | ✅ | N/A | ✅ | Built into `get_with` to prevent duplicate work. |
-| | **Stale-While-Revalidate** | ✅ | ❌ | ✅ | Hides refresh latency by serving stale data. |
-| | | | | | |
-| **Production Features**| **Eviction Listener** | ✅ | ✅ | ✅ | Decoupled notifications on a dedicated background task to prevent blocking. |
-| | **Metrics & Stats** | ✅ | ✅ | ✅ | Detailed, contention-free metrics via `MetricsSnapshot`. |
-| | **Persistence (`serde`)** | ❌ | ❌ | ✅ **Serializable Snapshot** | `to_snapshot()` and `build_from_snapshot()` API (via `serde` feature). |
-
-# License
-
-Licensed under the [MPL-2.0](https://www.mozilla.org/en-US/MPL/2.0/).
-
-Of course. Here is the final, expanded feature comparison table.
+[Hi Stakes Markets Game](https://www.histakesgame.com) - The world's most advanced financial simulator, available on iPhone and Android.

@@ -37,16 +37,14 @@ pub trait CachePolicy<K, V>: Send + Sync {
 
   /// Called when an item is being admitted.
   ///
-  /// The policy can use this to decide if the new item should be admitted,
-  /// potentially rejecting it to protect more valuable items. Returning `false`
-  /// will cause the insertion to be aborted.
+  /// `AdmitAndEvict` names keys to evict. `Reject` does not stop the insert.
   fn on_admit(&self, key: &K, cost: u64) -> AdmissionDecision<K>;
 
   /// Called when an item is manually invalidated or evicted due to TTL/TTI.
   /// The policy should clean up any state associated with the key.
   fn on_remove(&self, key: &K);
 
-  /// Called by the janitor when the cache is over capacity.
+  /// Called on an insert that leaves the shard over its share of the capacity.
   ///
   /// The policy must identify and return a set of victim keys to be evicted,
   /// along with the total cost of those victims. The number of victims should

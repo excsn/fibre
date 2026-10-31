@@ -60,20 +60,20 @@ where
   }
 
   pub fn metrics(&self) -> MetricsSnapshot {
-    self.shared.flush_for_introspection();
+    self.shared.try_flush_for_introspection();
     return self.shared.metrics.snapshot();
   }
 
   /// Looks up an entry and, if found, applies a closure to the value.
   ///
-  /// This is the most efficient way to read a value from the cache as it
-  /// does not require cloning the underlying `Arc`. The provided closure `f`
-  /// is executed while a read lock is held on the shard, so it should be fast.
+  /// The provided closure `f` is executed while a read lock is held on the
+  /// shard, so it should be fast.
   ///
   /// # Returns
   ///
   /// - `Some(R)` if the key was found, where `R` is the return value of the closure.
   /// - `None` if the key was not found.
+  #[inline]
   pub async fn get<Q, F, R>(&self, key: &Q, f: F) -> Option<R>
   where
     K: Borrow<Q>,
@@ -90,7 +90,7 @@ where
       let guard = shard.map.read_async().await;
       if let Some((found_key, entry_in_guard)) = guard.get_key_value_hashed(key, hash) {
         if !entry_in_guard.is_expired_coarse(self.shared.time_to_idle, &self.shared.clock) {
-          result = Some(f(entry_in_guard.value().as_ref()));
+          result = Some(f(&*entry_in_guard.value));
           deferred = self.on_hit(found_key, hash, entry_in_guard, shard_index, &guard);
         }
       }
@@ -119,6 +119,7 @@ where
   /// the reference count of the value's `Arc`.
   ///
   /// NOTE: Prefer get, compute will block as long as Arc ref count > 1
+  #[inline]
   pub async fn fetch<Q>(&self, key: &Q) -> Option<Arc<V>>
   where
     K: Borrow<Q>,
@@ -204,8 +205,7 @@ where
 
   /// Inserts a key-value pair into the cache with a specific cost.
   ///
-  /// In a future milestone, this will become an `async fn` to handle
-  /// waiting for capacity.
+  /// Capacity is enforced before this returns.
   pub async fn insert(&self, key: K, value: V, cost: u64)
   where
     K: Clone + Sync,
@@ -232,19 +232,21 @@ where
 
 
 
-    self._run_opportunistic_maintenance(shard_index, shard);
   }
 
   /// Asynchronously inserts a key-value pair into the cache with a specific cost
   /// and Time-to-Live (TTL).
   ///
   /// This TTL overrides any global TTL that was configured on the cache builder.
+  /// Reads honour the TTL and the janitor removes the entry at expiry. The first
+  /// call starts the janitor if the cache has none.
   pub async fn insert_with_ttl(&self, key: K, value: V, cost: u64, ttl: Duration)
   where
     K: Clone + Sync,
     V: Sync,
     H: Send + Sync,
   {
+    self.shared.ensure_janitor();
     let expires_at = time::now_duration().as_nanos() as u64 + ttl.as_nanos() as u64;
     let new_cache_entry =
       CacheEntry::new_with_custom_expiry(value, cost, expires_at, self.shared.time_to_idle);
@@ -262,7 +264,6 @@ where
 
 
 
-    self._run_opportunistic_maintenance(shard_index, shard);
   }
 
   /// Asynchronously and atomically computes a new value for a key, waiting if necessary.
@@ -336,20 +337,20 @@ where
     return ComputeResult::NotFound; // Key does not exist
   }
 
-  // Atomically computes a new value for a key, waiting if necessary.
+  /// Atomically computes a new value for a key, waiting if necessary.
   ///
   /// This function provides a blocking, "wait-and-succeed" version of the
-  /// read-modify-write pattern. It repeatedly calls `try_compute` in a loop
+  /// read-modify-write pattern. It repeatedly calls `try_compute_val` in a loop
   /// until the modification is successful.
   ///
   /// The closure `f` will be called with a mutable reference `&mut V` to the
   /// value if the key exists.
   ///
-  /// # Panics
+  /// # Livelock
   ///
-  /// This function will not panic, but it can loop indefinitely if another
-  /// thread holds an `Arc` to the value and never releases it, preventing
-  /// `try_compute` from ever succeeding. This is a form of livelock.
+  /// This function can loop indefinitely if another thread holds an `Arc` to the
+  /// value and never releases it, preventing `try_compute_val` from ever
+  /// succeeding.
   ///
   /// NOTE: Use the `get` method for reads where possible to mitigate blocking.
   pub async fn compute_val<Q, F, R>(&self, key: &Q, mut f: F) -> ComputeResult<R>
@@ -440,10 +441,8 @@ where
 
   }
 
-  /// Private helper for cache hits. Called while the shard guard is held,
-  /// so the batcher is only try-locked here; on stripe contention it returns
-  /// the (cloned key, cost) for the caller to record via
-  /// `record_access_async` AFTER releasing the shard guard.
+  /// Private helper for cache hits. Returns a read the shard's log or ring could
+  /// not take, for the caller to apply after releasing the guard.
   #[inline]
   fn on_hit(
     &self,
@@ -487,30 +486,6 @@ where
     }
   }
 
-
-  /// Requests maintenance for this shard's pending events. Never blocks and
-  /// never does the work here: drain/eviction takes blocking locks, which is
-  /// forbidden on async paths, so the janitor performs it on its own (sync)
-  /// thread. The rng gate keeps signal traffic at ~1/denominator inserts;
-  /// a full signal buffer means the janitor is already busy, so dropping
-  /// the signal is fine.
-  fn _run_opportunistic_maintenance(&self, shard_index: usize, shard: &crate::store::Shard<K, V, H>)
-  where
-    K: Eq + Hash + Clone + Send,
-    V: Send + Sync,
-    H: BuildHasher + Clone,
-  {
-    if !shard
-      .rng
-      .should_run(self.shared.maintenance_probability_denominator)
-    {
-      return;
-    }
-
-    if let Some(signal) = &self.shared.maintenance_signal {
-      let _ = signal.try_send(shard_index);
-    }
-  }
 }
 
 impl<K: Send, V: Send, H> AsyncCache<K, V, H>
@@ -545,7 +520,7 @@ where
   /// # }
   /// ```
   pub fn iter_stream(&self) -> IterStream<K, V, H> {
-    self.shared.flush_for_introspection();
+    self.shared.try_flush_for_introspection();
     IterStream::new(self, DEFAULT_ITER_BATCH_SIZE)
   }
 
@@ -554,7 +529,7 @@ where
   /// A larger batch size may have better throughput but will hold shard locks
   /// for slightly longer during batch-refill operations.
   pub fn iter_stream_with_batch_size(&self, batch_size: usize) -> IterStream<K, V, H> {
-    self.shared.flush_for_introspection();
+    self.shared.try_flush_for_introspection();
     IterStream::new(self, batch_size.max(1))
   }
   
@@ -578,7 +553,7 @@ where
   /// }
   /// ```
   pub fn iter_snapshot_async(&self) -> AsyncSnapshotIter<'_, K, V, H> {
-    self.shared.flush_for_introspection();
+    self.shared.try_flush_for_introspection();
     AsyncSnapshotIter::new(self)
   }
 }
@@ -685,9 +660,8 @@ where
 
   /// Inserts multiple key-value-cost triples into the cache.
   ///
-  /// This operation is non-blocking and pushes write events to a queue for
-  /// background processing. The cache may be temporarily over capacity until
-  /// the janitor task evicts items.
+  /// Groups items by shard and inserts each group under that shard's write lock.
+  /// Capacity is enforced during the insert.
   #[cfg(feature = "bulk")]
   pub async fn multi_insert<I>(&self, items: I)
   where
@@ -720,8 +694,7 @@ where
           for (key, value, cost) in shard_items {
             let new_cache_entry =
               CacheEntry::new(value, cost, shared.time_to_live, shared.time_to_idle);
-                        guard.insert(key.clone(), new_cache_entry);
-
+            guard.insert(key.clone(), new_cache_entry);
           }
         }
       });
@@ -804,15 +777,18 @@ where
   V: Send + Sync,
   H: BuildHasher + Clone + Send + Sync + 'static,
 {
-  /// Forces a complete, task-safe maintenance pass across all shards.
+  /// Forces a maintenance pass across all shards.
   ///
-  /// Every pending read reaches the eviction policy and TTL/TTI expiration
-  /// runs before this returns. Capacity needs no pass: an insert evicts before
-  /// it returns.
+  /// Refreshes the clock reads use, applies every pending read to the policy on
+  /// each shard and removes every entry past its TTL or TTI with a full scan. An
+  /// entry in its stale-while-revalidate grace stays. Capacity needs no pass: an
+  /// insert evicts before it returns.
+  ///
+  /// Awaits each shard's locks, so a task holding an `AsyncEntry` can finish.
   ///
   /// Primarily useful for deterministic testing and manual cache management.
   pub async fn run_maintenance(&self) {
-    use crate::task::janitor::{perform_shard_maintenance, Janitor, JanitorContext};
+    use crate::task::janitor::JanitorContext;
 
     let janitor_context = JanitorContext {
       store: Arc::clone(&self.shared.store),
@@ -822,11 +798,12 @@ where
       notification_sender: self.shared.notification_sender.as_ref().map(|s| s.clone()),
     };
 
-    for (i, shard) in self.shared.store.shards.iter().enumerate() {
+    self.shared.clock.refresh();
+    let now = crate::time::now_duration().as_nanos() as u64;
+    for shard in self.shared.store.shards.iter() {
       let _guard = shard.maintenance_lock.lock_async().await;
-      perform_shard_maintenance(shard);
-      Janitor::cleanup_ttl_for_shard(shard, i, &janitor_context);
-      Janitor::cleanup_tti_for_shard(shard, i, &janitor_context);
+      let expired = shard.map.write_async().await.expire_all(now);
+      janitor_context.account_expired(expired);
     }
   }
 
@@ -835,7 +812,17 @@ where
   ///
   /// This method provides thundering herd protection, ensuring that if multiple
   /// tasks request a missing key simultaneously, the loader function is only
-  /// executed once.
+  /// executed once. The load runs off this task, so dropping this future leaves
+  /// it running for its waiters. A sync loader runs on a pool of up to 64 threads
+  /// per cache.
+  ///
+  /// # Panics
+  ///
+  /// Panics on a miss when the cache has no loader. Panics when the loader panics
+  /// for this key or its task is dropped, as when its runtime shuts down, in the
+  /// caller and in every waiter on it; the next call loads again. A `TokioSpawner`
+  /// keeps the runtime it was built on, so once that runtime is gone every miss
+  /// panics.
   pub async fn fetch_with(&self, key: &K) -> Arc<V>
   where
     K: Clone + Send + Sync + 'static,
@@ -847,6 +834,7 @@ where
     let shard_ref = &self.shared.store.shards[shard_index];
 
     let mut deferred = None;
+    let mut stale = false;
     let hit_value = {
       let guard = shard_ref.map.read_async().await;
       if let Some((found_key, entry_in_guard)) = guard.get_key_value_hashed(key, hash) {
@@ -875,7 +863,7 @@ where
           } else if let Some(grace_period) = self.shared.stale_while_revalidate {
             // CASE B: Stale Hit
             if now_nanos < expires_at_nanos + grace_period.as_nanos() as u64 {
-              self.trigger_background_load(found_key);
+              stale = true;
               Some(entry_in_guard.value())
             } else {
               None
@@ -892,6 +880,9 @@ where
     if let Some(read) = deferred {
       shard_ref.map.write_async().await.apply_deferred(read);
     }
+    if stale {
+      self.trigger_background_load(key).await;
+    }
 
     if let Some(val) = hit_value {
       return val;
@@ -902,25 +893,27 @@ where
   }
 
   /// Private helper to trigger a background refresh for stale items.
-  fn trigger_background_load(&self, key: &K)
+  async fn trigger_background_load(&self, key: &K)
   where
     K: Clone + 'static,
     V: 'static,
   {
+    if self.shared.loader.is_none() {
+      return;
+    }
     let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
     let index = hash as usize & (self.shared.pending_loads.len() - 1);
-    let pending_loads_lock = &self.shared.pending_loads[index];
-    if let Some(mut pending) = pending_loads_lock.try_lock() {
-      if pending.contains_key(key) {
-        return;
-      }
-      let future = Arc::new(LoadFuture::new());
-      pending.insert(key.clone(), future.clone());
-      CacheShared::spawn_loader_task(Arc::clone(&self.shared), key.clone(), future);
+    let mut pending = self.shared.pending_loads[index].lock_async().await;
+    if pending.get(key).is_some_and(|load| !load.is_dropped()) {
+      return;
     }
+    let future = Arc::new(LoadFuture::queued());
+    pending.insert(key.clone(), future.clone());
+    drop(pending);
+    CacheShared::enqueue_refresh(&self.shared, key.clone(), future);
   }
 
-  /// Private helper for the "miss" path of `fetch_with_async`.
+  /// Private helper for the "miss" path of `fetch_with`.
   ///
   /// This implements thundering herd protection for asynchronous callers.
   async fn load_value_awaiting(&self, key: &K) -> Arc<V>
@@ -929,44 +922,40 @@ where
     V: Send + Sync + 'static,
     H: BuildHasher + Clone + Send + Sync,
   {
-    let mut am_leader = false;
-    let future = loop {
-      // 1. Lock the pending loads map. Note: This is a sync mutex lock,
-      //    which is acceptable here because it should be held for a very
-      //    short duration (a few hashmap lookups).
-      let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
-      let index = hash as usize & (self.shared.pending_loads.len() - 1);
-      let pending_loads_lock = &self.shared.pending_loads[index];
-      let mut pending = pending_loads_lock.lock_async().await;
-
-      // 2. Check for an existing `LoadFuture`.
-      //    DO NOT call self.shared.raw_get(key) here to prevent AB-BA deadlock.
-      //    The initial optimistic raw_get in fetch_with handles the "already cached" case.
-      if let Some(existing_future) = pending.get(key) {
-        // We will get a value, so this counts as a HIT for us.
-        self.shared.metrics.record_hits(1);
-        am_leader = false;
-        break existing_future.clone();
-      }
-
-      // 3. We are the "leader". This is the ONLY time a MISS is recorded.
-      self.shared.metrics.record_misses(1);
-      // Create a new future, insert it.
-      let new_future = Arc::new(LoadFuture::new());
-      pending.insert(key.clone(), new_future.clone());
-      am_leader = true;
-      break new_future;
-    }; // `pending` (MutexGuard for pending_loads) is dropped here.
-
-    // 4. If we became the leader, spawn the loader task.
-    //    This happens *after* the `pending_loads` lock is released.
-    if am_leader {
-      CacheShared::spawn_loader_task(Arc::clone(&self.shared), key.clone(), future.clone());
+    if self.shared.loader.is_none() {
+      panic!("{}", crate::loader::NO_LOADER);
     }
 
-    // 5. All async tasks wait on the same future.
-    //    `.await` will poll the future, registering the waker and suspending
-    //    the task if the value is not ready.
+    // Only one leader is chosen per key. The cached value is not read again
+    // here, to keep the shard lock out of this lock's scope.
+    let hash = crate::store::hash_key(&self.shared.store.hasher, &key);
+    let index = hash as usize & (self.shared.pending_loads.len() - 1);
+    let (future, am_leader) = {
+      let mut pending = self.shared.pending_loads[index].lock_async().await;
+      if let Some(existing) = pending.get(key).filter(|load| !load.is_dropped()) {
+        if existing.claim() {
+          // A refresh still in the queue: this miss runs it now.
+          self.shared.metrics.record_misses(1);
+          (existing.clone(), true)
+        } else {
+          // We will get a value, so this counts as a HIT for us.
+          self.shared.metrics.record_hits(1);
+          (existing.clone(), false)
+        }
+      } else {
+        // This is the only time a MISS is recorded for the entire operation.
+        self.shared.metrics.record_misses(1);
+        let future = Arc::new(LoadFuture::new(None));
+        pending.insert(key.clone(), future.clone());
+        (future, true)
+      }
+    };
+
+    // The load runs off this task, so dropping this future leaves it running for the waiters.
+    if am_leader {
+      CacheShared::spawn_loader_task(Arc::clone(&self.shared), key.clone(), future.clone(), false);
+    }
+
     (&*future).await
   }
 }

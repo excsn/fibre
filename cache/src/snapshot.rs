@@ -28,7 +28,7 @@ pub(crate) struct PersistentEntry<K, V> {
 /// A serializable, point-in-time snapshot of the cache's data.
 ///
 /// This struct can be created with [`Cache::to_snapshot()`] and used to
-/// restore a cache with [`CacheBuilder::with_snapshot()`].
+/// restore a cache with [`CacheBuilder::build_from_snapshot()`].
 ///
 /// It implements `Serialize` and `Deserialize` (if `K` and `V` do), allowing
 /// you to use any `serde`-compatible format (like JSON, Bincode, etc.) for
@@ -165,7 +165,7 @@ where
   H: BuildHasher + Clone,
 {
   pub async fn to_snapshot(&self) -> CacheSnapshot<K, V> {
-    self.shared.flush_for_introspection();
+    self.shared.flush_for_introspection_async().await;
     // 1. Asynchronously acquire all write locks.
     let shard_guards =
       future::join_all(self.shared.store.iter_shards().map(|s| s.map.write_async())).await;

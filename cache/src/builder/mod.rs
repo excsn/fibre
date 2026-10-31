@@ -1,4 +1,4 @@
-/// A set of presets for configuring the frequency of opportunistic maintenance.
+/// A set of presets for how often the janitor applies pending reads.
 ///
 /// These values are used with the [`CacheBuilder::maintenance_chance()`] method.
 pub mod maintenance_frequency;
@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Defines preset configurations for the cache's internal timer wheel,
-/// which manages TTL and TTI expirations.
+/// which manages TTL expirations. TTI removal scans each shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimerWheelMode {
   /// A general-purpose configuration suitable for a wide range of workloads.
@@ -67,6 +67,7 @@ pub struct CacheBuilder<K: Send, V: Send, H = ahash::RandomState> {
   spawner: Option<Arc<dyn TaskSpawner>>,
   maintenance_probability_denominator: u32,
   maintenance_on_introspection: bool,
+  max_concurrent_refreshes: usize,
   shards_set: bool,
   _key_marker: PhantomData<K>,
   _value_marker: PhantomData<V>,
@@ -112,7 +113,10 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
   ///
   /// Reads check expiry against a clock the janitor refreshes once per tick
   /// (1 s by default), so `get`, `fetch` and `peek` can return an entry for up
-  /// to one tick past its deadline. `iter()` and snapshots use the exact clock.
+  /// to one tick past its deadline. `iter()`, `iter_stream()` and `to_snapshot()`
+  /// use the exact clock. The janitor removes an expired entry within about one
+  /// wheel tick plus one janitor tick of its deadline, independent of
+  /// `maintenance_chance`.
   /// See [`janitor_tick_interval`](Self::janitor_tick_interval).
   pub fn time_to_live(mut self, duration: Duration) -> Self {
     self.time_to_live = Some(duration);
@@ -120,6 +124,10 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
   }
 
   /// Sets a time-to-idle (TTI) for all entries in the cache.
+  ///
+  /// Reads stop returning an entry at least this long after its last read, and
+  /// up to two clock refreshes later; the clock refreshes at least every
+  /// `duration / 2`. Each janitor tick scans every shard and removes idle entries.
   pub fn time_to_idle(mut self, duration: Duration) -> Self {
     self.time_to_idle = Some(duration);
     self
@@ -189,7 +197,9 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
   /// Sets the synchronous loader function for the cache.
   ///
   /// The provided closure is called by `fetch_with` when a key is not present.
-  /// It must return a tuple of `(value, cost)`.
+  /// It must return a tuple of `(value, cost)`. On a `Cache` it runs on the calling
+  /// thread. Stale refreshes and an `AsyncCache` run it on a pool of up to 64
+  /// threads per cache.
   pub fn loader(mut self, f: impl Fn(K) -> (V, u64) + Send + Sync + 'static) -> Self {
     self.loader = Some(Loader::Sync(Arc::new(f)));
     self
@@ -215,10 +225,11 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
   }
 
   /// Sets how often the janitor wakes to refresh the clock reads check expiry
-  /// against and to run cleanup. Defaults to 1 s.
+  /// against, sweep shards with TTL timers due and scan for idle entries. Defaults
+  /// to 1 s. With a TTI set it defaults to `time_to_idle / 2` capped at 1 s.
   ///
-  /// Reads can return an entry for up to one tick past its TTL or TTI
-  /// deadline. A shorter tick tightens that bound at the cost of more frequent
+  /// Reads can return an entry for up to one tick past its TTL deadline. A shorter
+  /// tick tightens the read and removal bounds at the cost of more frequent
   /// background work.
   pub fn janitor_tick_interval(mut self, duration: Duration) -> Self {
     self.janitor_tick_interval = Some(duration);
@@ -242,7 +253,7 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
     self
   }
 
-  /// Sets the granularity of the timer wheel for TTL/TTI expirations.
+  /// Sets the granularity of the timer wheel for TTL expirations.
   ///
   /// This is the duration that each "tick" of the wheel represents. A smaller
   /// duration provides more precise expiration but may have slightly higher
@@ -254,33 +265,27 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
     self
   }
 
-  /// Sets the number of slots in the timer wheel for TTL/TTI expirations.
+  /// Sets the number of slots in the timer wheel for TTL expirations.
   ///
   /// The total cycle time of the wheel is `tick_duration * wheel_size`.
   /// A larger wheel can accommodate longer TTLs with fewer "laps," at the
   /// cost of slightly more memory.
   ///
-  /// Defaults to `60` slots if not set.
+  /// Defaults to `60` slots if not set. A size of 0 panics at the first TTL
+  /// insert.
   pub fn timer_wheel_size(mut self, size: usize) -> Self {
     self.timer_wheel_size = Some(size);
     self
   }
 
-  /// Sets the probability of running opportunistic maintenance on each `insert`.
+  /// Sets the probability, `1 / denominator`, that a janitor tick applies
+  /// pending reads on each of two random shards.
   ///
-  /// Maintenance is run with a chance of `1 / denominator`. For example, a
-  /// value of `16` means there is a 1-in-16 chance that any given `insert`
-  /// operation will trigger a maintenance cycle for its shard.
+  /// Inserts apply reads themselves. Capacity, TTL removal and TTI removal do
+  /// not depend on it.
   ///
-  /// The default is `16`, which is suitable for most workloads. For convenience,
-  /// this crate provides presets in the [`maintenance_frequency`] module, such as
-  /// [`maintenance_frequency::RESPONSIVE`] (the default) and
-  /// [`maintenance_frequency::THROUGHPUT`].
-  ///
-  /// A lower value (e.g., `RESPONSIVE`) increases the frequency of maintenance,
-  /// keeping memory usage smoother. A higher value (e.g., `THROUGHPUT`) reduces
-  /// the CPU overhead of maintenance checks, which can be beneficial in
-  /// extremely write-heavy workloads.
+  /// The default is `16` ([`maintenance_frequency::RESPONSIVE`]). Other presets
+  /// are in the [`maintenance_frequency`] module.
   ///
   /// The provided denominator will be rounded up to the next power of two for
   /// efficient internal calculations.
@@ -294,7 +299,7 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
   /// use fibre_cache::CacheBuilder;
   /// use fibre_cache::builder::maintenance_frequency;
   ///
-  /// // Configure the cache for maximum insert throughput.
+  /// // Configure a lower maintenance rate.
   /// let cache = CacheBuilder::<u64, u64>::new()
   ///     .maintenance_chance(maintenance_frequency::THROUGHPUT)
   ///     .build();
@@ -309,11 +314,11 @@ impl<K: Send, V: Send, H> CacheBuilder<K, V, H> {
     self
   }
 
-  /// When enabled, the cache automatically runs a full maintenance pass before
-  /// returning metrics, iterators, snapshots, or other introspection results.
+  /// When enabled, the cache applies pending reads to the policy before
+  /// returning metrics, iterators or snapshots. On an `AsyncCache`, `metrics`,
+  /// `iter_stream` and `iter_snapshot_async` skip a shard whose lock is held, since
+  /// they cannot wait for it. `to_snapshot` awaits every shard.
   ///
-  /// This ensures that pending write admissions and read access events are
-  /// reflected in policy state before the caller observes cache internals.
   /// Particularly useful for deterministic testing.
   pub fn maintenance_on_introspection(mut self, enabled: bool) -> Self {
     self.maintenance_on_introspection = enabled;
@@ -345,6 +350,7 @@ impl<K: Send, V: Send, H: BuildHasher + Default> CacheBuilder<K, V, H> {
       spawner: None,
       maintenance_probability_denominator: maintenance_frequency::RESPONSIVE,
       maintenance_on_introspection: false,
+      max_concurrent_refreshes: 32,
       shards_set: false,
       _key_marker: PhantomData,
       _value_marker: PhantomData,
@@ -380,9 +386,27 @@ where
     self
   }
 
+  /// Sets how many stale refreshes run at once, 32 by default.
+  ///
+  /// More wait in order, one per key, and a miss past the grace period takes its
+  /// key's refresh from the queue. Limits the background load on what the loader
+  /// calls. It does not limit misses.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `limit` is `0`.
+  pub fn max_concurrent_refreshes(mut self, limit: usize) -> Self {
+    assert!(limit > 0, "max_concurrent_refreshes cannot be zero");
+    self.max_concurrent_refreshes = limit;
+    self
+  }
+
   /// Sets a duration after an entry's TTL expires during which the cache can
   /// still serve the stale value while asynchronously refreshing it in the
   /// background.
+  ///
+  /// The entry is removed and counted at the end of the grace period. See
+  /// [`max_concurrent_refreshes`](Self::max_concurrent_refreshes).
   ///
   /// This feature requires a `loader` or `async_loader` to be configured.
   pub fn stale_while_revalidate(mut self, duration: Duration) -> Self {
@@ -424,7 +448,14 @@ where
       }
     }
 
-    let has_timer_logic = self.time_to_live.is_some() || self.time_to_idle.is_some();
+    let janitor_tick = self.janitor_tick_interval.unwrap_or_else(|| {
+      let second = Duration::from_secs(1);
+      self.time_to_idle.map_or(second, |tti| (tti / 2).clamp(Duration::from_millis(1), second))
+    });
+    let clock_tick = self.time_to_idle.map_or(janitor_tick, |tti| (tti / 2).clamp(Duration::from_millis(1), janitor_tick.max(Duration::from_millis(1))));
+    // Reads stamp `last_accessed` from the coarse clock, up to `clock_tick` old, so
+    // an entry stays that much past its TTI to never expire before it.
+    let idle_limit = self.time_to_idle.map(|tti| tti + clock_tick);
     let tick_duration = self
       .timer_wheel_tick_duration
       .unwrap_or(Duration::from_secs(1));
@@ -472,11 +503,12 @@ where
       self.hasher.clone(),
       wheel_size,
       tick_duration,
-      has_timer_logic,
       self.capacity,
       &cache_policy,
       builtin_capacity.map(|c| (self.builtin_choice, c)),
       Arc::new(crate::store::EvictCtx {
+        grace_ns: self.stale_while_revalidate.map_or(0, |g| g.as_nanos() as u64),
+        tti_ns: idle_limit.map_or(0, |t| t.as_nanos() as u64),
         notify: notification_sender.as_ref().map(|s| {
           let s = s.clone();
           Box::new(move |k: K, v: Arc<V>| {
@@ -489,6 +521,8 @@ where
 
 
 
+    let mut restored_a_ttl = false;
+
     // --- Populate from Snapshot if it exists ---
     #[cfg(feature = "serde")]
     if let Some(snap) = snapshot {
@@ -498,6 +532,7 @@ where
 
       for p_entry in snap.entries {
         let expires_at = p_entry.ttl_remaining.map(|ttl| now_duration + ttl);
+        restored_a_ttl |= expires_at.is_some();
         let mut entry = crate::entry::CacheEntry::new_with_expiry(
           p_entry.value,
           p_entry.cost,
@@ -525,30 +560,24 @@ where
       store: Arc::clone(&store),
       clock: Arc::clone(&clock),
       metrics: Arc::clone(&metrics),
-      time_to_idle: self.time_to_idle,
+      time_to_idle: idle_limit,
       notification_sender: notification_sender.as_ref().map(|val| val.clone()),
     };
 
-    let maintenance_probability_denominator = self.maintenance_probability_denominator;
-    // The janitor also runs for custom policies on unbounded caches: async
-    // paths never do maintenance inline (they signal instead), so a policy
-    // that wants access/write events needs this thread to apply them.
+    // The janitor also runs for custom policies on unbounded caches: a policy
+    // that wants access events on a read-only workload needs this thread to
+    // apply them.
     let needs_janitor = self.time_to_live.is_some()
       || self.time_to_idle.is_some()
       || self.capacity != u64::MAX
-      || has_custom_policy;
-    let (janitor, maintenance_signal) = if needs_janitor {
-      let tick_interval = self.janitor_tick_interval.unwrap_or(Duration::from_secs(1));
-      let (signal_tx, signal_rx) = std::sync::mpsc::sync_channel(self.shards.max(16));
-      let janitor = Janitor::spawn(
-        janitor_context,
-        tick_interval,
-        maintenance_probability_denominator,
-        signal_rx,
-      );
-      (Some(janitor), Some(signal_tx))
+      || has_custom_policy
+      || restored_a_ttl;
+    let denominator = self.maintenance_probability_denominator;
+    let start_janitor = move || Janitor::spawn(janitor_context, janitor_tick, clock_tick, denominator);
+    let janitor = if needs_janitor {
+      crate::shared::JanitorState::Running(start_janitor())
     } else {
-      (None, None)
+      crate::shared::JanitorState::Unstarted(Box::new(start_janitor))
     };
 
     let pending_loads = (0..self.shards)
@@ -560,24 +589,25 @@ where
       store,
       clock,
       metrics,
-      janitor,
+      janitor: crate::sync::HybridMutex::new(janitor),
+      janitor_running: needs_janitor.into(),
       capacity: self.capacity,
       time_to_live: self.time_to_live,
-      time_to_idle: self.time_to_idle,
+      time_to_idle: idle_limit,
       stale_while_revalidate: self.stale_while_revalidate,
       notification_sender,
       notifier,
       loader: self.loader.take(),
       pending_loads,
+      load_pool: crate::task::load_pool::LoadPool::new(),
+      refreshes: crate::shared::RefreshQueue::new(self.max_concurrent_refreshes),
       spawner,
-      maintenance_probability_denominator,
       maintenance_on_introspection: self.maintenance_on_introspection,
       track_reads,
       builtin_reads: match builtin_capacity {
         None => crate::shared::BuiltinReads::None,
         Some(_) => crate::select::reads(self.builtin_choice),
       },
-      maintenance_signal,
     }))
   }
 

@@ -45,7 +45,7 @@ impl TimerWheel {
   pub(crate) fn new(wheel_size: usize, tick_duration: Duration, next_due: Arc<AtomicU64>) -> Self {
     next_due.store(u64::MAX, Ordering::Relaxed);
     Self {
-      slots: vec![Slot::default(); wheel_size],
+      slots: Vec::new(),
       timers: Arena::new(),
       wheel_len: wheel_size,
       current_tick: 0,
@@ -63,6 +63,10 @@ impl TimerWheel {
   /// Arms a timer that fires on the first advance at or after `expires_at`
   /// (nanos since the cache epoch).
   pub(crate) fn schedule(&mut self, key_hash: u64, expires_at: u64) -> TimerHandle {
+    if self.slots.is_empty() {
+      self.slots = vec![Slot::default(); self.wheel_len];
+      self.last_advanced = crate::time::now_duration().as_nanos() as u64;
+    }
     // The slot `offset` ahead of the current tick is swept once the wheel has
     // advanced `offset + 1` ticks, the first advance at or after `expires_at`.
     let ticks = (expires_at.saturating_sub(self.last_advanced).div_ceil(self.tick_ns) as usize).max(1);
@@ -123,7 +127,7 @@ impl TimerWheel {
   pub(crate) fn advance(&mut self, now: u64) -> Vec<u64> {
     let wheel_len = self.wheel_len;
     let tick_ns = self.tick_ns;
-    if wheel_len == 0 {
+    if self.slots.is_empty() {
       return Vec::new();
     }
     let ticks_due = (now.saturating_sub(self.last_advanced) / tick_ns) as usize;
