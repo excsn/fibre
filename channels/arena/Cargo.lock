@@ -203,12 +203,11 @@ dependencies = [
 
 [[package]]
 name = "fibre"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "futures-core",
  "futures-intrusive",
  "futures-util",
- "lazy_static",
  "loom",
  "papaya",
  "parking_lot",
