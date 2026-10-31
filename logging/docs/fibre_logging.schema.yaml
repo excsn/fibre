@@ -53,6 +53,10 @@ $defs:
         const: "console"
       encoder:
         $ref: "#/$defs/encoder"
+      channel_capacity:
+        $ref: "#/$defs/channel_capacity"
+      overflow:
+        $ref: "#/$defs/overflow"
     additionalProperties: false
 
   appender_file:
@@ -65,6 +69,10 @@ $defs:
         type: string
       encoder:
         $ref: "#/$defs/encoder"
+      channel_capacity:
+        $ref: "#/$defs/channel_capacity"
+      overflow:
+        $ref: "#/$defs/overflow"
     required: [ "path" ]
     additionalProperties: false
     
@@ -88,6 +96,10 @@ $defs:
         $ref: "#/$defs/rolling_policy"
       encoder:
         $ref: "#/$defs/encoder"
+      channel_capacity:
+        $ref: "#/$defs/channel_capacity"
+      overflow:
+        $ref: "#/$defs/overflow"
     required: [ "directory", "policy" ]
     additionalProperties: false
     
@@ -101,7 +113,21 @@ $defs:
         type: integer
         default: 256
         minimum: 1
+      overflow:
+        $ref: "#/$defs/overflow"
     additionalProperties: false
+
+  channel_capacity:
+    description: "The capacity of the channel between the logging call and the appender task."
+    type: integer
+    default: 1024
+    minimum: 1
+
+  overflow:
+    description: "What to do when the appender's channel is full. 'drop' drops the newest message and warns on stderr at most once a second. 'block' blocks the logging call until there is room."
+    type: string
+    enum: [ "drop", "block" ]
+    default: "drop"
 
   appender_debug_report:
     properties:
@@ -128,9 +154,9 @@ $defs:
         description: "Formats logs using a Logback-style pattern string."
         const: "pattern"
       pattern:
-        description: "The pattern string. Specifiers: %d (date), %p (level), %t (target), %m (message), %n (newline), %T (thread name). Padding is supported (e.g., %-5p)."
+        description: "The pattern string. Specifiers: %d (date), %p (level), %l (level), %t (target), %m (message), %n (newline), %T (thread name), %X and %X{name} (fields). Padding is supported (e.g., %-5p)."
         type: string
-        default: "[%d] %-5p %t - %m%n"
+        default: "[%d] %p %t - %m%n"
     additionalProperties: false
 
   encoder_json_lines:

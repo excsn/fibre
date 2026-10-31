@@ -1,154 +1,186 @@
-# API REFERENCE: `fibre_logging`
+# API Reference: fibre_logging
 
-This document provides a detailed API reference for the `fibre_logging` library.
+A logging library that routes `log` and `tracing` events through appenders and encoders configured from a YAML file.
 
-### 1. Introduction & Core Concepts
+## Contents
 
-`fibre_logging` is a comprehensive logging solution designed to bridge the gap between Rust's `log` and `tracing` ecosystems. It provides a single, unified sink that seamlessly captures events from both library dependencies using `log` and modern application code instrumented with `tracing`.
+* [1. Initialization and Lifecycle](#1-initialization-and-lifecycle)
+  * [`init`](#init)
+  * [`InitResult`](#initresult)
+  * [`DispatchLayer`](#dispatchlayer)
+* [2. Events](#2-events)
+  * [`LogEvent`](#logevent)
+  * [`LogValue`](#logvalue)
+* [3. Debug Instrumentation](#3-debug-instrumentation)
+  * [`debug_report`](#debug_report)
+* [4. Encoders](#4-encoders)
+  * [`EventFormatter`](#eventformatter)
+  * [`PatternFormatter`](#patternformatter)
+  * [`JsonLinesFormatter`](#jsonlinesformatter)
+  * [`encoders::util`](#encodersutil)
+* [5. Configuration Types](#5-configuration-types)
+  * [`config::raw`](#configraw)
+  * [`config::processed`](#configprocessed)
+* [6. Type Aliases](#6-type-aliases)
+* [7. Error Handling](#7-error-handling)
+  * [`Result`](#result)
+  * [`Error`](#error)
+  * [`InternalErrorReport`](#internalerrorreport)
+  * [`InternalErrorSource`](#internalerrorsource)
 
-*   **Configuration-Driven:** The library's primary architectural principle is its reliance on external YAML configuration. This allows developers to define and modify complex logging behavior (filtering, formatting, destinations) without recompiling the application.
-*   **Asynchronous I/O:** All I/O operations (like writing to files) are offloaded to dedicated background threads to prevent blocking application code, making the library suitable for high-performance systems.
-*   **Lifecycle Management:** The library is initialized via a single function call which returns a "guard" struct. The logging system remains active as long as this guard is in scope. When the guard is dropped (typically at the end of `main`), it triggers a graceful shutdown, ensuring all buffered logs are flushed.
-*   **Unified Event Model:** All log and trace events are converted into a standard internal format, `LogEvent`, allowing for consistent processing and formatting.
+## 1. Initialization and Lifecycle
 
-#### Primary Entry Points & Handles
+### `init`
 
-*   The main entry point is the `init::init_from_file` function.
-*   The primary handle for managing the library's lifecycle is the `InitResult` struct, which is returned by the initialization function.
+`find_config_file` and `init_from_file` are also re-exported at the crate root.
 
-#### Pervasive Types
+* `pub fn find_config_file(environment_suffix: Option<&str>) -> Result<PathBuf>`: searches the current directory. The environment comes from the argument, then `FIBRE_ENV`, then `APP_ENV`. Tries `fibre_logging.{env}.yaml` then `fibre_logging.yaml`, so a missing environment file silently loads the plain one. `Error::ConfigNotFound` only when neither exists.
+* `pub fn init_from_file(config_path: &Path) -> Result<InitResult>`: builds the pipeline, sets the global subscriber and installs the `log` bridge. The file is read once; there is no reload. A second call in one process fails with `GlobalSubscriberSet`.
+* `pub fn layer_from_file(config_path: &Path) -> Result<(DispatchLayer, InitResult)>`: the same pipeline and the `log` bridge with no global subscriber. Set the composed registry with `tracing::subscriber::set_global_default`. `SubscriberInitExt::init` panics here, since it tries to install a second `log` logger.
+* `pub fn console_layer<S>() -> impl tracing_subscriber::Layer<S> + Send + Sync + 'static` where `S: tracing::Subscriber + for<'a> LookupSpan<'a>`: requires the `tokio-console` feature. The tokio-console layer with its gRPC server started. `init_from_file` attaches it itself.
 
-*   **`Result<T, Error>`**: Most initialization functions return this custom `Result` type.
-*   **`LogEvent`**: The internal representation for all captured log and trace events. It is the type received by custom appender streams.
+### `InitResult`
 
-### 2. Initialization & Lifecycle
+`#[must_use] pub struct InitResult`. Dropping it shuts logging down, waiting at most 5 seconds. It must be held for the life of the application.
 
-The functions and types in this section are used to start, manage, and shut down the logging system.
+* `pub appender_task_handles: Vec<AppenderTaskHandle>`: the background appender threads.
+* `pub internal_error_rx: Option<fibre::mpsc::BoundedSyncReceiver<InternalErrorReport>>`: `Some` when `internal_error_reporting.enabled` is true. Capacity 256.
+* `pub custom_streams: HashMap<String, CustomEventReceiver>`: one receiver per `kind: custom` appender, by appender name. Nothing drains these for you.
+* `pub fn shutdown(self, timeout: Duration)`: closes the channels and joins the tasks, waiting at most `timeout`. A task still running at the deadline is reported on stderr and abandoned. Custom-stream receivers drain what is buffered and then see `Disconnected`.
 
-#### **Struct `InitResult`**
+### `DispatchLayer`
 
-The primary handle for the log system, returned upon successful initialization. Its `Drop` implementation ensures a graceful shutdown of all background logging tasks, flushing any buffered messages. **This struct must be kept in scope for the duration of the application's life.**
+`pub struct DispatchLayer` at `subscriber::DispatchLayer`. `Clone`. Implements `tracing_subscriber::Layer<S>` for any `S: Subscriber + for<'span> LookupSpan<'span>`. It has no public constructor; `layer_from_file` returns one. Spans stay enabled regardless of appender levels.
 
-**Public Fields:**
+## 2. Events
 
-*   `appender_task_handles: Vec<AppenderTaskHandle>`
-    *   A vector of join handles for the spawned background appender threads.
-*   `internal_error_rx: Option<fibre::mpsc::BoundedReceiver<InternalErrorReport>>`
-    *   An optional channel receiver that can be used to consume internal error reports from the log system itself (e.g., file write errors). This is only populated if `internal_error_reporting` is enabled in the configuration.
-*   `custom_streams: HashMap<String, CustomEventReceiver>`
-    *   A map of channel receivers for any appenders configured with `kind: custom`. The key is the appender's name from the configuration file.
+### `LogEvent`
 
-#### **Module `init`**
+`pub struct LogEvent`, also at `model::LogEvent`. `Debug + Clone`. The type a custom stream yields.
 
-Contains the primary public functions for initializing the library.
+* `pub timestamp: chrono::DateTime<chrono::Utc>`
+* `pub level: tracing::Level`
+* `pub target: String`
+* `pub name: String`: for a `tracing` event its metadata name. For a `log` record its target.
+* `pub message: Option<String>`
+* `pub fields: HashMap<String, LogValue>`: a `log` record carries `module_path`, `file` and `line` here.
+* `pub span_id: Option<String>`: `{:?}` of the current span's `Id`. Always `None` for a `log` record.
+* `pub parent_id: Option<String>`: as `span_id`, for the parent.
+* `pub thread_id: Option<String>`: always `None` for a `log` record.
+* `pub thread_name: Option<String>`: always `None` for a `log` record.
+* `pub fn new<S1: Into<String>, S2: Into<String>>(level: Level, target: S1, name: S2, message: Option<String>) -> Self`
 
-**Public Functions:**
+### `LogValue`
 
-*   `pub fn find_config_file(environment_suffix: Option<&str>) -> Result<std::path::PathBuf>`
-    *   Finds a configuration file in the current directory. The environment comes from the provided suffix, then `FIBRE_ENV`, then `APP_ENV`. It looks for `fibre_logging.{env}.yaml` first and falls back to `fibre_logging.yaml` when the environment-specific file does not exist, so a missing `fibre_logging.prod.yaml` silently loads the plain file. It returns `Error::ConfigNotFound` only when neither exists.
-*   `pub fn init_from_file(config_path: &std::path::Path) -> Result<InitResult>`
-    *   Initializes the log system from a specific configuration file path. This is the main entry point for the library.
-*   `pub fn layer_from_file(config_path: &std::path::Path) -> Result<(DispatchLayer, InitResult)>`
-    *   Builds the same pipeline as `init_from_file` and installs the `log` bridge, but sets no global subscriber. The caller composes the returned layer into its own registry beside other layers and sets that as the subscriber. The `InitResult` must be held, since its `Drop` flushes the appenders.
-*   `pub fn console_layer<S>() -> impl tracing_subscriber::Layer<S> + Send + Sync + 'static` where `S: tracing::Subscriber + for<'a> LookupSpan<'a>`, with the `tokio-console` feature
-    *   The tokio-console layer, with its gRPC server started. `init_from_file` attaches it itself; a caller composing `layer_from_file` adds it to keep tokio-console.
+`pub enum LogValue`, also at `model::LogValue`. `Debug + Clone + PartialEq + Display`.
 
-### 3. Core Data Types
+* `String(String)`, `Int(i64)`, `Float(f64)`, `Bool(bool)`, `Debug(String)`.
 
-These are the primary data structures that represent log events and their fields.
+A `u64` above `i64::MAX` is stored as `String`.
 
-#### **Struct `LogEvent`**
+## 3. Debug Instrumentation
 
-The internal structured representation of a log or trace event.
+### `debug_report`
 
-**Public Fields:**
+In a release build every function is a no-op, `debug_report_totals` returns `(0, 0)` and a `debug_report` appender is skipped.
 
-*   `timestamp: chrono::DateTime<chrono::Utc>`
-*   `level: tracing::Level`
-*   `target: String`
-*   `name: String`
-*   `message: Option<String>`
-*   `fields: std::collections::HashMap<String, LogValue>`
-*   `span_id: Option<String>`
-*   `parent_id: Option<String>`
-*   `thread_id: Option<String>`
-*   `thread_name: Option<String>`
+* `pub fn print_debug_report()`: prints every event and counter captured by `debug_report` appenders.
+* `pub fn clear_debug_report()`: clears the collector.
+* `pub fn debug_report_totals() -> (usize, usize)`: recorded events and the sum of all counter values.
 
-#### **Enum `LogValue`**
+## 4. Encoders
 
-Represents a value associated with a key in a `LogEvent`'s fields.
+### `EventFormatter`
 
-**Variants:**
+`pub trait EventFormatter: Send + Sync + 'static`. No configuration selects a custom implementation.
 
-*   `String(String)`
-*   `Int(i64)`
-*   `Float(f64)`
-*   `Bool(bool)`
-*   `Debug(String)`
+* `fn format_event(&self, event: &LogEvent) -> Result<Vec<u8>>`
 
-### 4. Error Handling
+### `PatternFormatter`
 
-This section details the error types returned by the library.
+`pub struct PatternFormatter` at `encoders::pattern`. Implements `EventFormatter`.
 
-#### **Type Alias `Result`**
+* `pub fn new(pattern_string: &str) -> Self`
 
-A specialized `Result` type for `fibre_logging` operations.
+Converters: `%d` and `%d{strftime}`, `%p`, `%l`, `%t`, `%m`, `%T`, `%n`, `%X`, `%X{name}`, `%%`. An unknown converter is `InvalidConfigValue` at init. The default pattern is `[%d] %p %t - %m%n`.
 
-*   `pub type Result<T, E = Error> = std::result::Result<T, E>;`
+### `JsonLinesFormatter`
 
-#### **Enum `Error`**
+`pub struct JsonLinesFormatter` at `encoders::json`. Implements `EventFormatter`.
 
-The primary error type for initialization failures.
+* `pub fn new(config: JsonLinesEncoderInternal) -> Self`
 
-**Variants:**
+### `encoders::util`
 
-*   `ConfigNotFound(String)`: Configuration file could not be found.
-*   `ConfigRead(#[from] std::io::Error)`: Failed to read the configuration file.
-*   `ConfigParse(String)`: Failed to parse the configuration file content (e.g., invalid YAML).
-*   `LogBridgeInit(String)`: Failed to initialize the bridge with the `log` crate.
-*   `GlobalSubscriberSet(String)`: Failed to set the global `tracing` subscriber.
-*   `AppenderSetup { appender_name: String, reason: String }`: An appender failed to initialize (e.g., couldn't open a file).
-*   `InvalidConfigValue { field: String, message: String }`: A value in the configuration was invalid.
-*   `Internal(String)`: An unexpected internal library error.
+* `pub fn write_timestamp(buf: &mut String, timestamp: &DateTime<Utc>)`: RFC 3339 with milliseconds and `Z`.
+* `pub fn write_timestamp_with_format(buf: &mut String, timestamp: &DateTime<Utc>, format_str: &str)`
 
-#### **Struct `InternalErrorReport`**
+## 5. Configuration Types
 
-Represents a runtime error that occurred within the log system *after* initialization. These are consumed via the `internal_error_rx` field on `InitResult`.
+### `config::raw`
 
-**Public Fields:**
+The YAML shape. Every struct has `deny_unknown_fields`, so an unknown key is `ConfigParse`.
 
-*   `source: InternalErrorSource`
-*   `error_message: String`
-*   `context: Option<String>`
-*   `timestamp: chrono::DateTime<chrono::Utc>`
+* `ConfigRaw`: `version` (default 1), `appenders`, `loggers`, `internal_error_reporting`.
+* `InternalErrorReportingRaw`: `enabled` (default false).
+* `AppenderConfigRaw`, tagged by `kind`: `Console`, `File`, `RollingFile`, `Custom`, `DebugReport`.
+* `ConsoleAppenderConfigRaw`: `encoder`, `channel_capacity` (default 1024), `overflow`.
+* `FileAppenderConfigRaw`: `path`, `encoder`, `channel_capacity`, `overflow`.
+* `RollingFileAppenderConfigRaw`: `directory`, `file_name_prefix` (default `fibre_logging.log`), `file_name_suffix` (default `.log`), `policy`, `encoder`, `channel_capacity`, `overflow`.
+* `RollingPolicyRaw`: `time_granularity` (`minutely`, `hourly`, `daily` or `never`), `max_file_size`, `max_retained_sequences`, `compression`.
+* `CompressionPolicyRaw`: `compressed_file_suffix`, `max_uncompressed_sequences` (default 0).
+* `CustomAppenderConfigRaw`: `buffer_size` (default 256), `overflow`.
+* `DebugReportAppenderConfigRaw`: `print_interval`.
+* `OverflowPolicyRaw`: `drop` (the default) or `block`.
+* `EncoderConfigRaw`, tagged by `kind`: `Pattern`, `JsonLines`.
+* `PatternEncoderConfigRaw`: `pattern`.
+* `JsonLinesEncoderConfigRaw`: `flatten_fields` (default false).
+* `LoggerConfigRaw`: `level`, `appenders` (default empty), `additive` (default true).
+* `pub fn AppenderConfigRaw::encoder_config_raw(&self) -> Option<EncoderConfigRaw>`
 
-#### **Enum `InternalErrorSource`**
+### `config::processed`
 
-Describes the origin of an `InternalErrorReport`.
+The validated form.
 
-**Variants:**
+* `pub fn process_raw_config(raw_config: ConfigRaw) -> Result<ConfigInternal>`
+* `ConfigInternal`, `AppenderInternal`, `AppenderKindInternal`, `OverflowPolicy` (`DropNewest`, `Block`), `ConsoleAppenderInternal`, `FileAppenderInternal`, `CustomAppenderInternal`, `DebugReportAppenderInternal`, `CompressionPolicyInternal`, `EncoderInternal`, `PatternEncoderInternal`, `JsonLinesEncoderInternal`, `LoggerInternal`.
+* `RollingPolicyInternal`: `pub fn base_path(&self) -> PathBuf`, `pub fn format_period(&self, ts: DateTime<Utc>) -> String`, `pub fn rolled_path(&self, ts: DateTime<Utc>, sequence: u32) -> PathBuf`.
 
-*   `AppenderWrite { appender_name: String }`
-*   `EventFormatting { appender_name: String }`
-*   `ConfigProcessing`
-*   `CustomRollerIo { path: String }`
+## 6. Type Aliases
 
-### 5. Debug Instrumentation
+* `pub type AppenderTaskHandle = std::thread::JoinHandle<()>;`
+* `pub type CustomEventReceiver = fibre::mpsc::BoundedSyncReceiver<LogEvent>;`
 
-This module provides functions for interacting with the special `debug_report` appender. These functions are only active in debug builds; in release builds, they are no-ops.
+## 7. Error Handling
 
-#### **Module `debug_report`**
+### `Result`
 
-**Public Functions:**
+* `pub type Result<T, E = Error> = std::result::Result<T, E>;`
 
-*   `pub fn print_debug_report()`
-    *   Prints a detailed, sorted report of all events and counters captured by any `debug_report` appenders.
-*   `pub fn clear_debug_report()`
-    *   Clears all data from the in-memory debug report collector.
+### `Error`
 
-### 6. Public Type Aliases
+`pub enum Error`. `Debug + std::error::Error`.
 
-*   `pub type AppenderTaskHandle = std::thread::JoinHandle<()>;`
-    *   A handle to a spawned appender background task.
-*   `pub type CustomEventReceiver = fibre::mpsc::BoundedReceiver<LogEvent>;`
-    *   The receiving end of a channel for a `custom` appender, which yields full `LogEvent` structs.
+* `ConfigNotFound(String)`: `find_config_file` found no file. `init_from_file` on a missing path returns `ConfigRead`.
+* `ConfigRead(std::io::Error)`: the file could not be read. `From<std::io::Error>`.
+* `ConfigParse(String)`: the content did not parse.
+* `LogBridgeInit(String)`: a `log` logger was already set.
+* `GlobalSubscriberSet(String)`: a global subscriber was already set.
+* `AppenderSetup { appender_name: String, reason: String }`
+* `InvalidConfigValue { field: String, message: String }`
+* `Internal(String)`
+
+### `InternalErrorReport`
+
+`pub struct InternalErrorReport`. `Debug`. A runtime failure after init, read through `InitResult::internal_error_rx`. Write and flush failures also go to stderr.
+
+* `pub source: InternalErrorSource`
+* `pub error_message: String`
+* `pub context: Option<String>`
+* `pub timestamp: chrono::DateTime<chrono::Utc>`
+
+### `InternalErrorSource`
+
+`pub enum InternalErrorSource`. `Debug + Display`.
+
+* `AppenderWrite { appender_name: String }`, `EventFormatting { appender_name: String }`, `ConfigProcessing`, `CustomRollerIo { path: String }`.

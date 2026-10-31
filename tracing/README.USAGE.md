@@ -12,7 +12,7 @@ How to collect the spans of one unit of work, read them back while it is running
 * [Sizing the Ring](#sizing-the-ring)
 * [Recording an Outcome](#recording-an-outcome)
 * [Composing Beside a Log Sink](#composing-beside-a-log-sink)
-* [Exporting, and Tail Sampling](#exporting-and-tail-sampling)
+* [Exporting and Tail Sampling](#exporting-and-tail-sampling)
 * [Printing a Waterfall](#printing-a-waterfall)
 * [Why a Collector Rather Than a Subscriber](#why-a-collector-rather-than-a-subscriber)
 * [Error Handling](#error-handling)
@@ -133,7 +133,7 @@ tracing::subscriber::set_global_default(composed)?;
 
 Use `set_global_default` rather than `init` when the other layer installs the `log` bridge itself, since `init` tries to take it a second time and fails.
 
-## Exporting, and Tail Sampling
+## Exporting and Tail Sampling
 
 Two shapes. As siblings, each layer sees every span and nothing forwards:
 
@@ -174,13 +174,13 @@ for span in &trace.spans {
 
 ## Why a Collector Rather Than a Subscriber
 
-`tracing` is fire and forget: a span reaches the subscriber and nothing comes back. That is right for logs, whose destination is a file or a socket, and wrong for three readers that want the work whole. An error page needs what this request did before it failed. A test needs what a body actually called, against the same shape production records, so the two cannot drift. A `Server-Timing` header needs per-step cost with no collector running anywhere.
+`tracing` is fire and forget: a span reaches the subscriber and nothing comes back. That is right for logs, whose destination is a file or a socket. It is wrong for three readers that want the work whole. An error page needs what this request did before it failed. A test needs what a body actually called, against the same shape production records, so the two cannot drift. A `Server-Timing` header needs per-step cost with no collector running anywhere.
 
-None of those are export. OpenTelemetry has an in-memory exporter, but it is a test harness rather than a per-unit accessor, and it holds no ring. So the collector is its own thing and the exporter sits beside it.
+None of those are export. OpenTelemetry has an in-memory exporter, but it is a test harness rather than a per-unit accessor and it holds no ring. So the collector is its own thing and the exporter sits beside it.
 
 ## Error Handling
 
-This crate returns no errors. A layer cannot fail: a span outside a root is not collected, an unknown field is kept as it was recorded, and a full ring drops its oldest trace.
+This crate returns no errors. A layer cannot fail: a span outside a root is not collected, an unknown field is kept as it was recorded and a full ring drops its oldest trace.
 
 Two things fail in the calling code instead.
 

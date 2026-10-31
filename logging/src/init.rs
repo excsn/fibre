@@ -89,13 +89,13 @@ pub fn find_config_file(environment_suffix: Option<&str>) -> Result<PathBuf> {
   )))
 }
 
-/// Initializes `fibre_logging` from a configuration file path.
 /// The logging layer and its guard, with no global subscriber set, so a
 /// caller composes it with layers of its own:
 ///
 /// ```ignore
 /// let (logging, guard) = fibre_logging::init::layer_from_file(&config)?;
-/// tracing_subscriber::registry().with(logging).with(mine).init();
+/// let subscriber = tracing_subscriber::registry().with(logging).with(mine);
+/// tracing::subscriber::set_global_default(subscriber)?;
 /// ```
 ///
 /// The guard still has to be held: its `Drop` flushes the appenders. The

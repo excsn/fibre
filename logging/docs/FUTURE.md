@@ -7,11 +7,11 @@ Log levels (`INFO`, `WARN`, `ERROR`) are excellent for filtering by severity, bu
 **Markers** (a concept from SLF4J/Logback) solve this by acting as "tags" you can attach to a log event. This allows you to create filtering and routing rules based on the *purpose* of the log, independent of its severity.
 
 **Use Cases:**
-*   **Security Auditing:** Tag all login attempts, permission changes, and resource access events with a `SECURITY_AUDIT` marker and route them to a secure, tamper-proof log file.
+*   **Security Auditing:** Tag all login attempts, permission changes and resource access events with a `SECURITY_AUDIT` marker and route them to a secure, tamper-proof log file.
 *   **Performance Monitoring:** Tag the start and end of expensive operations with a `PERFORMANCE` marker to calculate durations and analyze bottlenecks.
 *   **Billing Events:** Tag all events related to billable actions (e.g., API calls, data processed) with a `BILLING` marker to be consumed by a separate financial system.
 
-#### The User Experience
+#### Marker User Experience
 
 **In Rust Code:** The most idiomatic way to add a marker is to establish a convention using a special field name within the `tracing` macros.
 
@@ -71,7 +71,7 @@ loggers:
     appenders: [main_log_file, security_audit_log]
 ```
 
-#### Implementation Sketch
+#### Marker Implementation Sketch
 
 1.  **`LogEvent` Enhancement:** The `LogEventFieldVisitor` would be updated to recognize the special `"marker"` field. Instead of putting it in the generic `fields` map, it would populate a new, dedicated field on the `LogEvent` struct for fast access:
     ```rust
@@ -103,7 +103,7 @@ The current appenders are foundational. The next step is to add appenders that i
 
 #### TCP Appender
 
-*   **Why:** For sending logs to a centralized log aggregator like **Logstash**, **Fluentd**, or **Vector**. This is standard practice in distributed systems. It's more reliable and performant than tailing log files.
+*   **Why:** For sending logs to a centralized log aggregator like **Logstash**, **Fluentd** or **Vector**. This is standard practice in distributed systems. It's more reliable and performant than tailing log files.
 *   **User Experience (`yaml`):**
     ```yaml
     appenders:
@@ -142,22 +142,22 @@ The current appenders are foundational. The next step is to add appenders that i
     *   It would apply the template to the `LogEvent` data to create the message body.
     *   It would construct the JSON payload required by the webhook provider (e.g., `{"text": "..."}` for Slack).
     *   It would POST this payload to the configured URL.
-    *   It should include internal rate-limiting to prevent a flood of errors from spamming the channel (e.g., "send at most 1 alert every 10 seconds, and then a summary message").
+    *   It should include internal rate-limiting to prevent a flood of errors from spamming the channel (e.g., "send at most 1 alert every 10 seconds and then a summary message").
 
 ---
 
-### 5. Formalize Spans as the "MDC" Equivalent
+### 3. Formalize Spans as the "MDC" Equivalent
 
 `tracing`'s spans are the modern, async-safe successor to Logback's Mapped Diagnostic Context (MDC). The goal is to automatically enrich every log event with the contextual data from the span(s) it occurred in.
 
 *   **Why:** To avoid manually repeating contextual information (`request_id`, `user_id`, `trace_id`) on every single log statement. This makes logs vastly more useful for debugging and analysis.
 
-#### The User Experience
+#### Span Context User Experience
 
 **In Rust Code:** The user does *nothing different*. They just use `tracing` spans as intended. This is the beauty of the feature-it requires zero changes to application instrumentation code.
 
 ```rust
-use tracing::{info, info_span, Instrument};
+use tracing::{info, instrument};
 
 #[instrument(name="process_request", fields(request_id = "xyz-789", user.id = 42))]
 fn handle_request() {
@@ -184,13 +184,13 @@ appenders:
     kind: console
     encoder:
       kind: pattern
-      # NEW: A Logback-style specifier to pull a specific field from the context.
+      # %X{key} exists today and reads event fields. Reading span context is the new part.
       pattern: "[%d] %p {request_id=%X{request_id}} %t - %m%n"
 ```
 *When `handle_request` is called, the console output would be:*
 `[2023-10-27T10:30:00.123Z] INFO {request_id=xyz-789} my_app::handlers - Processing payment for user.`
 
-#### Implementation Sketch
+#### Span Context Implementation Sketch
 
 This is the most complex of the three but provides the most value for `tracing` users.
 
@@ -211,4 +211,4 @@ This is the most complex of the three but provides the most value for `tracing` 
     Care must be taken when merging fields: an inner span's field should override a field with the same name from an outer span.
 3.  **Encoder Integration:**
     *   **`JsonLinesFormatter`:** If `include_span_fields` is `true`, it would merge the `event.span_context` map into the final JSON object.
-    *   **`PatternFormatter`:** It would need to be updated to parse the new `%X{key}` or `%mdc{key}` conversion specifier. When it encounters this, it would look up `key` in the `event.span_context` map and write the value.
+    *   **`PatternFormatter`:** `%X{key}` already parses and reads `event.fields`. It would also look up `key` in `event.span_context` when the event has no such field.

@@ -15,7 +15,8 @@
 //!
 //! ```ignore
 //! let (layer, traces) = fibre_tracing::layer();
-//! tracing_subscriber::registry().with(fibre_logging_layer).with(layer).init();
+//! let subscriber = tracing_subscriber::registry().with(fibre_logging_layer).with(layer);
+//! tracing::subscriber::set_global_default(subscriber)?;
 //!
 //! #[tracing::instrument(fields(fibre.root = true))]
 //! fn handle() { ... }

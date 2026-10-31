@@ -24,6 +24,29 @@ Unit and regression tests live with the code (`channels/src/**` test modules and
 
 Channels take their atomics, locks, threads and parking from `channels/src/internal/sync.rs`. Normal builds re-export std and parking_lot. Under `--cfg loom` they are loom's types. Under `--cfg shuttle` they are shuttle's. Anything blocking must come from the facade, or a model run blocks for real and hangs.
 
+## Running the test suite with nextest
+
+`cargo-nextest` is the recommended runner for `fibre`: it applies per-test timeouts to detect deadlocks and runs tests in parallel.
+
+```bash
+# Run all tests
+cargo nextest run
+
+# Run a specific test, e.g., in spmc/mod.rs
+cargo nextest run spmc::tests::spmc_sync_slow_consumer_blocks_producer
+```
+
+## Running the tests under ThreadSanitizer
+
+TSan detects data races in the library's `unsafe` and atomic code. It requires a nightly Rust toolchain.
+
+```bash
+# Example: Run SPMC tests with TSan on an Apple Silicon Mac
+RUSTFLAGS="-Z sanitizer=thread" cargo +nightly nextest run \
+  --test spmc_sync \
+  --target aarch64-apple-darwin
+```
+
 ## Running tiers
 
 One expensive tier at a time. Miri, loom, shuttle, stress and benchmarks all saturate the machine; running two together slows both and makes timing-dependent failures appear and disappear.

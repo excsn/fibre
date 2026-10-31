@@ -1,19 +1,23 @@
 # Usage Guide: `fibre_ioc`
 
-This guide provides a detailed overview of the `fibre_ioc` container, its core concepts, and examples of common usage patterns.
+This guide provides a detailed overview of the `fibre_ioc` container, its core concepts and examples of common usage patterns.
 
 ## Table of Contents
 
 - [Core Concepts](#core-concepts)
 - [Choosing a Container: `Container` vs. `LocalContainer`](#choosing-a-container-container-vs-localcontainer)
 - [Quick Start: Trait-Based Injection](#quick-start-trait-based-injection)
-- [Service Registration](#service-registration)
-- [Service Resolution](#service-resolution)
+- [Registering Services](#registering-services)
+  - [Singleton](#singleton)
+  - [Transient](#transient)
+  - [Instance (`Container` only)](#instance-container-only)
+  - [Named Registrations](#named-registrations)
+- [Resolving Services](#resolving-services)
   - [The Resolution Macro Family](#the-resolution-macro-family)
   - [Resolving Required Dependencies (Panicking)](#resolving-required-dependencies-panicking)
   - [Resolving Optional Dependencies (Fallible)](#resolving-optional-dependencies-fallible)
   - [Resolving from a Specific Container](#resolving-from-a-specific-container)
-- [Advanced Topics](#advanced-topics)
+- [Isolating Services](#isolating-services)
   - [Using `LocalContainer` for `!Send` Types](#using-localcontainer-for-send-types)
   - [Isolated Containers for Testing](#isolated-containers-for-testing)
 - [Error Handling](#error-handling)
@@ -21,9 +25,15 @@ This guide provides a detailed overview of the `fibre_ioc` container, its core c
 ## Core Concepts
 
 *   **Container**: The central registry for all your services. It holds the "recipes" (providers) for creating service instances.
-*   **Provider**: An internal enum that defines how a service is created and its lifetime. The main variants are `Singleton` (created once, then shared) and `Transient` (created new each time).
+*   **Provider**: How a service is created and how long it lives. Singletons are created once and shared. Transients are created new each time.
 *   **Resolution**: The process of requesting an instance of a service from the container.
-*   **InjectionKey**: A service is uniquely identified by a combination of its `TypeId` and an optional `String` name. This allows you to register multiple, distinct providers for the same Rust type.
+*   **Key**: A service is identified by its `TypeId` plus an optional name, so one Rust type can have several distinct providers.
+*   **Global Container**: The `Container` returned by `global()`.
+*   **Local Container**: `LocalContainer`, for one thread and types that are not `Send`.
+*   **Singleton**: One instance, built on first resolution unless registered with `add_instance`.
+*   **Transient**: A new instance per resolution.
+*   **Named Registration**: A provider registered with a `_with_name` method, resolved by passing that name.
+*   **Trait Service**: A provider registered with `add_singleton_trait` and resolved with the `trait` form of a macro.
 
 ## Choosing a Container: `Container` vs. `LocalContainer`
 
@@ -37,10 +47,18 @@ Fibre provides two distinct container types to suit different needs.
 
 2.  **`LocalContainer` (Single-Threaded)**
     *   **Feature Flag**: Requires the `"local"` feature to be enabled.
-    *   **Use when**: You need maximum performance in a single-threaded context (like a game loop or a single-threaded executor) or when you need to store types that are not `Send` or `Sync` (e.g., `Rc`, `RefCell`, or types from C FFI).
+    *   **Use when**: You need maximum performance in a single-threaded context (like a game loop or a single-threaded executor) or when you need to store types that are not `Send` or `Sync` (e.g., `Rc`, `RefCell` or types from C FFI).
     *   **Sharing**: Uses `std::rc::Rc` for shared ownership.
     *   **Bounds**: Does **not** require types to be `Send` or `Sync`.
     *   **API**: Registration methods (`add_*`) take `&mut self`.
+
+```rust
+let shared = fibre_ioc::Container::new();
+shared.add_singleton(|| String::from("thread-safe"));
+
+let mut local = fibre_ioc::LocalContainer::new();
+local.add_singleton(|| std::rc::Rc::new(1));
+```
 
 ## Quick Start: Trait-Based Injection
 
@@ -91,7 +109,23 @@ fn main() {
 }
 ```
 
-## Service Registration
+
+A container of your own keeps registrations separate, which suits tests, and a named registration gives one type several providers:
+
+```rust
+use fibre_ioc::{Container, resolve_from};
+
+fn main() {
+    let container = Container::new();
+    container.add_instance_with_name("primary", String::from("db-1"));
+    container.add_instance_with_name("replica", String::from("db-2"));
+
+    let primary = resolve_from!(&container, String, "primary");
+    assert_eq!(*primary, "db-1");
+}
+```
+
+## Registering Services
 
 You can register services with different lifetimes. The concepts are the same for both `Container` and `LocalContainer`, but the trait bounds and method signatures differ slightly.
 
@@ -135,7 +169,9 @@ global().add_instance_with_name("test_config", AppConfig { /* ... */ });
 let config = resolve!(AppConfig, "test_config");
 ```
 
-## Service Resolution
+Registering again under the same type and name replaces the earlier provider. Handles already resolved keep the old instance.
+
+## Resolving Services
 
 ### The Resolution Macro Family
 
@@ -193,18 +229,19 @@ let message = resolve_from!(&container, String);
 assert_eq!(*message, "hello");
 
 // Use maybe_resolve_from! for an optional dependency
-let missing: Option<i32> = maybe_resolve_from!(&container, i32);
+let missing = maybe_resolve_from!(&container, i32);
 assert!(missing.is_none());
 ```
 
-## Advanced Topics
+## Isolating Services
 
 ### Using `LocalContainer` for `!Send` Types
 
 The primary advantage of `LocalContainer` is its ability to manage types that don't implement `Send` or `Sync`.
 
+Requires `fibre_ioc = { version = "0", features = ["local"] }`.
+
 ```rust
-# #[cfg(feature = "local")] {
 use fibre_ioc::{LocalContainer, resolve_from};
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -228,7 +265,6 @@ let ui_state = resolve_from!(&container, UiState);
 assert_eq!(*ui_state.user_name, "Alice");
 *ui_state.counter.borrow_mut() += 1;
 assert_eq!(*ui_state.counter.borrow(), 1);
-# }
 ```
 
 ### Isolated Containers for Testing
@@ -260,3 +296,10 @@ Error handling is consistent across all macros and container types.
     *   `resolve!` and `resolve_from!` will **panic**.
     *   `maybe_resolve!` and `maybe_resolve_from!` return `None`.
 *   **Circular Dependencies**: The container automatically detects circular dependencies during resolution and will **always panic** with a "Circular dependency detected" message. This prevents infinite recursion and is not recoverable.
+
+```rust
+match maybe_resolve!(FeatureFlags) {
+    Some(flags) => flags.apply(),
+    None => println!("using default flags"),
+}
+```

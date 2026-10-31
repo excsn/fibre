@@ -45,11 +45,11 @@ Neither constructor sets a global subscriber. The caller composes the layer and 
 `pub struct Traces`. `Clone`; every clone shares one collector.
 
 * `pub fn current(&self) -> Option<Trace>`: the trace the current span belongs to, with the spans opened so far. `None` outside a root. The returned `Trace` has `duration` of `Duration::ZERO`, since the root has not closed.
-* `pub fn of_span(&self, span: u64) -> Option<Trace>`: `current` for a caller holding a span id rather than being inside it. Takes the value of `tracing::span::Id::into_u64`.
+* `pub fn of_span(&self, span: u64) -> Option<Trace>`: `current` for a caller holding a span id rather than being inside it. Takes the value of `tracing::span::Id::into_u64`. `None` once that span has closed, even if its trace is still in flight.
 * `pub fn recent(&self, n: usize) -> Vec<Trace>`: the last finished traces, newest last, at most `n` and at most what the ring holds.
 * `pub fn len(&self) -> usize` and `pub fn is_empty(&self) -> bool`: how many finished traces the ring holds.
 * `pub fn clear(&self)`: drops every finished trace. Does not affect traces in flight.
-* `pub fn on_finish(&self, f: impl Fn(&Trace) + Send + Sync + 'static)`: called with each trace as its root closes, before the ring. Listeners run in registration order, on the thread that closed the root, so a slow one delays that close.
+* `pub fn on_finish(&self, f: impl Fn(&Trace) + Send + Sync + 'static)`: called with each trace as its root closes, before the ring. Listeners run in registration order, on the thread that closed the root, so a slow one delays that close. A listener that calls `on_finish` deadlocks.
 
 ## 3. What a Trace Holds
 

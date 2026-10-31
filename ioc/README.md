@@ -1,52 +1,36 @@
-# Fibre IoC
+# fibre_ioc
 
 [![Crates.io](https://img.shields.io/crates/v/fibre_ioc.svg)](https://crates.io/crates/fibre_ioc)
 [![Docs.rs](https://docs.rs/fibre_ioc/badge.svg)](https://docs.rs/fibre_ioc)
-[![License](https://img.shields.io/crates/l/fibre_ioc.svg)](https://github.com/excsn/fibre/blob/main/ioc/LICENSE)
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 
-`fibre_ioc` is a flexible, thread-safe and dynamic Inversion of Control (IoC) container for Rust.
+An Inversion of Control container for Rust where services can be registered at any time, except from inside a factory running on the same container. It uses `dashmap` and `std::sync::OnceLock`, resolves through panicking or `Option`-returning macros and panics on a circular dependency instead of overflowing the stack. The task guide is [README.USAGE.md](README.USAGE.md) and the call surface is [API_REFERENCE.md](API_REFERENCE.md).
 
-It provides a robust solution for managing dependencies within an application, promoting loose coupling and enhancing testability. Unlike containers that require a single, upfront initialization, `Fibre IoC` allows for dynamic registration of services at any point during the application's lifecycle, making it ideal for complex, modular systems.
+## Install
 
-## Key Features
-
-### Thread-Safe by Design
-The container is built from the ground up for concurrency. It uses high-performance concurrent data structures (`dashmap` and `once_cell`) to ensure that registering and resolving services is completely thread-safe, without sacrificing performance.
-
-### Multiple Service Lifetimes
-`Fibre IoC` supports different service lifetimes to suit various use cases:
-*   **Singleton**: A single instance is created on first use and shared for all subsequent requests.
-*   **Transient**: A new instance is created every time the service is requested.
-*   **Instance**: A pre-existing object is registered directly with the container.
-
-### Global & Local Containers
-For convenience, a static global container is available via the `global()` function. For testing or modularity, you can create fully isolated `Container` instances with `Container::new()`, preventing any interference between dependency scopes.
-
-### Ergonomic and Type-Safe API
-Resolve dependencies effortlessly with the `resolve!` macro, which provides a concise, panicking API for retrieving services. For cases where failure is expected, the `container.get()` method returns an `Option`, allowing for graceful error handling.
-
-### Robust Circular Dependency Detection
-`Fibre IoC` automatically detects and prevents circular dependencies during resolution. If Service `A` depends on `B`, and `B` depends on `A`, the container will panic with a clear error message instead of causing a stack overflow.
-
-## Notable Users
-
-[Hi Stakes Markets Game](https://www.histakesgame.com) -  The worlds most advanced financial simulator, available on iPhone and Android.
-
-## Installation
-
-Add `Fibre IoC` to your project by running:
 ```sh
 cargo add fibre_ioc
 ```
 
-## Getting Started
+| Feature | Default | What it does |
+|---|---|---|
+| `local` | off | Adds `LocalContainer`, a single-threaded container for types that are not `Send` or `Sync`. |
 
-For a detailed guide on core concepts and advanced usage patterns, please see the **[Usage Guide](README.USAGE.md)**.
+## What to reach for
 
-The `tests/` directory in the repository also contains a comprehensive suite of examples demonstrating every feature, from basic registration to complex concurrent scenarios.
+| Problem | Piece |
+|---|---|
+| One shared container for the application | `global()` |
+| Keep registrations separate, as in a test | `Container::new()` |
+| Store `Rc`, `RefCell` or other `!Send` types | `LocalContainer` |
+| One instance created on first use | `add_singleton` |
+| A new instance per resolution | `add_transient` |
+| Register an object you already built | `add_instance` |
+| Resolve through a trait | `add_singleton_trait` and `resolve!(trait MyTrait)` |
+| Several providers of one type | the `_with_name` variants |
+| A dependency that must exist | `resolve!` and `resolve_from!` |
+| A dependency that may be absent | `maybe_resolve!` and `maybe_resolve_from!` |
 
-For a complete API reference, see the **[documentation on docs.rs](https://docs.rs/fibre_ioc)**.
+## Notable Users
 
-## License
-
-This library is distributed under the terms of the **MPL-2.0** license.
+[Hi Stakes Markets Game](https://www.histakesgame.com) -  The worlds most advanced financial simulator, available on iPhone and Android.

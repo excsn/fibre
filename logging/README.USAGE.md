@@ -1,21 +1,18 @@
 # Usage Guide: fibre_logging
 
-This guide provides a detailed overview of `fibre_logging`'s core concepts, configuration system, and practical examples for its key features.
+This guide provides a detailed overview of `fibre_logging`'s core concepts, configuration system and practical examples for its key features.
 
 ## Table of Contents
 
 *   [Core Concepts](#core-concepts)
-    *   [Loggers](#loggers)
-    *   [Appenders](#appenders)
-    *   [Encoders](#encoders)
 *   [Quick Start](#quick-start)
-*   [The Configuration File](#the-configuration-file)
+*   [Writing the Configuration File](#writing-the-configuration-file)
     *   [Top-Level Structure](#top-level-structure)
     *   [Configuring Appenders](#configuring-appenders)
     *   [Configuring Encoders](#configuring-encoders)
     *   [Configuring Loggers](#configuring-loggers)
-*   [Initialization API](#initialization-api)
-*   [Specialized Features](#specialized-features)
+*   [Initializing the Library](#initializing-the-library)
+*   [Using Specialized Features](#using-specialized-features)
     *   [Tracing Integration](#tracing-integration)
     *   [In-App Event Consumption (`custom` appender)](#in-app-event-consumption-custom-appender)
     *   [Internal Error Reporting](#internal-error-reporting)
@@ -25,36 +22,20 @@ This guide provides a detailed overview of `fibre_logging`'s core concepts, conf
 
 ## Core Concepts
 
-`fibre_logging`'s behavior is defined by the interaction of three primary components: `Loggers`, `Appenders`, and `Encoders`.
-
-### Loggers
-
-**Loggers** are named filters that control which log events are processed. When a log event is emitted, its **target** (typically the module path, e.g., `my_app::database`) is matched against the configured loggers.
-
-*   A logger has a `level` (e.g., `info`, `debug`, `trace`). An event is only processed if its level is at or above the logger's level.
-*   Each logger is associated with one or more `appenders`.
-*   The `root` logger is the fallback for any target that doesn't match a more specific logger.
-*   The `additive` flag (default: `true`) controls whether an event accepted by a specific logger is also passed to the appenders of its ancestor loggers and of `root`, at the specific logger's level. A logger with a `level` and no `appenders` therefore only changes the level for its targets: `orders::db: { level: debug }` sends `orders::db` debug events to root's appenders and `hyper: { level: warn }` keeps `hyper` info events out of them. Setting `additive: false` is useful for isolating a module's logs to a specific file.
-*   An appender receives an event once, however many loggers list it. Listing `console` on both `root` and a module logger does not print the event twice.
-
-### Appenders
-
-**Appenders** are named destinations for log events. They define *where* logs go.
-
-The following appender `kind`s are available:
-*   `console`: Writes to standard output.
-*   `file`: Writes to a single, non-rolling file.
-*   `rolling_file`: Writes to a file that rolls over based on time or size policies.
-*   `custom`: Sends structured log events to a channel for consumption within your application.
-*   `debug_report`: A debug-only appender that collects events in memory for later inspection.
-
-### Encoders
-
-**Encoders** are responsible for formatting a log event into a stream of bytes before it is sent to an appender. They define *what logs look like*.
-
-The following encoder `kind`s are available:
-*   `pattern`: Formats logs using a Log4j-style pattern string (e.g., `[%d] %p - %m%n`).
-*   `json_lines`: Formats logs as a stream of newline-delimited JSON objects, ideal for structured logging.
+*   **Target**: The name an event is matched on, typically the module path, e.g. `my_app::database`.
+*   **Logger**: A named filter with a `level`, zero or more `appenders` and an `additive` flag. Its name matches a target at a `::` boundary.
+*   **Level**: An event is only processed if its level is at or above the logger's `level` (e.g. `info`, `debug`, `trace`).
+*   **Root Logger**: `root`, the fallback for any target that doesn't match a more specific logger.
+*   **Additivity**: The `additive` flag (default: `true`) controls whether an event accepted by a specific logger is also passed to the appenders of its ancestor loggers and of `root`, at the specific logger's level. A logger with a `level` and no `appenders` therefore only changes the level for its targets: `orders::db: { level: debug }` sends `orders::db` debug events to root's appenders and `hyper: { level: warn }` keeps `hyper` info events out of them. Setting `additive: false` isolates a module's logs to a specific file.
+*   **Appender**: A named destination for log events. An appender receives an event once, however many loggers list it, so listing `console` on both `root` and a module logger does not print the event twice.
+*   **`console`**: An appender that writes to standard output.
+*   **`file`**: An appender that writes to a single, non-rolling file.
+*   **`rolling_file`**: An appender that writes to a file that rolls over based on time or size policies.
+*   **`custom`**: An appender that sends structured log events to a channel for consumption within your application.
+*   **`debug_report`**: A debug-only appender that collects events in memory for later inspection.
+*   **Encoder**: Formats a log event into bytes before it is sent to an appender.
+*   **`pattern`**: An encoder that formats logs using a Log4j-style pattern string (e.g. `[%d] %p - %m%n`).
+*   **`json_lines`**: An encoder that formats logs as newline-delimited JSON objects.
 
 ## Quick Start
 
@@ -98,7 +79,7 @@ This example logs `INFO` level messages from the root of the application to both
     
     mod my_app {
         pub fn do_work() {
-            tracing::debug!("Doing some internal work...");
+            tracing::debug!(target: "my_app", "Doing some internal work...");
         }
     }
     
@@ -123,7 +104,7 @@ This example logs `INFO` level messages from the root of the application to both
     }
     ```
 
-## The Configuration File
+## Writing the Configuration File
 
 ### Top-Level Structure
 
@@ -185,6 +166,28 @@ appenders:
       max_retained_sequences: 10
 ```
 
+Compress older rolled files by adding `compression` to the policy:
+```yaml
+    policy:
+      time_granularity: daily
+      max_retained_sequences: 10
+      compression:
+        compressed_file_suffix: ".gz"
+        max_uncompressed_sequences: 1
+```
+
+#### Channel capacity and overflow
+
+Every appender but `debug_report` has a bounded channel. `console`, `file` and `rolling_file` size it with `channel_capacity` (default 1024, zero is an error). `custom` sizes it with `buffer_size` (default 256, zero is an error). When it is full, `overflow: drop` (the default) drops the newest message and warns on stderr at most once a second. `overflow: block` blocks the logging call.
+```yaml
+appenders:
+  audit:
+    kind: file
+    path: "logs/audit.log"
+    channel_capacity: 4096
+    overflow: block
+```
+
 ### Configuring Encoders
 
 #### `pattern`
@@ -194,14 +197,14 @@ Uses Log4j-style format specifiers.
 *   `%p` or `%l`: Log level (e.g., `INFO`).
 *   `%t`: The event's target (typically the module path).
 *   `%m`: The primary log message.
-*   `%T`: The name of the thread on which the event occurred.
-*   `%n`: A platform-specific newline character.
+*   `%T`: The name of the thread on which the event occurred. Empty for `log` records and for unnamed threads.
+*   `%n`: A newline (`\n` on every platform).
 *   `%-5p`: Padding can be applied to specifiers (e.g., left-align the level to 5 characters).
 *   `%%`: An escaped literal percent sign.
 
 **Structured Fields with `%X`**
 
-The `%X` specifier is used to include structured fields from `tracing` events in the log line. It has two forms:
+The `%X` specifier includes an event's structured fields in the log line. It has two forms:
 
 1.  **`%X{field_name}` (Specific Field):** This is the recommended way to include specific, important context. If the field doesn't exist on a given event, nothing is printed.
 
@@ -219,7 +222,7 @@ The `%X` specifier is used to include structured fields from `tracing` events in
     [2025-11-01T10:00:00.123Z] WARN - [peer=1, ballot=B(1,2)] - Contention detected
     ```
 
-2.  **`%X` (All Fields):** This will print all fields attached to the event in a `{key=value}` format, sorted alphabetically by key. This is useful for debugging but can be very verbose for production logs.
+2.  **`%X` (All Fields):** This will print all fields attached to the event in a `{key=value}` format, sorted alphabetically by key. This is useful for debugging but can be very verbose for production logs. A record from the `log` crate also has `module_path`, `file` and `line` in its fields, so bare `%X` prints them. Use `%X{name}` when `log` records reach the appender.
 
     ```yaml
     # fibre_logging.yaml
@@ -240,7 +243,7 @@ The `%X` specifier is used to include structured fields from `tracing` events in
 ```yaml
 encoder:
   kind: pattern
-  pattern: "[%d{%Y-%m-%d %H:%M:%S}] %-5p [%T] %t - %m {span_id=%X{span_id}}%n"
+  pattern: "[%d{%Y-%m-%d %H:%M:%S}] %-5p [%T] %t - %m {peer=%X{peer_id}}%n"
 ```
 
 #### `json_lines`
@@ -264,7 +267,7 @@ loggers:
     level: info
     appenders: [console]
 
-  # Rules for any target starting with "my_app".
+  # Rules for the target "my_app" and anything under "my_app::".
   my_app:
     level: debug
     appenders: [main_log_file]
@@ -278,7 +281,64 @@ loggers:
     additive: false
 ```
 
-## Initialization API
+#### Using Prefixes to Target Modules
+
+You don't need to list every single module path in your configuration. The keys under the `loggers:` section are module-path prefixes. A key matches a target equal to it or under it at a `::` boundary: `my_app` matches `my_app` and `my_app::db` but not `my_apple`.
+
+**The Rule:** The most specific (longest) matching prefix wins. If no specific logger matches, the `root` logger's configuration is used.
+
+```yaml
+loggers:
+  # Default for everything else
+  root:
+    level: info
+    appenders: [console]
+
+  # This matches "my_app", "my_app::api", "my_app::db", etc.
+  my_app:
+    level: debug
+    appenders: [file_app]
+    additive: false # Prevents my_app logs from also going to the console
+
+  # This quiets a noisy dependency
+  hyper:
+    level: warn
+```
+
+**How it works:**
+*   A log from `my_app::api` matches the `my_app` logger and is logged to `file_app` at `DEBUG` level.
+*   A log from `hyper::client` matches the `hyper` logger; only `WARN` level logs and higher are processed.
+*   A log from another crate like `serde` doesn't match a specific logger, so it uses the `root` configuration and is logged to the `console` at `INFO` level.
+
+#### Reusing Settings with YAML Anchors
+
+You often want to apply the same logging level and appender settings to multiple, unrelated libraries (e.g., to quiet them all down). While the library does not support an `OR` operator like `|` in the logger key, you can achieve this using a standard YAML feature: **Anchors and Aliases**.
+
+1.  **Define an Anchor (`&`):** Put it on the first logger that uses the block.
+2.  **Use an Alias (`*`):** Refer to that anchored block wherever you need it.
+
+```yaml
+loggers:
+  root:
+    level: info
+    appenders: [console]
+
+  my_app:
+    level: debug
+    # ...
+
+  # The anchor goes on the first logger that uses the block. An unknown top-level key is a parse error.
+  hyper: &quiet_dependency_config
+    level: warn
+    appenders: [console]
+    additive: false
+  mio: *quiet_dependency_config
+  rustls: *quiet_dependency_config
+```
+
+To change the level for all dependencies, edit the one anchored block.
+
+## Initializing the Library
 
 The primary entry point is `init_from_file`, which sets up the entire logging system.
 
@@ -286,7 +346,32 @@ The primary entry point is `init_from_file`, which sets up the entire logging sy
 pub fn init_from_file(config_path: &Path) -> Result<InitResult>
 ```
 
-It returns an `InitResult` struct, which is a guard that must be kept alive. When it is dropped, it signals all background threads to shut down and flush any buffered logs.
+It returns an `InitResult`, a guard that must be kept alive. Dropping it flushes the appenders, waiting at most 5 seconds before abandoning a stuck task. To pick the wait yourself:
+
+```rust
+use std::time::Duration;
+
+guards.shutdown(Duration::from_secs(30));
+```
+
+To pick the file from the environment, `find_config_file` tries `fibre_logging.{env}.yaml` then `fibre_logging.yaml`:
+
+```rust
+let path = fibre_logging::find_config_file(None)?;
+let guards = fibre_logging::init_from_file(&path)?;
+```
+
+To compose with other layers, `layer_from_file` builds the same pipeline and sets no global subscriber:
+
+```rust
+use tracing_subscriber::layer::SubscriberExt;
+
+let (logging, guards) = fibre_logging::init::layer_from_file(&path)?;
+let subscriber = tracing_subscriber::registry().with(logging).with(my_layer);
+tracing::subscriber::set_global_default(subscriber)?;
+```
+
+The struct itself:
 
 ```rust
 pub struct InitResult {
@@ -294,7 +379,7 @@ pub struct InitResult {
   pub appender_task_handles: Vec<JoinHandle<()>>,
 
   // Channel to receive internal error reports.
-  pub internal_error_rx: Option<fibre::mpsc::BoundedReceiver<InternalErrorReport>>,
+  pub internal_error_rx: Option<fibre::mpsc::BoundedSyncReceiver<InternalErrorReport>>,
 
   // Map of names to channels for `custom` appenders.
   pub custom_streams: HashMap<String, CustomEventReceiver>,
@@ -303,11 +388,11 @@ pub struct InitResult {
 }
 ```
 
-## Specialized Features
+## Using Specialized Features
 
 ### Tracing Integration
 
-`fibre_logging` automatically captures `tracing` span information.
+`fibre_logging` records the current span's id and its parent's id on each `tracing` event. It does not copy span names or span fields onto the event.
 
 *   **YAML Config (`fibre_logging.tracing.yaml`):**
     ```yaml
@@ -332,13 +417,13 @@ pub struct InitResult {
     #[instrument(target = "database")]
     fn process_user(user_id: u32) {
         info_span!("fetch_data").in_scope(|| {
-            info!(task_id = 123, "Fetching data for user.");
+            info!(target: "database", task_id = 123, "Fetching data for user.");
         });
     }
     ```
 *   **Resulting JSON Log (`logs/tracing_example.log`):**
     ```json
-    {"level":"INFO","message":"Fetching data for user.","name":"fetch_data","parent_id":"SpanId(0x...)","span_id":"SpanId(0x...)","target":"database","task_id":123,"timestamp":"..."}
+    {"fields":{"task_id":123},"level":"INFO","message":"Fetching data for user.","name":"event src/main.rs:6","parent_id":"Id(...)","span_id":"Id(...)","target":"database","thread_id":"1","thread_name":"main","timestamp":"..."}
     ```
 
 ### In-App Event Consumption (`custom` appender)
@@ -372,6 +457,8 @@ Receive log events as structured data within your application.
     tracing::event!(target: "METRICS", tracing::Level::INFO, query_time_ms = 55);
     ```
 
+Nothing drains a `custom` stream for you. If the receiver is never read the buffer fills and every later event is dropped with the stderr warning.
+
 ### Internal Error Reporting
 
 Monitor the health of the logging system itself.
@@ -387,7 +474,7 @@ Monitor the health of the logging system itself.
     if let Some(error_rx) = init_result.internal_error_rx.take() {
         std::thread::spawn(move || {
             if let Ok(report) = error_rx.recv() {
-                // e.g., A file appender failed due to permissions
+                // e.g., A write to a log file failed
                 eprintln!("Internal logging error: {}", report.error_message);
             }
         });
@@ -419,9 +506,11 @@ Get an in-memory snapshot of events for debugging. This feature is only availabl
     fibre_logging::debug_report::print_debug_report();
     ```
 
+An event with a string field named `counter` increments a per-target counter instead of being recorded: `tracing::debug!(counter = "cache_miss");`
+
 ### Async Runtime Debugging (tokio-console)
 
-[tokio-console](https://github.com/tokio-rs/console) is an interactive debugger for async Rust programs. It streams live data about every task in your Tokio runtime - scheduling latency, wakeup counts, poll durations, and resource contention - via a gRPC server that the `tokio-console` CLI reads from.
+[tokio-console](https://github.com/tokio-rs/console) is an interactive debugger for async Rust programs. It streams live data about every task in your Tokio runtime - scheduling latency, wakeup counts, poll durations and resource contention - via a gRPC server that the `tokio-console` CLI reads from.
 
 The `tokio-console` feature integrates this transparently: when enabled, `init_from_file` attaches the console subscriber layer alongside your normal `fibre_logging` pipeline and starts the gRPC server automatically. No YAML changes are needed.
 
@@ -455,6 +544,8 @@ export RUSTFLAGS="--cfg tokio_unstable"
 Your application code does not change. `init_from_file` detects the feature and starts the console server on `localhost:6669`:
 
 ```rust
+use std::path::Path;
+
 fn main() {
     let _guards = fibre_logging::init::init_from_file(Path::new("fibre_logging.yaml"))
         .expect("Failed to initialize fibre_logging");
@@ -466,11 +557,13 @@ fn main() {
 If you compose `layer_from_file` into your own registry instead, add the console layer yourself:
 
 ```rust
+use tracing_subscriber::layer::SubscriberExt;
+
 let (logging, _guard) = fibre_logging::init::layer_from_file(Path::new("fibre_logging.yaml"))?;
-tracing_subscriber::registry()
+let subscriber = tracing_subscriber::registry()
     .with(logging)
-    .with(fibre_logging::init::console_layer())
-    .init();
+    .with(fibre_logging::init::console_layer());
+tracing::subscriber::set_global_default(subscriber)?;
 ```
 
 #### Step 4 - Install and run `tokio-console`
@@ -480,7 +573,7 @@ cargo install tokio-console
 tokio-console           # connects to localhost:6669 by default
 ```
 
-The console shows a live table of all async tasks: their state (`idle` / `running` / `scheduled`), total poll count, busy and idle time, and wakeup sources. Press `t` to sort by total time, `r` to filter to running tasks, and `Enter` on any task to drill into its wakeup timeline.
+The console shows a live table of all async tasks: their state (`idle` / `running` / `scheduled`), total poll count, busy and idle time and wakeup sources. Press `Enter` on any task to see its details.
 
 #### Configuration via environment variables
 
@@ -489,12 +582,12 @@ The console server can be tuned without recompiling:
 | Variable | Default | Description |
 |---|---|---|
 | `TOKIO_CONSOLE_BIND` | `127.0.0.1:6669` | Address the gRPC server listens on |
-| `TOKIO_CONSOLE_RETENTION` | `60s` | How long completed task data is retained |
+| `TOKIO_CONSOLE_RETENTION` | `3600s` | How long completed task data is retained |
 | `TOKIO_CONSOLE_RECORD_PATH` | *(unset)* | Write a recording to a file for replay |
 
 #### Disabling for release builds
 
-The feature is typically only enabled in development. Use a Cargo profile or conditional dependency to ensure it is stripped in production:
+The feature is typically only enabled in development. Put it behind a feature of your own so production builds leave it out:
 
 ```toml
 # Cargo.toml
@@ -530,3 +623,12 @@ Then build with `cargo run --features debug-console` during development.
       // ... and others
     }
     ```
+
+```rust
+match fibre_logging::init_from_file(path) {
+    Ok(guards) => run(guards),
+    Err(fibre_logging::Error::ConfigRead(e)) => eprintln!("cannot read config: {e}"),
+    Err(fibre_logging::Error::ConfigParse(e)) => eprintln!("bad YAML: {e}"),
+    Err(e) => eprintln!("logging setup failed: {e}"),
+}
+```
