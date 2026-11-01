@@ -3,6 +3,14 @@
     "1×1 rows reproduce within a few percent. Rows at 16 and 64 threads oversubscribe a 14-core machine and do not: over four runs of MPSC/sync/cap-128/64×1, fibre held 0.579-0.601 Melem/s, kanal 0.359-0.640, crossbeam 8.43-11.9, with crossbeam's spread inside one run reaching 1.24-18.6."
   ],
   "explore": {
+    "axes": "shapes, modes, capacities and thread counts",
+    "defaults": {
+      "api": "single",
+      "capacity": "128",
+      "flavor": "mpsc",
+      "mode": "async",
+      "stage": "stream"
+    },
     "dimensions": [
       {
         "id": "flavor",
@@ -37,6 +45,15 @@
       {
         "id": "pairing",
         "label": "P×C",
+        "labels": {
+          "16x1": "16 producers, 1 consumer",
+          "16x16": "16 producers, 16 consumers",
+          "1x1": "1 producer, 1 consumer",
+          "1x16": "1 producer, 16 consumers",
+          "1x64": "1 producer, 64 consumers",
+          "64x1": "64 producers, 1 consumer",
+          "64x64": "64 producers, 64 consumers"
+        },
         "values": [
           "1x1",
           "16x1",
@@ -65,6 +82,7 @@
         ]
       }
     ],
+    "intro": "Choose a workload and compare the implementations at each pairing of producers and consumers. Bars show the median in Melem/s; the thin line spans the fastest and slowest sample.",
     "records": [
       {
         "d": [
@@ -10552,7 +10570,8 @@
         "median": 184.158,
         "min": 154.155
       }
-    ]
+    ],
+    "rows": "pairing"
   },
   "format": 1,
   "groups": [
@@ -18012,6 +18031,9 @@
     "Capacities are rendezvous, 1, 128, 1024 and unbounded, with a lower item ceiling on unbounded cells. Batched cells run at capacity 128 and above, for implementations with a batch API.",
     "Oneshot is the exception to all of that: its channel is spent by a single op, so capacity, pairing and batching have one legal value each and the axis that remains is whether channel construction sits inside the timed region. See that page for the two stages."
   ],
+  "noun": "channel",
+  "peers": "other Rust channel libraries",
+  "reading": "The best result in each row is highlighted. In batched tables, the bracketed figure is the gain over the same implementation's single-item row. A dash means the implementation has no channel for that cell.",
   "run": {
     "load_at_start": null,
     "machine": "MacBook M4 Pro (14 cores)",

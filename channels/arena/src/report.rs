@@ -86,6 +86,17 @@ const METHOD: [&str; 5] = [
 
 const REPRODUCIBILITY: &str = "1×1 rows reproduce within a few percent. Rows at 16 and 64 threads oversubscribe a 14-core machine and do not: over four runs of MPSC/sync/cap-128/64×1, fibre held 0.579-0.601 Melem/s, kanal 0.359-0.640, crossbeam 8.43-11.9, with crossbeam's spread inside one run reaching 1.24-18.6.";
 
+const READING: &str = "The best result in each row is highlighted. In batched tables, the bracketed figure is the gain over the same implementation's single-item row. A dash means the implementation has no channel for that cell.";
+
+const EXPLORE_INTRO: &str = "Choose a workload and compare the implementations at each pairing of producers and consumers. Bars show the median in Melem/s; the thin line spans the fastest and slowest sample.";
+
+/// `16x1` as `16 producers, 1 consumer`.
+fn pairing_label(pairing: &str) -> String {
+  let count = |n: &str, one: &str| if n == "1" { format!("1 {one}") } else { format!("{n} {one}s") };
+  let (producers, consumers) = pairing.split_once('x').unwrap_or((pairing, ""));
+  format!("{}, {}", count(producers, "producer"), count(consumers, "consumer"))
+}
+
 fn rows(records: &[Record], flavor: Flavor, mode: Mode, batched: bool) -> Rows<'_> {
   let mut out: Rows = BTreeMap::new();
   for record in records {
@@ -611,11 +622,24 @@ impl Report {
       json!({ "id": id, "label": label, "values": values })
     };
 
+    let mut pairing = dimension("pairing", "P×C", 3);
+    let labels: serde_json::Map<String, Value> = pairing["values"]
+      .as_array()
+      .into_iter()
+      .flatten()
+      .filter_map(Value::as_str)
+      .map(|value| (value.to_owned(), json!(pairing_label(value))))
+      .collect();
+    pairing["labels"] = Value::Object(labels);
+
     let report = json!({
       "format": 1,
       "id": "channels",
       "title": "Channel Arena",
       "summary": SUMMARY,
+      "noun": "channel",
+      "peers": "other Rust channel libraries",
+      "reading": READING,
       "unit": { "label": "Melem/s", "description": "Million items per second per item sent, median of samples." },
       "run": {
         "machine": self.machine,
@@ -633,11 +657,15 @@ impl Report {
       "caveats": [REPRODUCIBILITY],
       "groups": groups,
       "explore": {
+        "intro": EXPLORE_INTRO,
+        "axes": "shapes, modes, capacities and thread counts",
+        "rows": "pairing",
+        "defaults": { "flavor": "mpsc", "mode": "async", "capacity": "128", "api": "single", "stage": "stream" },
         "dimensions": [
           dimension("flavor", "Shape", 0),
           dimension("mode", "Mode", 1),
           dimension("capacity", "Capacity", 2),
-          dimension("pairing", "P×C", 3),
+          pairing,
           dimension("api", "API", 4),
           dimension("stage", "Stage", 5),
         ],
