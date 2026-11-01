@@ -132,3 +132,44 @@ fn a_field_recorded_after_the_span_opened_lands_on_it() {
   let call = trace.named("call").next().expect("the span");
   assert_eq!(call.outcome(), Some("not_found"), "which is what a dashboard groups by");
 }
+
+#[test]
+fn a_root_gets_an_eight_byte_id_that_differs_between_traces_and_a_start_time() {
+  let (layer, traces) = fibre_tracing::layer();
+  let before = std::time::SystemTime::now();
+  under(&traces, layer, || {
+    tracing::info_span!("one", fibre.root = true).in_scope(|| {});
+    tracing::info_span!("two", fibre.root = true).in_scope(|| {});
+  });
+  let held = traces.recent(2);
+  assert_eq!(held[0].trace_id.len(), 8);
+  assert_ne!(held[0].trace_id, held[1].trace_id);
+  assert_eq!(held[0].parent_ref, None);
+  assert!(held[0].started_at >= before);
+}
+
+#[test]
+fn a_root_adopts_an_incoming_id_of_any_length_and_its_parent_ref() {
+  let (layer, traces) = fibre_tracing::layer();
+  under(&traces, layer, || {
+    let long = "00112233445566778899aabbccddeeff";
+    tracing::info_span!("call", fibre.root = true, fibre.trace_id = long, fibre.parent_ref = "0a0b").in_scope(|| {});
+    tracing::info_span!("bad", fibre.root = true, fibre.trace_id = "not hex").in_scope(|| {});
+  });
+  let held = traces.recent(2);
+  assert_eq!(held[0].trace_id, [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+  assert_eq!(held[0].parent_ref.as_deref(), Some(&[0x0a, 0x0b][..]));
+  assert_eq!(held[1].trace_id.len(), 8, "an id that does not read as hex is replaced");
+}
+
+#[test]
+fn current_trace_id_reads_the_id_from_any_depth_and_nothing_outside() {
+  let (layer, traces) = fibre_tracing::layer();
+  let seen = under(&traces, layer, || {
+    let outside = traces.current_trace_id();
+    let inside = tracing::info_span!("root", fibre.root = true).in_scope(|| tracing::info_span!("deep").in_scope(|| traces.current_trace_id()));
+    (outside, inside)
+  });
+  assert_eq!(seen.0, None);
+  assert_eq!(seen.1, Some(traces.recent(1)[0].trace_id.clone()));
+}

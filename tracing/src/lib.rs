@@ -26,10 +26,12 @@
 //! ```
 
 use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
 use std::fmt;
+use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use parking_lot::Mutex;
 use tracing::field::{Field, Visit};
@@ -43,6 +45,12 @@ pub const ROOT_FIELD: &str = "fibre.root";
 
 /// The field naming the outcome a span finished with, when it says.
 pub const OUTCOME_FIELD: &str = "fibre.outcome";
+
+/// A root's incoming trace id, in hex. A value that does not read as hex is replaced by a new id.
+pub const TRACE_ID_FIELD: &str = "fibre.trace_id";
+
+/// A root's parent span in another process, in hex.
+pub const PARENT_REF_FIELD: &str = "fibre.parent_ref";
 
 /// How many finished traces the ring keeps by default.
 pub const DEFAULT_RING: usize = 256;
@@ -101,6 +109,10 @@ impl Span {
 #[derive(Debug, Clone)]
 pub struct Trace {
   pub id: u64,
+  /// Identifies the trace across processes: 8 random bytes, or whatever length the root adopted.
+  pub trace_id: Vec<u8>,
+  pub parent_ref: Option<Vec<u8>>,
+  pub started_at: SystemTime,
   pub spans: Vec<Span>,
   /// How long the root was open. Zero while the trace is still running.
   pub duration: Duration,
@@ -121,6 +133,9 @@ impl Trace {
 /// A trace being built.
 struct Open {
   id: u64,
+  trace_id: Vec<u8>,
+  parent_ref: Option<Vec<u8>>,
+  started_at: SystemTime,
   started: Instant,
   spans: Vec<Span>,
   /// Span id to its index in `spans`, so a child finds its parent.
@@ -130,6 +145,20 @@ struct Open {
   ids: Vec<u64>,
   /// How many spans are still open, so the root closing is unambiguous.
   root: u64,
+}
+
+fn from_hex(text: &str) -> Option<Vec<u8>> {
+  if text.is_empty() || !text.len().is_multiple_of(2) || !text.is_ascii() {
+    return None;
+  }
+  (0..text.len()).step_by(2).map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok()).collect()
+}
+
+/// `RandomState` is seeded from the OS per process, and the counter separates traces within one.
+fn fresh_trace_id(counter: u64) -> Vec<u8> {
+  let mut hasher = RandomState::new().build_hasher();
+  hasher.write_u64(counter);
+  hasher.finish().to_be_bytes().to_vec()
 }
 
 /// The handle a caller reads through, and what the layer writes into.
@@ -157,12 +186,19 @@ impl Traces {
     self.of_span(id.into_u64())
   }
 
+  /// The current trace's id, without copying its spans. `None` outside a root.
+  pub fn current_trace_id(&self) -> Option<Vec<u8>> {
+    let span = tracing::Span::current().id()?.into_u64();
+    let root = *self.inner.belongs.lock().get(&span)?;
+    self.inner.open.lock().get(&root).map(|held| held.trace_id.clone())
+  }
+
   /// The trace a span id belongs to, for a caller holding one.
   pub fn of_span(&self, span: u64) -> Option<Trace> {
     let root = *self.inner.belongs.lock().get(&span)?;
     let open = self.inner.open.lock();
     let held = open.get(&root)?;
-    Some(Trace { id: held.id, spans: held.spans.clone(), duration: Duration::ZERO })
+    Some(Trace { id: held.id, trace_id: held.trace_id.clone(), parent_ref: held.parent_ref.clone(), started_at: held.started_at, spans: held.spans.clone(), duration: Duration::ZERO })
   }
 
   /// The most recently finished traces, newest last, at most `n`.
@@ -250,7 +286,13 @@ where
     let mut open = self.traces.inner.open.lock();
     if is_root {
       let trace_id = self.traces.inner.next_id.fetch_add(1, Ordering::Relaxed);
-      open.insert(this, Open { id: trace_id, started: Instant::now(), spans: Vec::new(), index: HashMap::new(), ids: Vec::new(), root: this });
+      let incoming = |field: &str| match fields.map.get(field) {
+        Some(Value::Str(text)) => from_hex(text),
+        _ => None,
+      };
+      let adopted = incoming(TRACE_ID_FIELD).unwrap_or_else(|| fresh_trace_id(trace_id));
+      let parent_ref = incoming(PARENT_REF_FIELD);
+      open.insert(this, Open { id: trace_id, trace_id: adopted, parent_ref, started_at: SystemTime::now(), started: Instant::now(), spans: Vec::new(), index: HashMap::new(), ids: Vec::new(), root: this });
     }
     let Some(held) = open.get_mut(&root) else { return };
     let parent = parent_span.and_then(|p| held.index.get(&p).copied());
@@ -302,7 +344,7 @@ where
         belongs.remove(id);
       }
     }
-    let trace = Trace { id: held.id, duration: held.started.elapsed(), spans: held.spans };
+    let trace = Trace { id: held.id, trace_id: held.trace_id, parent_ref: held.parent_ref, started_at: held.started_at, duration: held.started.elapsed(), spans: held.spans };
     for listener in self.traces.inner.listeners.lock().iter() {
       listener(&trace);
     }

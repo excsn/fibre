@@ -46,6 +46,7 @@ Neither constructor sets a global subscriber. The caller composes the layer and 
 
 * `pub fn current(&self) -> Option<Trace>`: the trace the current span belongs to, with the spans opened so far. `None` outside a root. The returned `Trace` has `duration` of `Duration::ZERO`, since the root has not closed.
 * `pub fn of_span(&self, span: u64) -> Option<Trace>`: `current` for a caller holding a span id rather than being inside it. Takes the value of `tracing::span::Id::into_u64`. `None` once that span has closed, even if its trace is still in flight.
+* `pub fn current_trace_id(&self) -> Option<Vec<u8>>`: the current trace's id without copying its spans. `None` outside a root.
 * `pub fn recent(&self, n: usize) -> Vec<Trace>`: the last finished traces, newest last, at most `n` and at most what the ring holds.
 * `pub fn len(&self) -> usize` and `pub fn is_empty(&self) -> bool`: how many finished traces the ring holds.
 * `pub fn clear(&self)`: drops every finished trace. Does not affect traces in flight.
@@ -58,6 +59,9 @@ Neither constructor sets a global subscriber. The caller composes the layer and 
 `pub struct Trace`. `Debug + Clone`.
 
 * `pub id: u64`: unique per collector, from 1, in the order roots opened.
+* `pub trace_id: Vec<u8>`: identifies the trace across processes. 8 random bytes, or the bytes the root adopted through `fibre.trace_id`.
+* `pub parent_ref: Option<Vec<u8>>`: the root's parent span in another process, from `fibre.parent_ref`.
+* `pub started_at: SystemTime`: when the root opened.
 * `pub spans: Vec<Span>`: in the order they opened, the root first.
 * `pub duration: Duration`: how long the root was open. `Duration::ZERO` while the trace is in flight.
 * `pub fn root(&self) -> Option<&Span>`: the first span.
@@ -89,6 +93,8 @@ A field recorded through `Debug` is kept as `Str` of its `{:?}`.
 
 * `pub const ROOT_FIELD: &str = "fibre.root"`: marks a span as the top of a trace. Only a `bool` of `true` counts.
 * `pub const OUTCOME_FIELD: &str = "fibre.outcome"`: what `Span::outcome` reads.
+* `pub const TRACE_ID_FIELD: &str = "fibre.trace_id"`: a root's incoming trace id, in hex. A value that does not read as hex is replaced by a new id.
+* `pub const PARENT_REF_FIELD: &str = "fibre.parent_ref"`: a root's parent span in another process, in hex.
 * `pub const DEFAULT_RING: usize = 256`: what `layer` sizes the ring to.
 
 ## 5. Error Handling
