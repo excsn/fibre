@@ -1,24 +1,1807 @@
 {
-  "format": 1,
-  "id": "cache",
-  "title": "Cache Arena",
-  "summary": "fibre_cache against moka, quick_cache and stretto through one fixed-duration workload harness.",
-  "unit": { "label": "Mops/s", "description": "Operations completed per second across all workers over a fixed-duration run." },
-  "run": {
-    "machine": "MacBook M4 Pro (14 cores)",
-    "measured_at": "2026-10-31T04:12:05Z",
-    "power_mode": "high power",
-    "load_at_start": 6.18,
-    "load_at_end": 20.08,
-    "capacity": 10000,
-    "secs": 10.00
+  "caveats": [
+    "Each cell is one fixed-duration run, so these figures carry no spread between samples.",
+    "quick_cache is an unranked yardstick: it has no expiry or cache-level loader and its async cells call a sync `get` on a blocking lock."
+  ],
+  "explore": {
+    "axes": "workloads, modes and worker counts",
+    "defaults": {
+      "mode": "sync",
+      "op": "zipf"
+    },
+    "dimensions": [
+      {
+        "id": "op",
+        "label": "Workload",
+        "values": [
+          "hit",
+          "hot",
+          "insert",
+          "zipf"
+        ]
+      },
+      {
+        "id": "mode",
+        "label": "Mode",
+        "values": [
+          "sync",
+          "async",
+          "mixed"
+        ]
+      },
+      {
+        "id": "workers",
+        "label": "Workers",
+        "labels": {
+          "1": "1 worker",
+          "64": "64 workers",
+          "8": "8 workers"
+        },
+        "values": [
+          "1",
+          "8",
+          "64"
+        ]
+      }
+    ],
+    "intro": "Choose a workload and compare the engines at each worker count. Bars show Mops/s from one 10 s run per cell, with the hit ratio beside it where the workload can miss.",
+    "records": [
+      {
+        "d": [
+          "zipf",
+          "sync",
+          "8"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 30.147,
+        "note": "0.777 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "sync",
+          "8"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 23.574,
+        "note": "0.774 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "sync",
+          "8"
+        ],
+        "library": "moka",
+        "median": 5.569,
+        "note": "0.788 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "sync",
+          "8"
+        ],
+        "library": "quick_cache",
+        "median": 42.439,
+        "note": "0.785 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "sync",
+          "8"
+        ],
+        "library": "stretto",
+        "median": 3.661,
+        "note": "0.652 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "sync",
+          "64"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 31.34,
+        "note": "0.778 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "sync",
+          "64"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 23.912,
+        "note": "0.774 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "sync",
+          "64"
+        ],
+        "library": "moka",
+        "median": 1.111,
+        "note": "0.785 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "sync",
+          "64"
+        ],
+        "library": "quick_cache",
+        "median": 21.025,
+        "note": "0.785 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "sync",
+          "64"
+        ],
+        "library": "stretto",
+        "median": 3.591,
+        "note": "0.615 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "async",
+          "8"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 30.722,
+        "note": "0.777 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "async",
+          "8"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 20.878,
+        "note": "0.774 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "async",
+          "8"
+        ],
+        "library": "moka",
+        "median": 5.388,
+        "note": "0.787 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "async",
+          "8"
+        ],
+        "library": "quick_cache",
+        "median": 47.014,
+        "note": "0.785 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "async",
+          "8"
+        ],
+        "library": "stretto",
+        "median": 3.865,
+        "note": "0.668 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "async",
+          "64"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 31.281,
+        "note": "0.777 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "async",
+          "64"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 25.869,
+        "note": "0.774 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "async",
+          "64"
+        ],
+        "library": "moka",
+        "median": 4.01,
+        "note": "0.788 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "async",
+          "64"
+        ],
+        "library": "quick_cache",
+        "median": 24.848,
+        "note": "0.785 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "async",
+          "64"
+        ],
+        "library": "stretto",
+        "median": 3.752,
+        "note": "0.650 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "mixed",
+          "64"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 26.203,
+        "note": "0.777 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "mixed",
+          "64"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 19.39,
+        "note": "0.774 hit ratio"
+      },
+      {
+        "d": [
+          "zipf",
+          "mixed",
+          "64"
+        ],
+        "library": "quick_cache",
+        "median": 21.304,
+        "note": "0.785 hit ratio"
+      },
+      {
+        "d": [
+          "insert",
+          "sync",
+          "1"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 13.921
+      },
+      {
+        "d": [
+          "insert",
+          "sync",
+          "1"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 8.065
+      },
+      {
+        "d": [
+          "insert",
+          "sync",
+          "1"
+        ],
+        "library": "moka",
+        "median": 2.796
+      },
+      {
+        "d": [
+          "insert",
+          "sync",
+          "1"
+        ],
+        "library": "quick_cache",
+        "median": 42.502
+      },
+      {
+        "d": [
+          "insert",
+          "sync",
+          "1"
+        ],
+        "library": "stretto",
+        "median": 8.257
+      },
+      {
+        "d": [
+          "insert",
+          "sync",
+          "64"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 34.166
+      },
+      {
+        "d": [
+          "insert",
+          "sync",
+          "64"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 21.541
+      },
+      {
+        "d": [
+          "insert",
+          "sync",
+          "64"
+        ],
+        "library": "moka",
+        "median": 0.286
+      },
+      {
+        "d": [
+          "insert",
+          "sync",
+          "64"
+        ],
+        "library": "quick_cache",
+        "median": 52.278
+      },
+      {
+        "d": [
+          "insert",
+          "sync",
+          "64"
+        ],
+        "library": "stretto",
+        "median": 4.373
+      },
+      {
+        "d": [
+          "insert",
+          "async",
+          "64"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 38.095
+      },
+      {
+        "d": [
+          "insert",
+          "async",
+          "64"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 22.475
+      },
+      {
+        "d": [
+          "insert",
+          "async",
+          "64"
+        ],
+        "library": "moka",
+        "median": 1.341
+      },
+      {
+        "d": [
+          "insert",
+          "async",
+          "64"
+        ],
+        "library": "quick_cache",
+        "median": 50.205
+      },
+      {
+        "d": [
+          "insert",
+          "async",
+          "64"
+        ],
+        "library": "stretto",
+        "median": 2.894
+      },
+      {
+        "d": [
+          "hit",
+          "sync",
+          "1"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 44.399,
+        "note": "0.953 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "sync",
+          "1"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 23.641,
+        "note": "0.955 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "sync",
+          "1"
+        ],
+        "library": "moka",
+        "median": 12.39,
+        "note": "1.000 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "sync",
+          "1"
+        ],
+        "library": "quick_cache",
+        "median": 166.436,
+        "note": "0.963 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "sync",
+          "1"
+        ],
+        "library": "stretto",
+        "median": 23.766,
+        "note": "1.000 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "sync",
+          "8"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 108.222,
+        "note": "0.956 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "sync",
+          "8"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 37.55,
+        "note": "0.956 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "sync",
+          "8"
+        ],
+        "library": "moka",
+        "median": 6.425,
+        "note": "1.000 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "sync",
+          "8"
+        ],
+        "library": "quick_cache",
+        "median": 94.759,
+        "note": "0.963 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "sync",
+          "8"
+        ],
+        "library": "stretto",
+        "median": 4.267,
+        "note": "1.000 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "async",
+          "64"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 224.77,
+        "note": "0.954 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "async",
+          "64"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 47.577,
+        "note": "0.949 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "async",
+          "64"
+        ],
+        "library": "moka",
+        "median": 28.125,
+        "note": "1.000 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "async",
+          "64"
+        ],
+        "library": "quick_cache",
+        "median": 104.899,
+        "note": "0.975 hit ratio"
+      },
+      {
+        "d": [
+          "hit",
+          "async",
+          "64"
+        ],
+        "library": "stretto",
+        "median": 4.765,
+        "note": "1.000 hit ratio"
+      },
+      {
+        "d": [
+          "hot",
+          "sync",
+          "8"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 11.006
+      },
+      {
+        "d": [
+          "hot",
+          "sync",
+          "8"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 5.064
+      },
+      {
+        "d": [
+          "hot",
+          "sync",
+          "8"
+        ],
+        "library": "moka",
+        "median": 5.245
+      },
+      {
+        "d": [
+          "hot",
+          "sync",
+          "8"
+        ],
+        "library": "quick_cache",
+        "median": 14.344
+      },
+      {
+        "d": [
+          "hot",
+          "sync",
+          "8"
+        ],
+        "library": "stretto",
+        "median": 5.05
+      },
+      {
+        "d": [
+          "hot",
+          "async",
+          "8"
+        ],
+        "library": "fibre_cache.s3fifo",
+        "median": 10.53
+      },
+      {
+        "d": [
+          "hot",
+          "async",
+          "8"
+        ],
+        "library": "fibre_cache.tinylfu",
+        "median": 5.477
+      },
+      {
+        "d": [
+          "hot",
+          "async",
+          "8"
+        ],
+        "library": "moka",
+        "median": 5.076
+      },
+      {
+        "d": [
+          "hot",
+          "async",
+          "8"
+        ],
+        "library": "quick_cache",
+        "median": 8.143
+      },
+      {
+        "d": [
+          "hot",
+          "async",
+          "8"
+        ],
+        "library": "stretto",
+        "median": 4.834
+      }
+    ],
+    "rows": "workers"
   },
-  "engines": [
-    { "name": "fibre_cache.s3fifo", "version": "0.4.12" },
-    { "name": "fibre_cache.tinylfu", "version": "0.4.12" },
-    { "name": "moka", "version": "0.12.16" },
-    { "name": "quick_cache", "version": "0.6.24" },
-    { "name": "stretto", "version": "0.8.4" }
+  "format": 1,
+  "groups": [
+    {
+      "blurb": "every operation reads a resident key",
+      "caveats": [],
+      "id": "hit",
+      "sections": [
+        {
+          "batched": false,
+          "heads": [
+            "Workers"
+          ],
+          "id": "sync",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": "sync",
+          "notes": [],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "44.40",
+                  "median": 44.399
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "23.64",
+                  "median": 23.641
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "12.39",
+                  "median": 12.39
+                },
+                {
+                  "above_ranked": true,
+                  "best": false,
+                  "display": "166.44",
+                  "median": 166.436
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "23.77",
+                  "median": 23.766
+                }
+              ],
+              "head": [
+                "1"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "108.22",
+                  "median": 108.222
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "37.55",
+                  "median": 37.55
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "6.42",
+                  "median": 6.425
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "94.76",
+                  "median": 94.759
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "4.27",
+                  "median": 4.267
+                }
+              ],
+              "head": [
+                "8"
+              ]
+            }
+          ],
+          "title": "sync"
+        },
+        {
+          "batched": false,
+          "heads": [
+            "Workers"
+          ],
+          "id": "async",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": "async",
+          "notes": [],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "224.77",
+                  "median": 224.77
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "47.58",
+                  "median": 47.577
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "28.12",
+                  "median": 28.125
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "104.90",
+                  "median": 104.899
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "4.76",
+                  "median": 4.765
+                }
+              ],
+              "head": [
+                "64"
+              ]
+            }
+          ],
+          "title": "async"
+        },
+        {
+          "batched": false,
+          "heads": [
+            "Mode",
+            "Workers"
+          ],
+          "id": "detail",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": null,
+          "notes": [
+            "Hit ratio over the run, then the highest entry count the sampler saw against the capacity."
+          ],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "0.953 / 9531"
+                },
+                {
+                  "best": false,
+                  "display": "0.955 / 9549"
+                },
+                {
+                  "best": false,
+                  "display": "1.000 / 10000"
+                },
+                {
+                  "best": false,
+                  "display": "0.963 / 9635"
+                },
+                {
+                  "best": false,
+                  "display": "1.000 / 10000"
+                }
+              ],
+              "head": [
+                "sync",
+                "1"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "0.956 / 9565"
+                },
+                {
+                  "best": false,
+                  "display": "0.956 / 9559"
+                },
+                {
+                  "best": false,
+                  "display": "1.000 / 10000"
+                },
+                {
+                  "best": false,
+                  "display": "0.963 / 9631"
+                },
+                {
+                  "best": false,
+                  "display": "1.000 / 10000"
+                }
+              ],
+              "head": [
+                "sync",
+                "8"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "0.954 / 9539"
+                },
+                {
+                  "best": false,
+                  "display": "0.949 / 9494"
+                },
+                {
+                  "best": false,
+                  "display": "1.000 / 10000"
+                },
+                {
+                  "best": false,
+                  "display": "0.975 / 9748"
+                },
+                {
+                  "best": false,
+                  "display": "1.000 / 10000"
+                }
+              ],
+              "head": [
+                "async",
+                "64"
+              ]
+            }
+          ],
+          "title": "Hit ratio and peak entries"
+        }
+      ],
+      "title": "HIT"
+    },
+    {
+      "blurb": "every worker reads the same resident key",
+      "caveats": [],
+      "id": "hot",
+      "sections": [
+        {
+          "batched": false,
+          "heads": [
+            "Workers"
+          ],
+          "id": "sync",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": "sync",
+          "notes": [],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "11.01",
+                  "median": 11.006
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "5.06",
+                  "median": 5.064
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "5.25",
+                  "median": 5.245
+                },
+                {
+                  "above_ranked": true,
+                  "best": false,
+                  "display": "14.34",
+                  "median": 14.344
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "5.05",
+                  "median": 5.05
+                }
+              ],
+              "head": [
+                "8"
+              ]
+            }
+          ],
+          "title": "sync"
+        },
+        {
+          "batched": false,
+          "heads": [
+            "Workers"
+          ],
+          "id": "async",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": "async",
+          "notes": [],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "10.53",
+                  "median": 10.53
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "5.48",
+                  "median": 5.477
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "5.08",
+                  "median": 5.076
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "8.14",
+                  "median": 8.143
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "4.83",
+                  "median": 4.834
+                }
+              ],
+              "head": [
+                "8"
+              ]
+            }
+          ],
+          "title": "async"
+        },
+        {
+          "batched": false,
+          "heads": [
+            "Mode",
+            "Workers"
+          ],
+          "id": "detail",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": null,
+          "notes": [
+            "The highest entry count the sampler saw during the run, against the capacity."
+          ],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "9520"
+                },
+                {
+                  "best": false,
+                  "display": "9499"
+                },
+                {
+                  "best": false,
+                  "display": "10000"
+                },
+                {
+                  "best": false,
+                  "display": "9719"
+                },
+                {
+                  "best": false,
+                  "display": "10000"
+                }
+              ],
+              "head": [
+                "sync",
+                "8"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "9593"
+                },
+                {
+                  "best": false,
+                  "display": "9521"
+                },
+                {
+                  "best": false,
+                  "display": "10000"
+                },
+                {
+                  "best": false,
+                  "display": "9711"
+                },
+                {
+                  "best": false,
+                  "display": "10000"
+                }
+              ],
+              "head": [
+                "async",
+                "8"
+              ]
+            }
+          ],
+          "title": "Peak entries"
+        }
+      ],
+      "title": "HOT"
+    },
+    {
+      "blurb": "every operation inserts a key not yet seen, into a full cache",
+      "caveats": [],
+      "id": "insert",
+      "sections": [
+        {
+          "batched": false,
+          "heads": [
+            "Workers"
+          ],
+          "id": "sync",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": "sync",
+          "notes": [],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "13.92",
+                  "median": 13.921
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "8.06",
+                  "median": 8.065
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "2.80",
+                  "median": 2.796
+                },
+                {
+                  "above_ranked": true,
+                  "best": false,
+                  "display": "42.50",
+                  "median": 42.502
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "8.26",
+                  "median": 8.257
+                }
+              ],
+              "head": [
+                "1"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "34.17",
+                  "median": 34.166
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "21.54",
+                  "median": 21.541
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "0.29",
+                  "median": 0.286
+                },
+                {
+                  "above_ranked": true,
+                  "best": false,
+                  "display": "52.28",
+                  "median": 52.278
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "4.37",
+                  "median": 4.373
+                }
+              ],
+              "head": [
+                "64"
+              ]
+            }
+          ],
+          "title": "sync"
+        },
+        {
+          "batched": false,
+          "heads": [
+            "Workers"
+          ],
+          "id": "async",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": "async",
+          "notes": [],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "38.09",
+                  "median": 38.095
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "22.48",
+                  "median": 22.475
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "1.34",
+                  "median": 1.341
+                },
+                {
+                  "above_ranked": true,
+                  "best": false,
+                  "display": "50.20",
+                  "median": 50.205
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "2.89",
+                  "median": 2.894
+                }
+              ],
+              "head": [
+                "64"
+              ]
+            }
+          ],
+          "title": "async"
+        },
+        {
+          "batched": false,
+          "heads": [
+            "Mode",
+            "Workers"
+          ],
+          "id": "detail",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": null,
+          "notes": [
+            "The highest entry count the sampler saw during the run, against the capacity."
+          ],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "9984"
+                },
+                {
+                  "best": false,
+                  "display": "9984"
+                },
+                {
+                  "best": false,
+                  "display": "10000"
+                },
+                {
+                  "best": false,
+                  "display": "10048"
+                },
+                {
+                  "best": false,
+                  "display": "10002"
+                }
+              ],
+              "head": [
+                "sync",
+                "1"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "9984"
+                },
+                {
+                  "best": false,
+                  "display": "9984"
+                },
+                {
+                  "best": false,
+                  "display": "10000"
+                },
+                {
+                  "best": false,
+                  "display": "10048"
+                },
+                {
+                  "best": false,
+                  "display": "10002"
+                }
+              ],
+              "head": [
+                "sync",
+                "64"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "9984"
+                },
+                {
+                  "best": false,
+                  "display": "9984"
+                },
+                {
+                  "best": false,
+                  "display": "10000"
+                },
+                {
+                  "best": false,
+                  "display": "10048"
+                },
+                {
+                  "best": false,
+                  "display": "10002"
+                }
+              ],
+              "head": [
+                "async",
+                "64"
+              ]
+            }
+          ],
+          "title": "Peak entries"
+        }
+      ],
+      "title": "INSERT"
+    },
+    {
+      "blurb": "Zipf-distributed reads over ten times the capacity, inserting on a miss",
+      "caveats": [
+        "The mixed 64 row is from a rerun on 2026-10-31 at load average 6.87, after the full run gave fibre_cache.s3fifo 16.66 and fibre_cache.tinylfu 11.35 and neither repeated."
+      ],
+      "id": "zipf",
+      "sections": [
+        {
+          "batched": false,
+          "heads": [
+            "Workers"
+          ],
+          "id": "sync",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": "sync",
+          "notes": [],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "30.15",
+                  "median": 30.147
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "23.57",
+                  "median": 23.574
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "5.57",
+                  "median": 5.569
+                },
+                {
+                  "above_ranked": true,
+                  "best": false,
+                  "display": "42.44",
+                  "median": 42.439
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "3.66",
+                  "median": 3.661
+                }
+              ],
+              "head": [
+                "8"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "31.34",
+                  "median": 31.34
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "23.91",
+                  "median": 23.912
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "1.11",
+                  "median": 1.111
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "21.02",
+                  "median": 21.025
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "3.59",
+                  "median": 3.591
+                }
+              ],
+              "head": [
+                "64"
+              ]
+            }
+          ],
+          "title": "sync"
+        },
+        {
+          "batched": false,
+          "heads": [
+            "Workers"
+          ],
+          "id": "async",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": "async",
+          "notes": [],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "30.72",
+                  "median": 30.722
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "20.88",
+                  "median": 20.878
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "5.39",
+                  "median": 5.388
+                },
+                {
+                  "above_ranked": true,
+                  "best": false,
+                  "display": "47.01",
+                  "median": 47.014
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "3.86",
+                  "median": 3.865
+                }
+              ],
+              "head": [
+                "8"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "31.28",
+                  "median": 31.281
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "25.87",
+                  "median": 25.869
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "4.01",
+                  "median": 4.01
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "24.85",
+                  "median": 24.848
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "3.75",
+                  "median": 3.752
+                }
+              ],
+              "head": [
+                "64"
+              ]
+            }
+          ],
+          "title": "async"
+        },
+        {
+          "batched": false,
+          "heads": [
+            "Workers"
+          ],
+          "id": "mixed",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "quick_cache"
+          ],
+          "mode": "mixed",
+          "notes": [],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "above_ranked": false,
+                  "best": true,
+                  "display": "26.20",
+                  "median": 26.203
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "19.39",
+                  "median": 19.39
+                },
+                {
+                  "above_ranked": false,
+                  "best": false,
+                  "display": "21.30",
+                  "median": 21.304
+                }
+              ],
+              "head": [
+                "64"
+              ]
+            }
+          ],
+          "title": "mixed"
+        },
+        {
+          "batched": false,
+          "heads": [
+            "Mode",
+            "Workers"
+          ],
+          "id": "detail",
+          "libraries": [
+            "fibre_cache.s3fifo",
+            "fibre_cache.tinylfu",
+            "moka",
+            "quick_cache",
+            "stretto"
+          ],
+          "mode": null,
+          "notes": [
+            "Hit ratio over the run, then the highest entry count the sampler saw against the capacity."
+          ],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "0.777 / 9984"
+                },
+                {
+                  "best": false,
+                  "display": "0.774 / 9984"
+                },
+                {
+                  "best": false,
+                  "display": "0.788 / 10000"
+                },
+                {
+                  "best": false,
+                  "display": "0.785 / 10048"
+                },
+                {
+                  "best": false,
+                  "display": "0.652 / 10002"
+                }
+              ],
+              "head": [
+                "sync",
+                "8"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "0.778 / 9984"
+                },
+                {
+                  "best": false,
+                  "display": "0.774 / 9984"
+                },
+                {
+                  "best": false,
+                  "display": "0.785 / 10000"
+                },
+                {
+                  "best": false,
+                  "display": "0.785 / 10048"
+                },
+                {
+                  "best": false,
+                  "display": "0.615 / 10003"
+                }
+              ],
+              "head": [
+                "sync",
+                "64"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "0.777 / 9984"
+                },
+                {
+                  "best": false,
+                  "display": "0.774 / 9984"
+                },
+                {
+                  "best": false,
+                  "display": "0.787 / 10000"
+                },
+                {
+                  "best": false,
+                  "display": "0.785 / 10048"
+                },
+                {
+                  "best": false,
+                  "display": "0.668 / 10002"
+                }
+              ],
+              "head": [
+                "async",
+                "8"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "0.777 / 9984"
+                },
+                {
+                  "best": false,
+                  "display": "0.774 / 9984"
+                },
+                {
+                  "best": false,
+                  "display": "0.788 / 10000"
+                },
+                {
+                  "best": false,
+                  "display": "0.785 / 10048"
+                },
+                {
+                  "best": false,
+                  "display": "0.650 / 10002"
+                }
+              ],
+              "head": [
+                "async",
+                "64"
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "best": false,
+                  "display": "0.777 / 9984"
+                },
+                {
+                  "best": false,
+                  "display": "0.774 / 9984"
+                },
+                null,
+                {
+                  "best": false,
+                  "display": "0.785 / 10048"
+                },
+                null
+              ],
+              "head": [
+                "mixed",
+                "64"
+              ]
+            }
+          ],
+          "title": "Hit ratio and peak entries"
+        }
+      ],
+      "title": "ZIPF"
+    }
+  ],
+  "id": "cache",
+  "libraries": [
+    {
+      "crate": "fibre_cache",
+      "name": "fibre_cache.s3fifo",
+      "version": "0.4.13"
+    },
+    {
+      "crate": "fibre_cache",
+      "name": "fibre_cache.tinylfu",
+      "version": "0.4.13"
+    },
+    {
+      "crate": "moka",
+      "name": "moka",
+      "version": "0.12.16"
+    },
+    {
+      "crate": "quick_cache",
+      "name": "quick_cache",
+      "version": "0.6.24"
+    },
+    {
+      "crate": "stretto",
+      "name": "stretto",
+      "version": "0.8.4"
+    }
   ],
   "method": [
     "Each cell runs every engine in turn for a fixed number of seconds and reports how many operations its workers completed. Workers stay alive for the whole run, keys are shuffled and dealt round-robin and each worker checks the stop flag every 256 operations. Sync workers are OS threads; async workers are tasks on a multi-thread tokio runtime with one worker thread per task; mixed puts half the workers on each side of the same instance.",
@@ -26,69 +1809,22 @@
     "A sampler thread reads the entry count every millisecond; the peak it saw is reported against the capacity, which is how an implementation's capacity bound is checked under load.",
     "Timing starts once every worker has reached a barrier. The power mode and load average are recorded at the start and the end of the run."
   ],
-  "records": [
-    { "engine": "fibre_cache.s3fifo", "op": "zipf", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 301619456, "hits": 234460866, "hit_ratio": 0.7773, "mops": 30.147, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "fibre_cache.tinylfu", "op": "zipf", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 235742464, "hits": 182459816, "hit_ratio": 0.7740, "mops": 23.574, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "moka", "op": "zipf", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 55722240, "hits": 43897680, "hit_ratio": 0.7878, "mops": 5.569, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "quick_cache", "op": "zipf", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 424424192, "hits": 333286964, "hit_ratio": 0.7853, "mops": 42.439, "peak_len": 10048, "end_len": 10048, "settled_len": 10048 },
-    { "engine": "stretto", "op": "zipf", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 36619776, "hits": 23884643, "hit_ratio": 0.6522, "mops": 3.661, "peak_len": 10002, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "zipf", "mode": "sync", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 313513728, "hits": 243764109, "hit_ratio": 0.7775, "mops": 31.340, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "fibre_cache.tinylfu", "op": "zipf", "mode": "sync", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 239227392, "hits": 185186900, "hit_ratio": 0.7741, "mops": 23.912, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "moka", "op": "zipf", "mode": "sync", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 11142144, "hits": 8750160, "hit_ratio": 0.7853, "mops": 1.111, "peak_len": 10000, "end_len": 9998, "settled_len": 9998 },
-    { "engine": "quick_cache", "op": "zipf", "mode": "sync", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 210365440, "hits": 165234632, "hit_ratio": 0.7855, "mops": 21.025, "peak_len": 10048, "end_len": 10045, "settled_len": 10045 },
-    { "engine": "stretto", "op": "zipf", "mode": "sync", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 35932416, "hits": 22082864, "hit_ratio": 0.6146, "mops": 3.591, "peak_len": 10003, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "zipf", "mode": "async", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 307239936, "hits": 238867450, "hit_ratio": 0.7775, "mops": 30.722, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "fibre_cache.tinylfu", "op": "zipf", "mode": "async", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 208789248, "hits": 161607900, "hit_ratio": 0.7740, "mops": 20.878, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "moka", "op": "zipf", "mode": "async", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 53905920, "hits": 42446179, "hit_ratio": 0.7874, "mops": 5.388, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "quick_cache", "op": "zipf", "mode": "async", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 470213888, "hits": 369256372, "hit_ratio": 0.7853, "mops": 47.014, "peak_len": 10048, "end_len": 10048, "settled_len": 10048 },
-    { "engine": "stretto", "op": "zipf", "mode": "async", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 38669056, "hits": 25842187, "hit_ratio": 0.6683, "mops": 3.865, "peak_len": 10002, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "zipf", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 312997120, "hits": 243344206, "hit_ratio": 0.7775, "mops": 31.281, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "fibre_cache.tinylfu", "op": "zipf", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 258830336, "hits": 200354572, "hit_ratio": 0.7741, "mops": 25.869, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "moka", "op": "zipf", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 40109824, "hits": 31603323, "hit_ratio": 0.7879, "mops": 4.010, "peak_len": 10000, "end_len": 9999, "settled_len": 9999 },
-    { "engine": "quick_cache", "op": "zipf", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 248611072, "hits": 195260154, "hit_ratio": 0.7854, "mops": 24.848, "peak_len": 10048, "end_len": 10047, "settled_len": 10047 },
-    { "engine": "stretto", "op": "zipf", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 37534208, "hits": 24411149, "hit_ratio": 0.6504, "mops": 3.752, "peak_len": 10002, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "zipf", "mode": "mixed", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 262149888, "hits": 203783714, "hit_ratio": 0.7774, "mops": 26.203, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "fibre_cache.tinylfu", "op": "zipf", "mode": "mixed", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 193973504, "hits": 150175962, "hit_ratio": 0.7742, "mops": 19.390, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "quick_cache", "op": "zipf", "mode": "mixed", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 213085440, "hits": 167355490, "hit_ratio": 0.7854, "mops": 21.304, "peak_len": 10048, "end_len": 10048, "settled_len": 10048 },
-    { "engine": "fibre_cache.s3fifo", "op": "insert", "mode": "sync", "workers": 1, "capacity": 10000, "secs": 10.0, "total": 139242816, "hits": 0, "hit_ratio": 0.0000, "mops": 13.921, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "fibre_cache.tinylfu", "op": "insert", "mode": "sync", "workers": 1, "capacity": 10000, "secs": 10.0, "total": 80677168, "hits": 0, "hit_ratio": 0.0000, "mops": 8.065, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "moka", "op": "insert", "mode": "sync", "workers": 1, "capacity": 10000, "secs": 10.0, "total": 27968960, "hits": 0, "hit_ratio": 0.0000, "mops": 2.796, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "quick_cache", "op": "insert", "mode": "sync", "workers": 1, "capacity": 10000, "secs": 10.0, "total": 425136656, "hits": 0, "hit_ratio": 0.0000, "mops": 42.502, "peak_len": 10048, "end_len": 10048, "settled_len": 10048 },
-    { "engine": "stretto", "op": "insert", "mode": "sync", "workers": 1, "capacity": 10000, "secs": 10.0, "total": 82593072, "hits": 0, "hit_ratio": 0.0000, "mops": 8.257, "peak_len": 10002, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "insert", "mode": "sync", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 341831004, "hits": 0, "hit_ratio": 0.0000, "mops": 34.166, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "fibre_cache.tinylfu", "op": "insert", "mode": "sync", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 215524479, "hits": 0, "hit_ratio": 0.0000, "mops": 21.541, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "moka", "op": "insert", "mode": "sync", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 2882301, "hits": 0, "hit_ratio": 0.0000, "mops": 0.286, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "quick_cache", "op": "insert", "mode": "sync", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 523064868, "hits": 0, "hit_ratio": 0.0000, "mops": 52.278, "peak_len": 10048, "end_len": 10048, "settled_len": 10048 },
-    { "engine": "stretto", "op": "insert", "mode": "sync", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 43761071, "hits": 0, "hit_ratio": 0.0000, "mops": 4.373, "peak_len": 10002, "end_len": 9999, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "insert", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 381021016, "hits": 0, "hit_ratio": 0.0000, "mops": 38.095, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "fibre_cache.tinylfu", "op": "insert", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 224853875, "hits": 0, "hit_ratio": 0.0000, "mops": 22.475, "peak_len": 9984, "end_len": 9984, "settled_len": 9984 },
-    { "engine": "moka", "op": "insert", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 13419300, "hits": 0, "hit_ratio": 0.0000, "mops": 1.341, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "quick_cache", "op": "insert", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 502113680, "hits": 0, "hit_ratio": 0.0000, "mops": 50.205, "peak_len": 10048, "end_len": 10043, "settled_len": 10043 },
-    { "engine": "stretto", "op": "insert", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 28958227, "hits": 0, "hit_ratio": 0.0000, "mops": 2.894, "peak_len": 10002, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "hit", "mode": "sync", "workers": 1, "capacity": 10000, "secs": 10.0, "total": 444104864, "hits": 423276329, "hit_ratio": 0.9531, "mops": 44.399, "peak_len": 9531, "end_len": 9531, "settled_len": 9531 },
-    { "engine": "fibre_cache.tinylfu", "op": "hit", "mode": "sync", "workers": 1, "capacity": 10000, "secs": 10.0, "total": 236534096, "hits": 225866397, "hit_ratio": 0.9549, "mops": 23.641, "peak_len": 9549, "end_len": 9549, "settled_len": 9549 },
-    { "engine": "moka", "op": "hit", "mode": "sync", "workers": 1, "capacity": 10000, "secs": 10.0, "total": 123960256, "hits": 123960256, "hit_ratio": 1.0000, "mops": 12.390, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "quick_cache", "op": "hit", "mode": "sync", "workers": 1, "capacity": 10000, "secs": 10.0, "total": 1665068704, "hits": 1604293691, "hit_ratio": 0.9635, "mops": 166.436, "peak_len": 9635, "end_len": 9635, "settled_len": 9635 },
-    { "engine": "stretto", "op": "hit", "mode": "sync", "workers": 1, "capacity": 10000, "secs": 10.0, "total": 237757168, "hits": 237757168, "hit_ratio": 1.0000, "mops": 23.766, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "hit", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 1082472334, "hits": 1035212827, "hit_ratio": 0.9563, "mops": 108.222, "peak_len": 9565, "end_len": 9565, "settled_len": 9565 },
-    { "engine": "fibre_cache.tinylfu", "op": "hit", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 375565602, "hits": 359000543, "hit_ratio": 0.9559, "mops": 37.550, "peak_len": 9559, "end_len": 9559, "settled_len": 9559 },
-    { "engine": "moka", "op": "hit", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 64280602, "hits": 64280602, "hit_ratio": 1.0000, "mops": 6.425, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "quick_cache", "op": "hit", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 947818358, "hits": 912831019, "hit_ratio": 0.9631, "mops": 94.759, "peak_len": 9631, "end_len": 9631, "settled_len": 9631 },
-    { "engine": "stretto", "op": "hit", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 42678840, "hits": 42678840, "hit_ratio": 1.0000, "mops": 4.267, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "hit", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 2248858389, "hits": 2144546544, "hit_ratio": 0.9536, "mops": 224.770, "peak_len": 9539, "end_len": 9539, "settled_len": 9539 },
-    { "engine": "fibre_cache.tinylfu", "op": "hit", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 476007925, "hits": 451863680, "hit_ratio": 0.9493, "mops": 47.577, "peak_len": 9494, "end_len": 9494, "settled_len": 9494 },
-    { "engine": "moka", "op": "hit", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 281388762, "hits": 281388762, "hit_ratio": 1.0000, "mops": 28.125, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "quick_cache", "op": "hit", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 1049263710, "hits": 1022897058, "hit_ratio": 0.9749, "mops": 104.899, "peak_len": 9748, "end_len": 9748, "settled_len": 9748 },
-    { "engine": "stretto", "op": "hit", "mode": "async", "workers": 64, "capacity": 10000, "secs": 10.0, "total": 47667993, "hits": 47667993, "hit_ratio": 1.0000, "mops": 4.765, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "hot", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 110121472, "hits": 110121472, "hit_ratio": 1.0000, "mops": 11.006, "peak_len": 9520, "end_len": 9520, "settled_len": 9520 },
-    { "engine": "fibre_cache.tinylfu", "op": "hot", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 50659584, "hits": 50659584, "hit_ratio": 1.0000, "mops": 5.064, "peak_len": 9499, "end_len": 9499, "settled_len": 9499 },
-    { "engine": "moka", "op": "hot", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 52476672, "hits": 52476672, "hit_ratio": 1.0000, "mops": 5.245, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "quick_cache", "op": "hot", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 143514880, "hits": 143514880, "hit_ratio": 1.0000, "mops": 14.344, "peak_len": 9719, "end_len": 9719, "settled_len": 9719 },
-    { "engine": "stretto", "op": "hot", "mode": "sync", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 50525952, "hits": 50525952, "hit_ratio": 1.0000, "mops": 5.050, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "fibre_cache.s3fifo", "op": "hot", "mode": "async", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 105357824, "hits": 105357824, "hit_ratio": 1.0000, "mops": 10.530, "peak_len": 9593, "end_len": 9593, "settled_len": 9593 },
-    { "engine": "fibre_cache.tinylfu", "op": "hot", "mode": "async", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 54772992, "hits": 54772992, "hit_ratio": 1.0000, "mops": 5.477, "peak_len": 9521, "end_len": 9521, "settled_len": 9521 },
-    { "engine": "moka", "op": "hot", "mode": "async", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 50789376, "hits": 50789376, "hit_ratio": 1.0000, "mops": 5.076, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 },
-    { "engine": "quick_cache", "op": "hot", "mode": "async", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 81473792, "hits": 81473792, "hit_ratio": 1.0000, "mops": 8.143, "peak_len": 9711, "end_len": 9711, "settled_len": 9711 },
-    { "engine": "stretto", "op": "hot", "mode": "async", "workers": 8, "capacity": 10000, "secs": 10.0, "total": 48361472, "hits": 48361472, "hit_ratio": 1.0000, "mops": 4.834, "peak_len": 10000, "end_len": 10000, "settled_len": 10000 }
-  ]
+  "noun": "cache",
+  "peers": "other Rust caches",
+  "reading": "The best result in each row is highlighted, leaving out quick_cache, which is a yardstick and is not ranked. Italics mean quick_cache is above the best ranked engine. A dash means the engine has no API for that mode.",
+  "run": {
+    "capacity": 10000,
+    "load_at_end": 20.08,
+    "load_at_start": 6.18,
+    "machine": "MacBook M4 Pro (14 cores)",
+    "measured_at": "2026-10-31T04:12:05Z",
+    "power_mode": "high power",
+    "secs": 10.0
+  },
+  "summary": "fibre_cache against moka, quick_cache and stretto through one fixed-duration workload harness.",
+  "title": "Arena",
+  "unit": {
+    "description": "Operations completed per second across all workers over a 10 s run at capacity 10000.",
+    "label": "Mops/s"
+  }
 }

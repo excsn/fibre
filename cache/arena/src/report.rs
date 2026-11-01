@@ -4,6 +4,7 @@
 use crate::engines::DOCS;
 use crate::harness::{Cell, Mode, Op, Report, zipf_ceiling};
 
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -43,6 +44,22 @@ const METHOD: [&str; 4] = [
   "A sampler thread reads the entry count every millisecond; the peak it saw is reported against the capacity, which is how an implementation's capacity bound is checked under load.",
   "Timing starts once every worker has reached a barrier. The power mode and load average are recorded at the start and the end of the run.",
 ];
+
+const READING: &str = "The best result in each row is highlighted, leaving out quick_cache, which is a yardstick and is not ranked. Italics mean quick_cache is above the best ranked engine. A dash means the engine has no API for that mode.";
+
+const CAVEATS: [&str; 2] = [
+  "Each cell is one fixed-duration run, so these figures carry no spread between samples.",
+  "quick_cache is an unranked yardstick: it has no expiry or cache-level loader and its async cells call a sync `get` on a blocking lock.",
+];
+
+fn op_caveats(op: Op) -> Vec<&'static str> {
+  match op {
+    Op::Zipf => vec![
+      "The mixed 64 row is from a rerun on 2026-10-31 at load average 6.87, after the full run gave fibre_cache.s3fifo 16.66 and fibre_cache.tinylfu 11.35 and neither repeated.",
+    ],
+    _ => Vec::new(),
+  }
+}
 
 fn op_name(op: Op) -> &'static str {
   match op {
@@ -151,6 +168,21 @@ impl Pages {
     self.records.first().map(|r| r.secs)
   }
 
+  fn has_hit_ratio(&self, op: Op) -> bool {
+    self.records.iter().any(|r| r.cell.op == op && r.report.hits > 0 && r.report.hits < r.report.total)
+  }
+
+  /// The best Mops/s among ranked engines in a row and how many of them ran it.
+  fn best_ranked(&self, op: Op, mode: Mode, workers: usize) -> (f64, usize) {
+    let ranked: Vec<f64> = self
+      .engines_for(op)
+      .iter()
+      .filter(|e| e.as_str() != YARDSTICK)
+      .filter_map(|e| self.record(e, op, mode, workers).map(|r| r.report.mops()))
+      .collect();
+    (ranked.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b)), ranked.len())
+  }
+
   /// Mops/s table with the best engine per row in bold, leaving out the yardstick.
   /// The yardstick is in italics where it is above that best.
   fn throughput_table(&self, op: Op) -> String {
@@ -170,14 +202,7 @@ impl Pages {
         .iter()
         .map(|e| self.record(e, op, mode, workers).map(|r| r.report.mops()))
         .collect();
-      let ranked: Vec<f64> = engines
-        .iter()
-        .zip(&values)
-        .filter(|(e, _)| e.as_str() != YARDSTICK)
-        .filter_map(|(_, v)| *v)
-        .collect();
-      let present = ranked.len();
-      let best = ranked.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b));
+      let (best, present) = self.best_ranked(op, mode, workers);
       let _ = write!(out, "| {} | {} |", mode_name(mode), workers);
       for (e, v) in engines.iter().zip(values) {
         match v {
@@ -203,7 +228,7 @@ impl Pages {
   /// Hit ratio and peak entry count per cell, the fidelity side of each number.
   fn detail_table(&self, op: Op) -> String {
     let engines = self.engines_for(op);
-    let with_ratio = self.records.iter().any(|r| r.cell.op == op && r.report.hits > 0 && r.report.hits < r.report.total);
+    let with_ratio = self.has_hit_ratio(op);
     let mut out = String::new();
     let _ = write!(out, "| Mode | Workers |");
     for e in &engines {
@@ -238,7 +263,7 @@ impl Pages {
     if self.engines_for(op).is_empty() {
       return None;
     }
-    let with_ratio = self.records.iter().any(|r| r.cell.op == op && r.report.hits > 0 && r.report.hits < r.report.total);
+    let with_ratio = self.has_hit_ratio(op);
     let mut out = String::new();
     let _ = writeln!(out, "# Cache Arena: {}", op_name(op).to_uppercase());
     let _ = writeln!(out, "**Test Machine:** {}", self.machine);
@@ -366,77 +391,190 @@ impl Pages {
     out
   }
 
-  fn json(&self) -> String {
-    fn esc(s: &str) -> String {
-      s.replace('\\', "\\\\").replace('"', "\\\"")
-    }
-    fn opt_str(v: &Option<String>) -> String {
-      v.as_ref().map_or("null".to_owned(), |s| format!("\"{}\"", esc(s)))
-    }
-    fn opt_f64(v: Option<f64>) -> String {
-      v.map_or("null".to_owned(), |f| format!("{:.2}", f))
-    }
-    let mut out = String::new();
-    let _ = writeln!(out, "{{");
-    let _ = writeln!(out, "  \"format\": 1,");
-    let _ = writeln!(out, "  \"id\": \"cache\",");
-    let _ = writeln!(out, "  \"title\": \"Cache Arena\",");
-    let _ = writeln!(out, "  \"summary\": \"{}\",", esc(SUMMARY));
-    let _ = writeln!(
-      out,
-      "  \"unit\": {{ \"label\": \"Mops/s\", \"description\": \"Operations completed per second across all workers over a fixed-duration run.\" }},"
-    );
-    let _ = writeln!(out, "  \"run\": {{");
-    let _ = writeln!(out, "    \"machine\": \"{}\",", esc(&self.machine));
-    let _ = writeln!(out, "    \"measured_at\": {},", opt_str(&self.run.measured_at));
-    let _ = writeln!(out, "    \"power_mode\": {},", opt_str(&self.run.power_mode));
-    let _ = writeln!(out, "    \"load_at_start\": {},", opt_f64(self.run.load_at_start));
-    let _ = writeln!(out, "    \"load_at_end\": {},", opt_f64(self.run.load_at_end));
-    let _ = writeln!(out, "    \"capacity\": {},", self.capacity().map_or("null".to_owned(), |c| c.to_string()));
-    let _ = writeln!(out, "    \"secs\": {}", opt_f64(self.secs()));
-    let _ = writeln!(out, "  }},");
-    let _ = writeln!(out, "  \"engines\": [");
-    let engines = self.engines();
-    for (i, e) in engines.iter().enumerate() {
-      let version = self.run.versions.get(e).map_or("null".to_owned(), |v| format!("\"{}\"", esc(v)));
-      let _ = writeln!(
-        out,
-        "    {{ \"name\": \"{}\", \"version\": {} }}{}",
-        esc(e),
-        version,
-        if i + 1 < engines.len() { "," } else { "" }
-      );
-    }
-    let _ = writeln!(out, "  ],");
-    let _ = writeln!(out, "  \"method\": [");
-    for (i, m) in METHOD.iter().enumerate() {
-      let _ = writeln!(out, "    \"{}\"{}", esc(m), if i + 1 < METHOD.len() { "," } else { "" });
-    }
-    let _ = writeln!(out, "  ],");
-    let _ = writeln!(out, "  \"records\": [");
-    for (i, r) in self.records.iter().enumerate() {
-      let _ = writeln!(
-        out,
-        "    {{ \"engine\": \"{}\", \"op\": \"{}\", \"mode\": \"{}\", \"workers\": {}, \"capacity\": {}, \"secs\": {:.1}, \"total\": {}, \"hits\": {}, \"hit_ratio\": {:.4}, \"mops\": {:.3}, \"peak_len\": {}, \"end_len\": {}, \"settled_len\": {} }}{}",
-        esc(&r.engine),
-        op_name(r.cell.op),
-        mode_name(r.cell.mode),
-        r.cell.workers,
-        r.capacity,
-        r.secs,
-        r.report.total,
-        r.report.hits,
-        r.report.hit_ratio(),
-        r.report.mops(),
-        r.report.peak_len,
-        r.report.end_len,
-        r.report.settled_len,
-        if i + 1 < self.records.len() { "," } else { "" }
-      );
-    }
-    let _ = writeln!(out, "  ]");
-    let _ = writeln!(out, "}}");
+  /// The whole report as data, in the shape `channels/arena` writes: the tables
+  /// the op pages show, plus every record for the explorer.
+  pub fn json(&self) -> String {
+    let groups: Vec<Value> = OPS
+      .into_iter()
+      .filter(|op| !self.engines_for(*op).is_empty())
+      .map(|op| {
+        json!({
+          "id": op_name(op),
+          "title": op_name(op).to_uppercase(),
+          "blurb": op_blurb(op),
+          "caveats": op_caveats(op),
+          "sections": self.sections(op),
+        })
+      })
+      .collect();
+
+    let libraries: Vec<Value> = self
+      .engines()
+      .iter()
+      .map(|name| {
+        json!({
+          "name": name,
+          "crate": name.split('.').next().unwrap_or(name),
+          "version": self.run.versions.get(name),
+        })
+      })
+      .collect();
+
+    let records: Vec<Value> = self
+      .records
+      .iter()
+      .map(|r| {
+        let mut record = json!({
+          "library": r.engine,
+          "d": [op_name(r.cell.op), mode_name(r.cell.mode), r.cell.workers.to_string()],
+          "median": round3(r.report.mops()),
+        });
+        if self.has_hit_ratio(r.cell.op) {
+          record["note"] = json!(format!("{:.3} hit ratio", r.report.hit_ratio()));
+        }
+        record
+      })
+      .collect();
+
+    let ops: Vec<&str> = OPS.into_iter().filter(|op| self.records.iter().any(|r| r.cell.op == *op)).map(op_name).collect();
+    let modes: Vec<&str> = MODES.into_iter().filter(|m| self.records.iter().any(|r| r.cell.mode == *m)).map(mode_name).collect();
+    let mut workers: Vec<usize> = self.records.iter().map(|r| r.cell.workers).collect();
+    workers.sort_unstable();
+    workers.dedup();
+    let worker_labels: serde_json::Map<String, Value> = workers
+      .iter()
+      .map(|w| (w.to_string(), json!(if *w == 1 { "1 worker".to_owned() } else { format!("{w} workers") })))
+      .collect();
+
+    let secs = self.secs().map_or("?".to_owned(), |s| format!("{s:.0}"));
+    let capacity = self.capacity().map_or("?".to_owned(), |c| c.to_string());
+
+    let report = json!({
+      "format": 1,
+      "id": "cache",
+      "title": "Arena",
+      "summary": SUMMARY,
+      "noun": "cache",
+      "peers": "other Rust caches",
+      "reading": READING,
+      "unit": { "label": "Mops/s", "description": format!("Operations completed per second across all workers over a {secs} s run at capacity {capacity}.") },
+      "run": {
+        "machine": self.machine,
+        "measured_at": self.run.measured_at,
+        "power_mode": self.run.power_mode,
+        "load_at_start": self.run.load_at_start,
+        "load_at_end": self.run.load_at_end,
+        "capacity": self.capacity(),
+        "secs": self.secs(),
+      },
+      "libraries": libraries,
+      "method": METHOD,
+      "caveats": CAVEATS,
+      "groups": groups,
+      "explore": {
+        "intro": format!("Choose a workload and compare the engines at each worker count. Bars show Mops/s from one {secs} s run per cell, with the hit ratio beside it where the workload can miss."),
+        "axes": "workloads, modes and worker counts",
+        "rows": "workers",
+        "defaults": { "op": "zipf", "mode": "sync" },
+        "dimensions": [
+          { "id": "op", "label": "Workload", "values": ops },
+          { "id": "mode", "label": "Mode", "values": modes },
+          { "id": "workers", "label": "Workers", "values": workers.iter().map(usize::to_string).collect::<Vec<_>>(), "labels": worker_labels },
+        ],
+        "records": records,
+      },
+    });
+    let mut out = serde_json::to_string_pretty(&report).expect("report serializes");
+    out.push('\n');
     out
+  }
+
+  /// One throughput table per mode, then the detail table, as the op pages have them.
+  fn sections(&self, op: Op) -> Vec<Value> {
+    let mut sections: Vec<Value> = MODES
+      .into_iter()
+      .filter_map(|mode| {
+        let rows: Vec<(Mode, usize)> = self.rows(op).into_iter().filter(|(m, _)| *m == mode).collect();
+        if rows.is_empty() {
+          return None;
+        }
+        let engines: Vec<String> = self
+          .engines_for(op)
+          .into_iter()
+          .filter(|e| self.records.iter().any(|r| r.engine == *e && r.cell.op == op && r.cell.mode == mode))
+          .collect();
+        let rows: Vec<Value> = rows
+          .iter()
+          .map(|(mode, workers)| {
+            let (best, present) = self.best_ranked(op, *mode, *workers);
+            let cells: Vec<Value> = engines
+              .iter()
+              .map(|e| {
+                self.record(e, op, *mode, *workers).map_or(Value::Null, |r| {
+                  let mops = r.report.mops();
+                  let yardstick = e == YARDSTICK;
+                  json!({
+                    "display": fmt3(mops),
+                    "median": round3(mops),
+                    "best": present > 1 && mops == best && !yardstick,
+                    "above_ranked": present > 0 && mops > best && yardstick,
+                  })
+                })
+              })
+              .collect();
+            json!({ "head": [workers.to_string()], "cells": cells })
+          })
+          .collect();
+        Some(json!({
+          "id": mode_name(mode),
+          "title": mode_name(mode),
+          "mode": mode_name(mode),
+          "batched": false,
+          "heads": ["Workers"],
+          "libraries": engines,
+          "rows": rows,
+          "notes": [],
+        }))
+      })
+      .collect();
+
+    let engines = self.engines_for(op);
+    let with_ratio = self.has_hit_ratio(op);
+    let rows: Vec<Value> = self
+      .rows(op)
+      .iter()
+      .map(|(mode, workers)| {
+        let cells: Vec<Value> = engines
+          .iter()
+          .map(|e| {
+            self.record(e, op, *mode, *workers).map_or(Value::Null, |r| {
+              let display = if with_ratio {
+                format!("{:.3} / {}", r.report.hit_ratio(), r.report.peak_len)
+              } else {
+                r.report.peak_len.to_string()
+              };
+              json!({ "display": display, "best": false })
+            })
+          })
+          .collect();
+        json!({ "head": [mode_name(*mode), workers.to_string()], "cells": cells })
+      })
+      .collect();
+    sections.push(json!({
+      "id": "detail",
+      "title": if with_ratio { "Hit ratio and peak entries" } else { "Peak entries" },
+      "mode": Value::Null,
+      "batched": false,
+      "heads": ["Mode", "Workers"],
+      "libraries": engines,
+      "rows": rows,
+      "notes": [if with_ratio {
+        "Hit ratio over the run, then the highest entry count the sampler saw against the capacity."
+      } else {
+        "The highest entry count the sampler saw during the run, against the capacity."
+      }],
+    }));
+    sections
   }
 
   /// Rebuilds the pages from a previous run's TSV so they can be reworded
@@ -501,40 +639,29 @@ impl RunInfo {
   /// Reads the run fields back from an earlier `results.json`, so a rerender
   /// keeps what the measuring run recorded.
   pub fn from_json(text: &str) -> Option<RunInfo> {
-    fn field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
-      let start = text.find(&format!("\"{}\": ", key))? + key.len() + 4;
-      let rest = &text[start..];
-      let end = rest.find([',', '\n', '}']).unwrap_or(rest.len());
-      Some(rest[..end].trim())
-    }
-    fn string(text: &str, key: &str) -> Option<String> {
-      let v = field(text, key)?;
-      (v != "null").then(|| v.trim_matches('"').to_owned())
-    }
-    fn number(text: &str, key: &str) -> Option<f64> {
-      field(text, key)?.parse().ok()
-    }
-    let run_start = text.find("\"run\": {")?;
-    let run = &text[run_start..];
-    let mut versions = BTreeMap::new();
-    for line in text.lines() {
-      let t = line.trim();
-      if let Some(rest) = t.strip_prefix("{ \"name\": \"") {
-        let name_end = rest.find('"')?;
-        let name = &rest[..name_end];
-        if let Some(v) = rest.find("\"version\": \"") {
-          let v = &rest[v + 12..];
-          let v_end = v.find('"')?;
-          versions.insert(name.to_owned(), v[..v_end].to_owned());
-        }
-      }
-    }
+    let value: Value = serde_json::from_str(text).ok()?;
+    let run = value.get("run")?;
+    let text = |key: &str| run.get(key).and_then(Value::as_str).map(str::to_owned);
+    let versions = value
+      .get("libraries")
+      .and_then(Value::as_array)
+      .map(|libs| {
+        libs
+          .iter()
+          .filter_map(|lib| Some((lib.get("name")?.as_str()?.to_owned(), lib.get("version")?.as_str()?.to_owned())))
+          .collect()
+      })
+      .unwrap_or_default();
     Some(RunInfo {
-      measured_at: string(run, "measured_at"),
-      power_mode: string(run, "power_mode"),
-      load_at_start: number(run, "load_at_start"),
-      load_at_end: number(run, "load_at_end"),
+      measured_at: text("measured_at"),
+      power_mode: text("power_mode"),
+      load_at_start: run.get("load_at_start").and_then(Value::as_f64),
+      load_at_end: run.get("load_at_end").and_then(Value::as_f64),
       versions,
     })
   }
+}
+
+fn round3(value: f64) -> f64 {
+  (value * 1000.0).round() / 1000.0
 }
