@@ -839,6 +839,7 @@ dependencies = [
  "chrono",
  "console-subscriber",
  "fibre",
+ "fibre_tracing",
  "flate2",
  "humantime",
  "log",

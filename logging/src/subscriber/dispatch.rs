@@ -1,5 +1,7 @@
 // Defines the primary Layer that dispatches events to AppenderActors.
 
+use fibre_tracing::TraceIdentity;
+use crate::model::LogValue;
 use crate::{
   model::LogEvent,
   subscriber::{processor::EventProcessor, visitor::LogEventFieldVisitor},
@@ -10,6 +12,9 @@ use tracing_subscriber::{
   layer::{Context, Layer},
   registry::LookupSpan,
 };
+
+/// The field a line written inside a trace names it under, the name the trace store filters on.
+const TRACE_ID_FIELD: &str = "trace_id";
 
 /// The primary Layer for fibre_logging.
 ///
@@ -48,6 +53,13 @@ impl DispatchLayer {
       log_event.span_id = Some(format!("{:?}", span_ref.id()));
       if let Some(parent_ref) = span_ref.parent() {
         log_event.parent_id = Some(format!("{:?}", parent_ref.id()));
+      }
+    }
+
+    if let Some(scope) = ctx.event_scope(event) {
+      let identity = scope.into_iter().find_map(|span| span.extensions().get::<TraceIdentity>().map(|held| held.0.clone()));
+      if let Some(identity) = identity {
+        log_event.fields.entry(TRACE_ID_FIELD.to_string()).or_insert_with(|| LogValue::String(identity.to_string()));
       }
     }
 

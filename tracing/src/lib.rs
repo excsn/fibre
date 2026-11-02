@@ -46,6 +46,10 @@ pub const ROOT_FIELD: &str = "fibre.root";
 /// The field naming the outcome a span finished with, when it says.
 pub const OUTCOME_FIELD: &str = "fibre.outcome";
 
+/// Left on a root span's extensions, so another layer on the same registry can name the trace an event falls in. The id in lowercase hex.
+#[derive(Debug, Clone)]
+pub struct TraceIdentity(pub Arc<str>);
+
 /// A root's incoming trace id, in hex. A value that does not read as hex is replaced by a new id.
 pub const TRACE_ID_FIELD: &str = "fibre.trace_id";
 
@@ -292,6 +296,10 @@ where
       };
       let adopted = incoming(TRACE_ID_FIELD).unwrap_or_else(|| fresh_trace_id(trace_id));
       let parent_ref = incoming(PARENT_REF_FIELD);
+      if let Some(span) = ctx.span(id) {
+        let text: String = adopted.iter().map(|byte| format!("{byte:02x}")).collect();
+        span.extensions_mut().insert(TraceIdentity(text.into()));
+      }
       open.insert(this, Open { id: trace_id, trace_id: adopted, parent_ref, started_at: SystemTime::now(), started: Instant::now(), spans: Vec::new(), index: HashMap::new(), ids: Vec::new(), root: this });
     }
     let Some(held) = open.get_mut(&root) else { return };
