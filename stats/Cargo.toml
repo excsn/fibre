@@ -1,6 +1,6 @@
 [package]
 name = "fibre_stats"
-version = "0.1.0"
+version = "0.9.0"
 
 description = "Metrics for applications and libraries: counters, gauges, timers and states defined once with metric!, aggregated per second in process and handed to a sink in batches."
 readme = "README.md"
