@@ -13,15 +13,13 @@ authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
-exclude = [
-  "/verify/",
-  "/arena/",
-  "/bench/",
-  "/benches/",
-  "/docs/",
-  "/scripts/",
-  "/tests/",
-  "nextest.toml",
+include = [
+  "/src/**",
+  "/Cargo.toml",
+  "/LICENSE",
+  "/README.md",
+  "/README.USAGE.md",
+  "/API_REFERENCE.md",
 ]
 
 [features]
