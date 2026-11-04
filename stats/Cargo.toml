@@ -14,7 +14,7 @@ homepage.workspace = true
 repository.workspace = true
 
 include = [
-  "/src/**",
+  "/src/**/*.rs",
   "/Cargo.toml",
   "/LICENSE",
   "/README.md",
