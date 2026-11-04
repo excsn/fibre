@@ -20,7 +20,7 @@ exclude = [
 [dependencies]
 tracing = "^0.1"
 tracing-subscriber = { version = "^0.3", features = ["registry", "std"] }
-parking_lot = "^0.12"
+parking_lot = "0.13"
 
 [dev-dependencies]
 tracing-subscriber = { version = "^0.3", features = ["registry", "std"] }

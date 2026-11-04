@@ -35,7 +35,7 @@ hashbrown = "^0.16"
 rapidhash = { version = "^1.4", optional = true }
 
 # Core dependencies for concurrency
-parking_lot = "^0.12"
+parking_lot = "0.13"
 crossbeam-utils = "^0.8"
 futures-util = "^0.3"
 

@@ -34,7 +34,7 @@ diagnostics = ["dep:tokio"]
 futures-core = { version = "^0.3", default-features = false, features = ["alloc", "std"] }
 futures-intrusive = "^0.5"
 futures-util = { version = "^0.3", default-features = false, features = ["alloc", "std"] }
-parking_lot = "^0.12"
+parking_lot = "0.13"
 tokio = { version = "^1", features = ["full"], optional = true }
 
 papaya = { version = "^0", optional = true }
