@@ -11,10 +11,13 @@ readme = "README.md"
 keywords = ["cache", "caching", "tinylfu", "lfu", "concurrent"]
 categories = ["caching", "concurrency", "asynchronous", "data-structures", "memory-management"]
 
-exclude = [
-  "/benches/",
-  "/docs/",
-  "/tests/",
+include = [
+  "/src/**/*.rs",
+  "/Cargo.toml",
+  "/LICENSE",
+  "/README.md",
+  "/README.USAGE.md",
+  "/API_REFERENCE.md",
 ]
 
 [features]
