@@ -17,6 +17,7 @@ enum Seen {
   Data(Vec<u8>),
   End,
   Reset,
+  Writable,
 }
 
 impl Harness {
@@ -30,7 +31,7 @@ impl Harness {
       map.append(http::HeaderName::from_bytes(k.as_bytes()).unwrap(), HeaderValue::from_str(v).unwrap());
     }
     let head = RequestHead { method, uri: uri.parse().unwrap(), version: Version::HTTP_11, headers: map };
-    self.engine.open(head, &mut self.out)
+    self.engine.open(head, std::time::Instant::now(), &mut self.out)
   }
 
   fn sent(&mut self) -> Vec<u8> {
@@ -66,6 +67,7 @@ impl Harness {
         },
         Event::End => seen.push(Seen::End),
         Event::Reset(_) => seen.push(Seen::Reset),
+        Event::Writable => seen.push(Seen::Writable),
         other => panic!("unexpected event {other:?}"),
       }
     }
@@ -279,4 +281,44 @@ fn head_response_ignores_its_content_length() {
   h.feed(b"HTTP/1.1 200 OK\r\ncontent-length: 500\r\n\r\n");
   assert_eq!(h.seen(id), vec![Seen::Head(200), Seen::End]);
   assert!(!h.closed());
+}
+
+#[test]
+fn expect_continue_holds_the_body_until_the_100() {
+  let mut h = Harness::new();
+  let id = h.open(Method::POST, "http://example.test/up", &[("expect", "100-continue"), ("content-length", "5")]).unwrap();
+  assert!(h.sent().starts_with(b"POST /up HTTP/1.1\r\n"));
+  assert_eq!(h.engine.send_body(id, Bytes::from_static(b"hello"), true, &mut h.out), 0);
+  assert!(h.engine.next_deadline().is_some());
+  h.feed(b"HTTP/1.1 100 Continue\r\n\r\n");
+  assert_eq!(h.seen(id), vec![Seen::Writable]);
+  assert_eq!(h.engine.send_body(id, Bytes::from_static(b"hello"), true, &mut h.out), 5);
+  assert_eq!(h.sent(), b"hello");
+  h.feed(HELLO);
+  assert_eq!(h.seen(id), vec![Seen::Head(200), Seen::Data(b"hello".to_vec()), Seen::End]);
+}
+
+#[test]
+fn expect_continue_sends_the_body_when_the_wait_runs_out() {
+  let mut h = Harness::new();
+  let id = h.open(Method::POST, "http://example.test/up", &[("expect", "100-continue"), ("content-length", "5")]).unwrap();
+  h.sent();
+  let deadline = h.engine.next_deadline().unwrap();
+  h.engine.on_tick(deadline - std::time::Duration::from_millis(1), &mut h.out);
+  assert_eq!(h.seen(id), vec![]);
+  h.engine.on_tick(deadline, &mut h.out);
+  assert_eq!(h.seen(id), vec![Seen::Writable]);
+  assert_eq!(h.engine.send_body(id, Bytes::from_static(b"hello"), true, &mut h.out), 5);
+  assert_eq!(h.sent(), b"hello");
+  assert_eq!(h.engine.next_deadline(), None);
+}
+
+#[test]
+fn a_final_response_instead_of_100_skips_the_body() {
+  let mut h = Harness::new();
+  let id = h.open(Method::POST, "http://example.test/up", &[("expect", "100-continue"), ("content-length", "5")]).unwrap();
+  h.sent();
+  h.feed(b"HTTP/1.1 417 Expectation Failed\r\ncontent-length: 0\r\n\r\n");
+  assert_eq!(h.seen(id), vec![Seen::Head(417), Seen::End]);
+  assert_eq!(h.sent(), b"");
 }

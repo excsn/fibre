@@ -320,7 +320,7 @@ impl engine::Engine for Engine {
     Capacity::Shared { open: self.exchanges.len(), max: self.max_streams() }
   }
 
-  fn open(&mut self, head: RequestHead, out: &mut Output) -> Result<ExchangeId, OpenError> {
+  fn open(&mut self, head: RequestHead, _now: Instant, out: &mut Output) -> Result<ExchangeId, OpenError> {
     self.drive(out);
     if self.closed {
       return Err(OpenError::Closed);

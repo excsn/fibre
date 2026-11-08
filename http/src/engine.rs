@@ -91,7 +91,8 @@ impl Output {
 pub trait Engine {
   fn capacity(&self) -> Capacity;
 
-  fn open(&mut self, head: RequestHead, out: &mut Output) -> Result<ExchangeId, OpenError>;
+  /// `now` starts any deadline the exchange has, such as waiting for `100 Continue`.
+  fn open(&mut self, head: RequestHead, now: Instant, out: &mut Output) -> Result<ExchangeId, OpenError>;
 
   /// Returns how much of `data` was accepted. HTTP/2 flow control can take less than offered.
   fn send_body(&mut self, id: ExchangeId, data: Bytes, end: bool, out: &mut Output) -> usize;

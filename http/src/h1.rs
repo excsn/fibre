@@ -6,18 +6,21 @@ use std::time::Instant;
 
 use bytes::{Buf, Bytes, BytesMut};
 use ureq_proto::BodyMode;
-use ureq_proto::client::state::{Prepare, RecvBody, RecvResponse, SendBody};
+use ureq_proto::client::state::{Await100, Prepare, RecvBody, RecvResponse, SendBody};
 use ureq_proto::client::{Await100Result, Call, RecvBodyResult, RecvResponseResult, SendRequestResult};
 
 use crate::Error;
 use crate::engine::{self, Capacity, ConnEvent, Event, ExchangeId, NetAction, OpenError, Output, RequestHead, ResponseHead};
 
 const WRITE_CHUNK: usize = 16 * 1024;
+/// How long a request with `Expect: 100-continue` waits for the 100 before sending its body anyway.
+const EXPECT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 /// The most bytes a response head may take before it is refused.
 const MAX_HEAD: usize = 64 * 1024;
 
 enum State {
   Idle,
+  Await100(Call<Await100>, Instant),
   SendBody(Call<SendBody>),
   RecvResponse(Call<RecvResponse>),
   RecvBody(Call<RecvBody>),
@@ -67,6 +70,20 @@ impl Engine {
       self.shut(None, out);
     } else {
       self.state = State::Idle;
+    }
+  }
+
+  /// Leaves the wait for `100 Continue`: the body may go, or the server answered without wanting it.
+  fn end_await(&mut self, call: Call<Await100>, out: &mut Output) {
+    match call.proceed() {
+      Ok(Await100Result::SendBody(call)) => {
+        self.state = State::SendBody(call);
+        if let Some(id) = self.current {
+          out.events.push((id, Event::Writable));
+        }
+      }
+      Ok(Await100Result::RecvResponse(call)) => self.state = State::RecvResponse(call),
+      Err(e) => self.fail(protocol(e), out),
     }
   }
 
@@ -122,7 +139,7 @@ impl engine::Engine for Engine {
     Capacity::Unique { available: matches!(self.state, State::Idle) }
   }
 
-  fn open(&mut self, head: RequestHead, out: &mut Output) -> Result<ExchangeId, OpenError> {
+  fn open(&mut self, head: RequestHead, now: Instant, out: &mut Output) -> Result<ExchangeId, OpenError> {
     match self.state {
       State::Idle => {}
       State::Closed => return Err(OpenError::Closed),
@@ -158,12 +175,7 @@ impl engine::Engine for Engine {
     match call.proceed() {
       Ok(Some(SendRequestResult::SendBody(call))) => self.state = State::SendBody(call),
       Ok(Some(SendRequestResult::RecvResponse(call))) => self.state = State::RecvResponse(call),
-      // Expect: 100-continue sends the body at once. Waiting for the 100 needs a deadline from open, which the trait does not give yet.
-      Ok(Some(SendRequestResult::Await100(call))) => match call.proceed() {
-        Ok(Await100Result::SendBody(call)) => self.state = State::SendBody(call),
-        Ok(Await100Result::RecvResponse(call)) => self.state = State::RecvResponse(call),
-        Err(e) => self.fail(protocol(e), out),
-      },
+      Ok(Some(SendRequestResult::Await100(call))) => self.state = State::Await100(call, now + EXPECT_WAIT),
       Ok(None) => self.fail(Error::Protocol("request head incomplete".into()), out),
       Err(e) => self.fail(protocol(e), out),
     }
@@ -173,6 +185,10 @@ impl engine::Engine for Engine {
   fn send_body(&mut self, id: ExchangeId, data: Bytes, end: bool, out: &mut Output) -> usize {
     if self.current != Some(id) {
       return 0;
+    }
+    if matches!(self.state, State::RecvResponse(_) | State::RecvBody(_)) {
+      // The server answered before taking the body, so it is not sent; it counts as taken so the caller moves on.
+      return data.len();
     }
     let State::SendBody(call) = &mut self.state else {
       return 0;
@@ -230,6 +246,23 @@ impl engine::Engine for Engine {
   fn on_bytes(&mut self, input: &mut BytesMut, out: &mut Output) {
     loop {
       match std::mem::replace(&mut self.state, State::Idle) {
+        State::Await100(mut call, deadline) => match call.try_read_100(input) {
+          Ok(used) => {
+            input.advance(used);
+            if !call.can_keep_await_100() {
+              self.end_await(call, out);
+              continue;
+            }
+            self.state = State::Await100(call, deadline);
+            if used == 0 {
+              return;
+            }
+          }
+          Err(e) => {
+            self.fail(protocol(e), out);
+            return;
+          }
+        },
         State::RecvResponse(mut call) => match call.try_response(input, false) {
           Ok((used, Some(response))) => {
             input.advance(used);
@@ -312,10 +345,20 @@ impl engine::Engine for Engine {
     }
   }
 
-  fn on_tick(&mut self, _now: Instant, _out: &mut Output) {}
+  fn on_tick(&mut self, now: Instant, out: &mut Output) {
+    if let State::Await100(_, deadline) = &self.state {
+      if now >= *deadline {
+        let State::Await100(call, _) = std::mem::replace(&mut self.state, State::Idle) else { unreachable!() };
+        self.end_await(call, out);
+      }
+    }
+  }
 
   fn next_deadline(&self) -> Option<Instant> {
-    None
+    match &self.state {
+      State::Await100(_, deadline) => Some(*deadline),
+      _ => None,
+    }
   }
 
   fn close(&mut self, out: &mut Output) {

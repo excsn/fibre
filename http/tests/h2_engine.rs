@@ -150,7 +150,7 @@ impl Harness {
       map.append(http::HeaderName::from_bytes(k.as_bytes()).unwrap(), HeaderValue::from_str(v).unwrap());
     }
     let head = RequestHead { method, uri: format!("https://example.test{path}").parse().unwrap(), version: Version::HTTP_2, headers: map };
-    self.engine.open(head, &mut self.out)
+    self.engine.open(head, std::time::Instant::now(), &mut self.out)
   }
 
   fn collect(&mut self) -> Vec<u8> {

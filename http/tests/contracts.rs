@@ -439,3 +439,53 @@ fn a_body_over_the_size_limit_is_an_error() {
   let client = SyncClient::builder().max_response_size(20_000).build_sync().unwrap();
   assert_eq!(client.get(s.url("/")).send().unwrap().bytes().unwrap().len(), 10_000);
 }
+
+/// A server for `Expect: 100-continue`: it sends the 100 when `answer` is set, then reads the body and reports when it arrived.
+fn expect_server(answer: bool) -> SocketAddr {
+  let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+  let addr = listener.local_addr().unwrap();
+  std::thread::spawn(move || {
+    let (stream, _) = listener.accept().unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut w = stream;
+    let mut length = 0;
+    loop {
+      let mut h = String::new();
+      reader.read_line(&mut h).unwrap();
+      if h == "\r\n" {
+        break;
+      }
+      if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+        length = v.trim().parse().unwrap();
+      }
+    }
+    if answer {
+      w.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").unwrap();
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    let reply = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len());
+    w.write_all(reply.as_bytes()).unwrap();
+    w.write_all(&body).unwrap();
+  });
+  addr
+}
+
+#[test]
+fn expect_continue_sends_the_body_once_the_server_says_100() {
+  let addr = expect_server(true);
+  let started = Instant::now();
+  let r = SyncClient::new().post(format!("http://{addr}/")).header("expect", "100-continue").body("payload").send().unwrap();
+  assert_eq!(r.text().unwrap(), "payload");
+  assert!(started.elapsed() < Duration::from_millis(800), "{:?}", started.elapsed());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expect_continue_sends_the_body_after_the_wait_when_no_100_comes() {
+  let addr = expect_server(false);
+  let started = Instant::now();
+  let r = AsyncClient::new().post(format!("http://{addr}/")).header("expect", "100-continue").body("late").send().await.unwrap();
+  assert_eq!(r.text().await.unwrap(), "late");
+  let waited = started.elapsed();
+  assert!(waited >= Duration::from_millis(900) && waited < Duration::from_secs(3), "{waited:?}");
+}

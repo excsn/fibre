@@ -148,6 +148,22 @@ impl State {
     Interest { read: true, write: self.unflushed }
   }
 
+  /// The earlier of the request's deadline and the engine's. Returns whether the engine's is the one waited for.
+  fn wait_until(&self, request: Option<Instant>) -> (Option<Instant>, bool) {
+    match (request, self.engine.next_deadline()) {
+      (Some(r), Some(e)) if e < r => (Some(e), true),
+      (None, Some(e)) => (Some(e), true),
+      (r, _) => (r, false),
+    }
+  }
+
+  /// Runs the engine's timers that are due.
+  fn tick(&mut self) {
+    self.engine.on_tick(Instant::now(), &mut self.out);
+    self.apply();
+    self.flush_now();
+  }
+
   fn closed_error(&self) -> Error {
     self.error.clone().unwrap_or(Error::Closed)
   }
@@ -292,7 +308,7 @@ impl Conn {
     if st.closed {
       return Err(OpenError::Closed);
     }
-    let result = st.engine.open(head, &mut st.out);
+    let result = st.engine.open(head, Instant::now(), &mut st.out);
     if let Ok(id) = result {
       st.slots.insert(id, Slot::default());
     }
@@ -417,11 +433,13 @@ impl Conn {
             st.wake_any();
             return Ok(r);
           }
+          let (until, engine_timer) = st.wait_until(deadline);
           drop(st);
-          let ready = wait::block(self.fd, interest, deadline);
+          let ready = wait::block(self.fd, interest, until);
           st = self.st.lock();
           match ready {
             Ok(true) => {}
+            Ok(false) if engine_timer => st.tick(),
             Ok(false) => {
               st.leader = false;
               st.wake_any();
@@ -471,11 +489,13 @@ impl Conn {
             lead.active = false;
             return Ok(r);
           }
+          let (until, engine_timer) = st.wait_until(deadline);
           drop(st);
-          let ready = self.reg.wait(self.fd, interest, deadline).await;
+          let ready = self.reg.wait(self.fd, interest, until).await;
           st = self.st.lock_async().await;
           match ready {
             Ok(true) => {}
+            Ok(false) if engine_timer => st.tick(),
             Ok(false) => {
               st.leader = false;
               st.wake_any();
