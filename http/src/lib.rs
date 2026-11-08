@@ -11,6 +11,7 @@ pub mod h1;
 #[cfg(feature = "http2")]
 pub mod h2;
 mod io;
+mod notify;
 mod pool;
 mod response;
 mod wait;

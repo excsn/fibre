@@ -522,7 +522,8 @@ async fn requests_wait_for_room_on_a_one_stream_http2_connection() {
   for (i, t) in tasks.into_iter().enumerate() {
     assert_eq!(t.await.unwrap(), format!("n{i}"));
   }
-  assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+  // Eight waits on the 100 ms fallback would take 800 ms; a notify wakes each at once.
+  assert!(started.elapsed() < Duration::from_millis(400), "{:?}", started.elapsed());
   assert_eq!(s.accepted.load(Ordering::SeqCst), 1);
   assert_eq!(pool.connections_opened(), 1);
 }

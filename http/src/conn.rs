@@ -6,8 +6,8 @@ use std::collections::{HashMap, VecDeque};
 use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::task::{Poll, Waker};
-use std::thread::{self, Thread};
+use std::task::Poll;
+use std::thread;
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
@@ -16,6 +16,7 @@ use fibre::sync::HybridMutex;
 use crate::Error;
 use crate::engine::{Capacity, ConnEvent, Engine, Event, ExchangeId, NetAction, OpenError, Output, RequestHead};
 use crate::io::Io;
+use crate::notify::Waiter;
 use crate::wait::{self, Interest, Registration};
 
 const TURN_READ: usize = 64 * 1024;
@@ -25,28 +26,6 @@ const READ_CHUNK: usize = 16 * 1024;
 pub(crate) enum Proto {
   H1,
   H2,
-}
-
-#[derive(Default)]
-enum Waiter {
-  #[default]
-  None,
-  Thread(Thread),
-  Task(Waker),
-}
-
-impl Waiter {
-  fn wake(&mut self) {
-    match std::mem::take(self) {
-      Waiter::Thread(t) => t.unpark(),
-      Waiter::Task(w) => w.wake(),
-      Waiter::None => {}
-    }
-  }
-
-  fn is_some(&self) -> bool {
-    !matches!(self, Waiter::None)
-  }
 }
 
 #[derive(Default)]

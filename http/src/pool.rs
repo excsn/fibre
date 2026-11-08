@@ -11,9 +11,10 @@ use fibre::sync::HybridMutex;
 use crate::Error;
 use crate::conn::{Conn, Proto};
 use crate::dial::{self, Dialer};
+use crate::notify::Notify;
 
-const WAIT_SLICE: Duration = Duration::from_millis(50);
-const H2_SLICE: Duration = Duration::from_millis(1);
+/// The longest a waiter sleeps before looking again even without a notify.
+const WAIT_LIMIT: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Key {
@@ -38,7 +39,8 @@ impl Key {
 struct Host {
   idle_tx: mpmc::Sender<Arc<Conn>>,
   idle_rx: mpmc::Receiver<Arc<Conn>>,
-  idle_rx_async: mpmc::AsyncReceiver<Arc<Conn>>,
+  /// Raised when a connection may have become free: a dial ended, a lease came back or a connection closed.
+  notify: Notify,
   count: AtomicUsize,
   dialing: AtomicUsize,
   /// What the last dial to this origin agreed: 0 not known yet, 1 HTTP/1.1, 2 HTTP/2.
@@ -109,17 +111,18 @@ pub(crate) struct Lease {
 impl Lease {
   /// Returns an HTTP/1 connection to the idle set, or drops a closed one.
   pub(crate) fn release(self) {
-    if self.conn.proto == Proto::H2 {
-      return;
+    let host = self.host.clone();
+    if self.conn.proto == Proto::H1 {
+      if self.conn.is_closed() {
+        host.count.fetch_sub(1, Ordering::AcqRel);
+      } else {
+        self.conn.mark_idle();
+        if host.idle_tx.try_send(self.conn).is_err() {
+          host.count.fetch_sub(1, Ordering::AcqRel);
+        }
+      }
     }
-    if self.conn.is_closed() {
-      self.host.count.fetch_sub(1, Ordering::AcqRel);
-      return;
-    }
-    self.conn.mark_idle();
-    if self.host.idle_tx.try_send(self.conn).is_err() {
-      self.host.count.fetch_sub(1, Ordering::AcqRel);
-    }
+    host.notify.notify_all();
   }
 }
 
@@ -145,8 +148,7 @@ impl Pool {
       .entry(key.clone())
       .or_insert_with(|| {
         let (idle_tx, idle_rx) = mpmc::bounded(self.inner.config.max_per_host);
-        let idle_rx_async = idle_rx.clone().to_async();
-        Arc::new(Host { idle_tx, idle_rx, idle_rx_async, count: AtomicUsize::new(0), dialing: AtomicUsize::new(0), proto: AtomicU8::new(0), shared: HybridMutex::new(Vec::new()) })
+        Arc::new(Host { idle_tx, idle_rx, notify: Notify::default(), count: AtomicUsize::new(0), dialing: AtomicUsize::new(0), proto: AtomicU8::new(0), shared: HybridMutex::new(Vec::new()) })
       })
       .clone()
   }
@@ -199,28 +201,27 @@ impl Pool {
       }
     };
     host.dialing.fetch_sub(1, Ordering::AcqRel);
+    host.notify.notify_all();
     lease
   }
 
-  /// How long a waiter sleeps before looking again. Short while the origin may be HTTP/2, since a new HTTP/2 connection does not arrive through the idle channel.
-  fn slice(&self, host: &Host, deadline: Option<Instant>) -> Result<(Duration, bool), Error> {
-    let h2_wait = host.proto.load(Ordering::Acquire) != 1;
-    let slice = if h2_wait { H2_SLICE } else { WAIT_SLICE };
+  fn limit(deadline: Option<Instant>) -> Result<Duration, Error> {
     match deadline {
       Some(d) => {
         let now = Instant::now();
         if now >= d {
           return Err(Error::Timeout);
         }
-        Ok(((d - now).min(slice), h2_wait))
+        Ok((d - now).min(WAIT_LIMIT))
       }
-      None => Ok((slice, h2_wait)),
+      None => Ok(WAIT_LIMIT),
     }
   }
 
   pub(crate) fn checkout_sync(&self, key: &Key, dialer: &Dialer, deadline: Option<Instant>) -> Result<Lease, Error> {
     let host = self.host(key);
     loop {
+      let seen = host.notify.epoch();
       let found = {
         let mut shared = host.shared.lock();
         self.find(&host, &mut shared)
@@ -228,19 +229,7 @@ impl Pool {
       match found {
         Found::Lease(lease) => return Ok(lease),
         Found::Dial => return self.dialed(&host, dial::dial_sync(dialer, key, deadline)),
-        Found::Wait => {
-          let (slice, h2_wait) = self.slice(&host, deadline)?;
-          if h2_wait {
-            std::thread::sleep(slice);
-            continue;
-          }
-          if let Ok(conn) = host.idle_rx.recv_timeout(slice) {
-            if self.usable(&conn) {
-              return Ok(Lease { conn, host: host.clone(), reused: true });
-            }
-            host.count.fetch_sub(1, Ordering::AcqRel);
-          }
-        }
+        Found::Wait => host.notify.wait_sync(seen, Self::limit(deadline)?),
       }
     }
   }
@@ -248,6 +237,7 @@ impl Pool {
   pub(crate) async fn checkout_async(&self, key: &Key, dialer: &Dialer, deadline: Option<Instant>) -> Result<Lease, Error> {
     let host = self.host(key);
     loop {
+      let seen = host.notify.epoch();
       let found = {
         let mut shared = host.shared.lock_async().await;
         self.find(&host, &mut shared)
@@ -255,19 +245,7 @@ impl Pool {
       match found {
         Found::Lease(lease) => return Ok(lease),
         Found::Dial => return self.dialed(&host, dial::dial_async(dialer, key, deadline).await),
-        Found::Wait => {
-          let (slice, h2_wait) = self.slice(&host, deadline)?;
-          if h2_wait {
-            tokio::time::sleep(slice).await;
-            continue;
-          }
-          if let Ok(Ok(conn)) = tokio::time::timeout(slice, host.idle_rx_async.recv()).await {
-            if self.usable(&conn) {
-              return Ok(Lease { conn, host: host.clone(), reused: true });
-            }
-            host.count.fetch_sub(1, Ordering::AcqRel);
-          }
-        }
+        Found::Wait => host.notify.wait_async(seen, Self::limit(deadline)?).await,
       }
     }
   }
