@@ -14,6 +14,7 @@ pub mod h2;
 mod io;
 mod notify;
 mod pool;
+mod proxy;
 mod response;
 mod wait;
 
@@ -21,4 +22,5 @@ pub use body::{AsyncBody, SyncBody};
 pub use client::{Async, AsyncClient, Blocking, ClientBuilder, RequestBuilder, SyncClient};
 pub use error::Error;
 pub use pool::{Pool, PoolBuilder};
+pub use proxy::Proxy;
 pub use response::Response;

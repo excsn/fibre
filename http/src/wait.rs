@@ -84,7 +84,7 @@ impl Registration {
     Ok(afd)
   }
 
-  fn forget(&self) {
+  pub(crate) fn forget(&self) {
     self.0.lock().take();
   }
 

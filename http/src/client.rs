@@ -38,6 +38,8 @@ pub struct ClientBuilder {
   redirects: usize,
   decompress: bool,
   default_headers: HeaderMap,
+  /// `None` reads the environment when the client is built.
+  proxies: Option<crate::proxy::Proxies>,
   user_agent: HeaderValue,
   h2_prior_knowledge: bool,
   #[cfg(feature = "rustls")]
@@ -54,6 +56,7 @@ impl Default for ClientBuilder {
       redirects: DEFAULT_REDIRECTS,
       decompress: true,
       default_headers: HeaderMap::new(),
+      proxies: None,
       user_agent: HeaderValue::from_static(DEFAULT_USER_AGENT),
       h2_prior_knowledge: false,
       #[cfg(feature = "rustls")]
@@ -80,6 +83,29 @@ impl ClientBuilder {
   /// The most redirects a request follows, 10 by default. 0 hands every redirect back as the response.
   pub fn redirects(mut self, n: usize) -> Self {
     self.redirects = n;
+    self
+  }
+
+  /// Sends every request through `proxy`, in place of the proxies from the environment.
+  pub fn proxy(mut self, proxy: crate::proxy::Proxy) -> Self {
+    let mut p = self.proxies.take().unwrap_or_default();
+    p.http = Some(proxy.clone());
+    p.https = Some(proxy);
+    self.proxies = Some(p);
+    self
+  }
+
+  /// Hosts that skip the proxy, in `NO_PROXY` form: `a.test, .b.test, 10.0.0.1, *`.
+  pub fn no_proxy_for(mut self, list: &str) -> Self {
+    let mut p = self.proxies.take().unwrap_or_default();
+    p.no_proxy = crate::proxy::NoProxy::parse(list);
+    self.proxies = Some(p);
+    self
+  }
+
+  /// No proxy, whatever the environment says.
+  pub fn no_proxy(mut self) -> Self {
+    self.proxies = Some(crate::proxy::Proxies::default());
     self
   }
 
@@ -150,6 +176,8 @@ impl ClientBuilder {
         #[cfg(feature = "rustls")]
         tls,
         h2_prior_knowledge: self.h2_prior_knowledge,
+        proxies: self.proxies.unwrap_or_else(crate::proxy::Proxies::from_env),
+        user_agent: self.user_agent.to_str().unwrap_or(DEFAULT_USER_AGENT).to_owned(),
       },
       timeout: self.timeout,
       user_agent: self.user_agent,
@@ -357,7 +385,7 @@ impl<M> RequestBuilder<M> {
       return Err(e);
     }
     let uri = self.uri?;
-    let key = Key::from_uri(&uri)?;
+    let key = Key::for_target(&uri, &self.inner.dialer.proxies)?;
     let mut headers = self.headers;
     for name in self.inner.default_headers.keys() {
       if !headers.contains_key(name) {
@@ -470,7 +498,7 @@ impl Prepared {
       return Err(Error::TooManyRedirects);
     }
     let Ok(uri) = resolve(&self.uri, location) else { return Ok(None) };
-    let key = Key::from_uri(&uri)?;
+    let key = Key::for_target(&uri, &self.inner.dialer.proxies)?;
     let mut next = self.clone();
     let to_get = match status.as_u16() {
       303 => self.method != Method::HEAD,
@@ -509,7 +537,13 @@ impl Prepared {
 
   fn head(&self, proto: Proto) -> RequestHead {
     let version = if proto == Proto::H2 { Version::HTTP_2 } else { Version::HTTP_11 };
-    RequestHead { method: self.method.clone(), uri: self.uri.clone(), version, headers: self.headers.clone() }
+    let mut headers = self.headers.clone();
+    if let Some(auth) = self.key.forwarded().and_then(|p| p.auth.as_deref()) {
+      if let Ok(v) = HeaderValue::from_str(auth) {
+        headers.insert(http::header::PROXY_AUTHORIZATION, v);
+      }
+    }
+    RequestHead { method: self.method.clone(), uri: self.uri.clone(), version, headers }
   }
 
   fn idempotent(&self) -> bool {

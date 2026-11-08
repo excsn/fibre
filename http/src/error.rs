@@ -24,6 +24,8 @@ pub enum Error {
   TooLarge,
   /// A 4xx or 5xx status, from `Response::error_for_status`.
   Status(u16),
+  /// The proxy asked for credentials (407).
+  ProxyAuth,
 }
 
 impl fmt::Display for Error {
@@ -41,6 +43,7 @@ impl fmt::Display for Error {
       Error::TooManyRedirects => f.write_str("too many redirects"),
       Error::TooLarge => f.write_str("response body too large"),
       Error::Status(code) => write!(f, "status {code}"),
+      Error::ProxyAuth => f.write_str("the proxy requires authentication"),
     }
   }
 }

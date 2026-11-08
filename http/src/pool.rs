@@ -16,15 +16,39 @@ use crate::notify::Notify;
 /// The longest a waiter sleeps before looking again even without a notify.
 const WAIT_LIMIT: Duration = Duration::from_millis(100);
 
+/// How a connection reaches its origin when a proxy is in the way.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Via {
+  pub proxy: crate::proxy::Proxy,
+  /// `CONNECT` to the origin, for HTTPS. Otherwise requests go to the proxy in absolute form.
+  pub tunnel: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Key {
   pub https: bool,
   pub host: String,
   pub port: u16,
+  pub via: Option<Via>,
 }
 
 impl Key {
-  pub(crate) fn from_uri(uri: &http::Uri) -> Result<Key, Error> {
+  /// The pool key for `uri`. A forwarded `http://` request keys on the proxy, so its connections serve every origin.
+  pub(crate) fn for_target(uri: &http::Uri, proxies: &crate::proxy::Proxies) -> Result<Key, Error> {
+    let origin = Key::from_uri(uri)?;
+    Ok(match proxies.for_target(origin.https, &origin.host) {
+      None => origin,
+      Some(proxy) if origin.https => Key { via: Some(Via { proxy: proxy.clone(), tunnel: true }), ..origin },
+      Some(proxy) => Key { https: false, host: proxy.host.clone(), port: proxy.port, via: Some(Via { proxy: proxy.clone(), tunnel: false }) },
+    })
+  }
+
+  /// Whether requests on this key's connections are written in absolute form for a forward proxy.
+  pub(crate) fn forwarded(&self) -> Option<&crate::proxy::Proxy> {
+    self.via.as_ref().filter(|v| !v.tunnel).map(|v| &v.proxy)
+  }
+
+  fn from_uri(uri: &http::Uri) -> Result<Key, Error> {
     let https = match uri.scheme_str() {
       Some("https") => true,
       Some("http") => false,
@@ -32,7 +56,7 @@ impl Key {
     };
     let host = uri.host().ok_or_else(|| Error::Url("no host".into()))?.trim_start_matches('[').trim_end_matches(']').to_string();
     let port = uri.port_u16().unwrap_or(if https { 443 } else { 80 });
-    Ok(Key { https, host, port })
+    Ok(Key { https, host, port, via: None })
   }
 }
 

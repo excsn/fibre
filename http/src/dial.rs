@@ -18,6 +18,16 @@ pub(crate) struct Dialer {
   #[cfg(feature = "rustls")]
   pub tls: Option<Arc<rustls::ClientConfig>>,
   pub h2_prior_knowledge: bool,
+  pub proxies: crate::proxy::Proxies,
+  pub user_agent: String,
+}
+
+/// Where the TCP connection goes: the tunnel's proxy, or the key's host, which is the proxy for a forwarded key.
+fn endpoint(key: &Key) -> (&str, u16) {
+  match &key.via {
+    Some(via) if via.tunnel => (via.proxy.host.as_str(), via.proxy.port),
+    _ => (key.host.as_str(), key.port),
+  }
 }
 
 fn remaining(deadline: Option<Instant>) -> Result<Duration, Error> {
@@ -57,7 +67,7 @@ fn transport(dialer: &Dialer, key: &Key, sock: TcpStream) -> Result<Io, Error> {
 fn finish(dialer: &Dialer, key: &Key, io: Io, reg: Registration) -> Result<Arc<Conn>, Error> {
   let h2 = match io.alpn() {
     Some(p) => p == b"h2",
-    None => !key.https && dialer.h2_prior_knowledge,
+    None => !key.https && dialer.h2_prior_knowledge && key.via.is_none(),
   };
   let (engine, proto): (Box<dyn Engine + Send>, Proto) = if h2 {
     #[cfg(feature = "http2")]
@@ -71,7 +81,8 @@ fn finish(dialer: &Dialer, key: &Key, io: Io, reg: Registration) -> Result<Arc<C
   } else {
     #[cfg(feature = "http1")]
     {
-      (Box::new(crate::h1::Engine::new()), Proto::H1)
+      let engine = if key.forwarded().is_some() { crate::h1::Engine::absolute_form() } else { crate::h1::Engine::new() };
+      (Box::new(engine), Proto::H1)
     }
     #[cfg(not(feature = "http1"))]
     {
@@ -82,8 +93,9 @@ fn finish(dialer: &Dialer, key: &Key, io: Io, reg: Registration) -> Result<Arc<C
 }
 
 pub(crate) fn dial_sync(dialer: &Dialer, key: &Key, deadline: Option<Instant>) -> Result<Arc<Conn>, Error> {
-  let addrs: Vec<SocketAddr> = (key.host.as_str(), key.port).to_socket_addrs()?.collect();
-  let mut last = Error::Io(format!("no address for {}", key.host));
+  let (host, port) = endpoint(key);
+  let addrs: Vec<SocketAddr> = (host, port).to_socket_addrs()?.collect();
+  let mut last = Error::Io(format!("no address for {host}"));
   let mut sock = None;
   for addr in addrs {
     match TcpStream::connect_timeout(&addr, remaining(deadline)?) {
@@ -94,7 +106,11 @@ pub(crate) fn dial_sync(dialer: &Dialer, key: &Key, deadline: Option<Instant>) -
       Err(e) => last = e.into(),
     }
   }
-  let sock = sock.ok_or(last)?;
+  let mut sock = sock.ok_or(last)?;
+  if let Some(via) = key.via.as_ref().filter(|v| v.tunnel) {
+    sock.set_nonblocking(true)?;
+    crate::proxy::connect_tunnel_sync(&mut sock, &via.proxy, &key.host, key.port, &dialer.user_agent, deadline)?;
+  }
   let mut io = transport(dialer, key, sock)?;
   while let Some(interest) = io.handshake().map_err(|e| Error::Tls(e.to_string()))? {
     if !wait::block(io.fd(), interest, deadline)? {
@@ -106,9 +122,10 @@ pub(crate) fn dial_sync(dialer: &Dialer, key: &Key, deadline: Option<Instant>) -
 
 pub(crate) async fn dial_async(dialer: &Dialer, key: &Key, deadline: Option<Instant>) -> Result<Arc<Conn>, Error> {
   let limit = remaining(deadline)?;
+  let (host, port) = endpoint(key);
   let connect = async {
-    let mut last = Error::Io(format!("no address for {}", key.host));
-    for addr in tokio::net::lookup_host((key.host.as_str(), key.port)).await? {
+    let mut last = Error::Io(format!("no address for {host}"));
+    for addr in tokio::net::lookup_host((host, port)).await? {
       match tokio::net::TcpStream::connect(addr).await {
         Ok(s) => return Ok(s),
         Err(e) => last = e.into(),
@@ -120,9 +137,15 @@ pub(crate) async fn dial_async(dialer: &Dialer, key: &Key, deadline: Option<Inst
     Ok(r) => r?,
     Err(_) => return Err(Error::Timeout),
   };
-  let sock = sock.into_std()?;
-  let mut io = transport(dialer, key, sock)?;
+  let mut sock = sock.into_std()?;
   let reg = Registration::default();
+  if let Some(via) = key.via.as_ref().filter(|v| v.tunnel) {
+    sock.set_nonblocking(true)?;
+    let tunnel = crate::proxy::connect_tunnel_async(&mut sock, &reg, &via.proxy, &key.host, key.port, &dialer.user_agent, deadline).await;
+    reg.forget();
+    tunnel?;
+  }
+  let mut io = transport(dialer, key, sock)?;
   while let Some(interest) = io.handshake().map_err(|e| Error::Tls(e.to_string()))? {
     if !reg.wait(io.fd(), interest, deadline).await? {
       return Err(Error::Timeout);

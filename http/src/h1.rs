@@ -26,6 +26,8 @@ enum State {
 
 pub struct Engine {
   state: State,
+  /// Request lines carry the whole URI, for a forward proxy.
+  absolute: bool,
   current: Option<ExchangeId>,
   next_id: u64,
   scratch: Vec<u8>,
@@ -33,7 +35,12 @@ pub struct Engine {
 
 impl Engine {
   pub fn new() -> Self {
-    Self { state: State::Idle, current: None, next_id: 1, scratch: vec![0; WRITE_CHUNK] }
+    Self { state: State::Idle, absolute: false, current: None, next_id: 1, scratch: vec![0; WRITE_CHUNK] }
+  }
+
+  /// An engine whose request lines carry the whole URI, as a forward proxy needs.
+  pub fn absolute_form() -> Self {
+    Self { absolute: true, ..Self::new() }
   }
 
   fn fail(&mut self, error: Error, out: &mut Output) {
@@ -87,6 +94,17 @@ impl Default for Engine {
   }
 }
 
+/// `written` with the request line's target replaced by `uri`.
+fn absolute_line(written: &[u8], uri: &str) -> Vec<u8> {
+  let Some(end) = written.windows(2).position(|w| w == b"\r\n") else { return written.to_vec() };
+  let line = String::from_utf8_lossy(&written[..end]);
+  let mut parts = line.splitn(3, ' ');
+  let (Some(method), Some(_), Some(version)) = (parts.next(), parts.next(), parts.next()) else { return written.to_vec() };
+  let mut out = format!("{method} {uri} {version}").into_bytes();
+  out.extend_from_slice(&written[end..]);
+  out
+}
+
 fn protocol(e: ureq_proto::Error) -> Error {
   Error::Protocol(e.to_string())
 }
@@ -114,6 +132,7 @@ impl engine::Engine for Engine {
     self.next_id += 1;
     self.current = Some(id);
 
+    let absolute = (self.absolute && head.method != http::Method::CONNECT).then(|| head.uri.to_string());
     let mut call = match request(head) {
       Ok(prepare) => prepare.proceed(),
       Err(e) => {
@@ -130,6 +149,9 @@ impl engine::Engine for Engine {
           return Ok(id);
         }
       }
+    }
+    if let Some(uri) = absolute {
+      written = absolute_line(&written, &uri);
     }
     out.net.push(NetAction::Send(Bytes::from(written)));
 
