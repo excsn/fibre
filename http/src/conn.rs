@@ -3,11 +3,7 @@
 //! A caller waiting on an exchange takes the lead and reads the socket for every exchange on the connection. Other callers park until the leader hands them an event or leaves. The lock is never held while waiting on the socket.
 
 use std::collections::{HashMap, VecDeque};
-use std::os::fd::RawFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::task::Poll;
-use std::thread;
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
@@ -16,8 +12,9 @@ use fibre::sync::HybridMutex;
 use crate::Error;
 use crate::engine::{Capacity, ConnEvent, Engine, Event, ExchangeId, NetAction, OpenError, Output, RequestHead};
 use crate::io::Io;
-use crate::notify::Waiter;
-use crate::wait::{self, Interest, Registration};
+use crate::notify::{Signal, Waiter};
+use crate::sync::{AtomicBool, AtomicUsize, Ordering, thread};
+use crate::wait::{self, Interest, Registration, Waitable};
 
 const TURN_READ: usize = 64 * 1024;
 const READ_CHUNK: usize = 16 * 1024;
@@ -217,28 +214,25 @@ impl State {
     }
   }
 
-  fn needs_wake(&self, id: ExchangeId) -> bool {
-    !self.leader || self.closed || self.slots.get(&id).is_none_or(|s| !s.events.is_empty() || s.writable)
-  }
 }
 
 pub(crate) struct Conn {
   reg: Registration,
   st: HybridMutex<State>,
-  fd: RawFd,
+  waitable: Waitable,
   pub(crate) proto: Proto,
   closed: AtomicBool,
   /// Exchanges open and the most allowed, as of the last operation. `has_room` reads these without the lock.
   open: AtomicUsize,
   max: AtomicUsize,
-  idle_since: parking_lot::Mutex<Instant>,
+  idle_since: crate::sync::Mutex<Instant>,
 }
 
 type Check<R> = fn(&mut State, ExchangeId) -> Option<R>;
 
 impl Conn {
   pub(crate) fn new(engine: Box<dyn Engine + Send>, io: Io, proto: Proto, reg: Registration) -> Arc<Conn> {
-    let fd = io.fd();
+    let waitable = io.waitable();
     Arc::new(Conn {
       reg,
       st: HybridMutex::new(State {
@@ -255,12 +249,12 @@ impl Conn {
         going_away: false,
         error: None,
       }),
-      fd,
+      waitable,
       proto,
       closed: AtomicBool::new(false),
       open: AtomicUsize::new(0),
       max: AtomicUsize::new(1),
-      idle_since: parking_lot::Mutex::new(Instant::now()),
+      idle_since: crate::sync::Mutex::new(Instant::now()),
     })
   }
 
@@ -437,7 +431,7 @@ impl Conn {
           }
           let (until, engine_timer) = st.wait_until(deadline);
           drop(st);
-          let ready = wait::block(self.fd, interest, until);
+          let ready = wait::block_on(&self.waitable, interest, until);
           st = self.st.lock();
           match ready {
             Ok(true) => {}
@@ -493,7 +487,7 @@ impl Conn {
           }
           let (until, engine_timer) = st.wait_until(deadline);
           drop(st);
-          let ready = self.reg.wait(self.fd, interest, until).await;
+          let ready = self.reg.wait_on(&self.waitable, interest, until).await;
           st = self.st.lock_async().await;
           match ready {
             Ok(true) => {}
@@ -514,20 +508,12 @@ impl Conn {
           }
         }
       }
+      let signal = Arc::new(Signal::default());
+      if let Some(slot) = st.slots.get_mut(&id) {
+        slot.waiter = Waiter::Signal(signal.clone());
+      }
       drop(st);
-      let parked = std::future::poll_fn(|cx| {
-        let Some(mut st) = self.st.try_lock() else {
-          cx.waker().wake_by_ref();
-          return Poll::Pending;
-        };
-        if st.needs_wake(id) {
-          return Poll::Ready(());
-        }
-        if let Some(slot) = st.slots.get_mut(&id) {
-          slot.waiter = Waiter::Task(cx.waker().clone());
-        }
-        Poll::Pending
-      });
+      let parked = signal.wait();
       match deadline {
         Some(d) => {
           if tokio::time::timeout_at(d.into(), parked).await.is_err() {
@@ -553,5 +539,253 @@ impl Drop for Lead<'_> {
       st.leader = false;
       st.wake_any();
     }
+  }
+}
+
+/// Shuttle models of the leader handover: many callers on one shared connection, over an in-memory pipe, with a mock engine and a model server. A lost wake shows as a shuttle deadlock report with its schedule. Run with `http/verify/shuttle.sh`.
+#[cfg(all(test, shuttle))]
+mod model {
+  use std::collections::HashSet;
+  use std::future::Future;
+  use std::sync::Arc;
+  use std::task::{Context, Waker};
+
+  use bytes::{Buf, Bytes, BytesMut};
+  use http::{HeaderMap, Method, StatusCode, Version};
+
+  use super::*;
+  use crate::engine::{Capacity, ConnEvent, Event, NetAction, OpenError, Output, RequestHead, ResponseHead};
+  use crate::io::model::Pipe;
+
+  const ITERATIONS: usize = 2000;
+
+  /// Requests go out as `Q<id>;`. Each `A<id>;` from the server is that exchange's whole response.
+  struct Mock {
+    open: HashSet<u64>,
+    next: u64,
+  }
+
+  impl Engine for Mock {
+    fn capacity(&self) -> Capacity {
+      Capacity::Shared { open: self.open.len(), max: 16 }
+    }
+
+    fn open(&mut self, _head: RequestHead, _now: Instant, out: &mut Output) -> Result<ExchangeId, OpenError> {
+      self.next += 1;
+      self.open.insert(self.next);
+      out.net.push(NetAction::Send(Bytes::from(format!("Q{};", self.next))));
+      Ok(ExchangeId(self.next))
+    }
+
+    fn send_body(&mut self, _id: ExchangeId, data: Bytes, _end: bool, _out: &mut Output) -> usize {
+      data.len()
+    }
+
+    fn consumed(&mut self, _id: ExchangeId, _n: usize, _out: &mut Output) {}
+
+    fn reset(&mut self, id: ExchangeId, _out: &mut Output) {
+      self.open.remove(&id.0);
+    }
+
+    fn on_bytes(&mut self, input: &mut BytesMut, out: &mut Output) {
+      while let Some(end) = input.iter().position(|b| *b == b';') {
+        let token = String::from_utf8_lossy(&input[..end]).into_owned();
+        input.advance(end + 1);
+        let id: u64 = token.trim_start_matches('A').parse().unwrap();
+        if self.open.remove(&id) {
+          let head = ResponseHead { status: StatusCode::OK, version: Version::HTTP_2, headers: HeaderMap::new() };
+          out.events.push((ExchangeId(id), Event::Head(head)));
+          out.events.push((ExchangeId(id), Event::Data(Bytes::from_static(b"ok"))));
+          out.events.push((ExchangeId(id), Event::End));
+        }
+      }
+    }
+
+    fn on_eof(&mut self, out: &mut Output) {
+      for id in self.open.drain() {
+        out.events.push((ExchangeId(id), Event::Reset(Error::Closed)));
+      }
+      out.conn.push(ConnEvent::Closed(None));
+    }
+
+    fn on_tick(&mut self, _now: Instant, _out: &mut Output) {}
+
+    fn next_deadline(&self) -> Option<Instant> {
+      None
+    }
+
+    fn close(&mut self, out: &mut Output) {
+      self.on_eof(out);
+    }
+  }
+
+  fn connection() -> (Arc<Conn>, Arc<Pipe>) {
+    let pipe = Arc::new(Pipe::default());
+    let conn = Conn::new(Box::new(Mock { open: HashSet::new(), next: 0 }), Io::Model(pipe.clone()), Proto::H2, Registration::default());
+    (conn, pipe)
+  }
+
+  /// Answers `answers` requests one at a time, in the order they arrive.
+  fn server(pipe: Arc<Pipe>, answers: usize) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+      let mut pending = Vec::new();
+      let mut answered = 0;
+      while answered < answers {
+        let bytes = pipe.take_requests();
+        if bytes.is_empty() {
+          return;
+        }
+        pending.extend_from_slice(&bytes);
+        while let Some(end) = pending.iter().position(|b| *b == b';') {
+          let token: Vec<u8> = pending.drain(..=end).collect();
+          let id = String::from_utf8_lossy(&token[1..token.len() - 1]).into_owned();
+          pipe.respond(format!("A{id};").as_bytes());
+          answered += 1;
+        }
+      }
+    })
+  }
+
+  fn head() -> RequestHead {
+    RequestHead { method: Method::GET, uri: "http://model.test/".parse().unwrap(), version: Version::HTTP_2, headers: HeaderMap::new() }
+  }
+
+  fn kind(event: &Event) -> &'static str {
+    match event {
+      Event::Head(_) => "head",
+      Event::Data(_) => "data",
+      Event::End => "end",
+      Event::Reset(_) => "reset",
+      _ => "other",
+    }
+  }
+
+  fn exchange_sync(conn: &Conn) -> Vec<&'static str> {
+    let id = conn.open_sync(head()).unwrap();
+    let mut seen = Vec::new();
+    loop {
+      let event = conn.next_event_sync(id, None).unwrap();
+      seen.push(kind(&event));
+      if matches!(event, Event::End | Event::Reset(_)) {
+        return seen;
+      }
+    }
+  }
+
+  async fn exchange_async(conn: &Conn) -> Vec<&'static str> {
+    let id = conn.open_async(head()).await.unwrap();
+    let mut seen = Vec::new();
+    loop {
+      let event = conn.next_event_async(id, None).await.unwrap();
+      seen.push(kind(&event));
+      if matches!(event, Event::End | Event::Reset(_)) {
+        return seen;
+      }
+    }
+  }
+
+  fn blocking_callers() {
+    let (conn, pipe) = connection();
+    let srv = server(pipe, 3);
+    let callers: Vec<_> = (0..3)
+      .map(|_| {
+        let conn = conn.clone();
+        thread::spawn(move || exchange_sync(&conn))
+      })
+      .collect();
+    for c in callers {
+      assert_eq!(c.join().unwrap(), ["head", "data", "end"]);
+    }
+    srv.join().unwrap();
+  }
+
+  #[test]
+  fn blocking_callers_each_get_their_own_response_random() {
+    shuttle::check_random(blocking_callers, ITERATIONS);
+  }
+
+  #[test]
+  fn blocking_callers_each_get_their_own_response_pct() {
+    shuttle::check_pct(blocking_callers, ITERATIONS, 3);
+  }
+
+  fn mixed_callers() {
+    let (conn, pipe) = connection();
+    let srv = server(pipe, 3);
+    let blocking: Vec<_> = (0..2)
+      .map(|_| {
+        let conn = conn.clone();
+        thread::spawn(move || exchange_sync(&conn))
+      })
+      .collect();
+    let task = {
+      let conn = conn.clone();
+      thread::spawn(move || shuttle::future::block_on(async move { exchange_async(&conn).await }))
+    };
+    for c in blocking {
+      assert_eq!(c.join().unwrap(), ["head", "data", "end"]);
+    }
+    assert_eq!(task.join().unwrap(), ["head", "data", "end"]);
+    srv.join().unwrap();
+  }
+
+  #[test]
+  fn blocking_and_async_callers_share_the_lead_random() {
+    shuttle::check_random(mixed_callers, ITERATIONS);
+  }
+
+  #[test]
+  fn blocking_and_async_callers_share_the_lead_pct() {
+    shuttle::check_pct(mixed_callers, ITERATIONS, 3);
+  }
+
+  /// An async caller takes the lead, parks on the pipe, and its future is dropped. The others must still finish, and so must the dropped caller when it asks again.
+  fn dropped_async_leader() {
+    let (conn, pipe) = connection();
+    let srv = server(pipe, 3);
+    let dropper = {
+      let conn = conn.clone();
+      thread::spawn(move || {
+        let id = conn.open_sync(head()).unwrap();
+        {
+          let mut wait = std::pin::pin!(conn.next_event_async(id, None));
+          let mut cx = Context::from_waker(Waker::noop());
+          if let std::task::Poll::Ready(event) = wait.as_mut().poll(&mut cx) {
+            assert_eq!(kind(&event.unwrap()), "head");
+            return;
+          }
+        }
+        let mut seen = Vec::new();
+        loop {
+          let event = conn.next_event_sync(id, None).unwrap();
+          seen.push(kind(&event));
+          if matches!(event, Event::End) {
+            break;
+          }
+        }
+        assert_eq!(seen.last(), Some(&"end"));
+      })
+    };
+    let others: Vec<_> = (0..2)
+      .map(|_| {
+        let conn = conn.clone();
+        thread::spawn(move || exchange_sync(&conn))
+      })
+      .collect();
+    dropper.join().unwrap();
+    for c in others {
+      assert_eq!(c.join().unwrap(), ["head", "data", "end"]);
+    }
+    srv.join().unwrap();
+  }
+
+  #[test]
+  fn a_dropped_async_leader_hands_the_lead_on_random() {
+    shuttle::check_random(dropped_async_leader, ITERATIONS);
+  }
+
+  #[test]
+  fn a_dropped_async_leader_hands_the_lead_on_pct() {
+    shuttle::check_pct(dropped_async_leader, ITERATIONS, 3);
   }
 }

@@ -16,6 +16,7 @@ mod notify;
 mod pool;
 mod proxy;
 mod response;
+mod sync;
 mod wait;
 
 pub use body::{AsyncBody, SyncBody};

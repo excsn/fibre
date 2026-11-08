@@ -7,7 +7,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::time::Instant;
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 use tokio::io::Interest as TokioInterest;
 use tokio::io::unix::AsyncFd;
 
@@ -58,6 +58,26 @@ pub(crate) fn block(fd: RawFd, interest: Interest, deadline: Option<Instant>) ->
   }
 }
 
+/// What a connection waits on: its socket, or under shuttle a model pipe.
+#[derive(Clone)]
+pub(crate) enum Waitable {
+  Fd(RawFd),
+  #[cfg(shuttle)]
+  Model(Arc<crate::io::model::Pipe>),
+}
+
+/// [`block`] for a [`Waitable`].
+pub(crate) fn block_on(w: &Waitable, interest: Interest, deadline: Option<Instant>) -> io::Result<bool> {
+  match w {
+    Waitable::Fd(fd) => block(*fd, interest, deadline),
+    #[cfg(shuttle)]
+    Waitable::Model(pipe) => {
+      pipe.block(interest);
+      Ok(true)
+    }
+  }
+}
+
 #[derive(Debug)]
 struct Fd(RawFd);
 
@@ -86,6 +106,18 @@ impl Registration {
 
   pub(crate) fn forget(&self) {
     self.0.lock().take();
+  }
+
+  /// [`Registration::wait`] for a [`Waitable`].
+  pub(crate) async fn wait_on(&self, w: &Waitable, interest: Interest, deadline: Option<Instant>) -> io::Result<bool> {
+    match w {
+      Waitable::Fd(fd) => self.wait(*fd, interest, deadline).await,
+      #[cfg(shuttle)]
+      Waitable::Model(pipe) => {
+        pipe.wait_async(interest).await;
+        Ok(true)
+      }
+    }
   }
 
   /// Waits until the socket is ready or the deadline passes. Returns `false` at the deadline.

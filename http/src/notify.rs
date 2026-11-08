@@ -2,12 +2,10 @@
 //!
 //! A waiter reads `epoch`, looks for what it wants and parks only if `epoch` is unchanged. `notify_all` raises `epoch` before it wakes anyone, so a change made between the look and the park is never missed.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Poll, Waker};
-use std::thread::{self, Thread};
 use std::time::Duration;
 
-use parking_lot::Mutex;
+use crate::sync::{AtomicBool, AtomicU64, Mutex, Ordering, Thread, thread};
 
 #[derive(Default)]
 pub(crate) enum Waiter {
@@ -15,6 +13,7 @@ pub(crate) enum Waiter {
   None,
   Thread(Thread),
   Task(Waker),
+  Signal(std::sync::Arc<Signal>),
 }
 
 impl Waiter {
@@ -22,12 +21,43 @@ impl Waiter {
     match std::mem::take(self) {
       Waiter::Thread(t) => t.unpark(),
       Waiter::Task(w) => w.wake(),
+      Waiter::Signal(s) => s.fire(),
       Waiter::None => {}
     }
   }
 
   pub(crate) fn is_some(&self) -> bool {
     !matches!(self, Waiter::None)
+  }
+}
+
+/// A one-shot wake for an async waiter that registers itself under a lock and waits after releasing it. `fire` before `wait` polls is kept, so nothing is lost between the two.
+#[derive(Default)]
+pub(crate) struct Signal {
+  fired: AtomicBool,
+  waker: Mutex<Option<Waker>>,
+}
+
+impl Signal {
+  pub(crate) fn fire(&self) {
+    self.fired.store(true, Ordering::SeqCst);
+    if let Some(w) = self.waker.lock().take() {
+      w.wake();
+    }
+  }
+
+  pub(crate) async fn wait(&self) {
+    std::future::poll_fn(|cx| {
+      if self.fired.load(Ordering::SeqCst) {
+        return Poll::Ready(());
+      }
+      *self.waker.lock() = Some(cx.waker().clone());
+      if self.fired.load(Ordering::SeqCst) {
+        return Poll::Ready(());
+      }
+      Poll::Pending
+    })
+    .await
   }
 }
 

@@ -14,6 +14,8 @@ pub(crate) enum Io {
   Tls(Box<(TcpStream, rustls::ClientConnection)>),
   #[cfg(feature = "native-tls")]
   Native(Box<native::NativeIo>),
+  #[cfg(shuttle)]
+  Model(std::sync::Arc<model::Pipe>),
 }
 
 impl Io {
@@ -24,6 +26,16 @@ impl Io {
       Io::Tls(t) => t.0.as_raw_fd(),
       #[cfg(feature = "native-tls")]
       Io::Native(n) => n.sock.as_raw_fd(),
+      #[cfg(shuttle)]
+      Io::Model(_) => -1,
+    }
+  }
+
+  pub(crate) fn waitable(&self) -> crate::wait::Waitable {
+    match self {
+      #[cfg(shuttle)]
+      Io::Model(pipe) => crate::wait::Waitable::Model(pipe.clone()),
+      _ => crate::wait::Waitable::Fd(self.fd()),
     }
   }
 
@@ -52,6 +64,8 @@ impl Io {
       }
       #[cfg(feature = "native-tls")]
       Io::Native(n) => n.read(buf),
+      #[cfg(shuttle)]
+      Io::Model(pipe) => pipe.read(buf),
     }
   }
 
@@ -89,6 +103,12 @@ impl Io {
       }
       #[cfg(feature = "native-tls")]
       Io::Native(n) => n.flush(pending),
+      #[cfg(shuttle)]
+      Io::Model(pipe) => {
+        pipe.send(pending);
+        pending.clear();
+        Ok(true)
+      }
     }
   }
 
@@ -122,6 +142,8 @@ impl Io {
       }
       #[cfg(feature = "native-tls")]
       Io::Native(n) => n.handshake(),
+      #[cfg(shuttle)]
+      Io::Model(_) => Ok(None),
     }
   }
 
@@ -132,6 +154,8 @@ impl Io {
       Io::Tls(t) => t.1.alpn_protocol().map(<[u8]>::to_vec),
       #[cfg(feature = "native-tls")]
       Io::Native(n) => n.alpn(),
+      #[cfg(shuttle)]
+      Io::Model(_) => None,
     }
   }
 
@@ -307,6 +331,116 @@ pub(crate) mod native {
         State::Ready(tls) => tls.negotiated_alpn().ok().flatten(),
         _ => None,
       }
+    }
+  }
+}
+
+/// An in-memory connection for the shuttle models: the client side is an `Io`, the server side is driven by the model.
+#[cfg(shuttle)]
+pub(crate) mod model {
+  use std::collections::VecDeque;
+  use std::io;
+  use std::task::Poll;
+
+  use crate::notify::Waiter;
+  use crate::sync::{Mutex, thread};
+  use crate::wait::Interest;
+
+  #[derive(Default)]
+  struct State {
+    to_client: VecDeque<u8>,
+    to_server: Vec<u8>,
+    eof: bool,
+    client_waiters: Vec<Waiter>,
+    server_waiters: Vec<Waiter>,
+  }
+
+  #[derive(Default)]
+  pub(crate) struct Pipe {
+    state: Mutex<State>,
+  }
+
+  fn wake(waiters: &mut Vec<Waiter>) {
+    for mut w in waiters.drain(..) {
+      w.wake();
+    }
+  }
+
+  impl Pipe {
+    pub(crate) fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
+      let mut st = self.state.lock();
+      if st.to_client.is_empty() {
+        return if st.eof { Ok(0) } else { Err(io::ErrorKind::WouldBlock.into()) };
+      }
+      let n = buf.len().min(st.to_client.len());
+      for (slot, b) in buf.iter_mut().zip(st.to_client.drain(..n)) {
+        *slot = b;
+      }
+      Ok(n)
+    }
+
+    pub(crate) fn send(&self, data: &[u8]) {
+      let mut st = self.state.lock();
+      st.to_server.extend_from_slice(data);
+      wake(&mut st.server_waiters);
+    }
+
+    fn ready(st: &State, interest: Interest) -> bool {
+      interest.write || !st.to_client.is_empty() || st.eof
+    }
+
+    pub(crate) fn block(&self, interest: Interest) {
+      loop {
+        {
+          let mut st = self.state.lock();
+          if Self::ready(&st, interest) {
+            return;
+          }
+          st.client_waiters.push(Waiter::Thread(thread::current()));
+        }
+        thread::park();
+      }
+    }
+
+    pub(crate) async fn wait_async(&self, interest: Interest) {
+      std::future::poll_fn(|cx| {
+        let mut st = self.state.lock();
+        if Self::ready(&st, interest) {
+          return Poll::Ready(());
+        }
+        st.client_waiters.push(Waiter::Task(cx.waker().clone()));
+        Poll::Pending
+      })
+      .await
+    }
+
+    /// Server side: waits for request bytes and takes them all. Empty once the client side is closed.
+    pub(crate) fn take_requests(&self) -> Vec<u8> {
+      loop {
+        {
+          let mut st = self.state.lock();
+          if !st.to_server.is_empty() || st.eof {
+            return std::mem::take(&mut st.to_server);
+          }
+          st.server_waiters.push(Waiter::Thread(thread::current()));
+        }
+        thread::park();
+      }
+    }
+
+    /// Server side: delivers response bytes to the client.
+    pub(crate) fn respond(&self, data: &[u8]) {
+      let mut st = self.state.lock();
+      st.to_client.extend(data);
+      wake(&mut st.client_waiters);
+    }
+
+    /// Ends both directions.
+    pub(crate) fn close(&self) {
+      let mut st = self.state.lock();
+      st.eof = true;
+      wake(&mut st.client_waiters);
+      wake(&mut st.server_waiters);
     }
   }
 }

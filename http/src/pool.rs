@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use crate::sync::{AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use fibre::mpmc;
