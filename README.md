@@ -18,6 +18,7 @@
 
 *   **[`fibre`](./channels/README.md)**: A library of specialized, high-performance and memory-efficient sync/async channels (`spsc`, `mpsc`, `spmc`, `mpmc`).
 *   **[`fibre_cache`](./cache/README.md)**: A comprehensive, flexible and high-performance concurrent caching library with modern eviction policies.
+*   **[`fibre_http`](./http/README.md)**: An HTTP/1.1 and HTTP/2 client whose blocking and async handles share one connection pool and switch with `to_sync` and `to_async`.
 *   **[`fibre_ioc`](./ioc/README.md)**: A flexible, thread-safe and dynamic Inversion of Control (IoC) container with support for optional dependencies and a single-threaded, non-`Send`/`Sync` variant.
 *   **[`fibre_logging`](./logging/README.md)**: A flexible, multimode sync/async logging library that unifies the log and tracing ecosystems, driven by external configuration and featuring powerful debug instrumentation.
 *   **[`fibre_stats`](./stats/README.md)**: Metrics for applications and libraries: counters, gauges, timers and states defined once with `metric!`, registered automatically, aggregated per second in process and handed to a sink in batches.
@@ -33,6 +34,7 @@ Detailed documentation and usage guides can be found within each crate's directo
 
 *   **`fibre` (Channels)**: [Usage Guide](./channels/README.USAGE.md) | [API Reference (docs.rs)](https://docs.rs/fibre)
 *   **`fibre_cache` (Cache)**: [Usage Guide](./cache/README.USAGE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_cache)
+*   **`fibre_http` (HTTP client)**: [Usage Guide](./http/README.USAGE.md) | [API Reference](./http/API_REFERENCE.md)
 *   **`fibre_ioc` (IoC Container)**: [Usage Guide](./ioc/README.USAGE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_ioc)
 *   **`fibre_logging` (Logging)**: [Usage Guide](./logging/README.USAGE.md) | [API Reference (docs.rs)](https://docs.rs/fibre_logging)
 *   **`fibre_stats` (Metrics)**: [Usage Guide](./stats/README.USAGE.md) | [API Reference](./stats/API_REFERENCE.md) | [docs.rs](https://docs.rs/fibre_stats)
