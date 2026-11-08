@@ -39,6 +39,8 @@ pub(crate) struct State {
   engine: Box<dyn Engine + Send>,
   io: Io,
   input: BytesMut,
+  /// Socket reads land here first, allocated once per connection.
+  read_buf: Box<[u8]>,
   pending: BytesMut,
   unflushed: bool,
   out: Output,
@@ -113,11 +115,10 @@ impl State {
 
   fn turn(&mut self) -> Interest {
     self.flush_now();
-    let mut buf = [0u8; READ_CHUNK];
     let mut taken = 0;
     let mut got = false;
     while taken < TURN_READ && !self.closed {
-      match self.io.read(&mut buf) {
+      match self.io.read(&mut self.read_buf) {
         Ok(0) => {
           if got {
             self.engine.on_bytes(&mut self.input, &mut self.out);
@@ -129,7 +130,7 @@ impl State {
           break;
         }
         Ok(n) => {
-          self.input.extend_from_slice(&buf[..n]);
+          self.input.extend_from_slice(&self.read_buf[..n]);
           taken += n;
           got = true;
         }
@@ -244,6 +245,7 @@ impl Conn {
         engine,
         io,
         input: BytesMut::new(),
+        read_buf: vec![0u8; READ_CHUNK].into_boxed_slice(),
         pending: BytesMut::new(),
         unflushed: false,
         out: Output::default(),
