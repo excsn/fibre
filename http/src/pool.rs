@@ -78,13 +78,14 @@ impl PoolBuilder {
   }
 
   pub fn build(self) -> Pool {
-    Pool { inner: Arc::new(PoolInner { hosts: HybridMutex::new(HashMap::new()), config: self }) }
+    Pool { inner: Arc::new(PoolInner { hosts: HybridMutex::new(HashMap::new()), config: self, opened: AtomicUsize::new(0) }) }
   }
 }
 
 struct PoolInner {
   hosts: HybridMutex<HashMap<Key, Arc<Host>>>,
   config: PoolBuilder,
+  opened: AtomicUsize,
 }
 
 /// Connections shared by every client built from it, blocking and async alike.
@@ -131,6 +132,11 @@ enum Found {
 impl Pool {
   pub fn builder() -> PoolBuilder {
     PoolBuilder::default()
+  }
+
+  /// Connections this pool has opened since it was built.
+  pub fn connections_opened(&self) -> usize {
+    self.inner.opened.load(Ordering::Relaxed)
   }
 
   fn host(&self, key: &Key) -> Arc<Host> {
@@ -180,6 +186,7 @@ impl Pool {
   fn dialed(&self, host: &Arc<Host>, result: Result<Arc<Conn>, Error>) -> Result<Lease, Error> {
     let lease = match result {
       Ok(conn) => {
+        self.inner.opened.fetch_add(1, Ordering::Relaxed);
         host.proto.store(if conn.proto == Proto::H2 { 2 } else { 1 }, Ordering::Release);
         if conn.proto == Proto::H2 {
           host.shared.lock().push(conn.clone());
