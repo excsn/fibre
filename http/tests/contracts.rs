@@ -371,3 +371,71 @@ async fn a_hundred_requests_through_a_slow_one_stream_connection() {
   }
   assert_eq!(accepted.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn a_reader_body_of_unknown_length_is_sent_chunked() {
+  let s = server(|seen, _| ok(&format!("{}", seen.body.len())));
+  let data = vec![b'z'; 300_000];
+  let reader = std::io::Cursor::new(data.clone());
+  let listener_body = SyncClient::new().post(s.url("/up")).body_reader(reader, None).send().unwrap().text().unwrap();
+  let _ = listener_body;
+  let seen = s.last();
+  assert_eq!(seen.header("transfer-encoding"), Some("chunked"));
+  assert!(seen.header("content-length").is_none());
+}
+
+#[test]
+fn a_reader_body_of_known_length_is_sent_sized() {
+  let s = server(|seen, _| ok(&format!("{}", seen.body.len())));
+  let data = vec![b'q'; 200_000];
+  let r = SyncClient::new().post(s.url("/up")).body_reader(std::io::Cursor::new(data.clone()), Some(data.len() as u64)).send().unwrap();
+  assert_eq!(r.text().unwrap(), "200000");
+  assert_eq!(s.last().header("content-length"), Some("200000"));
+  assert_eq!(s.last().body, data);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_body_is_sent() {
+  let s = server(|seen, _| ok(&format!("{}", seen.body.len())));
+  let chunks: Vec<Result<Bytes, std::io::Error>> = (0..50).map(|i| Ok(Bytes::from(vec![b'0' + (i % 10) as u8; 1000]))).collect();
+  let stream = futures_util::stream::iter(chunks);
+  let r = AsyncClient::new().post(s.url("/up")).body_stream(stream, Some(50_000)).send().await.unwrap();
+  assert_eq!(r.text().await.unwrap(), "50000");
+}
+
+#[test]
+fn a_failing_reader_aborts_the_request() {
+  struct Broken(usize);
+  impl Read for Broken {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+      if self.0 == 0 {
+        return Err(std::io::Error::other("disk gone"));
+      }
+      self.0 -= 1;
+      buf[..10].fill(b'x');
+      Ok(10)
+    }
+  }
+  let s = server(|_, _| ok("x"));
+  let r = SyncClient::new().post(s.url("/up")).body_reader(Broken(3), Some(1000)).send();
+  assert!(matches!(r, Err(Error::Io(_))), "{:?}", r.err());
+}
+
+#[test]
+fn a_307_with_a_streamed_body_returns_the_redirect() {
+  let s = server(|seen, _| match seen.line.split_whitespace().nth(1) {
+    Some("/move") => b"HTTP/1.1 307 Temporary Redirect\r\nlocation: /up\r\ncontent-length: 0\r\n\r\n".to_vec(),
+    _ => ok("landed"),
+  });
+  let r = SyncClient::new().post(s.url("/move")).body_reader(std::io::Cursor::new(b"once".to_vec()), Some(4)).send().unwrap();
+  assert_eq!(r.status(), 307);
+}
+
+#[test]
+fn a_body_over_the_size_limit_is_an_error() {
+  let s = server(|_, _| ok(&"y".repeat(10_000)));
+  let client = SyncClient::builder().max_response_size(4096).build_sync().unwrap();
+  assert!(matches!(client.get(s.url("/")).send().unwrap().bytes(), Err(Error::TooLarge)));
+  let client = SyncClient::builder().max_response_size(20_000).build_sync().unwrap();
+  assert_eq!(client.get(s.url("/")).send().unwrap().bytes().unwrap().len(), 10_000);
+}

@@ -312,11 +312,11 @@ impl Conn {
     self.open_locked(&mut st, head)
   }
 
-  fn offer(&self, st: &mut State, id: ExchangeId, data: &Bytes, off: &mut usize) -> Result<(), Error> {
+  fn offer(&self, st: &mut State, id: ExchangeId, data: &Bytes, end: bool, off: &mut usize) -> Result<(), Error> {
     if st.closed {
       return Err(st.closed_error());
     }
-    let n = st.engine.send_body(id, data.slice(*off..), true, &mut st.out);
+    let n = st.engine.send_body(id, data.slice(*off..), end, &mut st.out);
     *off += n;
     st.apply();
     st.flush_now();
@@ -324,14 +324,15 @@ impl Conn {
     Ok(())
   }
 
-  pub(crate) fn send_body_sync(&self, id: ExchangeId, data: Bytes, deadline: Option<Instant>) -> Result<(), Error> {
+  /// Sends `data` as the next piece of the request body; `end` marks the last piece.
+  pub(crate) fn send_body_sync(&self, id: ExchangeId, data: Bytes, end: bool, deadline: Option<Instant>) -> Result<(), Error> {
     let mut off = 0;
     let mut first = true;
     loop {
       let unflushed = {
         let mut st = self.st.lock();
         if first || off < data.len() {
-          self.offer(&mut st, id, &data, &mut off)?;
+          self.offer(&mut st, id, &data, end, &mut off)?;
           first = false;
         }
         st.unflushed
@@ -347,14 +348,14 @@ impl Conn {
     }
   }
 
-  pub(crate) async fn send_body_async(&self, id: ExchangeId, data: Bytes, deadline: Option<Instant>) -> Result<(), Error> {
+  pub(crate) async fn send_body_async(&self, id: ExchangeId, data: Bytes, end: bool, deadline: Option<Instant>) -> Result<(), Error> {
     let mut off = 0;
     let mut first = true;
     loop {
       let unflushed = {
         let mut st = self.st.lock_async().await;
         if first || off < data.len() {
-          self.offer(&mut st, id, &data, &mut off)?;
+          self.offer(&mut st, id, &data, end, &mut off)?;
           first = false;
         }
         st.unflushed

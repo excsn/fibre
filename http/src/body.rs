@@ -19,11 +19,13 @@ pub(crate) struct BodyState {
   leftover: Bytes,
   trailers: Option<HeaderMap>,
   decoder: Option<Decoder>,
+  limit: Option<usize>,
+  received: usize,
 }
 
 impl BodyState {
-  pub(crate) fn new(lease: Lease, id: ExchangeId, deadline: Option<Instant>, empty: bool, decoder: Option<Decoder>) -> Self {
-    let mut state = Self { lease: Some(lease), id, deadline, done: false, leftover: Bytes::new(), trailers: None, decoder };
+  pub(crate) fn new(lease: Lease, id: ExchangeId, deadline: Option<Instant>, empty: bool, decoder: Option<Decoder>, limit: Option<usize>) -> Self {
+    let mut state = Self { lease: Some(lease), id, deadline, done: false, leftover: Bytes::new(), trailers: None, decoder, limit, received: 0 };
     if empty {
       state.drain_queued();
     }
@@ -60,18 +62,27 @@ impl BodyState {
   fn fail(&mut self, e: Error) -> Error {
     self.done = true;
     if let Some(lease) = self.lease.take() {
+      lease.conn.reset(self.id);
       lease.release();
     }
     e
   }
 
+  fn counted(&mut self, out: Bytes) -> Option<Result<Option<Bytes>, Error>> {
+    self.received += out.len();
+    if self.limit.is_some_and(|l| self.received > l) {
+      return Some(Err(self.fail(Error::TooLarge)));
+    }
+    Some(Ok(Some(out)))
+  }
+
   fn on(&mut self, event: Result<Event, Error>) -> Option<Result<Option<Bytes>, Error>> {
     match event {
       Ok(Event::Data(b)) => match self.decoder.as_mut() {
-        None => Some(Ok(Some(b))),
+        None => self.counted(b),
         Some(d) => match d.push(&b) {
           Ok(out) if out.is_empty() => None,
-          Ok(out) => Some(Ok(Some(out))),
+          Ok(out) => self.counted(out),
           Err(e) => Some(Err(self.fail(e))),
         },
       },
@@ -85,8 +96,15 @@ impl BodyState {
           Some(Ok(tail)) => tail,
           None => Bytes::new(),
         };
-        self.finish();
-        Some(Ok((!tail.is_empty()).then_some(tail)))
+        if tail.is_empty() {
+          self.finish();
+          return Some(Ok(None));
+        }
+        let counted = self.counted(tail);
+        if self.lease.is_some() {
+          self.finish();
+        }
+        counted
       }
       Ok(Event::Reset(e)) | Err(e) => Some(Err(self.fail(e))),
       Ok(_) => None,

@@ -964,6 +964,8 @@ dependencies = [
  "cookie_store",
  "fibre",
  "flate2",
+ "futures-core",
+ "futures-util",
  "h2 0.4.20",
  "http 1.5.0",
  "libc",

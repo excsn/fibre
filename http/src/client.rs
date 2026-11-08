@@ -19,6 +19,31 @@ use crate::response::Response;
 const DEFAULT_USER_AGENT: &str = concat!("fibre_http/", env!("CARGO_PKG_VERSION"));
 const ATTEMPTS: usize = 3;
 const DEFAULT_REDIRECTS: usize = 10;
+const BODY_CHUNK: usize = 64 * 1024;
+
+type BodyReader = Box<dyn std::io::Read + Send>;
+type BodyStream = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
+
+/// A request body. A reader or a stream is read once, so a request carrying one is not sent again.
+#[derive(Clone)]
+enum ReqBody {
+  Full(Bytes),
+  Reader(Arc<parking_lot::Mutex<Option<BodyReader>>>, Option<u64>),
+  Stream(Arc<parking_lot::Mutex<Option<BodyStream>>>, Option<u64>),
+}
+
+impl ReqBody {
+  fn replayable(&self) -> bool {
+    matches!(self, ReqBody::Full(_))
+  }
+
+  fn length(&self) -> Option<u64> {
+    match self {
+      ReqBody::Full(b) => Some(b.len() as u64),
+      ReqBody::Reader(_, n) | ReqBody::Stream(_, n) => *n,
+    }
+  }
+}
 /// A redirect's own body is read up to this much so its connection can be reused; a longer one is dropped.
 const REDIRECT_DRAIN: usize = 64 * 1024;
 
@@ -30,6 +55,7 @@ struct Inner {
   redirects: usize,
   decompress: bool,
   default_headers: HeaderMap,
+  max_response_size: Option<usize>,
   #[cfg(feature = "cookies")]
   cookies: Option<Arc<parking_lot::Mutex<cookie_store::CookieStore>>>,
 }
@@ -40,6 +66,7 @@ pub struct ClientBuilder {
   redirects: usize,
   decompress: bool,
   default_headers: HeaderMap,
+  max_response_size: Option<usize>,
   /// `None` reads the environment when the client is built.
   proxies: Option<crate::proxy::Proxies>,
   #[cfg(feature = "cookies")]
@@ -60,6 +87,7 @@ impl Default for ClientBuilder {
       redirects: DEFAULT_REDIRECTS,
       decompress: true,
       default_headers: HeaderMap::new(),
+      max_response_size: None,
       proxies: None,
       #[cfg(feature = "cookies")]
       cookie_store: false,
@@ -119,6 +147,12 @@ impl ClientBuilder {
   /// No proxy, whatever the environment says.
   pub fn no_proxy(mut self) -> Self {
     self.proxies = Some(crate::proxy::Proxies::default());
+    self
+  }
+
+  /// The most bytes a response body may decode to. A longer one fails with `Error::TooLarge`.
+  pub fn max_response_size(mut self, bytes: usize) -> Self {
+    self.max_response_size = Some(bytes);
     self
   }
 
@@ -197,6 +231,7 @@ impl ClientBuilder {
       redirects: self.redirects,
       decompress: self.decompress,
       default_headers: self.default_headers,
+      max_response_size: self.max_response_size,
       #[cfg(feature = "cookies")]
       cookies: self.cookie_store.then(|| Arc::new(parking_lot::Mutex::new(cookie_store::CookieStore::default()))),
     }))
@@ -299,7 +334,7 @@ pub struct RequestBuilder<M> {
   method: Method,
   uri: Result<Uri, Error>,
   headers: HeaderMap,
-  body: Bytes,
+  body: ReqBody,
   timeout: Option<Duration>,
   error: Option<Error>,
   _mode: PhantomData<M>,
@@ -309,7 +344,7 @@ impl<M> RequestBuilder<M> {
   fn new(inner: Arc<Inner>, method: Method, url: &str) -> Self {
     let uri = url.parse::<Uri>().map_err(|e| Error::Url(e.to_string()));
     let timeout = inner.timeout;
-    Self { inner, method, uri, headers: HeaderMap::new(), body: Bytes::new(), timeout, error: None, _mode: PhantomData }
+    Self { inner, method, uri, headers: HeaderMap::new(), body: ReqBody::Full(Bytes::new()), timeout, error: None, _mode: PhantomData }
   }
 
   pub fn header(mut self, name: &str, value: &str) -> Self {
@@ -364,7 +399,7 @@ impl<M> RequestBuilder<M> {
       encoded.push('=');
       form_encode(v.as_ref(), &mut encoded);
     }
-    self.body = Bytes::from(encoded);
+    self.body = ReqBody::Full(Bytes::from(encoded));
     if !self.headers.contains_key(http::header::CONTENT_TYPE) {
       self.headers.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/x-www-form-urlencoded"));
     }
@@ -372,7 +407,7 @@ impl<M> RequestBuilder<M> {
   }
 
   pub fn body(mut self, body: impl Into<Bytes>) -> Self {
-    self.body = body.into();
+    self.body = ReqBody::Full(body.into());
     self
   }
 
@@ -380,7 +415,7 @@ impl<M> RequestBuilder<M> {
   pub fn json<T: serde::Serialize + ?Sized>(mut self, value: &T) -> Self {
     match serde_json::to_vec(value) {
       Ok(v) => {
-        self.body = Bytes::from(v);
+        self.body = ReqBody::Full(Bytes::from(v));
         if !self.headers.contains_key(http::header::CONTENT_TYPE) {
           self.headers.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
         }
@@ -418,9 +453,19 @@ impl<M> RequestBuilder<M> {
         headers.insert(http::header::ACCEPT_ENCODING, HeaderValue::from_static(accept));
       }
     }
-    let sends_body = !self.body.is_empty() || matches!(self.method, Method::POST | Method::PUT | Method::PATCH);
+    let sends_body = match &self.body {
+      ReqBody::Full(b) => !b.is_empty() || matches!(self.method, Method::POST | Method::PUT | Method::PATCH),
+      _ => {
+        if matches!(self.method, Method::GET | Method::HEAD | Method::DELETE | Method::OPTIONS) {
+          return Err(Error::Protocol(format!("a streamed body needs a method that carries one, not {}", self.method)));
+        }
+        true
+      }
+    };
     if sends_body && !headers.contains_key(CONTENT_LENGTH) {
-      headers.insert(CONTENT_LENGTH, HeaderValue::from(self.body.len()));
+      if let Some(n) = self.body.length() {
+        headers.insert(CONTENT_LENGTH, HeaderValue::from(n));
+      }
     }
     let deadline = self.timeout.map(|t| Instant::now() + t);
     let decode = self.inner.decompress && !caller_encoding;
@@ -446,7 +491,7 @@ struct Prepared {
   method: Method,
   uri: Uri,
   headers: HeaderMap,
-  body: Bytes,
+  body: ReqBody,
   sends_body: bool,
   key: Key,
   deadline: Option<Instant>,
@@ -517,15 +562,18 @@ impl Prepared {
     }
     let Ok(uri) = resolve(&self.uri, location) else { return Ok(None) };
     let key = Key::for_target(&uri, &self.inner.dialer.proxies)?;
-    let mut next = self.clone();
     let to_get = match status.as_u16() {
       303 => self.method != Method::HEAD,
       301 | 302 => self.method == Method::POST,
       _ => false,
     };
+    if !to_get && self.sends_body && !self.body.replayable() {
+      return Ok(None);
+    }
+    let mut next = self.clone();
     if to_get {
       next.method = Method::GET;
-      next.body = Bytes::new();
+      next.body = ReqBody::Full(Bytes::new());
       next.sends_body = false;
       for name in [CONTENT_LENGTH, http::header::CONTENT_TYPE, http::header::CONTENT_ENCODING, http::header::TRANSFER_ENCODING] {
         next.headers.remove(name);
@@ -605,7 +653,7 @@ impl Prepared {
 
   /// Whether a failed attempt may be sent again on another connection.
   fn retry(&self, error: &Error, lease: &Lease, saw_head: bool) -> bool {
-    if saw_head {
+    if saw_head || (self.sends_body && !self.body.replayable()) {
       return false;
     }
     match error {
@@ -626,6 +674,12 @@ enum Attempt {
 }
 
 impl RequestBuilder<Blocking> {
+  /// A body read from `reader`, `length` bytes long when known. With no length it goes out chunked over HTTP/1.1.
+  pub fn body_reader(mut self, reader: impl std::io::Read + Send + 'static, length: Option<u64>) -> Self {
+    self.body = ReqBody::Reader(Arc::new(parking_lot::Mutex::new(Some(Box::new(reader)))), length);
+    self
+  }
+
   pub fn send(self) -> Result<Response<SyncBody>, Error> {
     let mut req = self.prepare()?;
     let mut hops = 0;
@@ -661,6 +715,12 @@ fn send_once_sync(req: &Prepared) -> Result<Response<BodyState>, Error> {
 }
 
 impl RequestBuilder<Async> {
+  /// A body from `stream`, `length` bytes long when known. With no length it goes out chunked over HTTP/1.1.
+  pub fn body_stream(mut self, stream: impl futures_core::Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static, length: Option<u64>) -> Self {
+    self.body = ReqBody::Stream(Arc::new(parking_lot::Mutex::new(Some(Box::pin(stream)))), length);
+    self
+  }
+
   pub async fn send(self) -> Result<Response<AsyncBody>, Error> {
     let mut req = self.prepare()?;
     let mut hops = 0;
@@ -729,6 +789,42 @@ fn on_event(req: &Prepared, lease: Lease, id: crate::engine::ExchangeId, event: 
   }
 }
 
+fn send_request_body_sync(req: &Prepared, lease: &Lease, id: crate::engine::ExchangeId) -> Result<(), Error> {
+  match &req.body {
+    ReqBody::Full(b) => lease.conn.send_body_sync(id, b.clone(), true, req.deadline),
+    ReqBody::Reader(slot, _) => {
+      let mut reader = slot.lock().take().ok_or_else(|| Error::Protocol("the request body was already read".into()))?;
+      let mut buf = vec![0u8; BODY_CHUNK];
+      loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+          return lease.conn.send_body_sync(id, Bytes::new(), true, req.deadline);
+        }
+        lease.conn.send_body_sync(id, Bytes::copy_from_slice(&buf[..n]), false, req.deadline)?;
+      }
+    }
+    ReqBody::Stream(..) => Err(Error::Protocol("a stream body needs the async client".into())),
+  }
+}
+
+async fn send_request_body_async(req: &Prepared, lease: &Lease, id: crate::engine::ExchangeId) -> Result<(), Error> {
+  match &req.body {
+    ReqBody::Full(b) => lease.conn.send_body_async(id, b.clone(), true, req.deadline).await,
+    ReqBody::Stream(slot, _) => {
+      let mut stream = slot.lock().take().ok_or_else(|| Error::Protocol("the request body was already read".into()))?;
+      loop {
+        match std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)).await {
+          Some(Ok(chunk)) if chunk.is_empty() => {}
+          Some(Ok(chunk)) => lease.conn.send_body_async(id, chunk, false, req.deadline).await?,
+          Some(Err(e)) => return Err(e.into()),
+          None => return lease.conn.send_body_async(id, Bytes::new(), true, req.deadline).await,
+        }
+      }
+    }
+    ReqBody::Reader(..) => Err(Error::Protocol("a reader body needs the blocking client".into())),
+  }
+}
+
 fn attempt_sync(req: &Prepared, lease: Lease) -> Attempt {
   let head = req.head(lease.conn.proto);
   let result = lease.conn.open_sync(head);
@@ -737,7 +833,7 @@ fn attempt_sync(req: &Prepared, lease: Lease) -> Attempt {
     Err(a) => return a,
   };
   if req.sends_body {
-    if let Err(e) = lease.conn.send_body_sync(id, req.body.clone(), req.deadline) {
+    if let Err(e) = send_request_body_sync(req, &lease, id) {
       let retry = req.retry(&e, &lease, false);
       lease.conn.reset(id);
       lease.release();
@@ -750,7 +846,7 @@ fn attempt_sync(req: &Prepared, lease: Lease) -> Attempt {
     if let Ok(Event::Head(_)) = &event {
       let Ok(Event::Head(mut head)) = event else { unreachable!() };
       let decoder = req.decoder(&mut head.headers);
-      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder);
+      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder, req.inner.max_response_size);
       return Attempt::Done(Response::new(head.status, head.version, head.headers, state));
     }
     match on_event(req, lease, id, event) {
@@ -769,7 +865,7 @@ async fn attempt_async(req: &Prepared, lease: Lease) -> Attempt {
     Err(a) => return a,
   };
   if req.sends_body {
-    if let Err(e) = lease.conn.send_body_async(id, req.body.clone(), req.deadline).await {
+    if let Err(e) = send_request_body_async(req, &lease, id).await {
       let retry = req.retry(&e, &lease, false);
       lease.conn.reset(id);
       lease.release();
@@ -782,7 +878,7 @@ async fn attempt_async(req: &Prepared, lease: Lease) -> Attempt {
     if let Ok(Event::Head(_)) = &event {
       let Ok(Event::Head(mut head)) = event else { unreachable!() };
       let decoder = req.decoder(&mut head.headers);
-      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder);
+      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder, req.inner.max_response_size);
       return Attempt::Done(Response::new(head.status, head.version, head.headers, state));
     }
     match on_event(req, lease, id, event) {
