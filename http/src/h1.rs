@@ -13,6 +13,8 @@ use crate::Error;
 use crate::engine::{self, Capacity, ConnEvent, Event, ExchangeId, NetAction, OpenError, Output, RequestHead, ResponseHead};
 
 const WRITE_CHUNK: usize = 16 * 1024;
+/// The most bytes a response head may take before it is refused.
+const MAX_HEAD: usize = 64 * 1024;
 
 enum State {
   Idle,
@@ -217,6 +219,10 @@ impl engine::Engine for Engine {
           }
           Ok((used, None)) => {
             input.advance(used);
+            if used == 0 && input.len() > MAX_HEAD {
+              self.fail(Error::Protocol(format!("response head over {MAX_HEAD} bytes")), out);
+              return;
+            }
             self.state = State::RecvResponse(call);
             if used == 0 {
               return;
@@ -261,6 +267,11 @@ impl engine::Engine for Engine {
               return;
             }
           }
+        }
+        State::Idle if !input.is_empty() => {
+          input.clear();
+          self.shut(None, out);
+          return;
         }
         other => {
           self.state = other;

@@ -401,3 +401,26 @@ fn engine_has_no_deadlines() {
   h.open(Method::GET, "/", &[]).unwrap();
   assert_eq!(h.engine.next_deadline(), None);
 }
+
+#[test]
+fn refused_stream_reset_is_refused() {
+  let handler: Handler = Rc::new(|_req, mut respond, _sp| {
+    respond.send_reset(h2::Reason::REFUSED_STREAM);
+  });
+  let mut h = Harness::new(None, handler);
+  let id = h.open(Method::GET, "/", &[]).unwrap();
+  h.pump();
+  assert_eq!(h.of(id), vec![Seen::Reset(Error::Refused)]);
+  assert!(!h.conn_closed());
+}
+
+#[test]
+fn other_resets_keep_their_code() {
+  let handler: Handler = Rc::new(|_req, mut respond, _sp| {
+    respond.send_reset(h2::Reason::INTERNAL_ERROR);
+  });
+  let mut h = Harness::new(None, handler);
+  let id = h.open(Method::GET, "/", &[]).unwrap();
+  h.pump();
+  assert_eq!(h.of(id), vec![Seen::Reset(Error::Reset(2))]);
+}

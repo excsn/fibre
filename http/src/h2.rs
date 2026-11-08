@@ -293,6 +293,9 @@ impl Default for Engine {
 fn map_error(e: &::h2::Error) -> Error {
   if e.is_go_away() && e.is_remote() {
     Error::Refused
+  } else if e.is_reset() && e.is_remote() && e.reason() == Some(Reason::REFUSED_STREAM) {
+    // RFC 9113 section 8.7: REFUSED_STREAM means no application processing happened.
+    Error::Refused
   } else if e.is_reset() {
     Error::Reset(e.reason().map(u32::from).unwrap_or(0))
   } else if e.is_io() {

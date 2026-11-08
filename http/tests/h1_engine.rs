@@ -231,3 +231,52 @@ fn engine_has_no_deadlines() {
   h.open(Method::GET, "http://example.test/", &[]).unwrap();
   assert_eq!(h.engine.next_deadline(), None);
 }
+
+#[test]
+fn bytes_after_a_complete_response_close_the_connection() {
+  let mut h = Harness::new();
+  let id = h.open(Method::GET, "http://example.test/", &[]).unwrap();
+  h.feed(b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhelloHTTP/1.1 200 OK\r\n");
+  assert_eq!(h.seen(id), vec![Seen::Head(200), Seen::Data(b"hello".to_vec()), Seen::End]);
+  assert!(h.closed());
+  assert_eq!(h.engine.capacity(), Capacity::Unique { available: false });
+}
+
+#[test]
+fn a_response_head_over_the_limit_is_an_error() {
+  let mut h = Harness::new();
+  let id = h.open(Method::GET, "http://example.test/", &[]).unwrap();
+  h.feed(b"HTTP/1.1 200 OK\r\n");
+  let line = format!("x-filler: {}\r\n", "a".repeat(1000));
+  for _ in 0..80 {
+    h.feed(line.as_bytes());
+  }
+  assert_eq!(h.seen(id), vec![Seen::Reset]);
+  assert!(h.closed());
+}
+
+#[test]
+fn a_malformed_status_line_is_an_error() {
+  let mut h = Harness::new();
+  let id = h.open(Method::GET, "http://example.test/", &[]).unwrap();
+  h.feed(b"HTTP/1.1 2x0 OK\r\ncontent-length: 0\r\n\r\n");
+  assert_eq!(h.seen(id), vec![Seen::Reset]);
+  assert!(h.closed());
+}
+
+#[test]
+fn equal_duplicate_content_lengths_are_read_as_one() {
+  let mut h = Harness::new();
+  let id = h.open(Method::GET, "http://example.test/", &[]).unwrap();
+  h.feed(b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\ncontent-length: 3\r\n\r\nabc");
+  assert_eq!(h.seen(id), vec![Seen::Head(200), Seen::Data(b"abc".to_vec()), Seen::End]);
+}
+
+#[test]
+fn head_response_ignores_its_content_length() {
+  let mut h = Harness::new();
+  let id = h.open(Method::HEAD, "http://example.test/", &[]).unwrap();
+  h.feed(b"HTTP/1.1 200 OK\r\ncontent-length: 500\r\n\r\n");
+  assert_eq!(h.seen(id), vec![Seen::Head(200), Seen::End]);
+  assert!(!h.closed());
+}
