@@ -321,7 +321,9 @@ impl engine::Engine for Engine {
   }
 
   fn open(&mut self, head: RequestHead, _now: Instant, out: &mut Output) -> Result<ExchangeId, OpenError> {
-    self.drive(out);
+    if self.send.is_none() {
+      self.drive(out);
+    }
     if self.closed {
       return Err(OpenError::Closed);
     }
