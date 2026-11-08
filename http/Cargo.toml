@@ -30,8 +30,8 @@ webpki-roots = ["dep:webpki-roots", "rustls"]
 native-roots = []
 hickory = []
 json = ["dep:serde", "dep:serde_json"]
-gzip = []
-zstd = []
+gzip = ["dep:flate2"]
+zstd = ["dep:ruzstd"]
 cookies = []
 
 [dependencies]
@@ -42,7 +42,9 @@ libc = "0.2.191"
 parking_lot = "0.13.0"
 tokio = { version = "1.54.1", default-features = false, features = ["net", "rt", "time"] }
 
+flate2 = { version = "1.1.11", optional = true }
 h2 = { version = "0.4.20", optional = true }
+ruzstd = { version = "0.9.1", optional = true }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 serde = { version = "1.0.229", optional = true }
 serde_json = { version = "1.0.154", optional = true }
@@ -50,6 +52,8 @@ ureq-proto = { version = "0.7.1", default-features = false, features = ["client"
 webpki-roots = { version = "1.0.11", optional = true }
 
 [dev-dependencies]
+flate2 = "1.1.11"
+ruzstd = "0.9.1"
 h2 = "0.4.20"
 rcgen = "0.14.10"
 tokio = { version = "1.54.1", features = ["macros", "net", "rt", "rt-multi-thread", "time", "io-util"] }

@@ -53,6 +53,7 @@ fn transport(dialer: &Dialer, key: &Key, sock: TcpStream) -> Result<Io, Error> {
   }
 }
 
+#[cfg_attr(not(all(feature = "http1", feature = "http2")), allow(unreachable_code, unused_variables))]
 fn finish(dialer: &Dialer, key: &Key, io: Io, reg: Registration) -> Result<Arc<Conn>, Error> {
   let h2 = match io.alpn() {
     Some(p) => p == b"h2",

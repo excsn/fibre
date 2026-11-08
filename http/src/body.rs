@@ -7,6 +7,7 @@ use bytes::{Buf, Bytes, BytesMut};
 use http::HeaderMap;
 
 use crate::Error;
+use crate::decode::Decoder;
 use crate::engine::{Event, ExchangeId};
 use crate::pool::Lease;
 
@@ -17,11 +18,12 @@ pub(crate) struct BodyState {
   done: bool,
   leftover: Bytes,
   trailers: Option<HeaderMap>,
+  decoder: Option<Decoder>,
 }
 
 impl BodyState {
-  pub(crate) fn new(lease: Lease, id: ExchangeId, deadline: Option<Instant>, empty: bool) -> Self {
-    let mut state = Self { lease: Some(lease), id, deadline, done: false, leftover: Bytes::new(), trailers: None };
+  pub(crate) fn new(lease: Lease, id: ExchangeId, deadline: Option<Instant>, empty: bool, decoder: Option<Decoder>) -> Self {
+    let mut state = Self { lease: Some(lease), id, deadline, done: false, leftover: Bytes::new(), trailers: None, decoder };
     if empty {
       state.drain_queued();
     }
@@ -65,14 +67,26 @@ impl BodyState {
 
   fn on(&mut self, event: Result<Event, Error>) -> Option<Result<Option<Bytes>, Error>> {
     match event {
-      Ok(Event::Data(b)) => Some(Ok(Some(b))),
+      Ok(Event::Data(b)) => match self.decoder.as_mut() {
+        None => Some(Ok(Some(b))),
+        Some(d) => match d.push(&b) {
+          Ok(out) if out.is_empty() => None,
+          Ok(out) => Some(Ok(Some(out))),
+          Err(e) => Some(Err(self.fail(e))),
+        },
+      },
       Ok(Event::Trailers(t)) => {
         self.trailers = Some(t);
         None
       }
       Ok(Event::End) => {
+        let tail = match self.decoder.as_mut().map(Decoder::finish) {
+          Some(Err(e)) => return Some(Err(self.fail(e))),
+          Some(Ok(tail)) => tail,
+          None => Bytes::new(),
+        };
         self.finish();
-        Some(Ok(None))
+        Some(Ok((!tail.is_empty()).then_some(tail)))
       }
       Ok(Event::Reset(e)) | Err(e) => Some(Err(self.fail(e))),
       Ok(_) => None,

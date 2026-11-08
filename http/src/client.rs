@@ -28,12 +28,14 @@ struct Inner {
   timeout: Option<Duration>,
   user_agent: HeaderValue,
   redirects: usize,
+  decompress: bool,
 }
 
 pub struct ClientBuilder {
   pool: Option<Pool>,
   timeout: Option<Duration>,
   redirects: usize,
+  decompress: bool,
   user_agent: HeaderValue,
   h2_prior_knowledge: bool,
   #[cfg(feature = "rustls")]
@@ -48,6 +50,7 @@ impl Default for ClientBuilder {
       pool: None,
       timeout: None,
       redirects: DEFAULT_REDIRECTS,
+      decompress: true,
       user_agent: HeaderValue::from_static(DEFAULT_USER_AGENT),
       h2_prior_knowledge: false,
       #[cfg(feature = "rustls")]
@@ -74,6 +77,12 @@ impl ClientBuilder {
   /// The most redirects a request follows, 10 by default. 0 hands every redirect back as the response.
   pub fn redirects(mut self, n: usize) -> Self {
     self.redirects = n;
+    self
+  }
+
+  /// Whether gzip and zstd responses are decoded, on by default. Off, `Accept-Encoding` is not sent and bodies arrive as the server encoded them.
+  pub fn decompress(mut self, on: bool) -> Self {
+    self.decompress = on;
     self
   }
 
@@ -136,6 +145,7 @@ impl ClientBuilder {
       timeout: self.timeout,
       user_agent: self.user_agent,
       redirects: self.redirects,
+      decompress: self.decompress,
     }))
   }
 
@@ -322,12 +332,19 @@ impl<M> RequestBuilder<M> {
     if !headers.contains_key(USER_AGENT) {
       headers.insert(USER_AGENT, self.inner.user_agent.clone());
     }
+    let caller_encoding = headers.contains_key(http::header::ACCEPT_ENCODING);
+    if self.inner.decompress && !caller_encoding {
+      if let Some(accept) = crate::decode::accept_encoding() {
+        headers.insert(http::header::ACCEPT_ENCODING, HeaderValue::from_static(accept));
+      }
+    }
     let sends_body = !self.body.is_empty() || matches!(self.method, Method::POST | Method::PUT | Method::PATCH);
     if sends_body && !headers.contains_key(CONTENT_LENGTH) {
       headers.insert(CONTENT_LENGTH, HeaderValue::from(self.body.len()));
     }
     let deadline = self.timeout.map(|t| Instant::now() + t);
-    Ok(Prepared { inner: self.inner, method: self.method, uri, headers, body: self.body, sends_body, key, deadline })
+    let decode = self.inner.decompress && !caller_encoding;
+    Ok(Prepared { inner: self.inner, method: self.method, uri, headers, body: self.body, sends_body, key, deadline, decode })
   }
 }
 
@@ -352,6 +369,8 @@ struct Prepared {
   sends_body: bool,
   key: Key,
   deadline: Option<Instant>,
+  /// Decode the response body by its `Content-Encoding`; off when the caller asked for an encoding themselves.
+  decode: bool,
 }
 
 fn is_redirect(status: StatusCode) -> bool {
@@ -437,6 +456,18 @@ impl Prepared {
     next.uri = uri;
     next.key = key;
     Ok(Some(next))
+  }
+
+  /// The decoder for this response, taking `Content-Encoding` and `Content-Length` off its headers when there is one.
+  fn decoder(&self, headers: &mut HeaderMap) -> Option<crate::decode::Decoder> {
+    if !self.decode || self.method == Method::HEAD {
+      return None;
+    }
+    let value = headers.get(http::header::CONTENT_ENCODING)?.to_str().ok()?;
+    let decoder = crate::decode::Decoder::for_encoding(value)?;
+    headers.remove(http::header::CONTENT_ENCODING);
+    headers.remove(CONTENT_LENGTH);
+    Some(decoder)
   }
 
   fn head(&self, proto: Proto) -> RequestHead {
@@ -591,8 +622,9 @@ fn attempt_sync(req: &Prepared, lease: Lease) -> Attempt {
   loop {
     let event = lease.conn.next_event_sync(id, req.deadline);
     if let Ok(Event::Head(_)) = &event {
-      let Ok(Event::Head(head)) = event else { unreachable!() };
-      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD);
+      let Ok(Event::Head(mut head)) = event else { unreachable!() };
+      let decoder = req.decoder(&mut head.headers);
+      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder);
       return Attempt::Done(Response::new(head.status, head.version, head.headers, state));
     }
     match on_event(req, lease, id, event) {
@@ -622,8 +654,9 @@ async fn attempt_async(req: &Prepared, lease: Lease) -> Attempt {
   loop {
     let event = lease.conn.next_event_async(id, req.deadline).await;
     if let Ok(Event::Head(_)) = &event {
-      let Ok(Event::Head(head)) = event else { unreachable!() };
-      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD);
+      let Ok(Event::Head(mut head)) = event else { unreachable!() };
+      let decoder = req.decoder(&mut head.headers);
+      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder);
       return Attempt::Done(Response::new(head.status, head.version, head.headers, state));
     }
     match on_event(req, lease, id, event) {

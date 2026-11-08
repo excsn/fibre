@@ -3,6 +3,7 @@
 mod body;
 mod client;
 mod conn;
+mod decode;
 mod dial;
 pub mod engine;
 mod error;

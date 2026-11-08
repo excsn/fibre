@@ -17,6 +17,7 @@ pub(crate) struct Interest {
   pub write: bool,
 }
 
+#[cfg_attr(not(feature = "rustls"), allow(dead_code))]
 impl Interest {
   pub const READ: Interest = Interest { read: true, write: false };
   pub const WRITE: Interest = Interest { read: false, write: true };
