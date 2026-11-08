@@ -18,6 +18,10 @@ pub enum Error {
   Url(String),
   /// The response body could not be decoded as asked.
   Decode(String),
+  /// More redirects than the client follows.
+  TooManyRedirects,
+  /// The response body is larger than the client accepts.
+  TooLarge,
 }
 
 impl fmt::Display for Error {
@@ -32,6 +36,8 @@ impl fmt::Display for Error {
       Error::Tls(e) => write!(f, "tls error: {e}"),
       Error::Url(e) => write!(f, "invalid url: {e}"),
       Error::Decode(e) => write!(f, "could not decode body: {e}"),
+      Error::TooManyRedirects => f.write_str("too many redirects"),
+      Error::TooLarge => f.write_str("response body too large"),
     }
   }
 }

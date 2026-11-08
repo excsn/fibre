@@ -65,6 +65,16 @@ fn serve_h1(stream: TcpStream, mode: H1Mode) {
       "/echo" => [format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len()).into_bytes(), body].concat(),
       "/chunked" => b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n".to_vec(),
       "/close" => b"HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-length: 3\r\n\r\nbye".to_vec(),
+      "/redirect" => b"HTTP/1.1 302 Found\r\nlocation: /chunked\r\ncontent-length: 4\r\n\r\nmove".to_vec(),
+      "/nested/redirect" => b"HTTP/1.1 301 Moved\r\nlocation: ../redirect\r\ncontent-length: 0\r\n\r\n".to_vec(),
+      "/loop" => b"HTTP/1.1 302 Found\r\nlocation: /loop\r\ncontent-length: 0\r\n\r\n".to_vec(),
+      "/see-other" => b"HTTP/1.1 303 See Other\r\nlocation: /method\r\ncontent-length: 0\r\n\r\n".to_vec(),
+      "/temporary" => b"HTTP/1.1 307 Temporary Redirect\r\nlocation: /echo\r\ncontent-length: 0\r\n\r\n".to_vec(),
+      "/permanent" => b"HTTP/1.1 308 Permanent Redirect\r\nlocation: /echo\r\ncontent-length: 0\r\n\r\n".to_vec(),
+      "/method" => {
+        let m = line.split_whitespace().next().unwrap_or("").to_string();
+        format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{m}", m.len()).into_bytes()
+      }
       "/stall" => {
         std::thread::sleep(Duration::from_secs(5));
         return;
@@ -526,4 +536,51 @@ async fn requests_wait_for_room_on_a_one_stream_http2_connection() {
   assert!(started.elapsed() < Duration::from_millis(400), "{:?}", started.elapsed());
   assert_eq!(s.accepted.load(Ordering::SeqCst), 1);
   assert_eq!(pool.connections_opened(), 1);
+}
+
+#[test]
+fn redirects_are_followed() {
+  let s = h1_server(H1Mode::KeepAlive);
+  let client = SyncClient::new();
+  let r = client.get(url(s.addr, "/redirect")).send().unwrap();
+  assert_eq!(r.status(), 200);
+  assert_eq!(r.text().unwrap(), "hello world");
+  let r = client.get(url(s.addr, "/nested/redirect")).send().unwrap();
+  assert_eq!(r.text().unwrap(), "hello world");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn see_other_turns_a_post_into_a_get() {
+  let s = h1_server(H1Mode::KeepAlive);
+  let client = AsyncClient::new();
+  let r = client.post(url(s.addr, "/see-other")).body("data").send().await.unwrap();
+  assert_eq!(r.text().await.unwrap(), "GET");
+}
+
+#[test]
+fn temporary_and_permanent_redirects_keep_the_method_and_body() {
+  let s = h1_server(H1Mode::KeepAlive);
+  let client = SyncClient::new();
+  for path in ["/temporary", "/permanent"] {
+    let r = client.post(url(s.addr, path)).body("kept").send().unwrap();
+    assert_eq!(r.text().unwrap(), "kept", "{path}");
+  }
+}
+
+#[test]
+fn a_redirect_loop_stops_at_the_limit() {
+  let s = h1_server(H1Mode::KeepAlive);
+  let client = SyncClient::builder().redirects(3).build_sync().unwrap();
+  let r = client.get(url(s.addr, "/loop")).send();
+  assert!(matches!(r, Err(Error::TooManyRedirects)), "{:?}", r.err());
+}
+
+#[test]
+fn redirects_off_returns_the_redirect() {
+  let s = h1_server(H1Mode::KeepAlive);
+  let client = SyncClient::builder().redirects(0).build_sync().unwrap();
+  let r = client.get(url(s.addr, "/redirect")).send().unwrap();
+  assert_eq!(r.status(), 302);
+  assert_eq!(r.headers()["location"], "/chunked");
+  assert_eq!(r.text().unwrap(), "move");
 }

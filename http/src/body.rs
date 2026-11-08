@@ -79,6 +79,27 @@ impl BodyState {
     }
   }
 
+  /// Reads and discards up to `limit` bytes so a short body leaves its connection reusable.
+  pub(crate) fn drain_sync(mut self, limit: usize) {
+    let mut read = 0;
+    while read <= limit {
+      match self.chunk_sync() {
+        Ok(Some(c)) => read += c.len(),
+        _ => return,
+      }
+    }
+  }
+
+  pub(crate) async fn drain_async(mut self, limit: usize) {
+    let mut read = 0;
+    while read <= limit {
+      match self.chunk_async().await {
+        Ok(Some(c)) => read += c.len(),
+        _ => return,
+      }
+    }
+  }
+
   fn chunk_sync(&mut self) -> Result<Option<Bytes>, Error> {
     if !self.leftover.is_empty() {
       return Ok(Some(std::mem::take(&mut self.leftover)));

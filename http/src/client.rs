@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use http::header::{CONTENT_LENGTH, HeaderName, HeaderValue, USER_AGENT};
-use http::{HeaderMap, Method, Uri, Version};
+use http::{HeaderMap, Method, StatusCode, Uri, Version};
 
 use crate::Error;
 use crate::body::{AsyncBody, BodyState, SyncBody};
@@ -18,17 +18,22 @@ use crate::response::Response;
 
 const DEFAULT_USER_AGENT: &str = concat!("fibre_http/", env!("CARGO_PKG_VERSION"));
 const ATTEMPTS: usize = 3;
+const DEFAULT_REDIRECTS: usize = 10;
+/// A redirect's own body is read up to this much so its connection can be reused; a longer one is dropped.
+const REDIRECT_DRAIN: usize = 64 * 1024;
 
 struct Inner {
   pool: Pool,
   dialer: Dialer,
   timeout: Option<Duration>,
   user_agent: HeaderValue,
+  redirects: usize,
 }
 
 pub struct ClientBuilder {
   pool: Option<Pool>,
   timeout: Option<Duration>,
+  redirects: usize,
   user_agent: HeaderValue,
   h2_prior_knowledge: bool,
   #[cfg(feature = "rustls")]
@@ -42,6 +47,7 @@ impl Default for ClientBuilder {
     Self {
       pool: None,
       timeout: None,
+      redirects: DEFAULT_REDIRECTS,
       user_agent: HeaderValue::from_static(DEFAULT_USER_AGENT),
       h2_prior_knowledge: false,
       #[cfg(feature = "rustls")]
@@ -62,6 +68,12 @@ impl ClientBuilder {
   /// Deadline for a whole request, from checkout to the response head. Bodies keep the same deadline.
   pub fn timeout(mut self, timeout: Duration) -> Self {
     self.timeout = Some(timeout);
+    self
+  }
+
+  /// The most redirects a request follows, 10 by default. 0 hands every redirect back as the response.
+  pub fn redirects(mut self, n: usize) -> Self {
+    self.redirects = n;
     self
   }
 
@@ -123,6 +135,7 @@ impl ClientBuilder {
       },
       timeout: self.timeout,
       user_agent: self.user_agent,
+      redirects: self.redirects,
     }))
   }
 
@@ -329,6 +342,7 @@ fn form_encode(s: &str, out: &mut String) {
   }
 }
 
+#[derive(Clone)]
 struct Prepared {
   inner: Arc<Inner>,
   method: Method,
@@ -340,7 +354,91 @@ struct Prepared {
   deadline: Option<Instant>,
 }
 
+fn is_redirect(status: StatusCode) -> bool {
+  matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308)
+}
+
+/// Resolves a `Location` against the URL that answered with it (RFC 3986 section 5.2).
+fn resolve(base: &Uri, location: &str) -> Result<Uri, Error> {
+  let bad = |e: String| Error::Url(format!("redirect to {location}: {e}"));
+  if location.contains("://") {
+    return location.parse().map_err(|e: http::uri::InvalidUri| bad(e.to_string()));
+  }
+  let scheme = base.scheme_str().unwrap_or("http");
+  let authority = base.authority().map(|a| a.as_str()).unwrap_or("");
+  if let Some(rest) = location.strip_prefix("//") {
+    return format!("{scheme}://{rest}").parse().map_err(|e: http::uri::InvalidUri| bad(e.to_string()));
+  }
+  let (reference, query) = match location.split_once('?') {
+    Some((p, q)) => (p, Some(q)),
+    None => (location, None),
+  };
+  let merged = if reference.starts_with('/') {
+    reference.to_owned()
+  } else if reference.is_empty() {
+    base.path().to_owned()
+  } else {
+    let dir = base.path().rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    format!("{dir}/{reference}")
+  };
+  let mut out: Vec<&str> = Vec::new();
+  for segment in merged.split('/').skip(1) {
+    match segment {
+      "." => {}
+      ".." => {
+        out.pop();
+      }
+      s => out.push(s),
+    }
+  }
+  let mut path = format!("/{}", out.join("/"));
+  if (merged.ends_with("/.") || merged.ends_with("/..")) && !path.ends_with('/') {
+    path.push('/');
+  }
+  let query = match query {
+    Some(q) => format!("?{q}"),
+    None if reference.is_empty() => base.query().map(|q| format!("?{q}")).unwrap_or_default(),
+    None => String::new(),
+  };
+  format!("{scheme}://{authority}{path}{query}").parse().map_err(|e: http::uri::InvalidUri| bad(e.to_string()))
+}
+
 impl Prepared {
+  /// The request a redirect asks for, or `None` when `status` is not one to follow.
+  fn redirected(&self, status: StatusCode, headers: &HeaderMap, hops: usize) -> Result<Option<Prepared>, Error> {
+    if self.inner.redirects == 0 || !is_redirect(status) {
+      return Ok(None);
+    }
+    let Some(location) = headers.get(http::header::LOCATION).and_then(|v| v.to_str().ok()) else { return Ok(None) };
+    if hops >= self.inner.redirects {
+      return Err(Error::TooManyRedirects);
+    }
+    let uri = resolve(&self.uri, location)?;
+    let key = Key::from_uri(&uri)?;
+    let mut next = self.clone();
+    let to_get = match status.as_u16() {
+      303 => self.method != Method::HEAD,
+      301 | 302 => self.method == Method::POST,
+      _ => false,
+    };
+    if to_get {
+      next.method = Method::GET;
+      next.body = Bytes::new();
+      next.sends_body = false;
+      for name in [CONTENT_LENGTH, http::header::CONTENT_TYPE, http::header::CONTENT_ENCODING, http::header::TRANSFER_ENCODING] {
+        next.headers.remove(name);
+      }
+    }
+    if key != self.key {
+      for name in [http::header::AUTHORIZATION, http::header::COOKIE, http::header::PROXY_AUTHORIZATION] {
+        next.headers.remove(name);
+      }
+    }
+    next.uri = uri;
+    next.key = key;
+    Ok(Some(next))
+  }
+
   fn head(&self, proto: Proto) -> RequestHead {
     let version = if proto == Proto::H2 { Version::HTTP_2 } else { Version::HTTP_11 };
     RequestHead { method: self.method.clone(), uri: self.uri.clone(), version, headers: self.headers.clone() }
@@ -374,12 +472,29 @@ enum Attempt {
 
 impl RequestBuilder<Blocking> {
   pub fn send(self) -> Result<Response<SyncBody>, Error> {
-    let req = self.prepare()?;
+    let mut req = self.prepare()?;
+    let mut hops = 0;
+    loop {
+      let response = send_once_sync(&req)?;
+      match req.redirected(response.status(), response.headers(), hops)? {
+        Some(next) => {
+          response.into_body().drain_sync(REDIRECT_DRAIN);
+          req = next;
+          hops += 1;
+        }
+        None => return Ok(response.map_body(SyncBody::from_state)),
+      }
+    }
+  }
+}
+
+fn send_once_sync(req: &Prepared) -> Result<Response<BodyState>, Error> {
+  {
     let mut attempts = 0;
     while attempts < ATTEMPTS {
       let lease = req.inner.pool.checkout_sync(&req.key, &req.inner.dialer, req.deadline)?;
-      match attempt_sync(&req, lease) {
-        Attempt::Done(r) => return Ok(r.map_body(SyncBody::from_state)),
+      match attempt_sync(req, lease) {
+        Attempt::Done(r) => return Ok(r),
         Attempt::Retry => attempts += 1,
         Attempt::Requeue => {}
         Attempt::Fail(e) => return Err(e),
@@ -391,12 +506,29 @@ impl RequestBuilder<Blocking> {
 
 impl RequestBuilder<Async> {
   pub async fn send(self) -> Result<Response<AsyncBody>, Error> {
-    let req = self.prepare()?;
+    let mut req = self.prepare()?;
+    let mut hops = 0;
+    loop {
+      let response = send_once_async(&req).await?;
+      match req.redirected(response.status(), response.headers(), hops)? {
+        Some(next) => {
+          response.into_body().drain_async(REDIRECT_DRAIN).await;
+          req = next;
+          hops += 1;
+        }
+        None => return Ok(response.map_body(AsyncBody::from_state)),
+      }
+    }
+  }
+}
+
+async fn send_once_async(req: &Prepared) -> Result<Response<BodyState>, Error> {
+  {
     let mut attempts = 0;
     while attempts < ATTEMPTS {
       let lease = req.inner.pool.checkout_async(&req.key, &req.inner.dialer, req.deadline).await?;
-      match attempt_async(&req, lease).await {
-        Attempt::Done(r) => return Ok(r.map_body(AsyncBody::from_state)),
+      match attempt_async(req, lease).await {
+        Attempt::Done(r) => return Ok(r),
         Attempt::Retry => attempts += 1,
         Attempt::Requeue => {}
         Attempt::Fail(e) => return Err(e),
@@ -498,6 +630,41 @@ async fn attempt_async(req: &Prepared, lease: Lease) -> Attempt {
       Ok((l, None)) => lease = l,
       Ok((_, Some(a))) => return a,
       Err(a) => return a,
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::resolve;
+
+  #[test]
+  fn resolve_follows_rfc_3986_section_5_4_1() {
+    let base: http::Uri = "http://a/b/c/d;p?q".parse().unwrap();
+    let cases = [
+      ("g", "http://a/b/c/g"),
+      ("./g", "http://a/b/c/g"),
+      ("g/", "http://a/b/c/g/"),
+      ("/g", "http://a/g"),
+      ("//g", "http://g/"),
+      ("?y", "http://a/b/c/d;p?y"),
+      ("g?y", "http://a/b/c/g?y"),
+      ("", "http://a/b/c/d;p?q"),
+      (".", "http://a/b/c/"),
+      ("./", "http://a/b/c/"),
+      ("..", "http://a/b/"),
+      ("../", "http://a/b/"),
+      ("../g", "http://a/b/g"),
+      ("../..", "http://a/"),
+      ("../../", "http://a/"),
+      ("../../g", "http://a/g"),
+      ("../../../g", "http://a/g"),
+      ("/./g", "http://a/g"),
+      ("/../g", "http://a/g"),
+      ("https://other.test/x", "https://other.test/x"),
+    ];
+    for (reference, expected) in cases {
+      assert_eq!(resolve(&base, reference).unwrap().to_string(), expected, "{reference}");
     }
   }
 }
