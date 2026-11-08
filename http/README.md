@@ -25,11 +25,11 @@ A local hyper 1.12 server answering 64-byte GETs, 10 s per cell, one run each, o
 | HTTP/1.1 | 1 | 45,364 | 45,272 | 46,377 | 38,987 | 29,356 |
 | HTTP/1.1 | 8 | 145,657 | 133,776 | 147,623 | 129,940 | 83,773 |
 | h2c | 1 | 42,130 | 43,138 | 43,140 | 34,734 | 26,342 |
-| h2c | 8 | 91,112 | 67,094 | 84,315 | 74,225 | 83,994 |
+| h2c | 8 | 99,562 | 66,206 | 84,315 | 74,225 | 83,994 |
 
 Inside an FSR server whose page calls an upstream over HTTP, moving FSR's transport from reqwest to fibre_http served 17% more requests a second at 8 clients. At 256 clients it served the same rate with 132 MB of peak memory against 237 MB.
 
-Blocking HTTP/2 from many threads at once is the weak spot today. Eight threads sharing one connection reach 74% of what eight async tasks do.
+Blocking HTTP/2 from many threads at once is the weak spot today. Eight threads sharing one connection reach 66% of what eight async tasks do.
 
 ## Features
 
@@ -51,7 +51,7 @@ Blocking HTTP/2 from many threads at once is the weak spot today. Eight threads 
 
 ## Status
 
-0.1, not yet published. Tested on macOS against real HTTP/1.1, h2c and TLS servers, with tests drawn from the contracts reqwest's and hyper's suites check.
+0.1, not yet published. Tested on macOS against real HTTP/1.1, h2c and TLS servers, with tests drawn from the contracts reqwest's and hyper's suites check. The connection driver's handover between blocking and async callers is model-checked with shuttle.
 
 Known limitations:
 
