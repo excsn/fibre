@@ -1,0 +1,39 @@
+[package]
+name = "fibre_http"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+authors = ["Excerion Sun <dev@excsn.com>"]
+
+description = "HTTP client whose handles switch between blocking and async with to_sync and to_async, sharing one connection pool."
+repository = "https://github.com/excsn/fibre"
+readme = "README.md"
+keywords = ["http", "client", "async", "sync", "http2"]
+categories = ["network-programming", "web-programming::http-client", "asynchronous"]
+
+include = [
+  "/src/**/*.rs",
+  "/Cargo.toml",
+  "/LICENSE",
+  "/README.md",
+  "/README.USAGE.md",
+  "/API_REFERENCE.md",
+]
+
+[features]
+default = ["http1", "http2", "rustls", "webpki-roots"]
+http1 = []
+http2 = []
+rustls = []
+native-tls = []
+webpki-roots = []
+native-roots = []
+hickory = []
+json = []
+gzip = []
+zstd = []
+cookies = []
+
+[dependencies]
+bytes = "1"
+http = "1"
