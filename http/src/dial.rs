@@ -127,12 +127,29 @@ pub(crate) fn dial_sync(dialer: &Dialer, key: &Key, deadline: Option<Instant>) -
   finish(dialer, key, io, Registration::default())
 }
 
+/// The addresses for `host`, through hickory when that feature is on and the OS resolver on tokio's blocking pool otherwise.
+async fn lookup_async(host: &str, port: u16) -> Result<Vec<SocketAddr>, Error> {
+  if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+    return Ok(vec![SocketAddr::new(ip, port)]);
+  }
+  #[cfg(feature = "hickory")]
+  {
+    static RESOLVER: std::sync::OnceLock<Result<hickory_resolver::TokioResolver, String>> = std::sync::OnceLock::new();
+    let resolver = RESOLVER.get_or_init(|| hickory_resolver::TokioResolver::builder_tokio().and_then(|b| b.build()).map_err(|e| e.to_string()));
+    let resolver = resolver.as_ref().map_err(|e| Error::Io(format!("resolver: {e}")))?;
+    let ips = resolver.lookup_ip(host).await.map_err(|e| Error::Io(format!("lookup {host}: {e}")))?;
+    Ok(ips.iter().map(|ip| SocketAddr::new(ip, port)).collect())
+  }
+  #[cfg(not(feature = "hickory"))]
+  Ok(tokio::net::lookup_host((host, port)).await?.collect())
+}
+
 pub(crate) async fn dial_async(dialer: &Dialer, key: &Key, deadline: Option<Instant>) -> Result<Arc<Conn>, Error> {
   let limit = remaining(deadline)?;
   let (host, port) = endpoint(key);
   let connect = async {
     let mut last = Error::Io(format!("no address for {host}"));
-    for addr in tokio::net::lookup_host((host, port)).await? {
+    for addr in lookup_async(host, port).await? {
       match tokio::net::TcpStream::connect(addr).await {
         Ok(s) => return Ok(s),
         Err(e) => last = e.into(),

@@ -617,3 +617,12 @@ fn native_tls_rejects_an_untrusted_certificate() {
   let r = client.get(format!("https://localhost:{}/", s.addr.port())).send();
   assert!(matches!(r, Err(Error::Tls(_))), "{:?}", r.err());
 }
+
+#[cfg(feature = "hickory")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hickory_resolves_localhost() {
+  let s = h1_server(H1Mode::KeepAlive);
+  let client = AsyncClient::new();
+  let r = client.get(format!("http://localhost:{}/", s.addr.port())).send().await.unwrap();
+  assert_eq!(r.text().await.unwrap(), "hello");
+}
