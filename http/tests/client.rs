@@ -409,3 +409,28 @@ fn tls_rejects_an_untrusted_certificate() {
   let r = client.get(format!("https://localhost:{}/", s.addr.port())).send();
   assert!(matches!(r, Err(Error::Tls(_))), "{:?}", r.err());
 }
+
+#[test]
+fn query_pairs_are_form_encoded() {
+  let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+  let addr = listener.local_addr().unwrap();
+  let seen = std::thread::spawn(move || {
+    let (stream, _) = listener.accept().unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    loop {
+      let mut h = String::new();
+      reader.read_line(&mut h).unwrap();
+      if h == "\r\n" {
+        break;
+      }
+    }
+    let mut w = stream;
+    w.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n").unwrap();
+    line
+  });
+  let client = SyncClient::new();
+  client.get(url(addr, "/p?a=1")).query(&[("q", "a b&c"), ("é", "x/y")]).send().unwrap();
+  assert_eq!(seen.join().unwrap(), "GET /p?a=1&q=a+b%26c&%C3%A9=x%2Fy HTTP/1.1\r\n");
+}

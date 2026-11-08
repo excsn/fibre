@@ -246,6 +246,37 @@ impl<M> RequestBuilder<M> {
     self
   }
 
+  /// Appends `pairs` to the URL's query, form-encoded.
+  pub fn query<K: AsRef<str>, V: AsRef<str>>(mut self, pairs: &[(K, V)]) -> Self {
+    if pairs.is_empty() {
+      return self;
+    }
+    if let Ok(uri) = &self.uri {
+      let mut parts = uri.clone().into_parts();
+      let (path, existing) = match parts.path_and_query.as_ref() {
+        Some(pq) => (pq.path().to_owned(), pq.query().map(str::to_owned)),
+        None => ("/".to_owned(), None),
+      };
+      let mut query = existing.unwrap_or_default();
+      for (k, v) in pairs {
+        if !query.is_empty() {
+          query.push('&');
+        }
+        form_encode(k.as_ref(), &mut query);
+        query.push('=');
+        form_encode(v.as_ref(), &mut query);
+      }
+      self.uri = format!("{path}?{query}")
+        .parse()
+        .map_err(|e: http::uri::InvalidUri| Error::Url(e.to_string()))
+        .and_then(|pq| {
+          parts.path_and_query = Some(pq);
+          Uri::from_parts(parts).map_err(|e| Error::Url(e.to_string()))
+        });
+    }
+    self
+  }
+
   pub fn body(mut self, body: impl Into<Bytes>) -> Self {
     self.body = body.into();
     self
@@ -284,6 +315,17 @@ impl<M> RequestBuilder<M> {
     }
     let deadline = self.timeout.map(|t| Instant::now() + t);
     Ok(Prepared { inner: self.inner, method: self.method, uri, headers, body: self.body, sends_body, key, deadline })
+  }
+}
+
+/// `application/x-www-form-urlencoded`: unreserved bytes as they are, space as `+`, the rest as `%XX`.
+fn form_encode(s: &str, out: &mut String) {
+  for b in s.bytes() {
+    match b {
+      b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'*' => out.push(b as char),
+      b' ' => out.push('+'),
+      _ => out.push_str(&format!("%{b:02X}")),
+    }
   }
 }
 
