@@ -30,6 +30,8 @@ struct Inner {
   redirects: usize,
   decompress: bool,
   default_headers: HeaderMap,
+  #[cfg(feature = "cookies")]
+  cookies: Option<Arc<parking_lot::Mutex<cookie_store::CookieStore>>>,
 }
 
 pub struct ClientBuilder {
@@ -40,6 +42,8 @@ pub struct ClientBuilder {
   default_headers: HeaderMap,
   /// `None` reads the environment when the client is built.
   proxies: Option<crate::proxy::Proxies>,
+  #[cfg(feature = "cookies")]
+  cookie_store: bool,
   user_agent: HeaderValue,
   h2_prior_knowledge: bool,
   #[cfg(feature = "rustls")]
@@ -57,6 +61,8 @@ impl Default for ClientBuilder {
       decompress: true,
       default_headers: HeaderMap::new(),
       proxies: None,
+      #[cfg(feature = "cookies")]
+      cookie_store: false,
       user_agent: HeaderValue::from_static(DEFAULT_USER_AGENT),
       h2_prior_knowledge: false,
       #[cfg(feature = "rustls")]
@@ -83,6 +89,13 @@ impl ClientBuilder {
   /// The most redirects a request follows, 10 by default. 0 hands every redirect back as the response.
   pub fn redirects(mut self, n: usize) -> Self {
     self.redirects = n;
+    self
+  }
+
+  /// Keeps cookies from `Set-Cookie` in memory and sends them on later requests that match.
+  #[cfg(feature = "cookies")]
+  pub fn cookie_store(mut self, on: bool) -> Self {
+    self.cookie_store = on;
     self
   }
 
@@ -184,6 +197,8 @@ impl ClientBuilder {
       redirects: self.redirects,
       decompress: self.decompress,
       default_headers: self.default_headers,
+      #[cfg(feature = "cookies")]
+      cookies: self.cookie_store.then(|| Arc::new(parking_lot::Mutex::new(cookie_store::CookieStore::default()))),
     }))
   }
 
@@ -409,7 +424,8 @@ impl<M> RequestBuilder<M> {
     }
     let deadline = self.timeout.map(|t| Instant::now() + t);
     let decode = self.inner.decompress && !caller_encoding;
-    Ok(Prepared { inner: self.inner, method: self.method, uri, headers, body: self.body, sends_body, key, deadline, decode })
+    let caller_cookie = headers.contains_key(http::header::COOKIE);
+    Ok(Prepared { inner: self.inner, method: self.method, uri, headers, body: self.body, sends_body, key, deadline, decode, caller_cookie })
   }
 }
 
@@ -436,6 +452,8 @@ struct Prepared {
   deadline: Option<Instant>,
   /// Decode the response body by its `Content-Encoding`; off when the caller asked for an encoding themselves.
   decode: bool,
+  /// The caller set `Cookie` themselves, so the store adds none.
+  caller_cookie: bool,
 }
 
 fn is_redirect(status: StatusCode) -> bool {
@@ -517,6 +535,7 @@ impl Prepared {
       for name in [http::header::AUTHORIZATION, http::header::COOKIE, http::header::PROXY_AUTHORIZATION] {
         next.headers.remove(name);
       }
+      next.caller_cookie = false;
     }
     next.uri = uri;
     next.key = key;
@@ -543,7 +562,41 @@ impl Prepared {
         headers.insert(http::header::PROXY_AUTHORIZATION, v);
       }
     }
+    #[cfg(feature = "cookies")]
+    if !self.caller_cookie {
+      if let Some(value) = self.stored_cookies() {
+        headers.insert(http::header::COOKIE, value);
+      }
+    }
     RequestHead { method: self.method.clone(), uri: self.uri.clone(), version, headers }
+  }
+
+  #[cfg(feature = "cookies")]
+  fn stored_cookies(&self) -> Option<HeaderValue> {
+    let store = self.inner.cookies.as_ref()?;
+    let url = url::Url::parse(&self.uri.to_string()).ok()?;
+    let store = store.lock();
+    let pairs: Vec<String> = store.get_request_values(&url).map(|(name, value)| format!("{name}={value}")).collect();
+    if pairs.is_empty() {
+      return None;
+    }
+    HeaderValue::from_str(&pairs.join("; ")).ok()
+  }
+
+  /// Keeps the response's `Set-Cookie` values when the client has a store.
+  fn remember(&self, headers: &HeaderMap) {
+    #[cfg(feature = "cookies")]
+    if let Some(store) = self.inner.cookies.as_ref() {
+      let Ok(url) = url::Url::parse(&self.uri.to_string()) else { return };
+      let cookies = headers
+        .get_all(http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|v| cookie_store::RawCookie::parse(v.to_owned()).ok());
+      store.lock().store_response_cookies(cookies, &url);
+    }
+    #[cfg(not(feature = "cookies"))]
+    let _ = headers;
   }
 
   fn idempotent(&self) -> bool {
@@ -578,6 +631,7 @@ impl RequestBuilder<Blocking> {
     let mut hops = 0;
     loop {
       let response = send_once_sync(&req)?;
+      req.remember(response.headers());
       match req.redirected(response.status(), response.headers(), hops)? {
         Some(next) => {
           response.into_body().drain_sync(REDIRECT_DRAIN);
@@ -612,6 +666,7 @@ impl RequestBuilder<Async> {
     let mut hops = 0;
     loop {
       let response = send_once_async(&req).await?;
+      req.remember(response.headers());
       match req.redirected(response.status(), response.headers(), hops)? {
         Some(next) => {
           response.into_body().drain_async(REDIRECT_DRAIN).await;
