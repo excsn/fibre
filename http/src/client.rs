@@ -73,10 +73,10 @@ pub struct ClientBuilder {
   cookie_store: bool,
   user_agent: HeaderValue,
   h2_prior_knowledge: bool,
-  #[cfg(feature = "rustls")]
-  roots: Vec<rustls::pki_types::CertificateDer<'static>>,
-  #[cfg(feature = "rustls")]
+  roots: Vec<Vec<u8>>,
   bundled_roots: bool,
+  #[cfg(feature = "native-tls")]
+  native_tls: bool,
 }
 
 impl Default for ClientBuilder {
@@ -93,10 +93,10 @@ impl Default for ClientBuilder {
       cookie_store: false,
       user_agent: HeaderValue::from_static(DEFAULT_USER_AGENT),
       h2_prior_knowledge: false,
-      #[cfg(feature = "rustls")]
       roots: Vec::new(),
-      #[cfg(feature = "rustls")]
       bundled_roots: true,
+      #[cfg(feature = "native-tls")]
+      native_tls: !cfg!(feature = "rustls"),
     }
   }
 }
@@ -180,20 +180,44 @@ impl ClientBuilder {
   }
 
   /// Trusts `der` as a root certificate, beside the bundled roots.
-  #[cfg(feature = "rustls")]
   pub fn add_root_certificate(mut self, der: Vec<u8>) -> Self {
-    self.roots.push(rustls::pki_types::CertificateDer::from(der));
+    self.roots.push(der);
     self
   }
 
-  /// Trusts only the roots added with `add_root_certificate`, leaving out the bundled roots and, with `native-roots`, the OS store.
-  #[cfg(feature = "rustls")]
+  /// HTTPS through the platform's TLS (Security.framework, SChannel or OpenSSL) instead of rustls.
+  #[cfg(feature = "native-tls")]
+  pub fn use_native_tls(mut self) -> Self {
+    self.native_tls = true;
+    self
+  }
+
+  /// Trusts only the roots added with `add_root_certificate`, leaving out the bundled roots and, with `native-roots` or native-tls, the OS store.
   pub fn no_bundled_roots(mut self) -> Self {
     self.bundled_roots = false;
     self
   }
 
   fn inner(self) -> Result<Arc<Inner>, Error> {
+    #[cfg(feature = "native-tls")]
+    let native = match self.native_tls {
+      false => None,
+      true => {
+        let mut builder = native_tls::TlsConnector::builder();
+        #[allow(unused_mut)]
+        let mut alpn: Vec<&str> = Vec::new();
+        #[cfg(feature = "http2")]
+        alpn.push("h2");
+        #[cfg(feature = "http1")]
+        alpn.push("http/1.1");
+        builder.request_alpns(&alpn);
+        for der in &self.roots {
+          builder.add_root_certificate(native_tls::Certificate::from_der(der).map_err(|e| Error::Tls(e.to_string()))?);
+        }
+        builder.disable_built_in_roots(!self.bundled_roots);
+        Some(builder.build().map_err(|e| Error::Tls(e.to_string()))?)
+      }
+    };
     #[cfg(feature = "rustls")]
     let tls = {
       let mut store = rustls::RootCertStore::empty();
@@ -207,8 +231,8 @@ impl ClientBuilder {
           let _ = store.add(der);
         }
       }
-      for der in self.roots {
-        store.add(der).map_err(|e| Error::Tls(e.to_string()))?;
+      for der in &self.roots {
+        store.add(rustls::pki_types::CertificateDer::from(der.clone())).map_err(|e| Error::Tls(e.to_string()))?;
       }
       let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_safe_default_protocol_versions()
@@ -229,6 +253,8 @@ impl ClientBuilder {
       dialer: Dialer {
         #[cfg(feature = "rustls")]
         tls,
+        #[cfg(feature = "native-tls")]
+        native,
         h2_prior_knowledge: self.h2_prior_knowledge,
         proxies: self.proxies.unwrap_or_else(crate::proxy::Proxies::from_env),
         user_agent: self.user_agent.to_str().unwrap_or(DEFAULT_USER_AGENT).to_owned(),

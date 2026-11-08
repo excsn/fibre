@@ -584,3 +584,36 @@ fn redirects_off_returns_the_redirect() {
   assert_eq!(r.headers()["location"], "/chunked");
   assert_eq!(r.text().unwrap(), "move");
 }
+
+#[cfg(feature = "native-tls")]
+#[test]
+fn native_tls_negotiates_http2() {
+  let s = tls::server(&[b"h2", b"http/1.1"]);
+  let client = SyncClient::builder().use_native_tls().add_root_certificate(s.root.clone()).build_sync().unwrap();
+  for _ in 0..3 {
+    let r = client.get(format!("https://localhost:{}/", s.addr.port())).send().unwrap();
+    assert_eq!(r.version(), Version::HTTP_2);
+    assert_eq!(r.text().unwrap(), "hello");
+  }
+}
+
+#[cfg(feature = "native-tls")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_tls_falls_back_to_http1() {
+  let s = tls::server(&[b"http/1.1"]);
+  let client = AsyncClient::builder().use_native_tls().add_root_certificate(s.root.clone()).build_async().unwrap();
+  for _ in 0..3 {
+    let r = client.get(format!("https://localhost:{}/", s.addr.port())).send().await.unwrap();
+    assert_eq!(r.version(), Version::HTTP_11);
+    assert_eq!(r.text().await.unwrap(), "hello");
+  }
+}
+
+#[cfg(feature = "native-tls")]
+#[test]
+fn native_tls_rejects_an_untrusted_certificate() {
+  let s = tls::server(&[b"h2"]);
+  let client = SyncClient::builder().use_native_tls().build_sync().unwrap();
+  let r = client.get(format!("https://localhost:{}/", s.addr.port())).send();
+  assert!(matches!(r, Err(Error::Tls(_))), "{:?}", r.err());
+}

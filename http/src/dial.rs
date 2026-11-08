@@ -17,6 +17,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) struct Dialer {
   #[cfg(feature = "rustls")]
   pub tls: Option<Arc<rustls::ClientConfig>>,
+  /// Set when HTTPS goes through native-tls instead of rustls.
+  #[cfg(feature = "native-tls")]
+  pub native: Option<native_tls::TlsConnector>,
   pub h2_prior_knowledge: bool,
   pub proxies: crate::proxy::Proxies,
   pub user_agent: String,
@@ -48,6 +51,10 @@ fn transport(dialer: &Dialer, key: &Key, sock: TcpStream) -> Result<Io, Error> {
   sock.set_nonblocking(true)?;
   if !key.https {
     return Ok(Io::Plain(sock));
+  }
+  #[cfg(feature = "native-tls")]
+  if let Some(connector) = dialer.native.clone() {
+    return Ok(Io::Native(Box::new(crate::io::native::NativeIo::new(sock, connector, key.host.clone()))));
   }
   #[cfg(feature = "rustls")]
   {
