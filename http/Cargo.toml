@@ -23,25 +23,34 @@ include = [
 [features]
 default = ["http1", "http2", "rustls", "webpki-roots"]
 http1 = ["dep:ureq-proto"]
-http2 = ["dep:h2", "dep:tokio", "dep:parking_lot"]
-rustls = []
+http2 = ["dep:h2"]
+rustls = ["dep:rustls"]
 native-tls = []
-webpki-roots = []
+webpki-roots = ["dep:webpki-roots", "rustls"]
 native-roots = []
 hickory = []
-json = []
+json = ["dep:serde", "dep:serde_json"]
 gzip = []
 zstd = []
 cookies = []
 
 [dependencies]
 bytes = "1.12.1"
+fibre = { version = "0.6.9", path = "../channels" }
 http = "1.5.0"
-ureq-proto = { version = "0.7.1", default-features = false, features = ["client"], optional = true }
+libc = "0.2.191"
+parking_lot = "0.13.0"
+tokio = { version = "1.54.1", default-features = false, features = ["net", "rt", "time"] }
+
 h2 = { version = "0.4.20", optional = true }
-parking_lot = { version = "0.13.0", optional = true }
-tokio = { version = "1.54.1", default-features = false, optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+serde = { version = "1.0.229", optional = true }
+serde_json = { version = "1.0.154", optional = true }
+ureq-proto = { version = "0.7.1", default-features = false, features = ["client"], optional = true }
+webpki-roots = { version = "1.0.11", optional = true }
 
 [dev-dependencies]
 h2 = "0.4.20"
-tokio = { version = "1.54.1", default-features = false }
+rcgen = "0.14.10"
+tokio = { version = "1.54.1", features = ["macros", "net", "rt", "rt-multi-thread", "time", "io-util"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }

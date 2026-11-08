@@ -11,6 +11,13 @@ pub enum Error {
   Closed,
   /// The peer never processed the exchange, so it is safe to send again on another connection.
   Refused,
+  /// A deadline passed.
+  Timeout,
+  Io(String),
+  Tls(String),
+  Url(String),
+  /// The response body could not be decoded as asked.
+  Decode(String),
 }
 
 impl fmt::Display for Error {
@@ -20,8 +27,22 @@ impl fmt::Display for Error {
       Error::Reset(code) => write!(f, "exchange reset by peer with code {code}"),
       Error::Closed => f.write_str("connection closed"),
       Error::Refused => f.write_str("exchange refused by peer before processing"),
+      Error::Timeout => f.write_str("timed out"),
+      Error::Io(e) => write!(f, "i/o error: {e}"),
+      Error::Tls(e) => write!(f, "tls error: {e}"),
+      Error::Url(e) => write!(f, "invalid url: {e}"),
+      Error::Decode(e) => write!(f, "could not decode body: {e}"),
     }
   }
 }
 
 impl std::error::Error for Error {}
+
+impl From<std::io::Error> for Error {
+  fn from(e: std::io::Error) -> Self {
+    if e.kind() == std::io::ErrorKind::TimedOut {
+      return Error::Timeout;
+    }
+    Error::Io(e.to_string())
+  }
+}
