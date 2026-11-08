@@ -22,7 +22,7 @@ include = [
 
 [features]
 default = ["http1", "http2", "rustls", "webpki-roots"]
-http1 = []
+http1 = ["dep:ureq-proto"]
 http2 = []
 rustls = []
 native-tls = []
@@ -35,5 +35,6 @@ zstd = []
 cookies = []
 
 [dependencies]
-bytes = "1"
-http = "1"
+bytes = "1.12.1"
+http = "1.5.0"
+ureq-proto = { version = "0.7.1", default-features = false, features = ["client"], optional = true }

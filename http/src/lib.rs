@@ -2,5 +2,7 @@
 
 pub mod engine;
 mod error;
+#[cfg(feature = "http1")]
+pub mod h1;
 
 pub use error::Error;

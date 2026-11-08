@@ -102,6 +102,9 @@ pub trait Engine {
   /// Takes what it can from `input` and leaves a partial frame there for the next call.
   fn on_bytes(&mut self, input: &mut BytesMut, out: &mut Output);
 
+  /// The peer closed its side. An HTTP/1.1 body without a length ends here.
+  fn on_eof(&mut self, out: &mut Output);
+
   fn on_tick(&mut self, now: Instant, out: &mut Output);
 
   fn next_deadline(&self) -> Option<Instant>;
