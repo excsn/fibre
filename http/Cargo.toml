@@ -27,7 +27,7 @@ http2 = ["dep:h2"]
 rustls = ["dep:rustls"]
 native-tls = []
 webpki-roots = ["dep:webpki-roots", "rustls"]
-native-roots = []
+native-roots = ["dep:rustls-native-certs", "rustls"]
 hickory = []
 json = ["dep:serde", "dep:serde_json"]
 gzip = ["dep:flate2"]
@@ -48,6 +48,7 @@ futures-core = "0.3.34"
 h2 = { version = "0.4.20", optional = true }
 ruzstd = { version = "0.9.1", optional = true }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-native-certs = { version = "0.8.5", optional = true }
 serde = { version = "1.0.229", optional = true }
 serde_json = { version = "1.0.154", optional = true }
 ureq-proto = { version = "0.7.1", default-features = false, features = ["client"], optional = true }

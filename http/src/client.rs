@@ -186,7 +186,7 @@ impl ClientBuilder {
     self
   }
 
-  /// Trusts only the roots added with `add_root_certificate`.
+  /// Trusts only the roots added with `add_root_certificate`, leaving out the bundled roots and, with `native-roots`, the OS store.
   #[cfg(feature = "rustls")]
   pub fn no_bundled_roots(mut self) -> Self {
     self.bundled_roots = false;
@@ -201,6 +201,12 @@ impl ClientBuilder {
       if self.bundled_roots {
         store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
       }
+      #[cfg(feature = "native-roots")]
+      if self.bundled_roots {
+        for der in rustls_native_certs::load_native_certs().certs {
+          let _ = store.add(der);
+        }
+      }
       for der in self.roots {
         store.add(der).map_err(|e| Error::Tls(e.to_string()))?;
       }
@@ -209,6 +215,7 @@ impl ClientBuilder {
         .map_err(|e| Error::Tls(e.to_string()))?
         .with_root_certificates(store)
         .with_no_client_auth();
+      #[allow(unused_mut)]
       let mut alpn = Vec::new();
       #[cfg(feature = "http2")]
       alpn.push(b"h2".to_vec());
