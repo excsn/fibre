@@ -4,5 +4,7 @@ pub mod engine;
 mod error;
 #[cfg(feature = "http1")]
 pub mod h1;
+#[cfg(feature = "http2")]
+pub mod h2;
 
 pub use error::Error;

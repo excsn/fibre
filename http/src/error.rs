@@ -9,6 +9,8 @@ pub enum Error {
   Reset(u32),
   /// The connection closed before the exchange finished.
   Closed,
+  /// The peer never processed the exchange, so it is safe to send again on another connection.
+  Refused,
 }
 
 impl fmt::Display for Error {
@@ -17,6 +19,7 @@ impl fmt::Display for Error {
       Error::Protocol(reason) => write!(f, "protocol error: {reason}"),
       Error::Reset(code) => write!(f, "exchange reset by peer with code {code}"),
       Error::Closed => f.write_str("connection closed"),
+      Error::Refused => f.write_str("exchange refused by peer before processing"),
     }
   }
 }

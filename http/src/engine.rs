@@ -63,13 +63,15 @@ pub enum Event {
   Trailers(HeaderMap),
   End,
   Reset(Error),
+  /// A `send_body` that accepted less than offered can be called again.
+  Writable,
 }
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ConnEvent {
-  /// Exchanges above `last_id` were never processed and can be retried elsewhere.
-  GoAway { last_id: ExchangeId },
+  /// The peer accepts no new exchanges. Exchanges it never processed get `Event::Reset(Error::Refused)`.
+  GoingAway,
   Closed(Option<Error>),
 }
 

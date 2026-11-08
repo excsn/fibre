@@ -23,7 +23,7 @@ include = [
 [features]
 default = ["http1", "http2", "rustls", "webpki-roots"]
 http1 = ["dep:ureq-proto"]
-http2 = []
+http2 = ["dep:h2", "dep:tokio", "dep:parking_lot"]
 rustls = []
 native-tls = []
 webpki-roots = []
@@ -38,3 +38,10 @@ cookies = []
 bytes = "1.12.1"
 http = "1.5.0"
 ureq-proto = { version = "0.7.1", default-features = false, features = ["client"], optional = true }
+h2 = { version = "0.4.20", optional = true }
+parking_lot = { version = "0.13.0", optional = true }
+tokio = { version = "1.54.1", default-features = false, optional = true }
+
+[dev-dependencies]
+h2 = "0.4.20"
+tokio = { version = "1.54.1", default-features = false }
