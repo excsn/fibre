@@ -21,11 +21,13 @@ pub(crate) struct BodyState {
   decoder: Option<Decoder>,
   limit: Option<usize>,
   received: usize,
+  /// Events taken from the connection in one batch and not yet handled.
+  queued: std::collections::VecDeque<Event>,
 }
 
 impl BodyState {
-  pub(crate) fn new(lease: Lease, id: ExchangeId, deadline: Option<Instant>, empty: bool, decoder: Option<Decoder>, limit: Option<usize>) -> Self {
-    let mut state = Self { lease: Some(lease), id, deadline, done: false, leftover: Bytes::new(), trailers: None, decoder, limit, received: 0 };
+  pub(crate) fn new(lease: Lease, id: ExchangeId, deadline: Option<Instant>, empty: bool, decoder: Option<Decoder>, limit: Option<usize>, queued: std::collections::VecDeque<Event>) -> Self {
+    let mut state = Self { lease: Some(lease), id, deadline, done: false, leftover: Bytes::new(), trailers: None, decoder, limit, received: 0, queued };
     if empty {
       state.drain_queued();
     }
@@ -34,8 +36,7 @@ impl BodyState {
 
   /// Takes queued events without waiting. Returns whether the body reached its end.
   fn drain_queued(&mut self) -> bool {
-    let Some(lease) = self.lease.as_ref() else { return true };
-    while let Some(event) = lease.conn.try_event(self.id) {
+    while let Some(event) = self.queued.pop_front().or_else(|| self.lease.as_ref().and_then(|l| l.conn.try_event(self.id))) {
       match event {
         Event::End => {
           self.finish();
@@ -140,10 +141,20 @@ impl BodyState {
       if self.done {
         return Ok(None);
       }
+      if let Some(event) = self.queued.pop_front() {
+        if let Some(r) = self.on(Ok(event)) {
+          return r;
+        }
+        continue;
+      }
       let Some(lease) = self.lease.as_ref() else { return Ok(None) };
-      let event = lease.conn.next_event_sync(self.id, self.deadline);
-      if let Some(r) = self.on(event) {
-        return r;
+      match lease.conn.next_events_sync(self.id, self.deadline) {
+        Ok(events) => self.queued = events,
+        Err(e) => {
+          if let Some(r) = self.on(Err(e)) {
+            return r;
+          }
+        }
       }
     }
   }
@@ -156,10 +167,20 @@ impl BodyState {
       if self.done {
         return Ok(None);
       }
+      if let Some(event) = self.queued.pop_front() {
+        if let Some(r) = self.on(Ok(event)) {
+          return r;
+        }
+        continue;
+      }
       let Some(lease) = self.lease.as_ref() else { return Ok(None) };
-      let event = lease.conn.next_event_async(self.id, self.deadline).await;
-      if let Some(r) = self.on(event) {
-        return r;
+      match lease.conn.next_events_async(self.id, self.deadline).await {
+        Ok(events) => self.queued = events,
+        Err(e) => {
+          if let Some(r) = self.on(Err(e)) {
+            return r;
+          }
+        }
       }
     }
   }

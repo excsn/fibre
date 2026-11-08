@@ -4,6 +4,7 @@ mod body;
 mod client;
 mod conn;
 mod decode;
+mod diag;
 mod dial;
 pub mod engine;
 mod error;
@@ -21,6 +22,11 @@ mod wait;
 
 pub use body::{AsyncBody, SyncBody};
 pub use client::{Async, AsyncClient, Blocking, ClientBuilder, RequestBuilder, SyncClient};
+/// Connection driver counters, for measuring how callers share connections.
+#[cfg(feature = "diagnostics")]
+pub mod diagnostics {
+  pub use crate::diag::{Snapshot, reset, snapshot};
+}
 pub use error::Error;
 pub use pool::{Pool, PoolBuilder};
 pub use proxy::Proxy;

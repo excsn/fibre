@@ -422,9 +422,10 @@ impl engine::Engine for Engine {
 
   fn consumed(&mut self, id: ExchangeId, n: usize, out: &mut Output) {
     if let Some(body) = self.exchanges.get_mut(&id).and_then(|ex| ex.body.as_mut()) {
+      // The window update goes out on the next drive. The caller that consumed reads next, so that drive comes.
       let _ = body.flow_control().release_capacity(n);
       self.conn_flag.raise();
-      self.drive(out);
+      let _ = out;
     }
   }
 

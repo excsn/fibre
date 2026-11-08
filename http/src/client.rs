@@ -874,12 +874,22 @@ fn attempt_sync(req: &Prepared, lease: Lease) -> Attempt {
     }
   }
   let mut lease = lease;
+  let mut queued = std::collections::VecDeque::new();
   loop {
-    let event = lease.conn.next_event_sync(id, req.deadline);
+    let event = match queued.pop_front() {
+      Some(event) => Ok(event),
+      None => match lease.conn.next_events_sync(id, req.deadline) {
+        Ok(events) => {
+          queued = events;
+          continue;
+        }
+        Err(e) => Err(e),
+      },
+    };
     if let Ok(Event::Head(_)) = &event {
       let Ok(Event::Head(mut head)) = event else { unreachable!() };
       let decoder = req.decoder(&mut head.headers);
-      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder, req.inner.max_response_size);
+      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder, req.inner.max_response_size, queued);
       return Attempt::Done(Response::new(head.status, head.version, head.headers, state));
     }
     match on_event(req, lease, id, event) {
@@ -906,12 +916,22 @@ async fn attempt_async(req: &Prepared, lease: Lease) -> Attempt {
     }
   }
   let mut lease = lease;
+  let mut queued = std::collections::VecDeque::new();
   loop {
-    let event = lease.conn.next_event_async(id, req.deadline).await;
+    let event = match queued.pop_front() {
+      Some(event) => Ok(event),
+      None => match lease.conn.next_events_async(id, req.deadline).await {
+        Ok(events) => {
+          queued = events;
+          continue;
+        }
+        Err(e) => Err(e),
+      },
+    };
     if let Ok(Event::Head(_)) = &event {
       let Ok(Event::Head(mut head)) = event else { unreachable!() };
       let decoder = req.decoder(&mut head.headers);
-      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder, req.inner.max_response_size);
+      let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder, req.inner.max_response_size, queued);
       return Attempt::Done(Response::new(head.status, head.version, head.headers, state));
     }
     match on_event(req, lease, id, event) {

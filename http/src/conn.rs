@@ -40,9 +40,14 @@ pub(crate) struct State {
   read_buf: Box<[u8]>,
   pending: BytesMut,
   unflushed: bool,
+  /// Body bytes were consumed since the engine last ran.
+  consumed: bool,
   out: Output,
   slots: HashMap<ExchangeId, Slot>,
   leader: bool,
+  /// When the last leader left with others still waiting, for `diagnostics`.
+  #[cfg(feature = "diagnostics")]
+  released_at: Option<Instant>,
   closed: bool,
   going_away: bool,
   error: Option<Error>,
@@ -111,6 +116,11 @@ impl State {
   }
 
   fn turn(&mut self) -> Interest {
+    crate::diag::bump(crate::diag::C::Turn);
+    #[cfg(feature = "diagnostics")]
+    if let Some(t) = self.released_at.take() {
+      crate::diag::idle(t.elapsed().as_nanos() as u64);
+    }
     self.flush_now();
     let mut taken = 0;
     let mut got = false;
@@ -138,7 +148,12 @@ impl State {
         }
       }
     }
-    if got {
+    if !got {
+      crate::diag::bump(crate::diag::C::EmptyTurn);
+    }
+    // After `consumed` the engine runs even with nothing read, so output it deferred, such as an HTTP/2 window update, goes out.
+    if got || self.consumed {
+      self.consumed = false;
       self.engine.on_bytes(&mut self.input, &mut self.out);
       self.apply();
     }
@@ -170,10 +185,12 @@ impl State {
   fn take(&mut self, id: ExchangeId) -> Option<Event> {
     let Some(slot) = self.slots.get_mut(&id) else { return Some(Event::Reset(self.closed_error())) };
     if let Some(event) = slot.events.pop_front() {
+      crate::diag::bump(crate::diag::C::Taken);
       match &event {
         Event::Data(b) => {
           let n = b.len();
           self.engine.consumed(id, n, &mut self.out);
+          self.consumed = true;
           self.apply();
           self.flush_now();
         }
@@ -189,6 +206,19 @@ impl State {
       return Some(Event::Reset(self.closed_error()));
     }
     None
+  }
+
+  /// Every event queued for `id`, at least one, taken under one lock. Stops after `End` or `Reset`.
+  fn take_all(&mut self, id: ExchangeId) -> Option<VecDeque<Event>> {
+    let first = self.take(id)?;
+    let mut all = VecDeque::from([first]);
+    while !matches!(all.back(), Some(Event::End | Event::Reset(_))) && self.slots.get(&id).is_some_and(|s| !s.events.is_empty()) {
+      match self.take(id) {
+        Some(event) => all.push_back(event),
+        None => break,
+      }
+    }
+    Some(all)
   }
 
   fn writable_or_done(&mut self, id: ExchangeId) -> Option<()> {
@@ -211,6 +241,11 @@ impl State {
   fn wake_any(&mut self) {
     if let Some(slot) = self.slots.values_mut().find(|s| s.waiter.is_some()) {
       slot.waiter.wake();
+      crate::diag::bump(crate::diag::C::Handoff);
+      #[cfg(feature = "diagnostics")]
+      {
+        self.released_at = Some(Instant::now());
+      }
     }
   }
 
@@ -242,9 +277,12 @@ impl Conn {
         read_buf: vec![0u8; READ_CHUNK].into_boxed_slice(),
         pending: BytesMut::new(),
         unflushed: false,
+        consumed: false,
         out: Output::default(),
         slots: HashMap::new(),
         leader: false,
+        #[cfg(feature = "diagnostics")]
+        released_at: None,
         closed: false,
         going_away: false,
         error: None,
@@ -383,12 +421,13 @@ impl Conn {
     }
   }
 
-  pub(crate) fn next_event_sync(&self, id: ExchangeId, deadline: Option<Instant>) -> Result<Event, Error> {
-    self.drive_sync(id, deadline, State::take)
+  /// Every event already queued for `id`, waiting for at least one.
+  pub(crate) fn next_events_sync(&self, id: ExchangeId, deadline: Option<Instant>) -> Result<VecDeque<Event>, Error> {
+    self.drive_sync(id, deadline, State::take_all)
   }
 
-  pub(crate) async fn next_event_async(&self, id: ExchangeId, deadline: Option<Instant>) -> Result<Event, Error> {
-    self.drive_async(id, deadline, State::take).await
+  pub(crate) async fn next_events_async(&self, id: ExchangeId, deadline: Option<Instant>) -> Result<VecDeque<Event>, Error> {
+    self.drive_async(id, deadline, State::take_all).await
   }
 
   /// The next event for `id` if one is already queued. Never waits.
@@ -421,6 +460,7 @@ impl Conn {
       }
       if !st.leader {
         st.leader = true;
+        crate::diag::bump(crate::diag::C::Lead);
         loop {
           let interest = st.turn();
           self.note(&st);
@@ -460,9 +500,22 @@ impl Conn {
           if now >= d {
             return Err(Error::Timeout);
           }
+          crate::diag::bump(crate::diag::C::Park);
           thread::park_timeout(d - now);
         }
-        None => thread::park(),
+        None => {
+          crate::diag::bump(crate::diag::C::Park);
+          #[cfg(feature = "diagnostics")]
+          let parked = Instant::now();
+          thread::park();
+          #[cfg(feature = "diagnostics")]
+          {
+            crate::diag::parked(parked.elapsed().as_nanos() as u64);
+            let woke = Instant::now();
+            drop(self.st.lock());
+            crate::diag::relock(woke.elapsed().as_nanos() as u64);
+          }
+        }
       }
     }
   }
@@ -475,6 +528,7 @@ impl Conn {
       }
       if !st.leader {
         st.leader = true;
+        crate::diag::bump(crate::diag::C::Lead);
         let mut lead = Lead { conn: self, active: true };
         loop {
           let interest = st.turn();
@@ -664,10 +718,11 @@ mod model {
     let id = conn.open_sync(head()).unwrap();
     let mut seen = Vec::new();
     loop {
-      let event = conn.next_event_sync(id, None).unwrap();
-      seen.push(kind(&event));
-      if matches!(event, Event::End | Event::Reset(_)) {
-        return seen;
+      for event in conn.next_events_sync(id, None).unwrap() {
+        seen.push(kind(&event));
+        if matches!(event, Event::End | Event::Reset(_)) {
+          return seen;
+        }
       }
     }
   }
@@ -676,10 +731,11 @@ mod model {
     let id = conn.open_async(head()).await.unwrap();
     let mut seen = Vec::new();
     loop {
-      let event = conn.next_event_async(id, None).await.unwrap();
-      seen.push(kind(&event));
-      if matches!(event, Event::End | Event::Reset(_)) {
-        return seen;
+      for event in conn.next_events_async(id, None).await.unwrap() {
+        seen.push(kind(&event));
+        if matches!(event, Event::End | Event::Reset(_)) {
+          return seen;
+        }
       }
     }
   }
@@ -748,19 +804,20 @@ mod model {
       thread::spawn(move || {
         let id = conn.open_sync(head()).unwrap();
         {
-          let mut wait = std::pin::pin!(conn.next_event_async(id, None));
+          let mut wait = std::pin::pin!(conn.next_events_async(id, None));
           let mut cx = Context::from_waker(Waker::noop());
-          if let std::task::Poll::Ready(event) = wait.as_mut().poll(&mut cx) {
-            assert_eq!(kind(&event.unwrap()), "head");
+          if let std::task::Poll::Ready(events) = wait.as_mut().poll(&mut cx) {
+            assert_eq!(kind(&events.unwrap()[0]), "head");
             return;
           }
         }
         let mut seen = Vec::new();
-        loop {
-          let event = conn.next_event_sync(id, None).unwrap();
-          seen.push(kind(&event));
-          if matches!(event, Event::End) {
-            break;
+        'read: loop {
+          for event in conn.next_events_sync(id, None).unwrap() {
+            seen.push(kind(&event));
+            if matches!(event, Event::End) {
+              break 'read;
+            }
           }
         }
         assert_eq!(seen.last(), Some(&"end"));

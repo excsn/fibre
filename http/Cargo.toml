@@ -33,6 +33,7 @@ json = ["dep:serde", "dep:serde_json"]
 gzip = ["dep:flate2"]
 zstd = ["dep:ruzstd"]
 cookies = ["dep:cookie_store", "dep:url"]
+diagnostics = []
 
 [dependencies]
 bytes = "1.12.1"
