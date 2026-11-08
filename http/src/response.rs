@@ -39,6 +39,14 @@ impl<B> Response<B> {
   pub fn into_body(self) -> B {
     self.body
   }
+
+  /// The response itself, or `Error::Status` for a 4xx or 5xx.
+  pub fn error_for_status(self) -> Result<Self, Error> {
+    if self.status.is_client_error() || self.status.is_server_error() {
+      return Err(Error::Status(self.status.as_u16()));
+    }
+    Ok(self)
+  }
 }
 
 impl Response<SyncBody> {

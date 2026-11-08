@@ -29,6 +29,7 @@ struct Inner {
   user_agent: HeaderValue,
   redirects: usize,
   decompress: bool,
+  default_headers: HeaderMap,
 }
 
 pub struct ClientBuilder {
@@ -36,6 +37,7 @@ pub struct ClientBuilder {
   timeout: Option<Duration>,
   redirects: usize,
   decompress: bool,
+  default_headers: HeaderMap,
   user_agent: HeaderValue,
   h2_prior_knowledge: bool,
   #[cfg(feature = "rustls")]
@@ -51,6 +53,7 @@ impl Default for ClientBuilder {
       timeout: None,
       redirects: DEFAULT_REDIRECTS,
       decompress: true,
+      default_headers: HeaderMap::new(),
       user_agent: HeaderValue::from_static(DEFAULT_USER_AGENT),
       h2_prior_knowledge: false,
       #[cfg(feature = "rustls")]
@@ -77,6 +80,12 @@ impl ClientBuilder {
   /// The most redirects a request follows, 10 by default. 0 hands every redirect back as the response.
   pub fn redirects(mut self, n: usize) -> Self {
     self.redirects = n;
+    self
+  }
+
+  /// Headers every request carries. A request header of the same name replaces them.
+  pub fn default_headers(mut self, headers: HeaderMap) -> Self {
+    self.default_headers = headers;
     self
   }
 
@@ -146,6 +155,7 @@ impl ClientBuilder {
       user_agent: self.user_agent,
       redirects: self.redirects,
       decompress: self.decompress,
+      default_headers: self.default_headers,
     }))
   }
 
@@ -300,6 +310,24 @@ impl<M> RequestBuilder<M> {
     self
   }
 
+  /// An `application/x-www-form-urlencoded` body of `pairs`.
+  pub fn form<K: AsRef<str>, V: AsRef<str>>(mut self, pairs: &[(K, V)]) -> Self {
+    let mut encoded = String::new();
+    for (k, v) in pairs {
+      if !encoded.is_empty() {
+        encoded.push('&');
+      }
+      form_encode(k.as_ref(), &mut encoded);
+      encoded.push('=');
+      form_encode(v.as_ref(), &mut encoded);
+    }
+    self.body = Bytes::from(encoded);
+    if !self.headers.contains_key(http::header::CONTENT_TYPE) {
+      self.headers.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/x-www-form-urlencoded"));
+    }
+    self
+  }
+
   pub fn body(mut self, body: impl Into<Bytes>) -> Self {
     self.body = body.into();
     self
@@ -310,7 +338,9 @@ impl<M> RequestBuilder<M> {
     match serde_json::to_vec(value) {
       Ok(v) => {
         self.body = Bytes::from(v);
-        self.headers.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if !self.headers.contains_key(http::header::CONTENT_TYPE) {
+          self.headers.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        }
       }
       Err(e) => self.error = Some(Error::Decode(e.to_string())),
     }
@@ -329,6 +359,13 @@ impl<M> RequestBuilder<M> {
     let uri = self.uri?;
     let key = Key::from_uri(&uri)?;
     let mut headers = self.headers;
+    for name in self.inner.default_headers.keys() {
+      if !headers.contains_key(name) {
+        for value in self.inner.default_headers.get_all(name) {
+          headers.append(name.clone(), value.clone());
+        }
+      }
+    }
     if !headers.contains_key(USER_AGENT) {
       headers.insert(USER_AGENT, self.inner.user_agent.clone());
     }
@@ -432,7 +469,7 @@ impl Prepared {
     if hops >= self.inner.redirects {
       return Err(Error::TooManyRedirects);
     }
-    let uri = resolve(&self.uri, location)?;
+    let Ok(uri) = resolve(&self.uri, location) else { return Ok(None) };
     let key = Key::from_uri(&uri)?;
     let mut next = self.clone();
     let to_get = match status.as_u16() {

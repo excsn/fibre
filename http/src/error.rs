@@ -22,6 +22,8 @@ pub enum Error {
   TooManyRedirects,
   /// The response body is larger than the client accepts.
   TooLarge,
+  /// A 4xx or 5xx status, from `Response::error_for_status`.
+  Status(u16),
 }
 
 impl fmt::Display for Error {
@@ -38,6 +40,7 @@ impl fmt::Display for Error {
       Error::Decode(e) => write!(f, "could not decode body: {e}"),
       Error::TooManyRedirects => f.write_str("too many redirects"),
       Error::TooLarge => f.write_str("response body too large"),
+      Error::Status(code) => write!(f, "status {code}"),
     }
   }
 }
