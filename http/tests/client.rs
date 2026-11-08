@@ -232,6 +232,9 @@ mod h2c {
           let _ = body.flow_control().release_capacity(chunk.len());
           got.extend_from_slice(&chunk);
         }
+        if path == "/slow" {
+          tokio::time::sleep(Duration::from_millis(400)).await;
+        }
         let reply: Bytes = match path.as_str() {
           "/echo" => Bytes::from(got),
           "/big" => Bytes::from(vec![7u8; 200_000]),
@@ -433,4 +436,60 @@ fn query_pairs_are_form_encoded() {
   let client = SyncClient::new();
   client.get(url(addr, "/p?a=1")).query(&[("q", "a b&c"), ("é", "x/y")]).send().unwrap();
   assert_eq!(seen.join().unwrap(), "GET /p?a=1&q=a+b%26c&%C3%A9=x%2Fy HTTP/1.1\r\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dropped_async_leader_hands_the_connection_to_a_parked_request() {
+  let s = h2c::server();
+  let client = AsyncClient::builder().http2_prior_knowledge().build_async().unwrap();
+  assert_eq!(client.get(url(s.addr, "/")).send().await.unwrap().text().await.unwrap(), "hello");
+  for _ in 0..20 {
+    let slow = client.clone();
+    let slow_url = url(s.addr, "/slow");
+    let leader = tokio::spawn(async move { slow.get(slow_url).send().await.map(|r| r.status()) });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let fast = client.clone();
+    let fast_url = url(s.addr, "/echo");
+    let follower = tokio::spawn(async move { fast.post(fast_url).body("still here").send().await?.text().await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    leader.abort();
+    let text = tokio::time::timeout(Duration::from_secs(5), follower).await.expect("the follower finished").unwrap().unwrap();
+    assert_eq!(text, "still here");
+  }
+  assert_eq!(s.accepted.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_timed_out_async_leader_leaves_a_blocking_follower_working() {
+  let s = h2c::server();
+  let pool = Pool::default();
+  let sync = SyncClient::builder().pool(&pool).http2_prior_knowledge().build_sync().unwrap();
+  assert_eq!(sync.get(url(s.addr, "/")).send().unwrap().text().unwrap(), "hello");
+  let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+  let asynch = sync.clone().to_async();
+  for _ in 0..10 {
+    let slow_url = url(s.addr, "/slow");
+    let a = asynch.clone();
+    let leader = rt.spawn(async move { tokio::time::timeout(Duration::from_millis(60), a.get(slow_url).send()).await.is_err() });
+    std::thread::sleep(Duration::from_millis(20));
+    let text = sync.post(url(s.addr, "/echo")).body("blocking").timeout(Duration::from_secs(5)).send().unwrap().text().unwrap();
+    assert_eq!(text, "blocking");
+    assert!(rt.block_on(leader).unwrap(), "the async request timed out");
+  }
+  assert_eq!(s.accepted.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_http1_request_does_not_poison_the_pool() {
+  let s = h1_server(H1Mode::KeepAlive);
+  let client = AsyncClient::new();
+  for _ in 0..5 {
+    let c = client.clone();
+    let u = url(s.addr, "/stall");
+    let stalled = tokio::spawn(async move { c.get(u).send().await.map(|r| r.status()) });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    stalled.abort();
+    let r = tokio::time::timeout(Duration::from_secs(5), client.get(url(s.addr, "/")).send()).await.expect("not stuck behind the dropped request").unwrap();
+    assert_eq!(r.text().await.unwrap(), "hello");
+  }
 }
