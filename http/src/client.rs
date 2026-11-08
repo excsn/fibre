@@ -365,18 +365,23 @@ impl Prepared {
 
 enum Attempt {
   Done(Response<BodyState>),
+  /// The request failed on a connection and may be sent once more on another.
   Retry,
+  /// The connection had no room. Waiting for room does not count as an attempt.
+  Requeue,
   Fail(Error),
 }
 
 impl RequestBuilder<Blocking> {
   pub fn send(self) -> Result<Response<SyncBody>, Error> {
     let req = self.prepare()?;
-    for _ in 0..ATTEMPTS {
+    let mut attempts = 0;
+    while attempts < ATTEMPTS {
       let lease = req.inner.pool.checkout_sync(&req.key, &req.inner.dialer, req.deadline)?;
       match attempt_sync(&req, lease) {
         Attempt::Done(r) => return Ok(r.map_body(SyncBody::from_state)),
-        Attempt::Retry => continue,
+        Attempt::Retry => attempts += 1,
+        Attempt::Requeue => {}
         Attempt::Fail(e) => return Err(e),
       }
     }
@@ -387,11 +392,13 @@ impl RequestBuilder<Blocking> {
 impl RequestBuilder<Async> {
   pub async fn send(self) -> Result<Response<AsyncBody>, Error> {
     let req = self.prepare()?;
-    for _ in 0..ATTEMPTS {
+    let mut attempts = 0;
+    while attempts < ATTEMPTS {
       let lease = req.inner.pool.checkout_async(&req.key, &req.inner.dialer, req.deadline).await?;
       match attempt_async(&req, lease).await {
         Attempt::Done(r) => return Ok(r.map_body(AsyncBody::from_state)),
-        Attempt::Retry => continue,
+        Attempt::Retry => attempts += 1,
+        Attempt::Requeue => {}
         Attempt::Fail(e) => return Err(e),
       }
     }
@@ -404,7 +411,7 @@ fn opened(req: &Prepared, lease: Lease, result: Result<crate::engine::ExchangeId
     Ok(id) => Ok((lease, id)),
     Err(OpenError::Full) | Err(OpenError::GoingAway) => {
       lease.release();
-      Err(Attempt::Retry)
+      Err(Attempt::Requeue)
     }
     Err(_) => {
       let retry = lease.reused || !req.sends_body;

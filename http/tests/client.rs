@@ -202,6 +202,10 @@ mod h2c {
   }
 
   pub fn server() -> H2Server {
+    server_with(None)
+  }
+
+  pub fn server_with(max_streams: Option<u32>) -> H2Server {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
@@ -214,7 +218,7 @@ mod h2c {
         loop {
           let (sock, _) = listener.accept().await.unwrap();
           count.fetch_add(1, Ordering::SeqCst);
-          tokio::spawn(serve(sock));
+          tokio::spawn(serve_limited(sock, max_streams));
         }
       });
     });
@@ -222,7 +226,15 @@ mod h2c {
   }
 
   pub async fn serve<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(io: T) {
-    let Ok(mut conn) = h2::server::handshake(io).await else { return };
+    serve_limited(io, None).await
+  }
+
+  pub async fn serve_limited<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(io: T, max_streams: Option<u32>) {
+    let mut builder = h2::server::Builder::new();
+    if let Some(n) = max_streams {
+      builder.max_concurrent_streams(n);
+    }
+    let Ok(mut conn) = builder.handshake(io).await else { return };
     while let Some(Ok((req, mut respond))) = conn.accept().await {
       tokio::spawn(async move {
         let path = req.uri().path().to_string();
@@ -492,4 +504,25 @@ async fn a_dropped_http1_request_does_not_poison_the_pool() {
     let r = tokio::time::timeout(Duration::from_secs(5), client.get(url(s.addr, "/")).send()).await.expect("not stuck behind the dropped request").unwrap();
     assert_eq!(r.text().await.unwrap(), "hello");
   }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn requests_wait_for_room_on_a_one_stream_http2_connection() {
+  let s = h2c::server_with(Some(1));
+  let pool = Pool::builder().max_per_host(1).build();
+  let client = AsyncClient::builder().pool(&pool).http2_prior_knowledge().build_async().unwrap();
+  assert_eq!(client.get(url(s.addr, "/")).send().await.unwrap().text().await.unwrap(), "hello");
+  let started = Instant::now();
+  let mut tasks = Vec::new();
+  for i in 0..8 {
+    let c = client.clone();
+    let u = url(s.addr, "/echo");
+    tasks.push(tokio::spawn(async move { c.post(u).body(format!("n{i}")).send().await.unwrap().text().await.unwrap() }));
+  }
+  for (i, t) in tasks.into_iter().enumerate() {
+    assert_eq!(t.await.unwrap(), format!("n{i}"));
+  }
+  assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+  assert_eq!(s.accepted.load(Ordering::SeqCst), 1);
+  assert_eq!(pool.connections_opened(), 1);
 }
