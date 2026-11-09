@@ -295,7 +295,7 @@ Without either call a client reads `http_proxy`, `https_proxy`, `all_proxy` and 
 ## Decompressing Responses
 
 ```toml
-fibre_http = { version = "0.1", features = ["gzip", "zstd"] }
+fibre_http = { version = "0", features = ["gzip", "zstd"] }
 ```
 
 ```rust
