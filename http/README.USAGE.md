@@ -239,6 +239,17 @@ assert_eq!(response.version(), http::Version::HTTP_2);
 
 Over TLS, ALPN picks HTTP/2 when the server offers it. Over plain `http://`, `http2_prior_knowledge` speaks HTTP/2 from the first byte. Concurrent requests to one origin share one HTTP/2 connection until the server's stream limit.
 
+Keepalive pings find a dead connection while a request waits on it:
+
+```rust
+let client = fibre_http::AsyncClient::builder()
+  .http2_keep_alive_interval(Duration::from_secs(10))
+  .http2_keep_alive_timeout(Duration::from_secs(5))
+  .build_async()?;
+```
+
+With nothing read for 10 s while a request is in flight, the client sends a PING. Without a PONG within 5 s the connection closes and its requests fail with `Error::Timeout`. Pings are off by default and idle pooled connections are never pinged.
+
 ## Configuring TLS
 
 ```rust

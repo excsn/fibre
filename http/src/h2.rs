@@ -9,10 +9,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ::h2::client::{Builder, Connection, ResponseFuture, SendRequest};
-use ::h2::{Reason, RecvStream, SendStream};
+use ::h2::{Ping, PingPong, Reason, RecvStream, SendStream};
 use bytes::{Bytes, BytesMut};
 use http::header::{CONNECTION, CONTENT_LENGTH, TRANSFER_ENCODING, UPGRADE};
 use http::{Method, Version};
@@ -121,6 +121,11 @@ pub struct Engine {
   next_id: u64,
   going_away: bool,
   closed: bool,
+  /// PING interval and how long to wait for its PONG.
+  keep_alive: Option<(Duration, Duration)>,
+  ping_pong: Option<PingPong>,
+  ping_sent: Option<Instant>,
+  last_read: Instant,
 }
 
 impl Engine {
@@ -137,6 +142,31 @@ impl Engine {
       next_id: 1,
       going_away: false,
       closed: false,
+      keep_alive: None,
+      ping_pong: None,
+      ping_sent: None,
+      last_read: Instant::now(),
+    }
+  }
+
+  /// Sends a PING after `interval` with nothing read while an exchange is open. With no PONG within `timeout` every open exchange ends in `Error::Timeout` and the connection closes.
+  pub fn keep_alive(mut self, interval: Duration, timeout: Duration) -> Self {
+    self.keep_alive = Some((interval, timeout));
+    self
+  }
+
+  fn poll_pong(&mut self, cx: &mut Context<'_>) -> bool {
+    if self.ping_sent.is_none() {
+      return false;
+    }
+    let Some(pp) = self.ping_pong.as_mut() else { return false };
+    match pp.poll_pong(cx) {
+      Poll::Ready(Ok(_)) => {
+        self.ping_sent = None;
+        self.last_read = Instant::now();
+        true
+      }
+      _ => false,
     }
   }
 
@@ -168,8 +198,9 @@ impl Engine {
     let mut cx = Context::from_waker(&waker);
     if let Some(handshake) = self.handshake.as_mut() {
       match handshake.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok((send, conn))) => {
+        Poll::Ready(Ok((send, mut conn))) => {
           self.send = Some(send);
+          self.ping_pong = conn.ping_pong();
           self.conn = Some(conn);
           self.handshake = None;
         }
@@ -182,7 +213,9 @@ impl Engine {
       }
     }
     let Some(conn) = self.conn.as_mut() else { return false };
-    match Pin::new(conn).poll(&mut cx) {
+    let polled = Pin::new(conn).poll(&mut cx);
+    let ponged = self.poll_pong(&mut cx);
+    match polled {
       Poll::Ready(result) => {
         self.conn = None;
         let ids: Vec<ExchangeId> = self.exchanges.keys().copied().collect();
@@ -192,7 +225,7 @@ impl Engine {
         self.end(result.err().map(|e| map_error(&e)), out);
         true
       }
-      Poll::Pending => false,
+      Poll::Pending => ponged,
     }
   }
 
@@ -442,6 +475,7 @@ impl engine::Engine for Engine {
 
   fn on_bytes(&mut self, input: &mut BytesMut, out: &mut Output) {
     if !input.is_empty() {
+      self.last_read = Instant::now();
       let waker = {
         let mut b = self.io.0.lock();
         b.inbound.extend(input.iter());
@@ -472,10 +506,35 @@ impl engine::Engine for Engine {
     }
   }
 
-  fn on_tick(&mut self, _now: Instant, _out: &mut Output) {}
+  fn on_tick(&mut self, now: Instant, out: &mut Output) {
+    let Some((interval, timeout)) = self.keep_alive else { return };
+    if self.closed || self.exchanges.is_empty() {
+      return;
+    }
+    match self.ping_sent {
+      Some(sent) if now >= sent + timeout => self.end(Some(Error::Timeout), out),
+      Some(_) => {}
+      None if now >= self.last_read + interval => {
+        let Some(pp) = self.ping_pong.as_mut() else { return };
+        if pp.send_ping(Ping::opaque()).is_ok() {
+          self.ping_sent = Some(now);
+          self.conn_flag.raise();
+          self.drive(out);
+        }
+      }
+      None => {}
+    }
+  }
 
   fn next_deadline(&self) -> Option<Instant> {
-    None
+    let (interval, timeout) = self.keep_alive?;
+    if self.closed || self.exchanges.is_empty() || self.ping_pong.is_none() {
+      return None;
+    }
+    Some(match self.ping_sent {
+      Some(sent) => sent + timeout,
+      None => self.last_read + interval,
+    })
   }
 
   fn close(&mut self, out: &mut Output) {

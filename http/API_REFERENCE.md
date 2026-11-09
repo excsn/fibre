@@ -83,6 +83,8 @@ Configuration for both clients. `Default` is the configuration `new()` uses.
 * `pub fn max_response_size(self, bytes: usize) -> Self`: the most bytes a body may decode to. Default: no limit.
 * `pub fn user_agent(self, value: &str) -> Result<Self, Error>`. Default: `fibre_http/<version>`.
 * `pub fn http2_prior_knowledge(self) -> Self`: HTTP/2 without TLS to `http://` origins.
+* `pub fn http2_keep_alive_interval(self, interval: Duration) -> Self`: send a PING after `interval` with nothing read while a request is in flight. Off by default. Idle pooled connections are not pinged.
+* `pub fn http2_keep_alive_timeout(self, timeout: Duration) -> Self`: how long to wait for the PONG, 20 s by default. Without one the connection closes and its requests fail with `Error::Timeout`.
 * `pub fn add_root_certificate(self, der: Vec<u8>) -> Self`: trusts a DER root beside the default roots.
 * `pub fn no_bundled_roots(self) -> Self`: trusts only added roots.
 * `pub fn use_native_tls(self) -> Self`: under `native-tls`.
@@ -232,8 +234,9 @@ Never emits `Event::Informational`. A response head over 64 KiB is an error. Byt
 Under `http2`.
 
 * `pub fn new() -> Engine`
+* `pub fn keep_alive(self, interval: Duration, timeout: Duration) -> Engine`: PING after `interval` with nothing read while an exchange is open. With no PONG within `timeout`, every open exchange gets `Event::Reset(Error::Timeout)` and the connection closes.
 
-`next_deadline` is always `None`.
+`next_deadline` is `None` without keep-alive or with no exchange open. Otherwise it is the next PING or the PONG deadline.
 
 ## 8. Error handling
 

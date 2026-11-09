@@ -19,6 +19,7 @@ use crate::response::Response;
 const DEFAULT_USER_AGENT: &str = concat!("fibre_http/", env!("CARGO_PKG_VERSION"));
 const ATTEMPTS: usize = 3;
 const DEFAULT_REDIRECTS: usize = 10;
+const DEFAULT_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 const BODY_CHUNK: usize = 64 * 1024;
 
 type BodyReader = Box<dyn std::io::Read + Send>;
@@ -73,6 +74,8 @@ pub struct ClientBuilder {
   cookie_store: bool,
   user_agent: HeaderValue,
   h2_prior_knowledge: bool,
+  h2_keep_alive_interval: Option<Duration>,
+  h2_keep_alive_timeout: Duration,
   roots: Vec<Vec<u8>>,
   bundled_roots: bool,
   #[cfg(feature = "native-tls")]
@@ -93,6 +96,8 @@ impl Default for ClientBuilder {
       cookie_store: false,
       user_agent: HeaderValue::from_static(DEFAULT_USER_AGENT),
       h2_prior_knowledge: false,
+      h2_keep_alive_interval: None,
+      h2_keep_alive_timeout: DEFAULT_KEEP_ALIVE_TIMEOUT,
       roots: Vec::new(),
       bundled_roots: true,
       #[cfg(feature = "native-tls")]
@@ -179,6 +184,18 @@ impl ClientBuilder {
     self
   }
 
+  /// Sends an HTTP/2 PING after `interval` with nothing read while a request is in flight, off by default. A connection idle in the pool is not pinged.
+  pub fn http2_keep_alive_interval(mut self, interval: Duration) -> Self {
+    self.h2_keep_alive_interval = Some(interval);
+    self
+  }
+
+  /// How long to wait for the PONG before the connection is closed and its requests fail with `Error::Timeout`, 20 s by default.
+  pub fn http2_keep_alive_timeout(mut self, timeout: Duration) -> Self {
+    self.h2_keep_alive_timeout = timeout;
+    self
+  }
+
   /// Trusts `der` as a root certificate, beside the bundled roots.
   pub fn add_root_certificate(mut self, der: Vec<u8>) -> Self {
     self.roots.push(der);
@@ -256,6 +273,7 @@ impl ClientBuilder {
         #[cfg(feature = "native-tls")]
         native,
         h2_prior_knowledge: self.h2_prior_knowledge,
+        h2_keep_alive: self.h2_keep_alive_interval.map(|interval| (interval, self.h2_keep_alive_timeout)),
         proxies: self.proxies.unwrap_or_else(crate::proxy::Proxies::from_env),
         user_agent: self.user_agent.to_str().unwrap_or(DEFAULT_USER_AGENT).to_owned(),
       },

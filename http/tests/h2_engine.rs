@@ -7,6 +7,7 @@ use std::io;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
+use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use fibre_http::Error;
@@ -133,8 +134,12 @@ struct Harness {
 
 impl Harness {
   fn new(max_streams: Option<u32>, handler: Handler) -> Self {
+    Self::with_engine(Engine::new(), max_streams, handler)
+  }
+
+  fn with_engine(engine: Engine, max_streams: Option<u32>, handler: Handler) -> Self {
     Self {
-      engine: Engine::new(),
+      engine,
       out: Output::default(),
       input: BytesMut::new(),
       server: Server::new(max_streams, handler),
@@ -423,4 +428,84 @@ fn other_resets_keep_their_code() {
   let id = h.open(Method::GET, "/", &[]).unwrap();
   h.pump();
   assert_eq!(h.of(id), vec![Seen::Reset(Error::Reset(2))]);
+}
+
+const PING_EVERY: Duration = Duration::from_secs(10);
+const PONG_WITHIN: Duration = Duration::from_secs(20);
+
+fn keep_alive(handler: Handler) -> Harness {
+  Harness::with_engine(Engine::new().keep_alive(PING_EVERY, PONG_WITHIN), None, handler)
+}
+
+#[test]
+fn keep_alive_pings_after_the_interval_while_an_exchange_is_open() {
+  let (handler, _held) = silent();
+  let start = Instant::now();
+  let mut h = keep_alive(handler);
+  let slow = h.open(Method::GET, "/slow", &[]).unwrap();
+  h.pump();
+  let due = h.engine.next_deadline().expect("a ping is due while an exchange is open");
+  assert!(due > start && due <= Instant::now() + PING_EVERY);
+  h.engine.on_tick(due, &mut h.out);
+  assert!(!h.collect().is_empty(), "the tick sends a PING");
+  assert_eq!(h.engine.next_deadline(), Some(due + PONG_WITHIN));
+  assert_eq!(h.of(slow), vec![]);
+}
+
+#[test]
+fn keep_alive_keeps_a_connection_whose_peer_answers() {
+  let (handler, _held) = silent();
+  let mut h = keep_alive(handler);
+  let slow = h.open(Method::GET, "/slow", &[]).unwrap();
+  h.pump();
+  let due = h.engine.next_deadline().unwrap();
+  h.engine.on_tick(due, &mut h.out);
+  h.pump();
+  assert_ne!(h.engine.next_deadline(), Some(due + PONG_WITHIN), "the PONG clears the wait for it");
+  h.engine.on_tick(due + PONG_WITHIN + Duration::from_secs(1), &mut h.out);
+  h.pump();
+  assert_eq!(h.of(slow), vec![]);
+  assert!(!h.closed && !h.conn_closed());
+}
+
+#[test]
+fn keep_alive_closes_a_connection_whose_peer_stops_answering() {
+  let (handler, _held) = silent();
+  let mut h = keep_alive(handler);
+  let slow = h.open(Method::GET, "/slow", &[]).unwrap();
+  h.pump();
+  let due = h.engine.next_deadline().unwrap();
+  h.engine.on_tick(due, &mut h.out);
+  let _unanswered = h.collect();
+  h.engine.on_tick(due + PONG_WITHIN - Duration::from_millis(1), &mut h.out);
+  h.collect();
+  assert_eq!(h.of(slow), vec![]);
+  assert!(!h.conn_closed());
+  h.engine.on_tick(due + PONG_WITHIN, &mut h.out);
+  h.collect();
+  assert_eq!(h.of(slow), vec![Seen::Reset(Error::Timeout)]);
+  assert!(h.closed && h.conn_closed());
+}
+
+#[test]
+fn keep_alive_has_no_deadline_without_an_open_exchange() {
+  let mut h = keep_alive(respond_with(b"hello"));
+  let id = h.open(Method::GET, "/", &[]).unwrap();
+  h.pump();
+  assert_eq!(h.of(id), vec![Seen::Head(200), Seen::Data(5), Seen::End]);
+  assert_eq!(h.engine.next_deadline(), None);
+}
+
+#[test]
+fn keep_alive_counts_from_the_last_bytes_read() {
+  let (handler, _held) = silent();
+  let mut h = keep_alive(handler);
+  let _slow = h.open(Method::GET, "/slow", &[]).unwrap();
+  h.pump();
+  let first = h.engine.next_deadline().unwrap();
+  std::thread::sleep(Duration::from_millis(20));
+  let fast = h.open(Method::GET, "/fast", &[]).unwrap();
+  h.pump();
+  assert_eq!(h.of(fast), vec![Seen::Head(200), Seen::Data(4), Seen::End]);
+  assert!(h.engine.next_deadline().unwrap() >= first + Duration::from_millis(20));
 }

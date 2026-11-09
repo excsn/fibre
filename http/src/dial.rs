@@ -21,6 +21,8 @@ pub(crate) struct Dialer {
   #[cfg(feature = "native-tls")]
   pub native: Option<native_tls::TlsConnector>,
   pub h2_prior_knowledge: bool,
+  /// HTTP/2 PING interval and PONG timeout.
+  pub h2_keep_alive: Option<(Duration, Duration)>,
   pub proxies: crate::proxy::Proxies,
   pub user_agent: String,
 }
@@ -79,7 +81,11 @@ fn finish(dialer: &Dialer, key: &Key, io: Io, reg: Registration) -> Result<Arc<C
   let (engine, proto): (Box<dyn Engine + Send>, Proto) = if h2 {
     #[cfg(feature = "http2")]
     {
-      (Box::new(crate::h2::Engine::new()), Proto::H2)
+      let engine = match dialer.h2_keep_alive {
+        Some((interval, timeout)) => crate::h2::Engine::new().keep_alive(interval, timeout),
+        None => crate::h2::Engine::new(),
+      };
+      (Box::new(engine), Proto::H2)
     }
     #[cfg(not(feature = "http2"))]
     {

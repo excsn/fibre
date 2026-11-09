@@ -342,6 +342,55 @@ mod h2c {
     });
     (addr, accepted)
   }
+
+  /// An h2c server that takes the first request, then never reads its connection again, so a PING goes unanswered.
+  pub fn stalls() -> SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+      let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+      rt.block_on(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let (sock, _) = listener.accept().await.unwrap();
+        let Ok(mut conn): Result<h2::server::Connection<_, Bytes>, _> = h2::server::handshake(sock).await else { return };
+        let _first = conn.accept().await;
+        std::future::pending::<()>().await;
+      });
+    });
+    addr
+  }
+}
+
+#[test]
+fn http2_keep_alive_fails_a_request_on_a_connection_that_stops_answering() {
+  let addr = h2c::stalls();
+  let client = SyncClient::builder()
+    .http2_prior_knowledge()
+    .http2_keep_alive_interval(Duration::from_millis(50))
+    .http2_keep_alive_timeout(Duration::from_millis(200))
+    .build_sync()
+    .unwrap();
+  let (tx, rx) = std::sync::mpsc::channel();
+  let started = Instant::now();
+  std::thread::spawn(move || {
+    let _ = tx.send(client.get(format!("http://{addr}/")).send().map(|_| ()));
+  });
+  let r = rx.recv_timeout(Duration::from_secs(5)).expect("the request ended instead of waiting for ever");
+  assert!(matches!(r, Err(Error::Timeout)), "{r:?}");
+  assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http2_keep_alive_leaves_a_live_slow_exchange_alone() {
+  let (addr, _) = h2c::server(None, None);
+  let client = AsyncClient::builder()
+    .http2_prior_knowledge()
+    .http2_keep_alive_interval(Duration::from_millis(20))
+    .http2_keep_alive_timeout(Duration::from_millis(500))
+    .build_async()
+    .unwrap();
+  assert_eq!(client.get(format!("http://{addr}/slow")).send().await.unwrap().text().await.unwrap(), "ok");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
