@@ -39,7 +39,9 @@ pub(crate) struct State {
   /// Socket reads land here first, allocated once per connection.
   read_buf: Box<[u8]>,
   pending: BytesMut,
-  unflushed: bool,
+  /// Bytes ready for the socket, written by whoever holds `writing`, with the lock released.
+  wire: BytesMut,
+  writing: bool,
   /// Body bytes were consumed since the engine last ran.
   consumed: bool,
   out: Output,
@@ -103,15 +105,15 @@ impl State {
     }
   }
 
+  /// Seals pending output into `wire`. The socket write happens in `Conn::release`, outside the lock.
   fn flush_now(&mut self) {
     if self.closed {
       self.pending.clear();
-      self.unflushed = false;
+      self.wire.clear();
       return;
     }
-    match self.io.flush(&mut self.pending) {
-      Ok(done) => self.unflushed = !done,
-      Err(e) => self.broken(e),
+    if let Err(e) = self.io.seal(&mut self.pending, &mut self.wire) {
+      self.broken(e);
     }
   }
 
@@ -158,7 +160,7 @@ impl State {
       self.apply();
     }
     self.flush_now();
-    Interest { read: true, write: self.unflushed }
+    Interest { read: true, write: !self.wire.is_empty() && !self.writing }
   }
 
   /// The earlier of the request's deadline and the engine's. Returns whether the engine's is the one waited for.
@@ -235,7 +237,7 @@ impl State {
 
   fn flushed(&mut self, _id: ExchangeId) -> Option<()> {
     self.flush_now();
-    (!self.unflushed || self.closed).then_some(())
+    (self.wire.is_empty() || self.writing || self.closed).then_some(())
   }
 
   fn wake_any(&mut self) {
@@ -254,6 +256,7 @@ impl State {
 pub(crate) struct Conn {
   reg: Registration,
   st: HybridMutex<State>,
+  writer: crate::io::Writer,
   waitable: Waitable,
   pub(crate) proto: Proto,
   closed: AtomicBool,
@@ -264,19 +267,23 @@ pub(crate) struct Conn {
 }
 
 type Check<R> = fn(&mut State, ExchangeId) -> Option<R>;
+type Guard<'a> = fibre::sync::MutexGuard<'a, State>;
 
 impl Conn {
   pub(crate) fn new(engine: Box<dyn Engine + Send>, io: Io, proto: Proto, reg: Registration) -> Arc<Conn> {
     let waitable = io.waitable();
+    let writer = io.writer().expect("a connected socket can be cloned for writing");
     Arc::new(Conn {
       reg,
+      writer,
       st: HybridMutex::new(State {
         engine,
         io,
         input: BytesMut::new(),
         read_buf: vec![0u8; READ_CHUNK].into_boxed_slice(),
         pending: BytesMut::new(),
-        unflushed: false,
+        wire: BytesMut::new(),
+        writing: false,
         consumed: false,
         out: Output::default(),
         slots: HashMap::new(),
@@ -338,6 +345,76 @@ impl Conn {
     true
   }
 
+  /// Drops the lock, first writing out sealed bytes if nobody else is: write combining. Bytes sealed by others while this writes go out in the next round. A full socket leaves the rest in `wire` for the leader, which then waits for writable.
+  fn release<'a>(&'a self, mut st: Guard<'a>) -> bool {
+    loop {
+      if st.writing || st.wire.is_empty() || st.closed {
+        return !st.wire.is_empty() && !st.writing && !st.closed;
+      }
+      st.writing = true;
+      let buf = std::mem::take(&mut st.wire);
+      drop(st);
+      let written = self.write_some(&buf);
+      st = self.st.lock();
+      if !self.settle(&mut st, buf, written) {
+        return !st.wire.is_empty() && !st.closed;
+      }
+    }
+  }
+
+  async fn release_async<'a>(&'a self, mut st: Guard<'a>) -> bool {
+    loop {
+      if st.writing || st.wire.is_empty() || st.closed {
+        return !st.wire.is_empty() && !st.writing && !st.closed;
+      }
+      st.writing = true;
+      let buf = std::mem::take(&mut st.wire);
+      drop(st);
+      let written = self.write_some(&buf);
+      st = self.st.lock_async().await;
+      if !self.settle(&mut st, buf, written) {
+        return !st.wire.is_empty() && !st.closed;
+      }
+    }
+  }
+
+  /// Writes until the socket would block. Returns how much went out.
+  fn write_some(&self, buf: &[u8]) -> std::io::Result<usize> {
+    let mut off = 0;
+    while off < buf.len() {
+      match self.writer.write(&buf[off..]) {
+        Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+        Ok(n) => off += n,
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+        Err(e) => return Err(e),
+      }
+    }
+    Ok(off)
+  }
+
+  /// Puts back what the socket did not take, ahead of anything sealed meanwhile. Returns whether to write another round.
+  fn settle(&self, st: &mut State, mut buf: BytesMut, written: std::io::Result<usize>) -> bool {
+    st.writing = false;
+    match written {
+      Err(e) => {
+        st.broken(e);
+        self.note(st);
+        false
+      }
+      Ok(n) if n < buf.len() => {
+        let _ = buf.split_to(n);
+        buf.extend_from_slice(&st.wire);
+        st.wire = buf;
+        if !st.leader {
+          st.wake_any();
+        }
+        false
+      }
+      Ok(_) => true,
+    }
+  }
+
   fn open_locked(&self, st: &mut State, head: RequestHead) -> Result<ExchangeId, OpenError> {
     if st.closed {
       return Err(OpenError::Closed);
@@ -354,12 +431,16 @@ impl Conn {
 
   pub(crate) fn open_sync(&self, head: RequestHead) -> Result<ExchangeId, OpenError> {
     let mut st = self.st.lock();
-    self.open_locked(&mut st, head)
+    let r = self.open_locked(&mut st, head);
+    self.release(st);
+    r
   }
 
   pub(crate) async fn open_async(&self, head: RequestHead) -> Result<ExchangeId, OpenError> {
     let mut st = self.st.lock_async().await;
-    self.open_locked(&mut st, head)
+    let r = self.open_locked(&mut st, head);
+    self.release_async(st).await;
+    r
   }
 
   fn offer(&self, st: &mut State, id: ExchangeId, data: &Bytes, end: bool, off: &mut usize) -> Result<(), Error> {
@@ -385,7 +466,9 @@ impl Conn {
           self.offer(&mut st, id, &data, end, &mut off)?;
           first = false;
         }
-        st.unflushed
+        self.release(st);
+        let st = self.st.lock();
+        !(st.wire.is_empty() || st.writing || st.closed)
       };
       if off == data.len() && !unflushed {
         return Ok(());
@@ -408,7 +491,9 @@ impl Conn {
           self.offer(&mut st, id, &data, end, &mut off)?;
           first = false;
         }
-        st.unflushed
+        self.release_async(st).await;
+        let st = self.st.lock_async().await;
+        !(st.wire.is_empty() || st.writing || st.closed)
       };
       if off == data.len() && !unflushed {
         return Ok(());
@@ -438,24 +523,27 @@ impl Conn {
     }
     let event = st.take(id);
     self.note(&st);
+    self.release(st);
     event
   }
 
   pub(crate) fn reset(&self, id: ExchangeId) {
-    let mut st = self.st.lock();
-    let st = &mut *st;
+    let mut guard = self.st.lock();
+    let st = &mut *guard;
     if st.slots.remove(&id).is_some() {
       st.engine.reset(id, &mut st.out);
       st.apply();
       st.flush_now();
     }
-    self.note(&st);
+    self.note(&guard);
+    self.release(guard);
   }
 
   fn drive_sync<R>(&self, id: ExchangeId, deadline: Option<Instant>, check: Check<R>) -> Result<R, Error> {
     loop {
       let mut st = self.st.lock();
       if let Some(r) = check(&mut st, id) {
+        self.release(st);
         return Ok(r);
       }
       if !st.leader {
@@ -467,10 +555,12 @@ impl Conn {
           if let Some(r) = check(&mut st, id) {
             st.leader = false;
             st.wake_any();
+            self.release(st);
             return Ok(r);
           }
           let (until, engine_timer) = st.wait_until(deadline);
-          drop(st);
+          let left = self.release(st);
+          let interest = Interest { read: true, write: interest.write || left };
           let ready = wait::block_on(&self.waitable, interest, until);
           st = self.st.lock();
           match ready {
@@ -493,7 +583,7 @@ impl Conn {
       if let Some(slot) = st.slots.get_mut(&id) {
         slot.waiter = Waiter::Thread(thread::current());
       }
-      drop(st);
+      self.release(st);
       match deadline {
         Some(d) => {
           let now = Instant::now();
@@ -524,6 +614,7 @@ impl Conn {
     loop {
       let mut st = self.st.lock_async().await;
       if let Some(r) = check(&mut st, id) {
+        self.release_async(st).await;
         return Ok(r);
       }
       if !st.leader {
@@ -537,10 +628,12 @@ impl Conn {
             st.leader = false;
             st.wake_any();
             lead.active = false;
+            self.release_async(st).await;
             return Ok(r);
           }
           let (until, engine_timer) = st.wait_until(deadline);
-          drop(st);
+          let left = self.release_async(st).await;
+          let interest = Interest { read: true, write: interest.write || left };
           let ready = self.reg.wait_on(&self.waitable, interest, until).await;
           st = self.st.lock_async().await;
           match ready {
@@ -566,7 +659,7 @@ impl Conn {
       if let Some(slot) = st.slots.get_mut(&id) {
         slot.waiter = Waiter::Signal(signal.clone());
       }
-      drop(st);
+      self.release_async(st).await;
       let parked = signal.wait();
       match deadline {
         Some(d) => {

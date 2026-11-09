@@ -8,6 +8,26 @@ use bytes::BytesMut;
 
 use crate::wait::Interest;
 
+/// The writing side of a connection's socket.
+pub(crate) enum Writer {
+  Tcp(TcpStream),
+  #[cfg(shuttle)]
+  Model(std::sync::Arc<model::Pipe>),
+}
+
+impl Writer {
+  pub(crate) fn write(&self, buf: &[u8]) -> io::Result<usize> {
+    match self {
+      Writer::Tcp(s) => (&*s).write(buf),
+      #[cfg(shuttle)]
+      Writer::Model(pipe) => {
+        pipe.send(buf);
+        Ok(buf.len())
+      }
+    }
+  }
+}
+
 pub(crate) enum Io {
   Plain(TcpStream),
   #[cfg(feature = "rustls")]
@@ -69,46 +89,49 @@ impl Io {
     }
   }
 
-  /// Writes as much of `pending` as the socket takes and removes it. Returns whether everything went out.
-  pub(crate) fn flush(&mut self, pending: &mut BytesMut) -> io::Result<bool> {
+  /// Moves `pending` plaintext into `wire` as bytes ready for the socket: itself, or ciphertext under TLS.
+  pub(crate) fn seal(&mut self, pending: &mut BytesMut, wire: &mut BytesMut) -> io::Result<()> {
     match self {
-      Io::Plain(s) => {
-        while !pending.is_empty() {
-          match s.write(pending) {
-            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(n) => {
-              let _ = pending.split_to(n);
-            }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
-            Err(e) => return Err(e),
-          }
-        }
-        Ok(true)
+      Io::Plain(_) => {
+        wire.extend_from_slice(pending);
+        pending.clear();
+        Ok(())
       }
       #[cfg(feature = "rustls")]
       Io::Tls(t) => {
-        let (sock, tls) = &mut **t;
+        let tls = &mut t.1;
         if !pending.is_empty() {
           tls.writer().write_all(pending)?;
           pending.clear();
         }
+        let mut out = Vec::new();
         while tls.wants_write() {
-          match tls.write_tls(sock) {
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
-            Err(e) => return Err(e),
-          }
+          tls.write_tls(&mut out)?;
         }
-        Ok(true)
+        wire.extend_from_slice(&out);
+        Ok(())
       }
       #[cfg(feature = "native-tls")]
-      Io::Native(n) => n.flush(pending),
+      Io::Native(n) => n.seal(pending, wire),
       #[cfg(shuttle)]
-      Io::Model(pipe) => {
-        pipe.send(pending);
+      Io::Model(_) => {
+        wire.extend_from_slice(pending);
         pending.clear();
-        Ok(true)
+        Ok(())
       }
+    }
+  }
+
+  /// A second handle on the socket, for writing while the connection lock is released.
+  pub(crate) fn writer(&self) -> io::Result<Writer> {
+    match self {
+      Io::Plain(s) => Ok(Writer::Tcp(s.try_clone()?)),
+      #[cfg(feature = "rustls")]
+      Io::Tls(t) => Ok(Writer::Tcp(t.0.try_clone()?)),
+      #[cfg(feature = "native-tls")]
+      Io::Native(n) => Ok(Writer::Tcp(n.sock.try_clone()?)),
+      #[cfg(shuttle)]
+      Io::Model(pipe) => Ok(Writer::Model(pipe.clone())),
     }
   }
 
@@ -317,13 +340,15 @@ pub(crate) mod native {
       }
     }
 
-    pub(crate) fn flush(&mut self, pending: &mut BytesMut) -> io::Result<bool> {
+    pub(crate) fn seal(&mut self, pending: &mut BytesMut, wire: &mut BytesMut) -> io::Result<()> {
       let State::Ready(tls) = &mut self.state else { return Err(io::ErrorKind::NotConnected.into()) };
       if !pending.is_empty() {
         tls.write_all(pending)?;
         pending.clear();
       }
-      write_out(&mut self.sock, tls.get_mut())
+      wire.extend_from_slice(&tls.get_mut().outbound);
+      tls.get_mut().outbound.clear();
+      Ok(())
     }
 
     pub(crate) fn alpn(&self) -> Option<Vec<u8>> {
