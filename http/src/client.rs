@@ -77,6 +77,7 @@ pub struct ClientBuilder {
   h2_keep_alive_interval: Option<Duration>,
   h2_keep_alive_timeout: Duration,
   roots: Vec<Vec<u8>>,
+  identity: Option<(Vec<u8>, Vec<u8>)>,
   bundled_roots: bool,
   #[cfg(feature = "native-tls")]
   native_tls: bool,
@@ -99,6 +100,7 @@ impl Default for ClientBuilder {
       h2_keep_alive_interval: None,
       h2_keep_alive_timeout: DEFAULT_KEEP_ALIVE_TIMEOUT,
       roots: Vec::new(),
+      identity: None,
       bundled_roots: true,
       #[cfg(feature = "native-tls")]
       native_tls: !cfg!(feature = "rustls"),
@@ -202,6 +204,12 @@ impl ClientBuilder {
     self
   }
 
+  /// Presents `cert_chain_pem` and its `key_pem` when a server asks for a client certificate: mutual TLS. A chain or key that does not parse fails the build with `Error::Tls`.
+  pub fn identity(mut self, cert_chain_pem: Vec<u8>, key_pem: Vec<u8>) -> Self {
+    self.identity = Some((cert_chain_pem, key_pem));
+    self
+  }
+
   /// HTTPS through the platform's TLS (Security.framework, SChannel or OpenSSL) instead of rustls.
   #[cfg(feature = "native-tls")]
   pub fn use_native_tls(mut self) -> Self {
@@ -232,6 +240,9 @@ impl ClientBuilder {
           builder.add_root_certificate(native_tls::Certificate::from_der(der).map_err(|e| Error::Tls(e.to_string()))?);
         }
         builder.disable_built_in_roots(!self.bundled_roots);
+        if let Some((chain, key)) = &self.identity {
+          builder.identity(native_tls::Identity::from_pkcs8(chain, key).map_err(|e| Error::Tls(e.to_string()))?);
+        }
         Some(builder.build().map_err(|e| Error::Tls(e.to_string()))?)
       }
     };
@@ -251,11 +262,22 @@ impl ClientBuilder {
       for der in &self.roots {
         store.add(rustls::pki_types::CertificateDer::from(der.clone())).map_err(|e| Error::Tls(e.to_string()))?;
       }
-      let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+      let builder = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_safe_default_protocol_versions()
         .map_err(|e| Error::Tls(e.to_string()))?
-        .with_root_certificates(store)
-        .with_no_client_auth();
+        .with_root_certificates(store);
+      let mut config = match &self.identity {
+        None => builder.with_no_client_auth(),
+        Some((chain, key)) => {
+          use rustls::pki_types::pem::PemObject;
+          let chain = rustls::pki_types::CertificateDer::pem_slice_iter(chain).collect::<Result<Vec<_>, _>>().map_err(|e| Error::Tls(format!("client certificate chain: {e}")))?;
+          if chain.is_empty() {
+            return Err(Error::Tls("client certificate chain: no certificate".into()));
+          }
+          let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(key).map_err(|e| Error::Tls(format!("client key: {e}")))?;
+          builder.with_client_auth_cert(chain, key).map_err(|e| Error::Tls(e.to_string()))?
+        }
+      };
       #[allow(unused_mut)]
       let mut alpn = Vec::new();
       #[cfg(feature = "http2")]

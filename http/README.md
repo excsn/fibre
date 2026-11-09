@@ -30,7 +30,7 @@ Requests a second for 64-byte GETs to a local hyper server with N concurrent cal
 - HTTP/2 keepalive pings.
 - One pool across clients and modes, with per-origin limits and idle expiry.
 - HTTP proxies with `CONNECT` for HTTPS.
-- rustls by default, native-tls optional.
+- rustls by default, native-tls optional, with client certificates for mutual TLS.
 - Per-request deadlines, browser-style redirects and safe retries.
 - Streamed request bodies and `Expect: 100-continue`.
 

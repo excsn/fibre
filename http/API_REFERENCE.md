@@ -87,6 +87,7 @@ Configuration for both clients. `Default` is the configuration `new()` uses.
 * `pub fn http2_keep_alive_timeout(self, timeout: Duration) -> Self`: how long to wait for the PONG, 20 s by default. Without one the connection closes and its requests fail with `Error::Timeout`.
 * `pub fn add_root_certificate(self, der: Vec<u8>) -> Self`: trusts a DER root beside the default roots.
 * `pub fn no_bundled_roots(self) -> Self`: trusts only added roots.
+* `pub fn identity(self, cert_chain_pem: Vec<u8>, key_pem: Vec<u8>) -> Self`: presents a PEM certificate chain and its PEM key when a server asks for a client certificate. With rustls the key may be RSA, ECDSA or Ed25519. With native-tls on macOS it must be RSA in PKCS#8. A chain or key that does not parse fails the build with `Error::Tls`.
 * `pub fn use_native_tls(self) -> Self`: under `native-tls`.
 * `pub fn cookie_store(self, on: bool) -> Self`: under `cookies`. Default: `false`.
 * `pub fn proxy(self, proxy: Proxy) -> Self`: every request through `proxy`, in place of the environment's.

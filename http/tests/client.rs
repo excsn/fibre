@@ -360,6 +360,47 @@ mod tls {
       .with_single_cert(vec![cert.cert.der().clone()], key)
       .unwrap();
     config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+    TlsServer { addr: listen(config), root }
+  }
+
+  pub struct MtlsServer {
+    pub addr: SocketAddr,
+    pub root: Vec<u8>,
+    pub client_chain: Vec<u8>,
+    pub client_key: Vec<u8>,
+  }
+
+  /// A server that refuses a connection without a client certificate signed by its own client CA.
+  pub fn server_requiring_client_cert() -> MtlsServer {
+    server_requiring_client_cert_for(rcgen::KeyPair::generate().unwrap())
+  }
+
+  /// As `server_requiring_client_cert`, with the client certificate issued for `client_key`.
+  pub fn server_requiring_client_cert_for(client_key: rcgen::KeyPair) -> MtlsServer {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let root = cert.cert.der().to_vec();
+    let key = rustls::pki_types::PrivateKeyDer::try_from(cert.signing_key.serialize_der()).unwrap();
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+    let issuer = rcgen::Issuer::new(ca_params, &ca_key);
+    let client_cert = rcgen::CertificateParams::new(vec!["client".to_string()]).unwrap().signed_by(&client_key, &issuer).unwrap();
+    let mut client_roots = rustls::RootCertStore::empty();
+    client_roots.add(ca_cert.der().clone()).unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(client_roots), provider.clone()).build().unwrap();
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+      .with_safe_default_protocol_versions()
+      .unwrap()
+      .with_client_cert_verifier(verifier)
+      .with_single_cert(vec![cert.cert.der().clone()], key)
+      .unwrap();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    MtlsServer { addr: listen(config), root, client_chain: client_cert.pem().into_bytes(), client_key: client_key.serialize_pem().into_bytes() }
+  }
+
+  fn listen(config: rustls::ServerConfig) -> SocketAddr {
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -382,7 +423,7 @@ mod tls {
         }
       });
     });
-    TlsServer { addr, root }
+    addr
   }
 
   async fn serve_h1_async<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(io: T) {
@@ -625,4 +666,45 @@ async fn hickory_resolves_localhost() {
   let client = AsyncClient::new();
   let r = client.get(format!("http://localhost:{}/", s.addr.port())).send().await.unwrap();
   assert_eq!(r.text().await.unwrap(), "hello");
+}
+
+#[test]
+fn tls_presents_the_client_identity_a_server_requires() {
+  let s = tls::server_requiring_client_cert();
+  let client = SyncClient::builder().add_root_certificate(s.root.clone()).identity(s.client_chain.clone(), s.client_key.clone()).build_sync().unwrap();
+  let r = client.get(format!("https://localhost:{}/", s.addr.port())).send().unwrap();
+  assert_eq!(r.text().unwrap(), "hello");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tls_presents_the_client_identity_a_server_requires_async() {
+  let s = tls::server_requiring_client_cert();
+  let client = AsyncClient::builder().add_root_certificate(s.root.clone()).identity(s.client_chain.clone(), s.client_key.clone()).build_async().unwrap();
+  let r = client.get(format!("https://localhost:{}/", s.addr.port())).send().await.unwrap();
+  assert_eq!(r.text().await.unwrap(), "hello");
+}
+
+#[test]
+fn tls_without_an_identity_is_refused_by_a_server_that_requires_one() {
+  let s = tls::server_requiring_client_cert();
+  let client = SyncClient::builder().add_root_certificate(s.root.clone()).build_sync().unwrap();
+  let r = client.get(format!("https://localhost:{}/", s.addr.port())).timeout(Duration::from_secs(5)).send();
+  assert!(r.is_err(), "{:?}", r.map(|r| r.status()));
+}
+
+#[test]
+fn an_identity_that_is_not_pem_fails_the_build() {
+  let r = SyncClient::builder().identity(b"not a pem chain".to_vec(), b"not a pem key".to_vec()).build_sync();
+  assert!(matches!(r, Err(Error::Tls(_))), "{:?}", r.err());
+}
+
+/// macOS's Security.framework imports only RSA keys through `native_tls::Identity::from_pkcs8`; ECDSA and Ed25519 keys fail with "Unknown format in import".
+#[cfg(feature = "native-tls")]
+#[test]
+fn native_tls_presents_an_rsa_client_identity_a_server_requires() {
+  let key = rcgen::KeyPair::from_pem(include_str!("fixtures/client-rsa-key.pem")).unwrap();
+  let s = tls::server_requiring_client_cert_for(key);
+  let client = SyncClient::builder().use_native_tls().add_root_certificate(s.root.clone()).identity(s.client_chain.clone(), s.client_key.clone()).build_sync().unwrap();
+  let r = client.get(format!("https://localhost:{}/", s.addr.port())).send().unwrap();
+  assert_eq!(r.text().unwrap(), "hello");
 }

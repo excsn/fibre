@@ -260,6 +260,16 @@ let native = fibre_http::SyncClient::builder().use_native_tls().build_sync()?; /
 
 rustls with the ring provider and the bundled Mozilla roots is the default. `native-roots` adds the OS root store to rustls. `native-tls` uses Security.framework, SChannel or OpenSSL.
 
+A server that asks for a client certificate gets the chain and key given to `identity`:
+
+```rust
+let chain = std::fs::read("client-chain.pem")?;
+let key = std::fs::read("client-key.pem")?;
+let client = fibre_http::AsyncClient::builder().identity(chain, key).build_async()?;
+```
+
+With rustls the key may be RSA, ECDSA or Ed25519. With native-tls on macOS it must be RSA in PKCS#8, since Security.framework refuses other keys there.
+
 ## Following Redirects
 
 ```rust
