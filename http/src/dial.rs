@@ -22,6 +22,7 @@ pub(crate) struct Dialer {
   pub native: Option<native_tls::TlsConnector>,
   pub h2_prior_knowledge: bool,
   /// HTTP/2 PING interval and PONG timeout.
+  #[cfg_attr(not(feature = "http2"), allow(dead_code))]
   pub h2_keep_alive: Option<(Duration, Duration)>,
   pub proxies: crate::proxy::Proxies,
   pub user_agent: String,
