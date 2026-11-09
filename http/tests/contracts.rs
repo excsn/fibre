@@ -538,3 +538,49 @@ async fn expect_continue_sends_the_body_after_the_wait_when_no_100_comes() {
   let waited = started.elapsed();
   assert!(waited >= Duration::from_millis(900) && waited < Duration::from_secs(3), "{waited:?}");
 }
+
+/// A server that accepts every connection and never answers.
+fn silent_server() -> SocketAddr {
+  let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+  let addr = listener.local_addr().unwrap();
+  std::thread::spawn(move || {
+    let held: Vec<_> = listener.incoming().collect();
+    drop(held);
+  });
+  addr
+}
+
+#[test]
+fn a_blocking_request_after_a_timed_out_one_times_out_too_on_a_one_connection_pool() {
+  let addr = silent_server();
+  let pool = Pool::builder().max_per_host(1).build();
+  let client = SyncClient::builder().pool(&pool).build_sync().unwrap();
+  let (tx, rx) = std::sync::mpsc::channel();
+  std::thread::spawn(move || {
+    let first = client.get(format!("http://{addr}/a")).timeout(Duration::from_millis(200)).send().map(|_| ());
+    let second = client.get(format!("http://{addr}/b")).timeout(Duration::from_millis(300)).send().map(|_| ());
+    let _ = tx.send((first, second));
+  });
+  let (first, second) = rx.recv_timeout(Duration::from_secs(5)).expect("both requests end");
+  assert!(matches!(first, Err(Error::Timeout)), "{first:?}");
+  assert!(matches!(second, Err(Error::Timeout)), "{second:?}");
+}
+
+#[test]
+fn an_async_request_after_a_timed_out_one_times_out_too_on_a_one_connection_pool() {
+  let addr = silent_server();
+  let (tx, rx) = std::sync::mpsc::channel();
+  std::thread::spawn(move || {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    rt.block_on(async move {
+      let pool = Pool::builder().max_per_host(1).build();
+      let client = AsyncClient::builder().pool(&pool).build_async().unwrap();
+      let first = client.get(format!("http://{addr}/a")).timeout(Duration::from_millis(200)).send().await.map(|_| ());
+      let second = client.get(format!("http://{addr}/b")).timeout(Duration::from_millis(300)).send().await.map(|_| ());
+      let _ = tx.send((first, second));
+    });
+  });
+  let (first, second) = rx.recv_timeout(Duration::from_secs(5)).expect("both requests end");
+  assert!(matches!(first, Err(Error::Timeout)), "{first:?}");
+  assert!(matches!(second, Err(Error::Timeout)), "{second:?}");
+}

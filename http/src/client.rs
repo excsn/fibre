@@ -757,6 +757,7 @@ fn send_once_sync(req: &Prepared) -> Result<Response<BodyState>, Error> {
       match attempt_sync(req, lease) {
         Attempt::Done(r) => return Ok(r),
         Attempt::Retry => attempts += 1,
+        Attempt::Requeue if req.deadline.is_some_and(|d| Instant::now() >= d) => return Err(Error::Timeout),
         Attempt::Requeue => {}
         Attempt::Fail(e) => return Err(e),
       }
@@ -798,6 +799,7 @@ async fn send_once_async(req: &Prepared) -> Result<Response<BodyState>, Error> {
       match attempt_async(req, lease).await {
         Attempt::Done(r) => return Ok(r),
         Attempt::Retry => attempts += 1,
+        Attempt::Requeue if req.deadline.is_some_and(|d| Instant::now() >= d) => return Err(Error::Timeout),
         Attempt::Requeue => {}
         Attempt::Fail(e) => return Err(e),
       }
@@ -831,9 +833,7 @@ fn on_event(req: &Prepared, lease: Lease, id: crate::engine::ExchangeId, event: 
     }
     Ok(Event::Reset(e)) | Err(e) => {
       let retry = req.retry(&e, &lease, false);
-      if !matches!(e, Error::Timeout) {
-        lease.conn.reset(id);
-      }
+      lease.conn.reset(id);
       lease.release();
       Err(if retry { Attempt::Retry } else { Attempt::Fail(e) })
     }
