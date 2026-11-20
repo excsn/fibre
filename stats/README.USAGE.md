@@ -27,6 +27,7 @@ How to define metrics, record them, aggregate them and hand them to a sink, plus
   * [Process, Host and Tokio](#process-host-and-tokio)
 * [Keeping Exact Samples](#keeping-exact-samples)
 * [Listing Every Metric](#listing-every-metric)
+* [Declaring Log Fields](#declaring-log-fields)
 * [Choosing a Clock](#choosing-a-clock)
 * [Running on Wasm](#running-on-wasm)
   * [With wasm-bindgen](#with-wasm-bindgen)
@@ -533,6 +534,41 @@ assert_eq!(requests.description_text(), "Requests answered.");
 ```
 
 This is what a program sends to whatever stores its metrics, so names, kinds, units and descriptions never have to be written a second time.
+
+## Declaring Log Fields
+
+`field!` declares what a log or trace field holds, beside the code that writes it. A store reads the declarations to keep a ULID as 128 bits or to keep a filter for a request id, with nothing measured from the data.
+
+```rust
+use fibre_stats::{field, find_field, FieldKind, FieldRole};
+
+field! {
+  /// The request a line belongs to.
+  #[kind(ulid)]
+  #[role(correlation)]
+  #[lives_secs(300)]
+  pub static REQUEST_ID: Field = "request_id";
+
+  /// The account a request acted for.
+  #[kind(id64)]
+  #[role(entity)]
+  pub static ACCOUNT_ID: Field = "account_id";
+}
+
+let id = "01J9ZQ4XGH8N0V2C7K5M3R6T1Y";
+let logged = REQUEST_ID.value(id);
+assert_eq!(logged, id);
+
+let declared = find_field("request_id").unwrap();
+assert_eq!((declared.kind, declared.role), (Some(FieldKind::Ulid), FieldRole::Correlation));
+assert_eq!(declared.lives, Some(std::time::Duration::from_secs(300)));
+```
+
+`#[kind]` is `ulid`, `uuid` or `id64`. `#[role]` is `correlation` for a short-lived id looked up by value or `entity` for a long-lived repeated one. `#[lives_secs]` gives a correlation id's lifetime: the most seconds between the first and the last record that carry one value. A store stops a lookup by the id that far before its newest match. Any of them can be left out.
+
+Write the value through the handle, as in `info!(request_id = REQUEST_ID.value(id), "accepted")`. `value` returns its argument unchanged. The call keeps the declaration in the program, since the linker drops a declaration nothing refers to and a field name alone refers to nothing.
+
+`fields()` lists every declaration the linker kept, as `registry()` does for metrics.
 
 ## Choosing a Clock
 

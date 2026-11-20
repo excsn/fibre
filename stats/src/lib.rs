@@ -65,6 +65,7 @@ pub struct UsageGuide;
 
 pub mod collect;
 pub mod error;
+pub mod field;
 pub mod histogram;
 mod macros;
 pub mod metric;
@@ -77,6 +78,7 @@ pub mod value;
 
 pub use collect::Collector;
 pub use error::{CollectError, SetGlobalError};
+pub use field::{Field, FieldKind, FieldRole, fields, find_field};
 pub use histogram::Histogram;
 pub use metric::{Counter, Gauge, Kind, Metric, MetricAttr, State, Timer, TimerGuard, Unit, find, registry};
 pub use recorder::{Clock, Context, Noop, Observation, Recorder, RecorderExt, Sample, global, global_arc, set_global};

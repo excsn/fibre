@@ -62,7 +62,13 @@ Metrics defined once with `metric!`, aggregated per window in process and handed
   * [`collect::process`](#collectprocess)
   * [`collect::host`](#collecthost)
   * [`collect::tokio`](#collecttokio)
-* [9. Error Handling](#9-error-handling)
+* [9. Field Declarations](#9-field-declarations)
+  * [The `field!` macro](#the-field-macro)
+  * [`Field`](#field)
+  * [`FieldKind`](#fieldkind)
+  * [`FieldRole`](#fieldrole)
+  * [`fields` and `find_field`](#fields-and-find_field)
+* [10. Error Handling](#10-error-handling)
   * [`SetGlobalError`](#setglobalerror)
   * [`CollectError`](#collecterror)
 
@@ -485,7 +491,43 @@ Feature `collect-tokio`. Not on wasm targets.
 * `pub struct TokioCollector`, implements `Collector`.
 * Each run records `tokio.workers`, `tokio.tasks.alive`, `tokio.queue.global` (Gauge) and, from the second run on and only where the target has 64-bit atomics, `tokio.worker.busy_pct` (Gauge, percent of wall time since the previous run) and `tokio.worker.parks` (Counter) tagged `worker`.
 
-## 9. Error Handling
+## 9. Field Declarations
+
+### The `field!` macro
+
+Declares fields at module level. Each item is `$vis static NAME: Field = "name";`. The doc comment is the description. `#[kind(ulid)]`, `#[kind(uuid)]` or `#[kind(id64)]` sets the kind, `#[role(correlation)]` or `#[role(entity)]` the role and `#[lives_secs(N)]` the lifetime, in any order. Every declaration registers itself, so `fields()` lists it.
+
+### `Field`
+
+`pub struct Field`, `Debug`.
+
+* `pub name: &'static str`
+* `pub kind: Option<FieldKind>`
+* `pub role: FieldRole`
+* `pub description: &'static [&'static str]`: one entry per doc comment line.
+* `pub lives: Option<Duration>`: for a correlation id, the most time between the first and the last record that carry one value. From `#[lives_secs]`.
+* `pub const fn new(name, kind, role, description) -> Self`: with no lifetime.
+* `pub const fn lives(self, lives: Option<Duration>) -> Self`
+* `pub fn value<T>(&'static self, value: T) -> T`: returns `value` unchanged. Writing a field through it keeps the declaration from being dropped by the linker.
+
+### `FieldKind`
+
+`pub enum FieldKind`, `Debug, Clone, Copy, PartialEq, Eq, Hash`. `Ulid`, `Uuid`, `Id64`.
+
+* `pub fn as_str(&self) -> &'static str`: `ulid`, `uuid` or `id64`.
+
+### `FieldRole`
+
+`pub enum FieldRole`, `Debug, Clone, Copy, PartialEq, Eq, Hash`. `Plain`, `Correlation`, `Entity`.
+
+* `pub fn as_str(&self) -> &'static str`: `plain`, `correlation` or `entity`.
+
+### `fields` and `find_field`
+
+* `pub fn fields() -> impl Iterator<Item = &'static Field>`: every `field!` declaration the linker kept, in no defined order. Two crates may declare the same name; both appear.
+* `pub fn find_field(name: &str) -> Option<&'static Field>`: the first declaration with that name.
+
+## 10. Error Handling
 
 Recording never returns an error. A recording the book does not take is a refusal: counted in `Stats::refused`, described by `Stats::last_refusal` and otherwise dropped.
 

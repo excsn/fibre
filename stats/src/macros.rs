@@ -112,6 +112,82 @@ macro_rules! __metric_unit {
   };
 }
 
+/// Declares fields that logs and traces write. Use it at module level.
+///
+/// Each item is a `static Field` and the string is the field's name. The doc comment is the description.
+/// Attributes add facts:
+///
+/// * `#[kind(ulid)]`: `ulid`, `uuid` or `id64`. A store keeps the field's text as the number it spells.
+/// * `#[role(correlation)]`: `correlation` for a short-lived id looked up by value, such as a request id, or
+///   `entity` for a long-lived repeated one, such as an account.
+/// * `#[lives_secs(300)]`: for a correlation id, the most seconds between the first and last record that carry
+///   one value. A store stops a lookup that far before the newest match.
+///
+/// A log call writes the value through the handle, which keeps the declaration from being dropped by the linker:
+///
+/// ```
+/// use fibre_stats::field;
+///
+/// field! {
+///   /// The request a line belongs to.
+///   #[kind(ulid)]
+///   #[role(correlation)]
+///   pub static REQUEST_ID: Field = "request_id";
+/// }
+///
+/// let id = "01J9ZQ4XGH8N0V2C7K5M3R6T1Y";
+/// let written = REQUEST_ID.value(id);
+/// assert_eq!(written, id);
+/// let declared = fibre_stats::find_field("request_id").unwrap();
+/// assert_eq!(declared.kind, Some(fibre_stats::FieldKind::Ulid));
+/// ```
+#[macro_export]
+macro_rules! field {
+  ($(
+    $(#[$($attr:tt)*])*
+    $vis:vis static $NAME:ident : Field = $field_name:literal;
+  )+) => {
+    $(
+      $crate::__field_one! {
+        @docs [] @kind [::core::option::Option::None] @role [$crate::FieldRole::Plain] @lives [::core::option::Option::None] [$(#[$($attr)*])*] $vis static $NAME = $field_name
+      }
+    )+
+  };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __field_one {
+  (@docs [$($d:tt)*] @kind [$k:expr] @role [$r:expr] @lives [$l:expr] [#[doc = $doc:literal] $($rest:tt)*] $($tail:tt)*) => {
+    $crate::__field_one! { @docs [$($d)* $doc,] @kind [$k] @role [$r] @lives [$l] [$($rest)*] $($tail)* }
+  };
+  (@docs [$($d:tt)*] @kind [$k:expr] @role [$r:expr] @lives [$l:expr] [#[kind(ulid)] $($rest:tt)*] $($tail:tt)*) => {
+    $crate::__field_one! { @docs [$($d)*] @kind [::core::option::Option::Some($crate::FieldKind::Ulid)] @role [$r] @lives [$l] [$($rest)*] $($tail)* }
+  };
+  (@docs [$($d:tt)*] @kind [$k:expr] @role [$r:expr] @lives [$l:expr] [#[kind(uuid)] $($rest:tt)*] $($tail:tt)*) => {
+    $crate::__field_one! { @docs [$($d)*] @kind [::core::option::Option::Some($crate::FieldKind::Uuid)] @role [$r] @lives [$l] [$($rest)*] $($tail)* }
+  };
+  (@docs [$($d:tt)*] @kind [$k:expr] @role [$r:expr] @lives [$l:expr] [#[kind(id64)] $($rest:tt)*] $($tail:tt)*) => {
+    $crate::__field_one! { @docs [$($d)*] @kind [::core::option::Option::Some($crate::FieldKind::Id64)] @role [$r] @lives [$l] [$($rest)*] $($tail)* }
+  };
+  (@docs [$($d:tt)*] @kind [$k:expr] @role [$r:expr] @lives [$l:expr] [#[role(correlation)] $($rest:tt)*] $($tail:tt)*) => {
+    $crate::__field_one! { @docs [$($d)*] @kind [$k] @role [$crate::FieldRole::Correlation] @lives [$l] [$($rest)*] $($tail)* }
+  };
+  (@docs [$($d:tt)*] @kind [$k:expr] @role [$r:expr] @lives [$l:expr] [#[role(entity)] $($rest:tt)*] $($tail:tt)*) => {
+    $crate::__field_one! { @docs [$($d)*] @kind [$k] @role [$crate::FieldRole::Entity] @lives [$l] [$($rest)*] $($tail)* }
+  };
+  (@docs [$($d:tt)*] @kind [$k:expr] @role [$r:expr] @lives [$l:expr] [#[lives_secs($secs:literal)] $($rest:tt)*] $($tail:tt)*) => {
+    $crate::__field_one! { @docs [$($d)*] @kind [$k] @role [$r] @lives [::core::option::Option::Some(::core::time::Duration::from_secs($secs))] [$($rest)*] $($tail)* }
+  };
+  (@docs [$($d:tt)*] @kind [$k:expr] @role [$r:expr] @lives [$l:expr] [] $vis:vis static $NAME:ident = $field_name:literal) => {
+    $vis static $NAME: $crate::Field = $crate::Field::new($field_name, $k, $r, &[$($d)*]).lives($l);
+
+    $crate::__inventory::submit! {
+      $crate::field::RegisteredField(&$NAME)
+    }
+  };
+}
+
 /// Defines an enum that is reported as a state.
 ///
 /// Each variant names its label. The label is what a store keys the variant
