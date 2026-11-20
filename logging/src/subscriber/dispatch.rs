@@ -1,5 +1,6 @@
 // Defines the primary Layer that dispatches events to AppenderActors.
 
+use tracing_log::NormalizeEvent;
 use fibre_tracing::TraceIdentity;
 use crate::model::LogValue;
 use crate::{
@@ -21,6 +22,9 @@ const TRACE_ID_FIELD: &str = "trace_id";
 /// This layer is a thin adapter that receives events from the `tracing`
 /// system, converts them to an internal `LogEvent`, and then passes
 /// that event to the central `EventProcessor`.
+/// tracing-log's field naming a `log` record's target.
+const LOG_TARGET_FIELD: &str = "log.target";
+
 #[derive(Clone)]
 pub struct DispatchLayer {
   processor: Arc<EventProcessor>,
@@ -34,11 +38,10 @@ impl DispatchLayer {
 
   /// Converts a `tracing::Event` into our internal `LogEvent` format.
   /// This is the single point of translation between the two models.
-  fn build_log_event<S>(&self, event: &Event<'_>, ctx: Context<'_, S>) -> LogEvent
+  fn build_log_event<S>(&self, event: &Event<'_>, metadata: &tracing::Metadata<'_>, ctx: Context<'_, S>) -> LogEvent
   where
     S: Subscriber + for<'span> LookupSpan<'span>,
   {
-    let metadata = event.metadata();
     let mut log_event = LogEvent::new(
       *metadata.level(),
       metadata.target().to_string(),
@@ -93,12 +96,11 @@ where
   S: Subscriber + for<'span> LookupSpan<'span>,
 {
   fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-    // 1. Build the LogEvent.
-    let log_event = self.build_log_event(event, ctx);
-    // 2. Pass it to the central processor.
-    self
-      .processor
-      .process_event(log_event, event.metadata());
+    // A record from the `log` crate arrives through tracing-log's stand-in callsite; its own target and level are in the normalized metadata.
+    let normalized = event.normalized_metadata();
+    let metadata = normalized.as_ref().unwrap_or_else(|| event.metadata());
+    let log_event = self.build_log_event(event, metadata, ctx);
+    self.processor.process_event(log_event, metadata);
   }
 
   // Fast path: avoid building the log event if no appender could possibly be
@@ -108,6 +110,10 @@ where
     // Spans must stay enabled regardless of appender levels: events inside
     // them need the registry to know the span for span_id/parent_id capture.
     if !metadata.is_event() {
+      return true;
+    }
+    // tracing-log's callsite stands for every `log` target, so only `on_event` can judge its records.
+    if metadata.fields().field(LOG_TARGET_FIELD).is_some() {
       return true;
     }
     self.processor.event_enabled(metadata)

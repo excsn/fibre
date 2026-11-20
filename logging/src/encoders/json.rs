@@ -25,6 +25,9 @@ impl JsonLinesFormatter {
         .unwrap_or(Value::Null),
       LogValue::Bool(b) => Value::Bool(*b),
       LogValue::Debug(d) => Value::String(d.clone()),
+      LogValue::UInt(n) => Value::Number((*n).into()),
+      LogValue::U128(n) => u64::try_from(*n).map_or_else(|_| Value::String(n.to_string()), |small| Value::Number(small.into())),
+      other => Value::String(other.to_string()),
     }
   }
 }

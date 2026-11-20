@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
-use tracing::{debug, error, info, info_span, instrument, warn, Instrument, Level};
+use tracing::{error, info, info_span, instrument, warn, Instrument, Level};
 
 // A module simulating a database interaction.
 // We use `instrument` to automatically create a span around this function.
@@ -25,7 +25,7 @@ fn execute_query(sql: &str, user_id: u32) {
 mod api_client {
   use std::thread;
   use std::time::Duration;
-  use tracing::{info, info_span, instrument};
+  use tracing::{info, info_span};
 
   // This function will be manually instrumented with a span.
   pub fn call_external_service() {

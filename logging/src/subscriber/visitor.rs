@@ -37,8 +37,16 @@ impl<'a> LogEventFieldVisitor<'a> {
   }
 }
 
+/// Fields tracing-log adds to carry a `log` record's place, which the event already holds.
+fn is_log_place(name: &str) -> bool {
+  name.starts_with("log.")
+}
+
 impl<'a> Visit for LogEventFieldVisitor<'a> {
   fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+    if is_log_place(field.name()) {
+      return;
+    }
     let value_str = format!("{:?}", value);
     // For Debug, always treat "message" field specially, but other debug fields go to LogValue::Debug
     if field.name() == "message" {
@@ -55,6 +63,9 @@ impl<'a> Visit for LogEventFieldVisitor<'a> {
   }
 
   fn record_str(&mut self, field: &Field, value: &str) {
+    if is_log_place(field.name()) {
+      return;
+    }
     self.record_potential_message(field.name(), value.to_string());
   }
 
@@ -63,13 +74,24 @@ impl<'a> Visit for LogEventFieldVisitor<'a> {
   }
 
   fn record_u64(&mut self, field: &Field, value: u64) {
-    if value <= i64::MAX as u64 {
-      // Fits in i64
-      self.fields.insert(field.name().to_string(), LogValue::Int(value as i64));
-    } else {
-      // Does not fit, store as string
-      self.fields.insert(field.name().to_string(), LogValue::String(value.to_string()));
+    if is_log_place(field.name()) {
+      return;
     }
+    let value = i64::try_from(value).map_or(LogValue::UInt(value), LogValue::Int);
+    self.fields.insert(field.name().to_string(), value);
+  }
+
+  fn record_u128(&mut self, field: &Field, value: u128) {
+    self.fields.insert(field.name().to_string(), LogValue::U128(value));
+  }
+
+  fn record_i128(&mut self, field: &Field, value: i128) {
+    let value = i64::try_from(value).map_or_else(|_| LogValue::String(value.to_string()), LogValue::Int);
+    self.fields.insert(field.name().to_string(), value);
+  }
+
+  fn record_bytes(&mut self, field: &Field, value: &[u8]) {
+    self.fields.insert(field.name().to_string(), LogValue::Bytes(value.to_vec()));
   }
 
   fn record_f64(&mut self, field: &Field, value: f64) {

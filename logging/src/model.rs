@@ -5,12 +5,21 @@ use tracing::Level;
 
 /// Represents a loggable value, part of a `LogEvent`'s fields.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum LogValue {
   String(String),
   Int(i64),
   Float(f64),
   Bool(bool),
   Debug(String),
+  /// An unsigned value above `i64::MAX`. One that fits is an `Int`.
+  UInt(u64),
+  U128(u128),
+  Bytes(Vec<u8>),
+}
+
+fn hex(bytes: &[u8]) -> String {
+  bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 impl fmt::Display for LogValue {
@@ -21,6 +30,9 @@ impl fmt::Display for LogValue {
       LogValue::Float(f_val) => write!(f, "{}", f_val),
       LogValue::Bool(b) => write!(f, "{}", b),
       LogValue::Debug(d) => write!(f, "{}", d),
+      LogValue::UInt(n) => write!(f, "{}", n),
+      LogValue::U128(n) => write!(f, "{}", n),
+      LogValue::Bytes(bytes) => write!(f, "{}", hex(bytes)),
     }
   }
 }

@@ -11,9 +11,9 @@ use crate::{
   roller::CustomRoller,
   subscriber::{
     actor::{ActorAction, AppenderActor, DropCounter, PerAppenderFilter},
-    DispatchLayer, EventProcessor, LogHandler,
+    DispatchLayer, EventProcessor,
   },
-  vlog, AppenderTaskHandle, InitResult, InternalErrorReport, LogEvent,
+  AppenderTaskHandle, InitResult, InternalErrorReport, LogEvent,
 };
 
 #[cfg(debug_assertions)]
@@ -122,11 +122,24 @@ pub fn init_from_file(config_path: &Path) -> Result<InitResult> {
   build_from_file(config_path, true).map(|(_, result)| result)
 }
 
+static LOG_BRIDGE: std::sync::OnceLock<std::result::Result<(), String>> = std::sync::OnceLock::new();
+
+/// Routes the `log` crate's records into `tracing`, once per process, so they reach whichever subscriber is
+/// current. Fails when another `log` logger was installed first.
+fn install_log_bridge() -> Result<()> {
+  LOG_BRIDGE
+    .get_or_init(|| tracing_log::LogTracer::builder().with_max_level(log::LevelFilter::Off).init().map_err(|e| e.to_string()))
+    .clone()
+    .map_err(Error::LogBridgeInit)
+}
+
 fn build_from_file(config_path: &Path, set_global: bool) -> Result<(DispatchLayer, InitResult)> {
   vlog!(
     "[fibre_logging] Initializing from config file: {:?}",
     config_path
   );
+
+  install_log_bridge()?;
 
   let file = StdFsFile::open(config_path)?;
   let reader = io::BufReader::new(file);
@@ -354,11 +367,10 @@ fn build_from_file(config_path: &Path, set_global: bool) -> Result<(DispatchLaye
     vlog!("[fibre_logging] Global tracing subscriber set.");
   }
 
-  let log_handler = LogHandler::new(Arc::clone(&processor));
-  log::set_boxed_logger(Box::new(log_handler))
-    .map(|()| log::set_max_level(tracing_filter_to_log_filter(max_level)))
-    .map_err(|e| Error::LogBridgeInit(e.to_string()))?;
-  vlog!("[fibre_logging] Custom log handler initialized.");
+  let wanted = tracing_filter_to_log_filter(max_level);
+  if wanted > log::max_level() {
+    log::set_max_level(wanted);
+  }
 
   vlog!("[fibre_logging] Initialization complete.");
   Ok((
@@ -575,7 +587,7 @@ mod tests {
   use super::*;
   use crate::config::processed::{EncoderInternal, LoggerInternal, OverflowPolicy};
   use serial_test::serial;
-  use std::{collections::HashMap, fs, path::Path};
+  use std::{collections::HashMap, fs};
   use tempfile::NamedTempFile;
   use tracing_core::metadata::{LevelFilter, Metadata};
   use tracing_core::{callsite, field, subscriber, Kind, Level};
