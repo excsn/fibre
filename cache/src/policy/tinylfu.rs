@@ -40,8 +40,6 @@ impl<K: Eq + Hash + Clone> TinyLfuPolicy<K> {
   /// The sketch hashes keys with `sketch_hasher`; two policies built with the
   /// same hasher make the same decisions on the same operations.
   pub(crate) fn with_sketch_hasher(total_cache_cost_capacity: u64, sketch_hasher: ahash::RandomState) -> Self {
-    let cms_reset_threshold = (total_cache_cost_capacity * 10).max(100);
-
     // Per the W-TinyLFU paper, the window is ~1% of the total cache.
     let window_target_cost = if total_cache_cost_capacity == 0 {
       0
@@ -64,12 +62,17 @@ impl<K: Eq + Hash + Clone> TinyLfuPolicy<K> {
       state: Mutex::new(TinyLfuState {
         window: LruList::new(),
         main: SlruState::new_with_capacity(main_cache_cost),
-        sketch: cms::CountMinSketch::new(cms_reset_threshold as usize, sketch_hasher),
+        sketch: cms::CountMinSketch::new(sketch_hasher),
       }),
       window_target_cost,
       main_cache_cost,
       main_prot_capacity,
     }
+  }
+
+  #[cfg(test)]
+  pub(crate) fn sketch_width(&self) -> usize {
+    self.state.lock().sketch.width()
   }
 }
 
@@ -99,6 +102,8 @@ where
 
     // Otherwise, it's either new or in the window. Add it to the window.
     state.window.push_front(key.clone(), cost);
+    let entries = state.window.lookup.len() + state.main.probationary.lookup.len() + state.main.protected.lookup.len();
+    state.sketch.reserve(entries);
 
     // Manage the window if it's over capacity.
     let mut rejected_candidates = Vec::new();
@@ -164,6 +169,7 @@ where
 }
 
 mod cms {
+  use crate::hpolicy::{sketch_reset_threshold, sketch_width, widen_sketch_row, SKETCH_DEPTH};
   use std::hash::{BuildHasher, Hash, Hasher};
 
   #[derive(Debug)]
@@ -174,20 +180,42 @@ mod cms {
     mask: usize,
     increments: usize,
     capacity: usize,
+    entries: usize,
   }
 
   impl CountMinSketch {
-    pub fn new(reset_threshold: usize, hasher: ahash::RandomState) -> Self {
-      const DEPTH: usize = 4;
-      let width = (reset_threshold * 2 / DEPTH).max(256).next_power_of_two();
-      let counters = (0..DEPTH).map(|_| vec![0usize; width]).collect();
+    pub fn new(hasher: ahash::RandomState) -> Self {
+      let width = sketch_width(0);
+      let counters = (0..SKETCH_DEPTH).map(|_| vec![0usize; width]).collect();
       Self {
         counters,
         hasher,
         mask: width - 1,
         increments: 0,
-        capacity: reset_threshold,
+        capacity: sketch_reset_threshold(0),
+        entries: 0,
       }
+    }
+
+    /// Sizes the sketch for `entries` keys, as `hpolicy::Sketch::reserve` does.
+    pub fn reserve(&mut self, entries: usize) {
+      if entries <= self.entries {
+        return;
+      }
+      self.entries = entries;
+      self.capacity = sketch_reset_threshold(entries);
+      let width = sketch_width(entries);
+      if width > self.mask + 1 {
+        for row in &mut self.counters {
+          widen_sketch_row(row, width);
+        }
+        self.mask = width - 1;
+      }
+    }
+
+    #[cfg(test)]
+    pub fn width(&self) -> usize {
+      self.mask + 1
     }
 
     /// Row `i` uses `h1 + i * h2` from one hash of the key, mixed as

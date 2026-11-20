@@ -85,8 +85,10 @@ A sharded concurrent cache for Rust with synchronous and asynchronous handles on
     * Sets a custom eviction policy via a factory function that is called for each shard. Without a factory a bounded cache runs S3-FIFO (TinyLFU after `tinylfu()`) and an unbounded cache runs `NullPolicy`.
 * `pub fn s3fifo(self) -> Self`
     * Sets the eviction policy to S3-FIFO, run inside each shard. This is the default for a bounded cache. Makes the same decisions as `S3FifoPolicy` through `cache_policy_factory`. Replaces a factory or `tinylfu()` set before it.
+    * Each shard's ghost queue remembers up to its capacity share of evicted keys, counted in cost units. With costs in bytes that is millions of keys a shard.
 * `pub fn tinylfu(self) -> Self`
     * Sets the eviction policy to W-TinyLFU, run inside each shard. Makes the same decisions as `TinyLfuPolicy` through `cache_policy_factory`. Replaces a factory or `s3fifo()` set before it.
+    * Each shard's frequency sketch is sized for the most entries the shard has held at once, whatever their costs: 4 rows of `u32` counters, each row `next_power_of_two(entries × 5)` wide and at least 256. It grows as entries arrive and does not shrink. 1,000,000 entries over 16 shards take 128 MiB.
 * `pub fn null_policy(self) -> Self`
     * *where `K: Sync`, `V: Sync`*
     * Sets the eviction policy to the no-op `NullPolicy`, which never evicts. Shorthand for `cache_policy_factory(|| Box::new(NullPolicy))`.

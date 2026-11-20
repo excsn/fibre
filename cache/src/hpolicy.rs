@@ -142,6 +142,10 @@ impl<P> Slab<P> {
     self.payload[i as usize].take().expect("live slot")
   }
 
+  fn live(&self) -> usize {
+    self.links.len() - self.free.len()
+  }
+
   fn resolve(&self, node: u64) -> Option<u32> {
     let (generation, slot) = split(node);
     let l = self.links.get(slot as usize)?;
@@ -228,7 +232,12 @@ impl HTinyLfu {
     let window_target = if capacity == 0 { 0 } else { ((capacity as f64 * 0.01).round() as u64).max(1) };
     let main = capacity.saturating_sub(window_target);
     let prot_capacity = if main == 0 { 0 } else { main.saturating_sub(((main as f64 * 0.20).round() as u64).max(1)) };
-    Self { slab: Slab::new(), sketch: Sketch::new((capacity * 10).max(100) as usize), window_target, main_capacity: main, prot_capacity }
+    Self { slab: Slab::new(), sketch: Sketch::new(), window_target, main_capacity: main, prot_capacity }
+  }
+
+  #[cfg(test)]
+  pub(crate) fn sketch_width(&self) -> usize {
+    self.sketch.mask + 1
   }
 
   #[inline]
@@ -276,6 +285,7 @@ impl HTinyLfu {
     self.sketch.increment(hash);
     let i = self.slab.alloc(hash, cost);
     self.slab.push_front(WINDOW, i);
+    self.sketch.reserve(self.slab.live());
     let id = self.slab.id(i);
     while self.slab.lists[WINDOW as usize].cost > self.window_target {
       let cand = self.slab.lists[WINDOW as usize].tail;
@@ -547,21 +557,67 @@ impl<K, V> ShardPolicy<K, V> for HS3Fifo {
   }
 }
 
+pub(crate) const SKETCH_DEPTH: usize = 4;
+
+/// Increments between halvings for a sketch that tracks `entries` keys.
+pub(crate) fn sketch_reset_threshold(entries: usize) -> usize {
+  (entries * 10).max(100)
+}
+
+/// Counters in a row of a sketch that tracks `entries` keys.
+pub(crate) fn sketch_width(entries: usize) -> usize {
+  (sketch_reset_threshold(entries) * 2 / SKETCH_DEPTH).max(256).next_power_of_two()
+}
+
+/// Widens `row` to `width` counters, both powers of two. Every key keeps its
+/// count: its index under the wider mask differs from its old index only in
+/// the bits above the old mask, and each of those positions gets a copy.
+pub(crate) fn widen_sketch_row<T: Copy>(row: &mut Vec<T>, width: usize) {
+  let mut wide = Vec::with_capacity(width);
+  while wide.len() < width {
+    wide.extend_from_slice(row);
+  }
+  *row = wide;
+}
+
 /// Count-min sketch, four rows of `width` counters, halved every
-/// `reset_threshold` increments. Rows index `h1 + i * h2` from one key hash,
-/// mixed first because every key in a shard shares the hash's low bits.
+/// `reset_threshold` increments. Both are sized for `entries`, the most keys
+/// the policy has held at once, and never shrink. Rows index `h1 + i * h2`
+/// from one key hash, mixed first because every key in a shard shares the
+/// hash's low bits.
 struct Sketch {
   counters: Vec<Vec<u32>>,
   mask: usize,
   increments: usize,
   reset_threshold: usize,
+  entries: usize,
 }
 
 impl Sketch {
-  fn new(reset_threshold: usize) -> Self {
-    const DEPTH: usize = 4;
-    let width = (reset_threshold * 2 / DEPTH).max(256).next_power_of_two();
-    Self { counters: vec![vec![0; width]; DEPTH], mask: width - 1, increments: 0, reset_threshold }
+  fn new() -> Self {
+    let width = sketch_width(0);
+    Self {
+      counters: (0..SKETCH_DEPTH).map(|_| vec![0; width]).collect(),
+      mask: width - 1,
+      increments: 0,
+      reset_threshold: sketch_reset_threshold(0),
+      entries: 0,
+    }
+  }
+
+  fn reserve(&mut self, entries: usize) {
+    if entries <= self.entries {
+      return;
+    }
+    self.entries = entries;
+    self.reset_threshold = sketch_reset_threshold(entries);
+    let width = sketch_width(entries);
+    if width > self.mask + 1 {
+      for row in &mut self.counters {
+        widen_sketch_row(row, width);
+      }
+      self.mask = width - 1;
+    }
   }
 
   #[inline]
@@ -738,12 +794,18 @@ mod policy_sim {
   struct Sim {
     shards: Vec<Shard>,
     per_shard: u64,
+    cost: u64,
     shard_hasher: ahash::RandomState,
     sketch_hasher: ahash::RandomState,
   }
 
   impl Sim {
     fn new(variant: Variant, capacity: u64, shards: usize) -> Self {
+      Self::with_cost(variant, capacity, shards, 1)
+    }
+
+    /// Every entry costs `cost`.
+    fn with_cost(variant: Variant, capacity: u64, shards: usize, cost: u64) -> Self {
       let per_shard = capacity.div_ceil(shards as u64);
       let s = SHARD_SEEDS;
       Sim {
@@ -754,6 +816,7 @@ mod policy_sim {
           })
           .collect(),
         per_shard,
+        cost,
         shard_hasher: ahash::RandomState::with_seeds(s.0, s.1, s.2, s.3),
         sketch_hasher: sketch_hasher(),
       }
@@ -765,22 +828,22 @@ mod policy_sim {
     fn access(&mut self, key: u64) -> bool {
       let shard_hash = hash_key(&self.shard_hasher, &key);
       let hash = hash_key(&self.sketch_hasher, &key);
-      let per_shard = self.per_shard;
+      let (per_shard, cost) = (self.per_shard, self.cost);
       let n = self.shards.len();
       match &mut self.shards[shard_hash as usize & (n - 1)] {
         Shard::Key(p, map) => {
           if map.contains_key(&key) {
-            CachePolicy::<u64, ()>::on_access(p, &key, 1);
+            CachePolicy::<u64, ()>::on_access(p, &key, cost);
             return true;
           }
           map.insert(key, ());
-          if let AdmissionDecision::AdmitAndEvict(victims) = CachePolicy::<u64, ()>::on_admit(p, &key, 1) {
+          if let AdmissionDecision::AdmitAndEvict(victims) = CachePolicy::<u64, ()>::on_admit(p, &key, cost) {
             for v in victims {
               map.remove(&v);
             }
           }
-          if map.len() as u64 > per_shard {
-            let (victims, _) = CachePolicy::<u64, ()>::evict(p, map.len() as u64 - per_shard);
+          if map.len() as u64 * cost > per_shard {
+            let (victims, _) = CachePolicy::<u64, ()>::evict(p, map.len() as u64 * cost - per_shard);
             for v in victims {
               map.remove(&v);
             }
@@ -793,7 +856,7 @@ mod policy_sim {
             return true;
           }
           let mut out = Vec::new();
-          let node = p.admit_key(hash, 1, &mut out);
+          let node = p.admit_key(hash, cost, &mut out);
           map.insert(key, node);
           nodes.insert(node, key);
           for (_, n) in out.drain(..) {
@@ -801,8 +864,8 @@ mod policy_sim {
               map.remove(&k);
             }
           }
-          if map.len() as u64 > per_shard {
-            p.evict_nodes(map.len() as u64 - per_shard, &mut out);
+          if map.len() as u64 * cost > per_shard {
+            p.evict_nodes(map.len() as u64 * cost - per_shard, &mut out);
             for (_, n) in out.drain(..) {
               if let Some(k) = nodes.remove(&n) {
                 map.remove(&k);
@@ -812,6 +875,17 @@ mod policy_sim {
           false
         }
       }
+    }
+
+    fn sketch_widths(&self) -> Vec<usize> {
+      self
+        .shards
+        .iter()
+        .map(|s| match s {
+          Shard::Key(p, _) => p.sketch_width(),
+          Shard::Handle(p, _, _) => p.sketch_width(),
+        })
+        .collect()
     }
 
     fn per_shard_resident(&self) -> Vec<usize> {
@@ -897,6 +971,45 @@ mod policy_sim {
           assert_eq!(key_based.resident_keys(), handle.resident_keys(), "shards={shards} op {i}: resident sets differ");
         }
       }
+    }
+  }
+
+  /// 1,000 entries and a cost of 64 keep the window and both main segments
+  /// whole multiples of the cost, so the two caches hold the same number of
+  /// entries in each.
+  #[test]
+  fn tinylfu_decisions_do_not_depend_on_the_cost_unit() {
+    const ENTRIES: u64 = 1_000;
+    const COST: u64 = 64;
+    let trace = zipf_trace(ENTRIES * 10, 400_000, 0.99, 11);
+    for v in VARIANTS {
+      let mut unit = Sim::new(v, ENTRIES, 1);
+      let mut scaled = Sim::with_cost(v, ENTRIES * COST, 1, COST);
+      for (i, &k) in trace.iter().enumerate() {
+        let a = unit.access(k);
+        let b = scaled.access(k);
+        assert_eq!(a, b, "{v:?} op {i} key {k}: hit differs between cost 1 and cost {COST}");
+        if i % 997 == 0 || i + 1 == trace.len() {
+          assert_eq!(unit.resident_keys(), scaled.resident_keys(), "{v:?} op {i}: resident sets differ between cost 1 and cost {COST}");
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn tinylfu_sketch_width_follows_resident_entries() {
+    const ENTRIES: u64 = 1_024;
+    const COST: u64 = 64;
+    for v in VARIANTS {
+      let mut sim = Sim::with_cost(v, ENTRIES * COST, 1, COST);
+      for k in 0..ENTRIES / 2 {
+        sim.access(k);
+      }
+      let resident = sim.resident();
+      assert_eq!(resident as u64, ENTRIES / 2, "{v:?}: an entry was rejected while the cache had room");
+      let width = sim.sketch_widths()[0];
+      assert!(width >= resident * 4, "{v:?}: {width} counters a row for {resident} entries");
+      assert!(width <= resident * 16, "{v:?}: {width} counters a row for {resident} entries");
     }
   }
 
