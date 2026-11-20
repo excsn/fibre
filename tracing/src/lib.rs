@@ -159,10 +159,19 @@ fn from_hex(text: &str) -> Option<Vec<u8>> {
 }
 
 /// `RandomState` is seeded from the OS per process, and the counter separates traces within one.
+/// 16 bytes, the size W3C trace context uses: the start in milliseconds since the epoch as 48 bits, then 80 random bits.
 fn fresh_trace_id(counter: u64) -> Vec<u8> {
-  let mut hasher = RandomState::new().build_hasher();
-  hasher.write_u64(counter);
-  hasher.finish().to_be_bytes().to_vec()
+  let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as u64);
+  let random = |salt: u64| {
+    let mut hasher = RandomState::new().build_hasher();
+    hasher.write_u64(counter ^ salt);
+    hasher.finish().to_be_bytes()
+  };
+  let mut id = Vec::with_capacity(16);
+  id.extend_from_slice(&millis.to_be_bytes()[2..]);
+  id.extend_from_slice(&random(0));
+  id.extend_from_slice(&random(u64::MAX)[..2]);
+  id
 }
 
 /// The handle a caller reads through, and what the layer writes into.

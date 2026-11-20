@@ -133,17 +133,31 @@ fn a_field_recorded_after_the_span_opened_lands_on_it() {
   assert_eq!(call.outcome(), Some("not_found"), "which is what a dashboard groups by");
 }
 
+fn epoch_ms(at: std::time::SystemTime) -> u64 {
+  at.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+fn leading_ms(id: &[u8]) -> u64 {
+  id[..6].iter().fold(0, |held, byte| (held << 8) | *byte as u64)
+}
+
 #[test]
-fn a_root_gets_an_eight_byte_id_that_differs_between_traces_and_a_start_time() {
+fn a_root_gets_a_sixteen_byte_id_led_by_its_start_milliseconds_that_differs_between_traces() {
   let (layer, traces) = fibre_tracing::layer();
   let before = std::time::SystemTime::now();
   under(&traces, layer, || {
     tracing::info_span!("one", fibre.root = true).in_scope(|| {});
     tracing::info_span!("two", fibre.root = true).in_scope(|| {});
   });
+  let after = std::time::SystemTime::now();
   let held = traces.recent(2);
-  assert_eq!(held[0].trace_id.len(), 8);
+  assert_eq!(held[0].trace_id.len(), 16);
   assert_ne!(held[0].trace_id, held[1].trace_id);
+  assert_ne!(held[0].trace_id[6..], held[1].trace_id[6..], "the random part differs even within one millisecond");
+  for trace in &held {
+    let at = leading_ms(&trace.trace_id);
+    assert!(at >= epoch_ms(before) && at <= epoch_ms(after), "the first 48 bits are the start in milliseconds: {at}");
+  }
   assert_eq!(held[0].parent_ref, None);
   assert!(held[0].started_at >= before);
 }
@@ -159,7 +173,7 @@ fn a_root_adopts_an_incoming_id_of_any_length_and_its_parent_ref() {
   let held = traces.recent(2);
   assert_eq!(held[0].trace_id, [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
   assert_eq!(held[0].parent_ref.as_deref(), Some(&[0x0a, 0x0b][..]));
-  assert_eq!(held[1].trace_id.len(), 8, "an id that does not read as hex is replaced");
+  assert_eq!(held[1].trace_id.len(), 16, "an id that does not read as hex is replaced");
 }
 
 #[test]
