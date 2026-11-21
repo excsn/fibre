@@ -1,4 +1,5 @@
 use fibre_cache::CacheBuilder;
+use fibre_cache::policy::s3fifo::S3FifoPolicy;
 use fibre_cache::policy::tinylfu::TinyLfuPolicy;
 
 use parking_lot::Mutex;
@@ -79,4 +80,37 @@ fn tinylfu_through_the_factory_memory_follows_the_entries_held() {
   assert_eq!(cache.metrics().current_cost, ENTRIES * ENTRY_COST);
   assert!(built < BUDGET, "an empty cache took {built} bytes");
   assert!(held < BUDGET, "a cache of {ENTRIES} entries took {held} bytes");
+}
+
+const EVICTED: u64 = 200_000;
+
+#[test]
+fn s3fifo_memory_follows_the_entries_held() {
+  let _one = ONE_AT_A_TIME.lock();
+  let before = live();
+  let cache = CacheBuilder::<u64, u64>::new().capacity(CAPACITY).shards(1).s3fifo().build().unwrap();
+  for key in 0..EVICTED {
+    cache.insert(key, key, ENTRY_COST);
+  }
+  let held = live() - before;
+  assert_eq!(cache.metrics().current_cost, CAPACITY);
+  assert!(held < BUDGET, "a cache of {} entries took {held} bytes after {EVICTED} inserts", CAPACITY / ENTRY_COST);
+}
+
+#[test]
+fn s3fifo_through_the_factory_memory_follows_the_entries_held() {
+  let _one = ONE_AT_A_TIME.lock();
+  let before = live();
+  let cache = CacheBuilder::<u64, u64>::new()
+    .capacity(CAPACITY)
+    .shards(1)
+    .cache_policy_factory(|| Box::new(S3FifoPolicy::new(CAPACITY)))
+    .build()
+    .unwrap();
+  for key in 0..EVICTED {
+    cache.insert(key, key, ENTRY_COST);
+  }
+  let held = live() - before;
+  assert_eq!(cache.metrics().current_cost, CAPACITY);
+  assert!(held < BUDGET, "a cache of {} entries took {held} bytes after {EVICTED} inserts", CAPACITY / ENTRY_COST);
 }

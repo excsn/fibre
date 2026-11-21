@@ -2,6 +2,7 @@
 //! ghost list of keys recently evicted from the small FIFO. Reads only raise a
 //! per-key frequency; eviction works from the queue heads.
 
+use crate::hpolicy::ghost_cap;
 use crate::policy::{AdmissionDecision, CachePolicy};
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -32,6 +33,7 @@ struct State<K> {
   total_cost: u64,
   ghost: VecDeque<K>,
   ghost_set: HashSet<K>,
+  ghost_cap: usize,
   next_stamp: u32,
 }
 
@@ -39,7 +41,7 @@ struct State<K> {
 pub struct S3FifoPolicy<K> {
   state: Mutex<State<K>>,
   small_target: u64,
-  ghost_cap: usize,
+  capacity: u64,
 }
 
 impl<K: Eq + Hash + Clone> S3FifoPolicy<K> {
@@ -53,10 +55,11 @@ impl<K: Eq + Hash + Clone> S3FifoPolicy<K> {
         total_cost: 0,
         ghost: VecDeque::new(),
         ghost_set: HashSet::new(),
+        ghost_cap: ghost_cap(0, capacity),
         next_stamp: 0,
       }),
       small_target: (capacity / 10).max(1),
-      ghost_cap: capacity.max(1) as usize,
+      capacity,
     }
   }
 }
@@ -78,8 +81,8 @@ impl<K: Eq + Hash + Clone> State<K> {
     }
   }
 
-  fn remember_ghost(&mut self, key: K, cap: usize) {
-    if self.ghost.len() >= cap {
+  fn remember_ghost(&mut self, key: K) {
+    if self.ghost.len() >= self.ghost_cap {
       if let Some(old) = self.ghost.pop_front() {
         self.ghost_set.remove(&old);
       }
@@ -139,6 +142,7 @@ where
       return AdmissionDecision::Admit;
     }
     let to_main = s.ghost_set.remove(key);
+    s.ghost_cap = s.ghost_cap.max(ghost_cap(s.meta.len(), self.capacity));
     s.meta.insert(key.clone(), Meta { cost, freq: 0, queue: Queue::Small, stamp: 0 });
     s.total_cost += cost;
     s.push(key.clone(), if to_main { Queue::Main } else { Queue::Small });
@@ -176,7 +180,7 @@ where
         }
         s.meta.remove(&key);
         s.total_cost -= cost;
-        s.remember_ghost(key.clone(), self.ghost_cap);
+        s.remember_ghost(key.clone());
       } else {
         if freq > 0 {
           s.meta.get_mut(&key).unwrap().freq = freq - 1;

@@ -384,6 +384,14 @@ pub(crate) struct HS3Fifo {
   ghost: HashSet<u64>,
   ghost_order: VecDeque<u64>,
   ghost_cap: usize,
+  capacity: u64,
+}
+
+/// Ghosts kept by a policy that has held `entries` keys at once within its
+/// budget: one for each, capped at its capacity in cost units. An admit counts
+/// the entries held before it, since the cache evicts after the admit.
+pub(crate) fn ghost_cap(entries: usize, capacity: u64) -> usize {
+  (entries as u64).min(capacity).max(1) as usize
 }
 
 const SMALL: u8 = 0;
@@ -397,7 +405,8 @@ impl HS3Fifo {
       small_target: (capacity / 10).max(1),
       ghost: HashSet::new(),
       ghost_order: VecDeque::new(),
-      ghost_cap: capacity.max(1) as usize,
+      ghost_cap: ghost_cap(0, capacity),
+      capacity,
     }
   }
 
@@ -492,6 +501,7 @@ impl HS3Fifo {
 
   pub(crate) fn admit_key(&mut self, hash: u64, cost: u64) -> u64 {
     let seg = if self.ghost.remove(&hash) { MAIN } else { SMALL };
+    self.ghost_cap = self.ghost_cap.max(ghost_cap(self.slab.live(), self.capacity));
     let i = self.slab.alloc(hash, cost);
     if i as usize >= self.freq.len() {
       self.freq.push(AtomicU8::new(0));
@@ -1017,17 +1027,24 @@ mod policy_sim {
     key_based: Vec<(S3FifoPolicy<u64>, HashMap<u64, ()>)>,
     handle: Vec<(HS3Fifo, HashMap<u64, u64>, HashMap<u64, u64>)>,
     per_shard: u64,
+    cost: u64,
     shard_hasher: ahash::RandomState,
   }
 
   impl S3Pair {
     fn new(capacity: u64, shards: usize) -> Self {
+      Self::with_cost(capacity, shards, 1)
+    }
+
+    /// Every entry costs `cost`.
+    fn with_cost(capacity: u64, shards: usize, cost: u64) -> Self {
       let per_shard = capacity.div_ceil(shards as u64);
       let s = SHARD_SEEDS;
       S3Pair {
         key_based: (0..shards).map(|_| (S3FifoPolicy::new(per_shard), HashMap::new())).collect(),
         handle: (0..shards).map(|_| (HS3Fifo::new(per_shard), HashMap::new(), HashMap::new())).collect(),
         per_shard,
+        cost,
         shard_hasher: ahash::RandomState::with_seeds(s.0, s.1, s.2, s.3),
       }
     }
@@ -1035,18 +1052,18 @@ mod policy_sim {
     /// Runs one access on both sides and returns their hit results.
     fn access(&mut self, key: u64) -> (bool, bool) {
       let hash = hash_key(&self.shard_hasher, &key);
-      let per_shard = self.per_shard;
+      let (per_shard, cost) = (self.per_shard, self.cost);
       let idx = hash as usize & (self.key_based.len() - 1);
       let a = {
         let (p, map) = &mut self.key_based[idx];
         if map.contains_key(&key) {
-          CachePolicy::<u64, ()>::on_access(p, &key, 1);
+          CachePolicy::<u64, ()>::on_access(p, &key, cost);
           true
         } else {
           map.insert(key, ());
-          CachePolicy::<u64, ()>::on_admit(p, &key, 1);
-          if map.len() as u64 > per_shard {
-            let (victims, _) = CachePolicy::<u64, ()>::evict(p, map.len() as u64 - per_shard);
+          CachePolicy::<u64, ()>::on_admit(p, &key, cost);
+          if map.len() as u64 * cost > per_shard {
+            let (victims, _) = CachePolicy::<u64, ()>::evict(p, map.len() as u64 * cost - per_shard);
             for v in victims {
               map.remove(&v);
             }
@@ -1060,12 +1077,12 @@ mod policy_sim {
           ShardPolicy::<u64, ()>::touch(p, node);
           true
         } else {
-          let node = p.admit_key(hash, 1);
+          let node = p.admit_key(hash, cost);
           map.insert(key, node);
           nodes.insert(node, key);
-          if map.len() as u64 > per_shard {
+          if map.len() as u64 * cost > per_shard {
             let mut out = Vec::new();
-            ShardPolicy::<u64, ()>::evict(p, map.len() as u64 - per_shard, &mut out);
+            ShardPolicy::<u64, ()>::evict(p, map.len() as u64 * cost - per_shard, &mut out);
             for (_, n) in out {
               if let Some(k) = nodes.remove(&n) {
                 map.remove(&k);
@@ -1084,6 +1101,11 @@ mod policy_sim {
       a.sort_unstable();
       b.sort_unstable();
       (a, b)
+    }
+
+    /// Ghosts held by the key-based and the handle policy.
+    fn ghosts(&self) -> (usize, usize) {
+      (self.key_based.iter().map(|(p, _)| p.debug_state().3.len()).sum(), self.handle.iter().map(|(p, _, _)| p.debug_state().3.len()).sum())
     }
   }
 
@@ -1107,6 +1129,38 @@ mod policy_sim {
       }
       println!("s3fifo zipf0.99 shards={shards}: hit_ratio={:.4}", hits as f64 / trace.len() as f64);
     }
+  }
+
+  /// 1,000 entries and a cost of 64 keep the small queue's target a whole
+  /// multiple of the cost, so the two caches hold the same number of entries in it.
+  #[test]
+  fn s3fifo_decisions_do_not_depend_on_the_cost_unit() {
+    const ENTRIES: u64 = 1_000;
+    const COST: u64 = 64;
+    let trace = zipf_trace(ENTRIES * 10, 400_000, 0.99, 11);
+    let mut unit = S3Pair::new(ENTRIES, 1);
+    let mut scaled = S3Pair::with_cost(ENTRIES * COST, 1, COST);
+    for (i, &k) in trace.iter().enumerate() {
+      let a = unit.access(k);
+      let b = scaled.access(k);
+      assert_eq!(a, b, "op {i} key {k}: hit differs between cost 1 and cost {COST}");
+      if i % 997 == 0 || i + 1 == trace.len() {
+        assert_eq!(unit.resident(), scaled.resident(), "op {i}: resident sets differ between cost 1 and cost {COST}");
+      }
+    }
+  }
+
+  #[test]
+  fn s3fifo_ghosts_follow_resident_entries() {
+    const ENTRIES: u64 = 1_024;
+    const COST: u64 = 64;
+    let mut pair = S3Pair::with_cost(ENTRIES * COST, 1, COST);
+    for k in 0..ENTRIES * 20 {
+      pair.access(k);
+    }
+    let (key_based, handle) = pair.ghosts();
+    assert!(key_based as u64 <= ENTRIES, "the key-based policy holds {key_based} ghosts for {ENTRIES} entries");
+    assert!(handle as u64 <= ENTRIES, "the handle policy holds {handle} ghosts for {ENTRIES} entries");
   }
 
   #[test]
