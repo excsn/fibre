@@ -197,7 +197,7 @@ Uses Log4j-style format specifiers.
 *   `%p` or `%l`: Log level (e.g., `INFO`).
 *   `%t`: The event's target (typically the module path).
 *   `%m`: The primary log message.
-*   `%T`: The name of the thread on which the event occurred. Empty for `log` records and for unnamed threads.
+*   `%T`: The name of the thread on which the event occurred. Empty for unnamed threads.
 *   `%n`: A newline (`\n` on every platform).
 *   `%-5p`: Padding can be applied to specifiers (e.g., left-align the level to 5 characters).
 *   `%%`: An escaped literal percent sign.
@@ -222,7 +222,7 @@ The `%X` specifier includes an event's structured fields in the log line. It has
     [2025-11-01T10:00:00.123Z] WARN - [peer=1, ballot=B(1,2)] - Contention detected
     ```
 
-2.  **`%X` (All Fields):** This will print all fields attached to the event in a `{key=value}` format, sorted alphabetically by key. This is useful for debugging but can be very verbose for production logs. A record from the `log` crate also has `module_path`, `file` and `line` in its fields, so bare `%X` prints them. Use `%X{name}` when `log` records reach the appender.
+2.  **`%X` (All Fields):** This will print all fields attached to the event in a `{key=value}` format, sorted alphabetically by key. This is useful for debugging but can be very verbose for production logs.
 
     ```yaml
     # fibre_logging.yaml

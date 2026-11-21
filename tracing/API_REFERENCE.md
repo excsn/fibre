@@ -59,7 +59,7 @@ Neither constructor sets a global subscriber. The caller composes the layer and 
 `pub struct Trace`. `Debug + Clone`.
 
 * `pub id: u64`: unique per collector, from 1, in the order roots opened.
-* `pub trace_id: Vec<u8>`: identifies the trace across processes. 8 random bytes, or the bytes the root adopted through `fibre.trace_id`.
+* `pub trace_id: Vec<u8>`: identifies the trace across processes. A new id is 16 bytes: the start in milliseconds since the epoch as 48 bits, then 80 random bits. A root that adopts one through `fibre.trace_id` keeps those bytes, whatever their length.
 * `pub parent_ref: Option<Vec<u8>>`: the root's parent span in another process, from `fibre.parent_ref`.
 * `pub started_at: SystemTime`: when the root opened.
 * `pub spans: Vec<Span>`: in the order they opened, the root first.

@@ -61,22 +61,22 @@ A logging library that routes `log` and `tracing` events through appenders and e
 * `pub timestamp: chrono::DateTime<chrono::Utc>`
 * `pub level: tracing::Level`
 * `pub target: String`
-* `pub name: String`: for a `tracing` event its metadata name. For a `log` record its target.
+* `pub name: String`: for a `tracing` event its metadata name. For a `log` record `log event`.
 * `pub message: Option<String>`
-* `pub fields: HashMap<String, LogValue>`: a `log` record carries `module_path`, `file` and `line` here.
-* `pub span_id: Option<String>`: `{:?}` of the current span's `Id`. Always `None` for a `log` record.
+* `pub fields: HashMap<String, LogValue>`
+* `pub span_id: Option<String>`: `{:?}` of the current span's `Id`.
 * `pub parent_id: Option<String>`: as `span_id`, for the parent.
-* `pub thread_id: Option<String>`: always `None` for a `log` record.
-* `pub thread_name: Option<String>`: always `None` for a `log` record.
+* `pub thread_id: Option<String>`: the number of the thread the event came from.
+* `pub thread_name: Option<String>`: `None` for an unnamed thread.
 * `pub fn new<S1: Into<String>, S2: Into<String>>(level: Level, target: S1, name: S2, message: Option<String>) -> Self`
 
 ### `LogValue`
 
-`pub enum LogValue`, also at `model::LogValue`. `Debug + Clone + PartialEq + Display`.
+`pub enum LogValue`, also at `model::LogValue`. `Debug + Clone + PartialEq + Display`. `#[non_exhaustive]`.
 
-* `String(String)`, `Int(i64)`, `Float(f64)`, `Bool(bool)`, `Debug(String)`.
+* `String(String)`, `Int(i64)`, `Float(f64)`, `Bool(bool)`, `Debug(String)`, `UInt(u64)`, `U128(u128)`, `Bytes(Vec<u8>)`.
 
-A `u64` above `i64::MAX` is stored as `String`.
+A `u64` that fits an `i64` is an `Int` and a larger one is a `UInt`. An `i128` that fits an `i64` is an `Int` and any other is a `String`. `Display` writes `Bytes` as lowercase hex. The JSON encoder writes `Bytes` and a `U128` above `u64::MAX` as strings.
 
 ## 3. Debug Instrumentation
 

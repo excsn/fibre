@@ -113,7 +113,7 @@ impl Span {
 #[derive(Debug, Clone)]
 pub struct Trace {
   pub id: u64,
-  /// Identifies the trace across processes: 8 random bytes, or whatever length the root adopted.
+  /// Identifies the trace across processes: 16 bytes for a new trace, or whatever length the root adopted.
   pub trace_id: Vec<u8>,
   pub parent_ref: Option<Vec<u8>>,
   pub started_at: SystemTime,
