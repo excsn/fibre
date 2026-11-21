@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "fibre_cache"
-version = "0.4.13"
+version = "0.4.14"
 dependencies = [
  "ahash",
  "bench_matrix",
@@ -1042,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "fibre_logging"
-version = "0.5.12"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "console-subscriber",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "fibre_stats"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "fixed",
  "inventory",
@@ -1115,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "fibre_tracing"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "parking_lot 0.13.0",
  "tracing",
