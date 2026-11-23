@@ -1,7 +1,7 @@
 #![cfg(feature = "http1")]
 
 use bytes::{Bytes, BytesMut};
-use fibre_http::engine::{Capacity, ConnEvent, Engine as _, Event, ExchangeId, NetAction, OpenError, Output, RequestHead};
+use fibre_http::engine::{Capacity, ConnEvent, Engine as _, Event, ExchangeId, Input, NetAction, OpenError, Output, RequestHead};
 use fibre_http::h1::Engine;
 use http::{HeaderMap, HeaderValue, Method, Version};
 
@@ -48,7 +48,7 @@ impl Harness {
 
   fn feed(&mut self, bytes: &[u8]) {
     self.input.extend_from_slice(bytes);
-    self.engine.on_bytes(&mut self.input, &mut self.out);
+    self.engine.on_input(Input::Stream(&mut self.input), std::time::Instant::now(), &mut self.out);
   }
 
   fn eof(&mut self) {

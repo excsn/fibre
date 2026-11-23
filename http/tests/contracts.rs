@@ -65,6 +65,34 @@ fn server(reply: impl Fn(&Seen, SocketAddr) -> Vec<u8> + Send + Sync + 'static) 
   server_on(TcpListener::bind("127.0.0.1:0").unwrap(), Arc::new(reply))
 }
 
+/// A chunked body (RFC 9112 section 7.1), trailers skipped. `None` when the connection ends first.
+fn read_chunked(reader: &mut BufReader<TcpStream>) -> Option<Vec<u8>> {
+  let mut body = Vec::new();
+  loop {
+    let mut size = String::new();
+    if reader.read_line(&mut size).ok()? == 0 {
+      return None;
+    }
+    let size = usize::from_str_radix(size.trim_end().split(';').next()?.trim(), 16).ok()?;
+    if size == 0 {
+      loop {
+        let mut trailer = String::new();
+        if reader.read_line(&mut trailer).ok()? == 0 {
+          return None;
+        }
+        if trailer == "\r\n" {
+          return Some(body);
+        }
+      }
+    }
+    let start = body.len();
+    body.resize(start + size, 0);
+    reader.read_exact(&mut body[start..]).ok()?;
+    let mut crlf = [0u8; 2];
+    reader.read_exact(&mut crlf).ok()?;
+  }
+}
+
 fn serve(stream: TcpStream, record: Arc<Mutex<Vec<Seen>>>, reply: Reply, addr: SocketAddr) {
   let mut reader = BufReader::new(stream.try_clone().unwrap());
   let mut w = stream;
@@ -86,11 +114,20 @@ fn serve(stream: TcpStream, record: Arc<Mutex<Vec<Seen>>>, reply: Reply, addr: S
         headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
       }
     }
-    let length: usize = headers.iter().find(|(k, _)| k == "content-length").map(|(_, v)| v.parse().unwrap()).unwrap_or(0);
-    let mut body = vec![0u8; length];
-    if reader.read_exact(&mut body).is_err() {
-      return;
-    }
+    let chunked = headers.iter().any(|(k, v)| k == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
+    let body = if chunked {
+      match read_chunked(&mut reader) {
+        Some(body) => body,
+        None => return,
+      }
+    } else {
+      let length: usize = headers.iter().find(|(k, _)| k == "content-length").map(|(_, v)| v.parse().unwrap()).unwrap_or(0);
+      let mut body = vec![0u8; length];
+      if reader.read_exact(&mut body).is_err() {
+        return;
+      }
+      body
+    };
     let seen = Seen { line: line.trim_end().to_string(), headers, body };
     record.lock().unwrap().push(seen.clone());
     let out = reply(&seen, addr);

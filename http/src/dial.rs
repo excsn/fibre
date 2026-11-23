@@ -12,6 +12,30 @@ use crate::pool::Key;
 use crate::wait::{self, Registration};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long an HTTP/3 handshake learnt from Alt-Svc may take before the origin is used over TCP instead.
+#[cfg(feature = "http3")]
+const H3_FALLBACK_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// HTTP/3 settings shared by every connection a client dials.
+#[cfg(feature = "http3")]
+#[derive(Clone)]
+pub(crate) struct H3 {
+  pub quic: quinn_proto::ClientConfig,
+  /// Every `https://` origin is dialled over HTTP/3, with no fallback.
+  pub prior_knowledge: bool,
+  /// An origin's `Alt-Svc` advertisement moves its next connection to HTTP/3.
+  pub alt_svc: bool,
+}
+
+/// Where an HTTP/3 connection for an origin goes.
+#[cfg_attr(not(feature = "http3"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct H3Target {
+  pub host: String,
+  pub port: u16,
+  /// Learnt from Alt-Svc: a failure marks the alternative broken and the request goes over TCP.
+  pub fallback: bool,
+}
 
 #[derive(Clone)]
 pub(crate) struct Dialer {
@@ -26,6 +50,8 @@ pub(crate) struct Dialer {
   pub h2_keep_alive: Option<(Duration, Duration)>,
   pub proxies: crate::proxy::Proxies,
   pub user_agent: String,
+  #[cfg(feature = "http3")]
+  pub h3: Option<H3>,
 }
 
 /// Where the TCP connection goes: the tunnel's proxy, or the key's host, which is the proxy for a forwarded key.
@@ -183,4 +209,53 @@ pub(crate) async fn dial_async(dialer: &Dialer, key: &Key, deadline: Option<Inst
     }
   }
   finish(dialer, key, io, reg)
+}
+
+#[cfg(feature = "http3")]
+fn h3_deadline(target: &H3Target, deadline: Option<Instant>) -> Result<Instant, Error> {
+  let limit = if target.fallback { H3_FALLBACK_TIMEOUT } else { CONNECT_TIMEOUT };
+  Ok(Instant::now() + remaining(deadline)?.min(limit))
+}
+
+/// A QUIC connection to `addr`, not yet through its handshake.
+#[cfg(feature = "http3")]
+fn h3_conn(h3: &H3, key: &Key, addr: SocketAddr, reg: Registration) -> Result<Arc<Conn>, Error> {
+  let local: SocketAddr = if addr.is_ipv4() { ([0, 0, 0, 0], 0).into() } else { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() };
+  let sock = std::net::UdpSocket::bind(local)?;
+  sock.connect(addr)?;
+  sock.set_nonblocking(true)?;
+  let engine = crate::h3::Engine::new(h3.quic.clone(), &key.host, addr, Instant::now())?;
+  Ok(Conn::new(Box::new(engine), Io::Udp(sock), Proto::H3, reg))
+}
+
+#[cfg(feature = "http3")]
+pub(crate) fn dial_h3_sync(dialer: &Dialer, key: &Key, target: &H3Target, deadline: Option<Instant>) -> Result<Arc<Conn>, Error> {
+  let h3 = dialer.h3.as_ref().ok_or_else(|| Error::Protocol("HTTP/3 is not configured".into()))?;
+  let until = h3_deadline(target, deadline)?;
+  let mut last = Error::Io(format!("no address for {}", target.host));
+  for addr in (target.host.as_str(), target.port).to_socket_addrs()? {
+    let conn = h3_conn(h3, key, addr, Registration::default())?;
+    match conn.established_sync(Some(until)) {
+      Ok(()) => return Ok(conn),
+      Err(Error::Timeout) => return Err(Error::Timeout),
+      Err(e) => last = e,
+    }
+  }
+  Err(last)
+}
+
+#[cfg(feature = "http3")]
+pub(crate) async fn dial_h3_async(dialer: &Dialer, key: &Key, target: &H3Target, deadline: Option<Instant>) -> Result<Arc<Conn>, Error> {
+  let h3 = dialer.h3.as_ref().ok_or_else(|| Error::Protocol("HTTP/3 is not configured".into()))?;
+  let until = h3_deadline(target, deadline)?;
+  let mut last = Error::Io(format!("no address for {}", target.host));
+  for addr in lookup_async(&target.host, target.port).await? {
+    let conn = h3_conn(h3, key, addr, Registration::default())?;
+    match conn.established_async(Some(until)).await {
+      Ok(()) => return Ok(conn),
+      Err(Error::Timeout) => return Err(Error::Timeout),
+      Err(e) => last = e,
+    }
+  }
+  Err(last)
 }

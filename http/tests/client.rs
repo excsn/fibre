@@ -249,6 +249,13 @@ mod h2c {
       tokio::spawn(async move {
         let path = req.uri().path().to_string();
         let mut body = req.into_body();
+        if path == "/early" {
+          let resp = Response::builder().status(405).body(()).unwrap();
+          let _ = respond.send_response(resp, true);
+          tokio::time::sleep(Duration::from_secs(30)).await;
+          drop(body);
+          return;
+        }
         let mut got = Vec::new();
         while let Some(Ok(chunk)) = body.data().await {
           let _ = body.flow_control().release_capacity(chunk.len());
@@ -327,6 +334,25 @@ fn h2c_threads_and_tasks_share_one_connection() {
     t.join().unwrap();
   }
   assert_eq!(s.accepted.load(Ordering::SeqCst), 1);
+}
+
+/// A server answers before reading the request body and never asks for the rest. The request ends with that answer and the connection keeps serving.
+#[test]
+fn h2c_a_response_before_the_whole_body_ends_the_upload() {
+  let s = h2c::server();
+  let pool = Pool::default();
+  let client = SyncClient::builder().pool(&pool).http2_prior_knowledge().timeout(Duration::from_secs(10)).build_sync().unwrap();
+  let (tx, rx) = std::sync::mpsc::channel();
+  let c = client.clone();
+  let u = url(s.addr, "/early");
+  std::thread::spawn(move || {
+    let r = c.post(u).body(vec![1u8; 1024 * 1024]).send().map(|r| r.status().as_u16());
+    let _ = tx.send(r);
+  });
+  let r = rx.recv_timeout(Duration::from_secs(15)).expect("the request returned");
+  assert_eq!(r, Ok(405));
+  assert_eq!(client.get(url(s.addr, "/")).send().unwrap().text().unwrap(), "hello");
+  assert_eq!(pool.connections_opened(), 1);
 }
 
 #[test]

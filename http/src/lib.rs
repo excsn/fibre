@@ -1,5 +1,7 @@
 //! HTTP client whose handles switch between blocking and async with `to_sync` and `to_async`, sharing one connection pool.
 
+#[cfg(feature = "http3")]
+mod altsvc;
 mod body;
 mod client;
 mod conn;
@@ -12,6 +14,8 @@ mod error;
 pub mod h1;
 #[cfg(feature = "http2")]
 pub mod h2;
+#[cfg(feature = "http3")]
+pub mod h3;
 mod io;
 mod notify;
 mod pool;

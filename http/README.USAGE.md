@@ -24,6 +24,9 @@ How to send HTTP requests with fibre_http from blocking code, async code and bot
   * [Chunks and readers](#chunks-and-readers)
   * [Statuses](#statuses)
 * [Using HTTP/2](#using-http2)
+* [Using HTTP/3](#using-http3)
+  * [Learning HTTP/3 from Alt-Svc](#learning-http3-from-alt-svc)
+  * [HTTP/3 by prior knowledge](#http3-by-prior-knowledge)
 * [Configuring TLS](#configuring-tls)
 * [Following Redirects](#following-redirects)
 * [Setting Timeouts](#setting-timeouts)
@@ -43,10 +46,12 @@ How to send HTTP requests with fibre_http from blocking code, async code and bot
 * **Exchange:** one request and its response on a connection.
 * **HTTP/1.1 connection:** one exchange at a time. Back in the pool once the body is read.
 * **HTTP/2 connection:** many exchanges at once, up to the server's stream limit.
+* **HTTP/3 connection:** many exchanges at once over QUIC on UDP, up to the server's stream limit.
+* **Alt-Svc:** a response header naming another place to reach the origin, such as HTTP/3 on a UDP port.
 * **ALPN:** how a TLS handshake picks HTTP/2 or HTTP/1.1.
 * **h2c:** HTTP/2 without TLS, by prior knowledge.
 * **Deadline:** one per request, covering the wait for a connection, the request, the response head and the body.
-* **Feature:** a Cargo feature turning on an optional part: `gzip`, `zstd`, `json`, `cookies`, `native-tls`, `native-roots`, `hickory`.
+* **Feature:** a Cargo feature turning on an optional part: `http3`, `gzip`, `zstd`, `json`, `cookies`, `native-tls`, `native-roots`, `hickory`.
 
 ## Quick Start
 
@@ -249,6 +254,40 @@ let client = fibre_http::AsyncClient::builder()
 ```
 
 With nothing read for 10 s while a request is in flight, the client sends a PING. Without a PONG within 5 s the connection closes and its requests fail with `Error::Timeout`. Pings are off by default and idle pooled connections are never pinged.
+
+## Using HTTP/3
+
+```toml
+fibre_http = { version = "0", features = ["http3"] }
+```
+
+HTTP/3 needs the `http3` feature and rustls. Requests through a proxy stay on TCP.
+
+### Learning HTTP/3 from Alt-Svc
+
+```rust
+let client = fibre_http::AsyncClient::new();
+let first = client.get("https://example.com/").send().await?;
+println!("{:?}", first.version()); // HTTP/1.1 or HTTP/2
+let next = client.get("https://example.com/").send().await?;
+println!("{:?}", next.version()); // HTTP/3 when the first response carried `Alt-Svc: h3=":443"`
+```
+
+With the feature on, a client follows `Alt-Svc` by default. The next connection to that origin goes over QUIC while the TCP connections keep serving. A QUIC handshake that fails or takes over a second sends the request over TCP and leaves the origin there for 5 minutes, doubling with each failure in a row.
+
+```rust
+let tcp_only = fibre_http::AsyncClient::builder().http3_alt_svc(false).build_async()?;
+```
+
+### HTTP/3 by prior knowledge
+
+```rust
+let client = fibre_http::SyncClient::builder().http3_prior_knowledge().build_sync()?;
+let response = client.get("https://quic.internal:8443/").send()?;
+assert_eq!(response.version(), http::Version::HTTP_3);
+```
+
+Every `https://` origin goes over HTTP/3 from the first request, with no fallback. Pick it for servers known to speak HTTP/3. Keep the default for the open web.
 
 ## Configuring TLS
 

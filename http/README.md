@@ -1,6 +1,6 @@
 # Fibre HTTP
 
-Simple High Performance Multi-mode Sync/Async HTTP 1/2 client.
+Simple High Performance Multi-mode Sync/Async HTTP 1/2/3 client.
 
 ## Why Fibre HTTP
 
@@ -27,6 +27,7 @@ Requests a second for 64-byte GETs to a local hyper server with N concurrent cal
 ## Features
 
 - HTTP/1.1 keep-alive and HTTP/2 multiplexing, by ALPN or h2c prior knowledge.
+- HTTP/3 over QUIC, learnt from `Alt-Svc` with fallback to TCP or by prior knowledge.
 - HTTP/2 keepalive pings.
 - One pool across clients and modes, with per-origin limits and idle expiry.
 - HTTP proxies with `CONNECT` for HTTPS.
@@ -37,7 +38,7 @@ Requests a second for 64-byte GETs to a local hyper server with N concurrent cal
 | Feature | Default |
 |---|---|
 | `http1`, `http2`, `rustls`, `webpki-roots` | on |
-| `native-roots`, `native-tls`, `hickory`, `gzip`, `zstd`, `json`, `cookies` | off |
+| `http3`, `native-roots`, `native-tls`, `hickory`, `gzip`, `zstd`, `json`, `cookies` | off |
 
 ## Getting Started
 
@@ -72,7 +73,7 @@ The API may still change.
 ## Limitations
 
 - Unix only. Windows is not supported.
-- No HTTP/3.
+- HTTP/3 does not go through proxies and has no 0-RTT.
 - HTTP/1.1 response trailers are dropped.
 
 ## License

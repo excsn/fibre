@@ -4,13 +4,13 @@
 
 use std::time::Instant;
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use ureq_proto::BodyMode;
 use ureq_proto::client::state::{Await100, Prepare, RecvBody, RecvResponse, SendBody};
 use ureq_proto::client::{Await100Result, Call, RecvBodyResult, RecvResponseResult, SendRequestResult};
 
 use crate::Error;
-use crate::engine::{self, Capacity, ConnEvent, Event, ExchangeId, NetAction, OpenError, Output, RequestHead, ResponseHead};
+use crate::engine::{self, Capacity, ConnEvent, Event, ExchangeId, Input, NetAction, OpenError, Output, RequestHead, ResponseHead};
 
 const WRITE_CHUNK: usize = 16 * 1024;
 /// How long a request with `Expect: 100-continue` waits for the 100 before sending its body anyway.
@@ -243,7 +243,8 @@ impl engine::Engine for Engine {
     }
   }
 
-  fn on_bytes(&mut self, input: &mut BytesMut, out: &mut Output) {
+  fn on_input(&mut self, input: Input<'_>, _now: Instant, out: &mut Output) {
+    let Input::Stream(input) = input else { return };
     loop {
       match std::mem::replace(&mut self.state, State::Idle) {
         State::Await100(mut call, deadline) => match call.try_read_100(input) {

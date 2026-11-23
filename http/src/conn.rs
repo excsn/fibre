@@ -10,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use fibre::sync::HybridMutex;
 
 use crate::Error;
-use crate::engine::{Capacity, ConnEvent, Engine, Event, ExchangeId, NetAction, OpenError, Output, RequestHead};
+use crate::engine::{Capacity, ConnEvent, Engine, Event, ExchangeId, Input, NetAction, OpenError, Output, RequestHead};
 use crate::io::Io;
 use crate::notify::{Signal, Waiter};
 use crate::sync::{AtomicBool, AtomicUsize, Ordering, thread};
@@ -18,11 +18,68 @@ use crate::wait::{self, Interest, Registration, Waitable};
 
 const TURN_READ: usize = 64 * 1024;
 const READ_CHUNK: usize = 16 * 1024;
+/// The largest UDP payload.
+const DATAGRAM_MAX: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Proto {
   H1,
   H2,
+  H3,
+}
+
+/// Output sealed for the socket: one byte stream or datagrams that keep their boundaries.
+enum Wire {
+  Stream(BytesMut),
+  Datagrams(VecDeque<Bytes>),
+}
+
+impl Wire {
+  fn is_empty(&self) -> bool {
+    match self {
+      Wire::Stream(b) => b.is_empty(),
+      Wire::Datagrams(q) => q.is_empty(),
+    }
+  }
+
+  /// Bytes for a stream, datagrams for datagrams: the unit `write_some` counts in.
+  fn len(&self) -> usize {
+    match self {
+      Wire::Stream(b) => b.len(),
+      Wire::Datagrams(q) => q.len(),
+    }
+  }
+
+  fn clear(&mut self) {
+    match self {
+      Wire::Stream(b) => b.clear(),
+      Wire::Datagrams(q) => q.clear(),
+    }
+  }
+
+  /// Takes the contents, leaving an empty wire of the same kind.
+  fn take(&mut self) -> Wire {
+    match self {
+      Wire::Stream(b) => Wire::Stream(std::mem::take(b)),
+      Wire::Datagrams(q) => Wire::Datagrams(std::mem::take(q)),
+    }
+  }
+
+  /// Drops the first `n` units and puts what is left ahead of `later`.
+  fn rest_before(mut self, n: usize, later: Wire) -> Wire {
+    match (&mut self, later) {
+      (Wire::Stream(b), Wire::Stream(l)) => {
+        let _ = b.split_to(n);
+        b.extend_from_slice(&l);
+      }
+      (Wire::Datagrams(q), Wire::Datagrams(l)) => {
+        q.drain(..n);
+        q.extend(l);
+      }
+      _ => unreachable!("a connection keeps one kind of wire"),
+    }
+    self
+  }
 }
 
 #[derive(Default)]
@@ -39,8 +96,8 @@ pub(crate) struct State {
   /// Socket reads land here first, allocated once per connection.
   read_buf: Box<[u8]>,
   pending: BytesMut,
-  /// Bytes ready for the socket, written by whoever holds `writing`, with the lock released.
-  wire: BytesMut,
+  /// Output ready for the socket, written by whoever holds `writing`, with the lock released.
+  wire: Wire,
   writing: bool,
   /// Body bytes were consumed since the engine last ran.
   consumed: bool,
@@ -61,6 +118,11 @@ impl State {
     for action in out.net {
       match action {
         NetAction::Send(b) => self.pending.extend_from_slice(&b),
+        NetAction::Datagram(d) => {
+          if let Wire::Datagrams(q) = &mut self.wire {
+            q.push_back(d);
+          }
+        }
         NetAction::Close => self.closed = true,
         _ => {}
       }
@@ -112,7 +174,8 @@ impl State {
       self.wire.clear();
       return;
     }
-    if let Err(e) = self.io.seal(&mut self.pending, &mut self.wire) {
+    let Wire::Stream(wire) = &mut self.wire else { return };
+    if let Err(e) = self.io.seal(&mut self.pending, wire) {
       self.broken(e);
     }
   }
@@ -124,13 +187,17 @@ impl State {
       crate::diag::idle(t.elapsed().as_nanos() as u64);
     }
     self.flush_now();
+    let now = Instant::now();
+    if self.io.is_datagram() {
+      return self.turn_datagrams(now);
+    }
     let mut taken = 0;
     let mut got = false;
     while taken < TURN_READ && !self.closed {
       match self.io.read(&mut self.read_buf) {
         Ok(0) => {
           if got {
-            self.engine.on_bytes(&mut self.input, &mut self.out);
+            self.engine.on_input(Input::Stream(&mut self.input), now, &mut self.out);
             got = false;
           }
           self.engine.on_eof(&mut self.out);
@@ -156,9 +223,37 @@ impl State {
     // After `consumed` the engine runs even with nothing read, so output it deferred, such as an HTTP/2 window update, goes out.
     if got || self.consumed {
       self.consumed = false;
-      self.engine.on_bytes(&mut self.input, &mut self.out);
+      self.engine.on_input(Input::Stream(&mut self.input), now, &mut self.out);
       self.apply();
     }
+    self.flush_now();
+    Interest { read: true, write: !self.wire.is_empty() && !self.writing }
+  }
+
+  /// Hands the engine each datagram waiting on the socket. A datagram engine sends its output from every call, so nothing is deferred to here.
+  fn turn_datagrams(&mut self, now: Instant) -> Interest {
+    let mut taken = 0;
+    let mut got = false;
+    while taken < TURN_READ && !self.closed {
+      match self.io.read(&mut self.read_buf) {
+        Ok(n) => {
+          taken += n.max(1);
+          got = true;
+          self.engine.on_input(Input::Datagram(BytesMut::from(&self.read_buf[..n])), now, &mut self.out);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+        Err(e) => {
+          self.broken(e);
+          break;
+        }
+      }
+    }
+    if !got {
+      crate::diag::bump(crate::diag::C::EmptyTurn);
+    }
+    self.consumed = false;
+    self.apply();
     self.flush_now();
     Interest { read: true, write: !self.wire.is_empty() && !self.writing }
   }
@@ -177,6 +272,18 @@ impl State {
     self.engine.on_tick(Instant::now(), &mut self.out);
     self.apply();
     self.flush_now();
+  }
+
+  /// Whether the engine can take an exchange yet. An error when the connection ended trying.
+  #[cfg(feature = "http3")]
+  fn established(&mut self, _id: ExchangeId) -> Option<Result<(), Error>> {
+    if self.closed {
+      return Some(Err(self.closed_error()));
+    }
+    match self.engine.capacity() {
+      Capacity::Shared { max, .. } if max == 0 => None,
+      _ => Some(Ok(())),
+    }
   }
 
   fn closed_error(&self) -> Error {
@@ -224,14 +331,18 @@ impl State {
   }
 
   fn writable_or_done(&mut self, id: ExchangeId) -> Option<()> {
-    match self.slots.get_mut(&id) {
-      Some(slot) if slot.writable => {
-        slot.writable = false;
-        Some(())
-      }
-      Some(slot) if !slot.events.is_empty() => Some(()),
-      Some(_) if !self.closed => None,
-      _ => Some(()),
+    if self.slots.get_mut(&id).is_some_and(|slot| std::mem::take(&mut slot.writable)) {
+      return Some(());
+    }
+    self.answered(id).then_some(())
+  }
+
+  /// Whether the exchange's whole response or its reset is already queued, or the exchange has gone. A request body still unsent then has no reader. A head alone does not count: a server may answer first and read on.
+  fn answered(&self, id: ExchangeId) -> bool {
+    match self.slots.get(&id) {
+      None => true,
+      Some(_) if self.closed => true,
+      Some(slot) => slot.events.iter().any(|e| matches!(e, Event::End | Event::Reset(_))),
     }
   }
 
@@ -273,6 +384,7 @@ impl Conn {
   pub(crate) fn new(engine: Box<dyn Engine + Send>, io: Io, proto: Proto, reg: Registration) -> Arc<Conn> {
     let waitable = io.waitable();
     let writer = io.writer().expect("a connected socket can be cloned for writing");
+    let (wire, read_len) = if io.is_datagram() { (Wire::Datagrams(VecDeque::new()), DATAGRAM_MAX) } else { (Wire::Stream(BytesMut::new()), READ_CHUNK) };
     Arc::new(Conn {
       reg,
       writer,
@@ -280,9 +392,9 @@ impl Conn {
         engine,
         io,
         input: BytesMut::new(),
-        read_buf: vec![0u8; READ_CHUNK].into_boxed_slice(),
+        read_buf: vec![0u8; read_len].into_boxed_slice(),
         pending: BytesMut::new(),
-        wire: BytesMut::new(),
+        wire,
         writing: false,
         consumed: false,
         out: Output::default(),
@@ -352,7 +464,7 @@ impl Conn {
         return !st.wire.is_empty() && !st.writing && !st.closed;
       }
       st.writing = true;
-      let buf = std::mem::take(&mut st.wire);
+      let buf = st.wire.take();
       drop(st);
       let written = self.write_some(&buf);
       st = self.st.lock();
@@ -368,7 +480,7 @@ impl Conn {
         return !st.wire.is_empty() && !st.writing && !st.closed;
       }
       st.writing = true;
-      let buf = std::mem::take(&mut st.wire);
+      let buf = st.wire.take();
       drop(st);
       let written = self.write_some(&buf);
       st = self.st.lock_async().await;
@@ -378,23 +490,41 @@ impl Conn {
     }
   }
 
-  /// Writes until the socket would block. Returns how much went out.
-  fn write_some(&self, buf: &[u8]) -> std::io::Result<usize> {
-    let mut off = 0;
-    while off < buf.len() {
-      match self.writer.write(&buf[off..]) {
-        Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
-        Ok(n) => off += n,
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-        Err(e) => return Err(e),
+  /// Writes until the socket would block. Returns how much went out: bytes of a stream or whole datagrams.
+  fn write_some(&self, buf: &Wire) -> std::io::Result<usize> {
+    match buf {
+      Wire::Stream(buf) => {
+        let mut off = 0;
+        while off < buf.len() {
+          match self.writer.write(&buf[off..]) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => off += n,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+          }
+        }
+        Ok(off)
+      }
+      Wire::Datagrams(q) => {
+        let mut sent = 0;
+        while sent < q.len() {
+          match self.writer.write(&q[sent]) {
+            Ok(_) => sent += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            // A full interface queue drops the datagram, as the network can. QUIC sends it again.
+            Err(e) if e.raw_os_error() == Some(libc::ENOBUFS) => sent += 1,
+            Err(e) => return Err(e),
+          }
+        }
+        Ok(sent)
       }
     }
-    Ok(off)
   }
 
   /// Puts back what the socket did not take, ahead of anything sealed meanwhile. Returns whether to write another round.
-  fn settle(&self, st: &mut State, mut buf: BytesMut, written: std::io::Result<usize>) -> bool {
+  fn settle(&self, st: &mut State, buf: Wire, written: std::io::Result<usize>) -> bool {
     st.writing = false;
     match written {
       Err(e) => {
@@ -403,9 +533,8 @@ impl Conn {
         false
       }
       Ok(n) if n < buf.len() => {
-        let _ = buf.split_to(n);
-        buf.extend_from_slice(&st.wire);
-        st.wire = buf;
+        let later = st.wire.take();
+        st.wire = buf.rest_before(n, later);
         if !st.leader {
           st.wake_any();
         }
@@ -427,6 +556,25 @@ impl Conn {
     st.flush_now();
     self.note(st);
     result
+  }
+
+  /// Drives the connection until the engine can take an exchange, which for QUIC is the end of the handshake.
+  #[cfg(feature = "http3")]
+  pub(crate) fn established_sync(&self, deadline: Option<Instant>) -> Result<(), Error> {
+    let mut st = self.st.lock();
+    st.tick();
+    self.note(&st);
+    self.release(st);
+    self.drive_sync(ExchangeId(u64::MAX), deadline, State::established)?
+  }
+
+  #[cfg(feature = "http3")]
+  pub(crate) async fn established_async(&self, deadline: Option<Instant>) -> Result<(), Error> {
+    let mut st = self.st.lock_async().await;
+    st.tick();
+    self.note(&st);
+    self.release_async(st).await;
+    self.drive_async(ExchangeId(u64::MAX), deadline, State::established).await?
   }
 
   pub(crate) fn open_sync(&self, head: RequestHead) -> Result<ExchangeId, OpenError> {
@@ -455,21 +603,29 @@ impl Conn {
     Ok(())
   }
 
-  /// Sends `data` as the next piece of the request body; `end` marks the last piece.
+  /// Sends `data` as the next piece of the request body; `end` marks the last piece. Stops early, without error, once the response has arrived while the engine takes no more: the caller reads the response next.
   pub(crate) fn send_body_sync(&self, id: ExchangeId, data: Bytes, end: bool, deadline: Option<Instant>) -> Result<(), Error> {
     let mut off = 0;
     let mut first = true;
     loop {
-      let unflushed = {
+      if deadline.is_some_and(|d| Instant::now() >= d) {
+        return Err(Error::Timeout);
+      }
+      let (unflushed, answered) = {
         let mut st = self.st.lock();
+        let before = off;
         if first || off < data.len() {
           self.offer(&mut st, id, &data, end, &mut off)?;
           first = false;
         }
+        let stalled = off < data.len() && off == before;
         self.release(st);
         let st = self.st.lock();
-        !(st.wire.is_empty() || st.writing || st.closed)
+        (!(st.wire.is_empty() || st.writing || st.closed), stalled && st.answered(id))
       };
+      if answered {
+        return Ok(());
+      }
       if off == data.len() && !unflushed {
         return Ok(());
       }
@@ -485,16 +641,24 @@ impl Conn {
     let mut off = 0;
     let mut first = true;
     loop {
-      let unflushed = {
+      if deadline.is_some_and(|d| Instant::now() >= d) {
+        return Err(Error::Timeout);
+      }
+      let (unflushed, answered) = {
         let mut st = self.st.lock_async().await;
+        let before = off;
         if first || off < data.len() {
           self.offer(&mut st, id, &data, end, &mut off)?;
           first = false;
         }
+        let stalled = off < data.len() && off == before;
         self.release_async(st).await;
         let st = self.st.lock_async().await;
-        !(st.wire.is_empty() || st.writing || st.closed)
+        (!(st.wire.is_empty() || st.writing || st.closed), stalled && st.answered(id))
       };
+      if answered {
+        return Ok(());
+      }
       if off == data.len() && !unflushed {
         return Ok(());
       }
@@ -701,7 +865,7 @@ mod model {
   use http::{HeaderMap, Method, StatusCode, Version};
 
   use super::*;
-  use crate::engine::{Capacity, ConnEvent, Event, NetAction, OpenError, Output, RequestHead, ResponseHead};
+  use crate::engine::{Capacity, ConnEvent, Event, Input, NetAction, OpenError, Output, RequestHead, ResponseHead};
   use crate::io::model::Pipe;
 
   const ITERATIONS: usize = 2000;
@@ -734,7 +898,8 @@ mod model {
       self.open.remove(&id.0);
     }
 
-    fn on_bytes(&mut self, input: &mut BytesMut, out: &mut Output) {
+    fn on_input(&mut self, input: Input<'_>, _now: Instant, out: &mut Output) {
+      let Input::Stream(input) = input else { return };
       while let Some(end) = input.iter().position(|b| *b == b';') {
         let token = String::from_utf8_lossy(&input[..end]).into_owned();
         input.advance(end + 1);

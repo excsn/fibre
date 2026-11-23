@@ -1,6 +1,6 @@
 # API Reference: fibre_http
 
-An HTTP/1.1 and HTTP/2 client whose blocking and async handles share one connection pool.
+An HTTP/1.1, HTTP/2 and HTTP/3 client whose blocking and async handles share one connection pool.
 
 ## Contents
 
@@ -26,6 +26,7 @@ An HTTP/1.1 and HTTP/2 client whose blocking and async handles share one connect
   * [Engine types](#engine-types)
   * [`h1::Engine`](#h1engine)
   * [`h2::Engine`](#h2engine)
+  * [`h3::Engine`](#h3engine)
 * [8. Error handling](#8-error-handling)
   * [`Error`](#error)
 
@@ -35,6 +36,7 @@ An HTTP/1.1 and HTTP/2 client whose blocking and async handles share one connect
 |---|---|---|
 | `http1` | yes | HTTP/1.1 through `ureq-proto` |
 | `http2` | yes | HTTP/2 through `h2` |
+| `http3` | no | HTTP/3 over QUIC through `quinn-proto`. Turns on `rustls` |
 | `rustls` | yes | TLS through rustls with the ring provider |
 | `webpki-roots` | yes | The bundled Mozilla root list, for rustls |
 | `native-roots` | no | The OS root store, for rustls |
@@ -85,6 +87,8 @@ Configuration for both clients. `Default` is the configuration `new()` uses.
 * `pub fn http2_prior_knowledge(self) -> Self`: HTTP/2 without TLS to `http://` origins.
 * `pub fn http2_keep_alive_interval(self, interval: Duration) -> Self`: send a PING after `interval` with nothing read while a request is in flight. Off by default. Idle pooled connections are not pinged.
 * `pub fn http2_keep_alive_timeout(self, timeout: Duration) -> Self`: how long to wait for the PONG, 20 s by default. Without one the connection closes and its requests fail with `Error::Timeout`.
+* `pub fn http3_prior_knowledge(self) -> Self`: under `http3`. HTTP/3 to every `https://` origin not reached through a proxy, with no TCP connection and no fallback. No effect with `use_native_tls`.
+* `pub fn http3_alt_svc(self, on: bool) -> Self`: under `http3`. Whether a response's `Alt-Svc: h3=...` moves its origin's next connection to HTTP/3. Default: `true`. No effect with `use_native_tls`.
 * `pub fn add_root_certificate(self, der: Vec<u8>) -> Self`: trusts a DER root beside the default roots.
 * `pub fn no_bundled_roots(self) -> Self`: trusts only added roots.
 * `pub fn identity(self, cert_chain_pem: Vec<u8>, key_pem: Vec<u8>) -> Self`: presents a PEM certificate chain and its PEM key when a server asks for a client certificate. With rustls the key may be RSA, ECDSA or Ed25519. With native-tls on macOS it must be RSA in PKCS#8. A chain or key that does not parse fails the build with `Error::Tls`.
@@ -121,7 +125,7 @@ On `RequestBuilder<Async>`:
 * `pub fn body_stream(self, stream: impl Stream<Item = Result<Bytes, io::Error>> + Send + 'static, length: Option<u64>) -> Self`
 * `pub async fn send(self) -> Result<Response<AsyncBody>, Error>`
 
-`Content-Length` is set from a known body length unless the caller set it. A request sent with a reader or a stream is never retried. A 307 or 308 to it is returned instead of followed. A reader or stream body on `GET`, `HEAD`, `DELETE` or `OPTIONS` fails at `send`. A request with `Expect: 100-continue` holds its body until the server answers 100 or 1 s passes.
+`Content-Length` is set from a known body length unless the caller set it. A request sent with a reader or a stream is never retried. A 307 or 308 to it is returned instead of followed. A reader or stream body on `GET`, `HEAD`, `DELETE` or `OPTIONS` fails at `send`. A request with `Expect: 100-continue` holds its body until the server answers 100 or 1 s passes. When the whole response or a reset arrives while the body is waiting for flow-control credit, the rest of the body is not sent and the response is returned.
 
 ### `Blocking` and `Async`
 
@@ -151,9 +155,9 @@ A body read with blocking calls. Implements `std::io::Read`.
 * `pub fn to_async(self) -> AsyncBody`: the same exchange, read with async calls from here on.
 * `pub fn chunk(&mut self) -> Result<Option<Bytes>, Error>`: `None` at the end.
 * `pub fn bytes(self) -> Result<Bytes, Error>`
-* `pub fn trailers(&self) -> Option<&http::HeaderMap>`: after the end, over HTTP/2.
+* `pub fn trailers(&self) -> Option<&http::HeaderMap>`: after the end, over HTTP/2 and HTTP/3.
 
-Dropping a body before its end resets the exchange: an HTTP/1.1 connection closes, an HTTP/2 stream is cancelled. Bytes already received are read first, so a short body that has arrived whole returns its connection to the pool.
+Dropping a body before its end resets the exchange: an HTTP/1.1 connection closes, an HTTP/2 or HTTP/3 stream is cancelled. Bytes already received are read first, so a short body that has arrived whole returns its connection to the pool.
 
 ### `AsyncBody`
 
@@ -180,7 +184,9 @@ Connections by origin, shared by every client built with it, blocking and async 
 * `pub fn peek_after(self, d: Duration) -> Self`: an HTTP/1.1 connection idle at least this long is peeked for a server close before reuse. Default: 1 s.
 * `pub fn build(self) -> Pool`
 
-An HTTP/2 connection takes up to the server's `SETTINGS_MAX_CONCURRENT_STREAMS` exchanges; a second opens only when the first is full.
+An HTTP/2 connection takes up to the server's `SETTINGS_MAX_CONCURRENT_STREAMS` exchanges; a second opens only when the first is full. An HTTP/3 connection takes up to the server's bidirectional stream limit the same way.
+
+An `https://` origin whose response carried `Alt-Svc: h3` gets its next connection over HTTP/3 while its TCP connections keep serving, until the advertisement's `ma` passes (24 hours without one). `Alt-Svc: clear` forgets it. A QUIC handshake that fails or takes over 1 s leaves the origin on TCP for 5 minutes, doubling with each failure in a row up to 64 times.
 
 ## 6. Proxies
 
@@ -196,15 +202,15 @@ An HTTP proxy at `http://[user:pass@]host[:port]`. Port 80 when absent. Userinfo
 
 ### `Engine`
 
-A protocol engine: bytes in, events and bytes out, no I/O.
+A protocol engine: bytes or datagrams in, events and bytes or datagrams out, no I/O.
 
 * `fn capacity(&self) -> Capacity`
 * `fn open(&mut self, head: RequestHead, now: Instant, out: &mut Output) -> Result<ExchangeId, OpenError>`
 * `fn send_body(&mut self, id: ExchangeId, data: Bytes, end: bool, out: &mut Output) -> usize`: bytes accepted, possibly fewer than offered.
 * `fn consumed(&mut self, id: ExchangeId, n: usize, out: &mut Output)`: `n` body bytes were read.
 * `fn reset(&mut self, id: ExchangeId, out: &mut Output)`
-* `fn on_bytes(&mut self, input: &mut BytesMut, out: &mut Output)`: leaves a partial frame in `input`.
-* `fn on_eof(&mut self, out: &mut Output)`
+* `fn on_input(&mut self, input: Input<'_>, now: Instant, out: &mut Output)`: a stream engine leaves a partial frame in `Input::Stream`.
+* `fn on_eof(&mut self, out: &mut Output)`: the peer closed a stream transport.
 * `fn on_tick(&mut self, now: Instant, out: &mut Output)`
 * `fn next_deadline(&self) -> Option<Instant>`
 * `fn close(&mut self, out: &mut Output)`
@@ -212,11 +218,12 @@ A protocol engine: bytes in, events and bytes out, no I/O.
 ### Engine types
 
 * `ExchangeId(pub u64)`
+* `Input<'a>`: `Stream(&'a mut BytesMut)` or `Datagram(BytesMut)`. `#[non_exhaustive]`. A stream engine is called with an empty `Stream` after `consumed`.
 * `Capacity`: `Unique { available: bool }` or `Shared { open: usize, max: usize }`. `#[non_exhaustive]`.
 * `RequestHead { method, uri, version, headers }`
 * `ResponseHead { status, version, headers }`
 * `OpenError`: `Full`, `GoingAway`, `Closed`. `#[non_exhaustive]`.
-* `NetAction`: `Send(Bytes)`, `Flush`, `Close`. `#[non_exhaustive]`.
+* `NetAction`: `Send(Bytes)`, `Datagram(Bytes)`, `Flush`, `Close`. `#[non_exhaustive]`. `Datagram` is one UDP datagram.
 * `Event`: `Informational(ResponseHead)`, `Head(ResponseHead)`, `Data(Bytes)`, `Trailers(HeaderMap)`, `End`, `Reset(Error)`, `Writable`. `#[non_exhaustive]`.
 * `ConnEvent`: `GoingAway`, `Closed(Option<Error>)`. `#[non_exhaustive]`.
 * `Output { net, events, conn }`: `pub fn is_empty(&self) -> bool`.
@@ -239,6 +246,14 @@ Under `http2`.
 
 `next_deadline` is `None` without keep-alive or with no exchange open. Otherwise it is the next PING or the PONG deadline.
 
+### `h3::Engine`
+
+Under `http3`. Takes `Input::Datagram` and emits `NetAction::Datagram`. Every call emits whatever QUIC has ready to send.
+
+* `pub fn new(config: quinn_proto::ClientConfig, server_name: &str, remote: SocketAddr, now: Instant) -> Result<Engine, Error>`: verifies the server as `server_name`. `config`'s TLS configuration offers `h3` as its only ALPN protocol.
+
+`capacity` has `max` 0 until the QUIC handshake completes. QPACK uses the static table only, with a dynamic table capacity of 0 offered to the server. Response body read past 1 MiB unconsumed per exchange waits on `consumed`. One `send_body` call takes at most 256 KiB. Requests on streams at or past a GOAWAY's stream ID end in `Event::Reset(Error::Refused)`. `next_deadline` is QUIC's next timer.
+
 ## 8. Error handling
 
 ### `Error`
@@ -248,9 +263,9 @@ Under `http2`.
 | Variant | Meaning |
 |---|---|
 | `Protocol(String)` | The peer broke the protocol or the request could not be built |
-| `Reset(u32)` | The peer reset the exchange with this HTTP/2 error code |
+| `Reset(u32)` | The peer reset the exchange with this HTTP/2 or HTTP/3 error code |
 | `Closed` | The connection ended before the exchange did |
-| `Refused` | The peer never processed the exchange (GOAWAY or `REFUSED_STREAM`); safe to send again |
+| `Refused` | The peer never processed the exchange (GOAWAY, `REFUSED_STREAM` or `H3_REQUEST_REJECTED`); safe to send again |
 | `Timeout` | The request's deadline passed |
 | `Io(String)` | A socket or body reader error |
 | `Tls(String)` | The TLS handshake or configuration failed |

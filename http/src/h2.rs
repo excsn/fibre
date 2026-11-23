@@ -13,14 +13,14 @@ use std::time::{Duration, Instant};
 
 use ::h2::client::{Builder, Connection, ResponseFuture, SendRequest};
 use ::h2::{Ping, PingPong, Reason, RecvStream, SendStream};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use http::header::{CONNECTION, CONTENT_LENGTH, TRANSFER_ENCODING, UPGRADE};
 use http::{Method, Version};
 use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::Error;
-use crate::engine::{self, Capacity, ConnEvent, Event, ExchangeId, NetAction, OpenError, Output, RequestHead, ResponseHead};
+use crate::engine::{self, Capacity, ConnEvent, Event, ExchangeId, Input, NetAction, OpenError, Output, RequestHead, ResponseHead};
 
 const MAX_ROUNDS: usize = 64;
 
@@ -473,7 +473,8 @@ impl engine::Engine for Engine {
     }
   }
 
-  fn on_bytes(&mut self, input: &mut BytesMut, out: &mut Output) {
+  fn on_input(&mut self, input: Input<'_>, _now: Instant, out: &mut Output) {
+    let Input::Stream(input) = input else { return };
     if !input.is_empty() {
       self.last_read = Instant::now();
       let waker = {

@@ -49,7 +49,10 @@ pub enum OpenError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum NetAction {
+  /// Bytes for a stream transport.
   Send(Bytes),
+  /// One datagram for a datagram transport, sent as it is.
+  Datagram(Bytes),
   Flush,
   Close,
 }
@@ -73,6 +76,16 @@ pub enum ConnEvent {
   /// The peer accepts no new exchanges. Exchanges it never processed get `Event::Reset(Error::Refused)`.
   GoingAway,
   Closed(Option<Error>),
+}
+
+/// What a transport delivered.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum Input<'a> {
+  /// Bytes read from a stream transport, such as TCP or TLS. The engine takes what it can and leaves a partial frame there for the next call. Empty after `consumed`, so output the engine deferred goes out.
+  Stream(&'a mut BytesMut),
+  /// One datagram, as received.
+  Datagram(BytesMut),
 }
 
 #[derive(Debug, Default)]
@@ -102,10 +115,9 @@ pub trait Engine {
 
   fn reset(&mut self, id: ExchangeId, out: &mut Output);
 
-  /// Takes what it can from `input` and leaves a partial frame there for the next call.
-  fn on_bytes(&mut self, input: &mut BytesMut, out: &mut Output);
+  fn on_input(&mut self, input: Input<'_>, now: Instant, out: &mut Output);
 
-  /// The peer closed its side. An HTTP/1.1 body without a length ends here.
+  /// The peer closed its side of a stream transport. An HTTP/1.1 body without a length ends here.
   fn on_eof(&mut self, out: &mut Output);
 
   fn on_tick(&mut self, now: Instant, out: &mut Output);

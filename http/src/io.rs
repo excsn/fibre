@@ -1,7 +1,7 @@
-//! Byte transports: a plain TCP socket or rustls over one, both non-blocking.
+//! Transports, all non-blocking: a plain TCP socket, TLS over one or a connected UDP socket carrying datagrams.
 
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, UdpSocket};
 use std::os::fd::{AsRawFd, RawFd};
 
 use bytes::BytesMut;
@@ -11,6 +11,8 @@ use crate::wait::Interest;
 /// The writing side of a connection's socket.
 pub(crate) enum Writer {
   Tcp(TcpStream),
+  /// Each `write` sends one datagram.
+  Udp(UdpSocket),
   #[cfg(shuttle)]
   Model(std::sync::Arc<model::Pipe>),
 }
@@ -19,6 +21,7 @@ impl Writer {
   pub(crate) fn write(&self, buf: &[u8]) -> io::Result<usize> {
     match self {
       Writer::Tcp(s) => (&*s).write(buf),
+      Writer::Udp(s) => s.send(buf),
       #[cfg(shuttle)]
       Writer::Model(pipe) => {
         pipe.send(buf);
@@ -30,6 +33,9 @@ impl Writer {
 
 pub(crate) enum Io {
   Plain(TcpStream),
+  /// A UDP socket connected to its peer. QUIC's TLS runs inside the engine.
+  #[cfg_attr(not(feature = "http3"), allow(dead_code))]
+  Udp(UdpSocket),
   #[cfg(feature = "rustls")]
   Tls(Box<(TcpStream, rustls::ClientConnection)>),
   #[cfg(feature = "native-tls")]
@@ -42,6 +48,7 @@ impl Io {
   pub(crate) fn fd(&self) -> RawFd {
     match self {
       Io::Plain(s) => s.as_raw_fd(),
+      Io::Udp(s) => s.as_raw_fd(),
       #[cfg(feature = "rustls")]
       Io::Tls(t) => t.0.as_raw_fd(),
       #[cfg(feature = "native-tls")]
@@ -59,10 +66,16 @@ impl Io {
     }
   }
 
-  /// Reads plaintext. `Ok(0)` is the end of the stream.
+  /// Whether reads and writes are datagrams, with no end of stream.
+  pub(crate) fn is_datagram(&self) -> bool {
+    matches!(self, Io::Udp(_))
+  }
+
+  /// Reads plaintext. `Ok(0)` is the end of the stream, except on a datagram transport, where each read is one datagram.
   pub(crate) fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
     match self {
       Io::Plain(s) => s.read(buf),
+      Io::Udp(s) => s.recv(buf),
       #[cfg(feature = "rustls")]
       Io::Tls(t) => {
         let (sock, tls) = &mut **t;
@@ -92,7 +105,7 @@ impl Io {
   /// Moves `pending` plaintext into `wire` as bytes ready for the socket: itself, or ciphertext under TLS.
   pub(crate) fn seal(&mut self, pending: &mut BytesMut, wire: &mut BytesMut) -> io::Result<()> {
     match self {
-      Io::Plain(_) => {
+      Io::Plain(_) | Io::Udp(_) => {
         wire.extend_from_slice(pending);
         pending.clear();
         Ok(())
@@ -126,6 +139,7 @@ impl Io {
   pub(crate) fn writer(&self) -> io::Result<Writer> {
     match self {
       Io::Plain(s) => Ok(Writer::Tcp(s.try_clone()?)),
+      Io::Udp(s) => Ok(Writer::Udp(s.try_clone()?)),
       #[cfg(feature = "rustls")]
       Io::Tls(t) => Ok(Writer::Tcp(t.0.try_clone()?)),
       #[cfg(feature = "native-tls")]
@@ -138,7 +152,7 @@ impl Io {
   /// Moves the TLS handshake on. Returns what to wait for, or `None` once it is done.
   pub(crate) fn handshake(&mut self) -> io::Result<Option<Interest>> {
     match self {
-      Io::Plain(_) => Ok(None),
+      Io::Plain(_) | Io::Udp(_) => Ok(None),
       #[cfg(feature = "rustls")]
       Io::Tls(t) => {
         let (sock, tls) = &mut **t;
@@ -172,7 +186,7 @@ impl Io {
 
   pub(crate) fn alpn(&self) -> Option<Vec<u8>> {
     match self {
-      Io::Plain(_) => None,
+      Io::Plain(_) | Io::Udp(_) => None,
       #[cfg(feature = "rustls")]
       Io::Tls(t) => t.1.alpn_protocol().map(<[u8]>::to_vec),
       #[cfg(feature = "native-tls")]
@@ -184,6 +198,9 @@ impl Io {
 
   /// Whether a non-blocking peek on an idle connection finds it closed or holding bytes nobody asked for.
   pub(crate) fn idle_unusable(&self) -> bool {
+    if self.is_datagram() {
+      return false;
+    }
     let mut byte = 0u8;
     let n = unsafe { libc::recv(self.fd(), (&mut byte as *mut u8).cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT) };
     n >= 0

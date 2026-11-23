@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use fibre_http::Error;
-use fibre_http::engine::{Capacity, ConnEvent, Engine as _, Event, ExchangeId, NetAction, OpenError, Output, RequestHead};
+use fibre_http::engine::{Capacity, ConnEvent, Engine as _, Event, ExchangeId, Input, NetAction, OpenError, Output, RequestHead};
 use fibre_http::h2::Engine;
 use h2::RecvStream;
 use h2::server::SendResponse;
@@ -193,10 +193,10 @@ impl Harness {
       let received = !to_client.is_empty();
       for chunk in to_client.chunks(step.max(1)) {
         self.input.extend_from_slice(chunk);
-        self.engine.on_bytes(&mut self.input, &mut self.out);
+        self.engine.on_input(Input::Stream(&mut self.input), std::time::Instant::now(), &mut self.out);
       }
       if to_client.is_empty() {
-        self.engine.on_bytes(&mut self.input, &mut self.out);
+        self.engine.on_input(Input::Stream(&mut self.input), std::time::Instant::now(), &mut self.out);
       }
       if !sent && !received && self.out.is_empty() {
         return;
@@ -378,7 +378,7 @@ fn goaway_refuses_unprocessed_exchanges() {
   h.collect();
   let goaway: [u8; 17] = [0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
   h.input.extend_from_slice(&goaway);
-  h.engine.on_bytes(&mut h.input, &mut h.out);
+  h.engine.on_input(Input::Stream(&mut h.input), std::time::Instant::now(), &mut h.out);
   h.collect();
   assert_eq!(h.of(unseen), vec![Seen::Reset(Error::Refused)]);
   let going = h.conn.iter().position(|c| matches!(c, ConnEvent::GoingAway)).expect("GoingAway reported");

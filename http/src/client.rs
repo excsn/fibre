@@ -76,6 +76,10 @@ pub struct ClientBuilder {
   h2_prior_knowledge: bool,
   h2_keep_alive_interval: Option<Duration>,
   h2_keep_alive_timeout: Duration,
+  #[cfg(feature = "http3")]
+  h3_prior_knowledge: bool,
+  #[cfg(feature = "http3")]
+  h3_alt_svc: bool,
   roots: Vec<Vec<u8>>,
   identity: Option<(Vec<u8>, Vec<u8>)>,
   bundled_roots: bool,
@@ -99,6 +103,10 @@ impl Default for ClientBuilder {
       h2_prior_knowledge: false,
       h2_keep_alive_interval: None,
       h2_keep_alive_timeout: DEFAULT_KEEP_ALIVE_TIMEOUT,
+      #[cfg(feature = "http3")]
+      h3_prior_knowledge: false,
+      #[cfg(feature = "http3")]
+      h3_alt_svc: true,
       roots: Vec::new(),
       identity: None,
       bundled_roots: true,
@@ -198,6 +206,20 @@ impl ClientBuilder {
     self
   }
 
+  /// Speaks HTTP/3 to every `https://` origin, with no TCP connection first and no fallback. Requests through a proxy stay on TCP.
+  #[cfg(feature = "http3")]
+  pub fn http3_prior_knowledge(mut self) -> Self {
+    self.h3_prior_knowledge = true;
+    self
+  }
+
+  /// Whether an `https://` origin's `Alt-Svc: h3=...` moves its next connection to HTTP/3, on by default. When that QUIC handshake fails or takes over a second, the origin stays on TCP for 5 minutes, doubling with each failure in a row.
+  #[cfg(feature = "http3")]
+  pub fn http3_alt_svc(mut self, on: bool) -> Self {
+    self.h3_alt_svc = on;
+    self
+  }
+
   /// Trusts `der` as a root certificate, beside the bundled roots.
   pub fn add_root_certificate(mut self, der: Vec<u8>) -> Self {
     self.roots.push(der);
@@ -246,6 +268,8 @@ impl ClientBuilder {
         Some(builder.build().map_err(|e| Error::Tls(e.to_string()))?)
       }
     };
+    #[cfg(feature = "http3")]
+    let h3: Option<crate::dial::H3>;
     #[cfg(feature = "rustls")]
     let tls = {
       let mut store = rustls::RootCertStore::empty();
@@ -285,8 +309,23 @@ impl ClientBuilder {
       #[cfg(feature = "http1")]
       alpn.push(b"http/1.1".to_vec());
       config.alpn_protocols = alpn;
+      #[cfg(feature = "http3")]
+      {
+        let mut quic_tls = config.clone();
+        quic_tls.alpn_protocols = vec![b"h3".to_vec()];
+        // A clone shares the ticket store, and a ticket from a TLS-over-TCP session offered in a QUIC handshake is refused by some servers (quiche answers illegal_parameter).
+        quic_tls.resumption = rustls::client::Resumption::default();
+        let crypto = quinn_proto::crypto::rustls::QuicClientConfig::try_from(Arc::new(quic_tls)).map_err(|e| Error::Tls(e.to_string()))?;
+        let mut quic = quinn_proto::ClientConfig::new(Arc::new(crypto));
+        let mut transport = quinn_proto::TransportConfig::default();
+        transport.max_concurrent_bidi_streams(quinn_proto::VarInt::from_u32(0));
+        quic.transport_config(Arc::new(transport));
+        h3 = Some(crate::dial::H3 { quic, prior_knowledge: self.h3_prior_knowledge, alt_svc: self.h3_alt_svc });
+      }
       Some(Arc::new(config))
     };
+    #[cfg(all(feature = "http3", feature = "native-tls"))]
+    let h3 = h3.filter(|_| native.is_none());
     Ok(Arc::new(Inner {
       pool: self.pool.unwrap_or_default(),
       dialer: Dialer {
@@ -298,6 +337,8 @@ impl ClientBuilder {
         h2_keep_alive: self.h2_keep_alive_interval.map(|interval| (interval, self.h2_keep_alive_timeout)),
         proxies: self.proxies.unwrap_or_else(crate::proxy::Proxies::from_env),
         user_agent: self.user_agent.to_str().unwrap_or(DEFAULT_USER_AGENT).to_owned(),
+        #[cfg(feature = "http3")]
+        h3,
       },
       timeout: self.timeout,
       user_agent: self.user_agent,
@@ -676,7 +717,11 @@ impl Prepared {
   }
 
   fn head(&self, proto: Proto) -> RequestHead {
-    let version = if proto == Proto::H2 { Version::HTTP_2 } else { Version::HTTP_11 };
+    let version = match proto {
+      Proto::H1 => Version::HTTP_11,
+      Proto::H2 => Version::HTTP_2,
+      Proto::H3 => Version::HTTP_3,
+    };
     let mut headers = self.headers.clone();
     if let Some(auth) = self.key.forwarded().and_then(|p| p.auth.as_deref()) {
       if let Ok(v) = HeaderValue::from_str(auth) {
@@ -702,6 +747,16 @@ impl Prepared {
       return None;
     }
     HeaderValue::from_str(&pairs.join("; ")).ok()
+  }
+
+  /// Records the response's `Alt-Svc` for its origin when HTTP/3 alternatives are followed.
+  fn note_alt_svc(&self, headers: &HeaderMap) {
+    #[cfg(feature = "http3")]
+    if self.inner.dialer.h3.as_ref().is_some_and(|h3| h3.alt_svc) {
+      self.inner.pool.alt_svc(&self.key, headers);
+    }
+    #[cfg(not(feature = "http3"))]
+    let _ = headers;
   }
 
   /// Keeps the response's `Set-Cookie` values when the client has a store.
@@ -928,6 +983,7 @@ fn attempt_sync(req: &Prepared, lease: Lease) -> Attempt {
     };
     if let Ok(Event::Head(_)) = &event {
       let Ok(Event::Head(mut head)) = event else { unreachable!() };
+      req.note_alt_svc(&head.headers);
       let decoder = req.decoder(&mut head.headers);
       let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder, req.inner.max_response_size, queued);
       return Attempt::Done(Response::new(head.status, head.version, head.headers, state));
@@ -970,6 +1026,7 @@ async fn attempt_async(req: &Prepared, lease: Lease) -> Attempt {
     };
     if let Ok(Event::Head(_)) = &event {
       let Ok(Event::Head(mut head)) = event else { unreachable!() };
+      req.note_alt_svc(&head.headers);
       let decoder = req.decoder(&mut head.headers);
       let state = BodyState::new(lease, id, req.deadline, req.method == Method::HEAD, decoder, req.inner.max_response_size, queued);
       return Attempt::Done(Response::new(head.status, head.version, head.headers, state));
