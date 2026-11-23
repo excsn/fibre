@@ -24,6 +24,14 @@ Requests a second for 64-byte GETs to a local hyper server with N concurrent cal
 | h2c | 8 | 102,049 | 84,630 | 83,779 | 71,631 | 77,187 |
 | h2c | 32 | 126,029 | 73,086 | 81,692 | 74,301 | 112,085 |
 
+HTTP/3 against a local quinn and h3 server, with the h3 crate on quinn as the other client.
+
+| | N | Fibre HTTP async | Fibre HTTP blocking | h3 on quinn |
+|---|---|---|---|---|
+| HTTP/3 | 1 | 29,767 | 30,293 | 30,039 |
+| HTTP/3 | 4 | 50,297 | 47,917 | 49,539 |
+| HTTP/3 | 8 | 56,720 | 53,646 | 49,175 |
+
 ## Features
 
 - HTTP/1.1 keep-alive and HTTP/2 multiplexing, by ALPN or h2c prior knowledge.

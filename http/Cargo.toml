@@ -67,10 +67,19 @@ ruzstd = "0.9.1"
 h2 = "0.4.20"
 h3 = "0.0.8"
 h3-quinn = "0.0.10"
-quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["client", "server", "http1", "http2"] }
+hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "http2", "tokio"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["http2", "blocking"] }
+quinn ={ version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rcgen = "0.14.10"
 tokio = { version = "1.54.1", features = ["macros", "net", "rt", "rt-multi-thread", "time", "io-util"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+
+[[bench]]
+name = "client"
+harness = false
+required-features = ["http1", "http2"]
 
 [target.'cfg(shuttle)'.dependencies]
 shuttle = "0.9.10"
