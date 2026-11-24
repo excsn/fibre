@@ -120,11 +120,11 @@ pub fn run_async(cfg: &BenchConfig) -> RunResult {
   let batch_size = cfg.batch_size;
 
   rt.block_on(async {
-    let (tx, rx) = spmc::bounded_async::<u64>(cfg.capacity);
+    let (mut tx, rx) = spmc::bounded_async::<u64>(cfg.capacity);
 
     let mut consumer_handles: Vec<JoinHandle<()>> = Vec::new();
     for _ in 0..cfg.consumers {
-      let rx = rx.clone();
+      let mut rx = rx.clone();
       let received = received.clone();
       consumer_handles.push(tokio::spawn(async move {
         if batch_size == 0 {

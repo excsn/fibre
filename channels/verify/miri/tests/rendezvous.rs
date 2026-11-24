@@ -3,7 +3,7 @@
 //! cross-thread by construction.
 
 use fibre::{mpmc, mpsc, spsc};
-use fibre_miri::{block_on, drop_counter, drops, DropCounter, ITEMS_SMALL};
+use fibre_miri::{block_on, drop_counter, drops, poll_once, DropCounter, ITEMS_SMALL};
 
 use std::thread;
 
@@ -118,4 +118,64 @@ fn mpmc_rendezvous_pair_and_disconnect() {
   producer.join().unwrap();
   drop(rx);
   assert_eq!(drops(&counter), 10);
+}
+
+#[test]
+fn mpmc_item_returned_by_a_dropped_recv_future_is_received_later() {
+  let (tx, rx) = mpmc::rendezvous::rendezvous_async::<Box<usize>>();
+  {
+    let mut fut = Box::pin(rx.recv());
+    assert!(poll_once(fut.as_mut()).is_pending());
+    assert!(tx.try_send(Box::new(5)).is_ok());
+  }
+  assert_eq!(*rx.try_recv().unwrap(), 5);
+}
+
+#[test]
+fn mpsc_item_returned_by_a_dropped_recv_future_is_received_later() {
+  let (tx, rx) = mpsc::rendezvous::rendezvous_async::<Box<usize>>();
+  {
+    let mut fut = Box::pin(rx.recv());
+    assert!(poll_once(fut.as_mut()).is_pending());
+    assert!(tx.try_send(Box::new(5)).is_ok());
+  }
+  assert_eq!(*rx.try_recv().unwrap(), 5);
+}
+
+#[test]
+fn spsc_item_returned_by_a_dropped_recv_future_is_received_later() {
+  let (tx, rx) = spsc::rendezvous::rendezvous_async::<Box<usize>>();
+  {
+    let mut fut = Box::pin(rx.recv());
+    assert!(poll_once(fut.as_mut()).is_pending());
+    assert!(tx.try_send(Box::new(5)).is_ok());
+  }
+  assert_eq!(*rx.try_recv().unwrap(), 5);
+}
+
+#[test]
+fn returned_item_is_dropped_once_when_the_channel_goes() {
+  let counter = drop_counter();
+  let (tx, rx) = mpmc::rendezvous::rendezvous_async::<DropCounter>();
+  {
+    let mut fut = Box::pin(rx.recv());
+    assert!(poll_once(fut.as_mut()).is_pending());
+    assert!(tx.try_send(DropCounter::new(&counter)).is_ok());
+  }
+  drop(rx);
+  drop(tx);
+  assert_eq!(drops(&counter), 1);
+}
+
+#[test]
+fn returned_item_crosses_to_a_receiver_on_another_thread() {
+  let (tx, rx) = mpmc::rendezvous::rendezvous_async::<Box<usize>>();
+  {
+    let mut fut = Box::pin(rx.recv());
+    assert!(poll_once(fut.as_mut()).is_pending());
+    assert!(tx.try_send(Box::new(9)).is_ok());
+  }
+  let consumer = thread::spawn(move || *block_on(rx.recv()).unwrap());
+  assert_eq!(consumer.join().unwrap(), 9);
+  drop(tx);
 }

@@ -509,12 +509,7 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
 impl<'a, T: Send> Drop for RecvFuture<'a, T> {
   fn drop(&mut self) {
     if self.registered {
-      // If the cancel loses the race, a sender already wrote the item into our
-      // inline `dest`; it is dropped with the future (the receiver abandoned
-      // it). Either way the queue node is removed before the future frees.
-      self
-        .shared
-        .cancel_receiver(&self.state as *const AtomicU8, &self.state);
+      self.shared.abandon_receiver(&self.state, &mut self.dest);
     }
   }
 }

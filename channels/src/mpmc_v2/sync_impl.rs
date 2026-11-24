@@ -64,15 +64,6 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
 
     // Check if we closed (Bit 1 / 0x02 is 0)
     if (final_state & 0x02) == 0 {
-      let mut guard = sender.shared.internal.lock();
-      if let Some(pos) = guard
-        .waiting_sync_senders
-        .iter()
-        .position(|w| w.state == done_ptr)
-      {
-        let _ = guard.waiting_sync_senders.remove(pos).unwrap();
-      }
-      drop(guard);
       return Err(SendError::Closed);
     }
 
@@ -82,16 +73,6 @@ pub(crate) fn send_sync<T: Send>(sender: &Sender<T>, item: T) -> Result<(), Send
       return Ok(());
     }
 
-    // Space retry (Buffered, Bit 2 / 0x04 is 0): the receiver just set the flag.
-    let mut guard = sender.shared.internal.lock();
-    if let Some(pos) = guard
-      .waiting_sync_senders
-      .iter()
-      .position(|w| w.state == done_ptr)
-    {
-      let _ = guard.waiting_sync_senders.remove(pos).unwrap();
-    }
-    drop(guard);
     // current_item_opt is still Some(item) locally. Loop back to retry.
   }
 }
@@ -167,15 +148,6 @@ fn send_batch_iter_sync<T: Send, I: Iterator<Item = T>>(
 
     // Check if we closed (Bit 1 / 0x02 is 0)
     if (final_state & 0x02) == 0 {
-      let mut guard = sender.shared.internal.lock();
-      if let Some(pos) = guard
-        .waiting_sync_senders
-        .iter()
-        .position(|w| w.state == done_ptr)
-      {
-        let _ = guard.waiting_sync_senders.remove(pos).unwrap();
-      }
-      drop(guard);
 
       return Err((sent, pending.take()));
     }
@@ -187,18 +159,6 @@ fn send_batch_iter_sync<T: Send, I: Iterator<Item = T>>(
       if sent == total {
         return Ok(total);
       }
-    } else {
-      // Space retry
-      let mut guard = sender.shared.internal.lock();
-      if let Some(pos) = guard
-        .waiting_sync_senders
-        .iter()
-        .position(|w| w.state == done_ptr)
-      {
-        let _ = guard.waiting_sync_senders.remove(pos).unwrap();
-      }
-      drop(guard);
-      // Loop back to retry pushing the pending item.
     }
   }
 }
@@ -300,14 +260,6 @@ pub(crate) fn recv_batch_sync<T: Send>(
       let st = done_flag.load(Ordering::Acquire);
       (st & 0x01) != 0
     });
-
-    let final_state = done_flag.load(Ordering::Acquire);
-    if (final_state & 0x02) == 0 {
-      let mut guard = receiver.shared.internal.lock();
-      guard.waiting_sync_receivers.retain(|w| w.state != done_ptr);
-      drop(guard);
-      return Err(RecvError::Disconnected);
-    }
   }
 }
 
@@ -352,18 +304,9 @@ pub(crate) fn recv_sync<T: Send>(receiver: &Receiver<T>) -> Result<T, RecvError>
       let st = done_flag.load(Ordering::Acquire);
       (st & 0x01) != 0
     });
-
-    let final_state = done_flag.load(Ordering::Acquire);
-    if (final_state & 0x02) == 0 {
-      let mut guard = receiver.shared.internal.lock();
-      guard.waiting_sync_receivers.retain(|w| w.state != done_ptr);
-      drop(guard);
-      return Err(RecvError::Disconnected);
-    }
   }
 }
 
-/// The synchronous, blocking receive operation with a timeout.
 /// The synchronous, blocking receive operation with a timeout.
 pub(crate) fn recv_timeout_sync<T: Send>(
   receiver: &Receiver<T>,
@@ -371,84 +314,67 @@ pub(crate) fn recv_timeout_sync<T: Send>(
 ) -> Result<T, RecvErrorTimeout> {
   let start_time = Instant::now();
 
-  // First, try a non-blocking receive.
-  match receiver.shared.try_recv_core() {
-    Ok(item) => return Ok(item),
-    Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
-    Err(TryRecvError::Empty) => { /* Continue to blocking path */ }
-  }
+  loop {
+    match receiver.shared.try_recv_core() {
+      Ok(item) => return Ok(item),
+      Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
+      Err(TryRecvError::Empty) => {}
+    }
 
-  // Declare state and waiter exactly once on the stack - no per-iteration allocation.
-  let done_flag = AtomicU8::new(STATE_WAITING);
-  let done_ptr = &done_flag as *const AtomicU8;
-  let waiter = SyncWaiter {
-    thread: thread::current(),
-    state: done_ptr,
-  };
+    let done_flag = AtomicU8::new(STATE_WAITING);
+    let done_ptr = &done_flag as *const AtomicU8;
+    let waiter = SyncWaiter {
+      thread: thread::current(),
+      state: done_ptr,
+    };
 
-  // Lock once to enqueue the waiter, with a final pre-park re-check.
-  {
-    let mut guard = receiver.shared.internal.lock();
-
-    if !guard.queue.is_empty()
-      || (receiver.shared.capacity == 0
-        && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
     {
-      drop(guard);
-      match receiver.shared.try_recv_core() {
-        Ok(item) => return Ok(item),
-        Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
-        Err(TryRecvError::Empty) => {}
+      let mut guard = receiver.shared.internal.lock();
+
+      if !guard.queue.is_empty()
+        || (receiver.shared.capacity == 0
+          && (!guard.waiting_sync_senders.is_empty() || !guard.waiting_async_senders.is_empty()))
+      {
+        continue;
       }
-    } else {
+
       if guard.sender_count == 0 {
         return Err(RecvErrorTimeout::Disconnected);
       }
 
       guard.waiting_sync_receivers.push_back(waiter);
     }
-  }
 
-  loop {
-    let elapsed = start_time.elapsed();
-    if elapsed >= timeout {
-      // Attempt atomic cancellation.
-      match done_flag.compare_exchange(
-        STATE_WAITING,
-        STATE_CANCELLED,
-        Ordering::SeqCst,
-        Ordering::SeqCst,
-      ) {
-        Ok(_) => {
-          // Eagerly unlink so the stack frame can safely return.
-          let mut guard = receiver.shared.internal.lock();
-          guard.waiting_sync_receivers.retain(|w| w.state != done_ptr);
-          return Err(RecvErrorTimeout::Timeout);
-        }
-        Err(_) => {
-          // SUCCESS or CLOSED: a sender committed the handoff concurrently or channel closed. Must complete.
-          match receiver.shared.try_recv_core() {
-            Ok(item) => return Ok(item),
-            Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
-            Err(TryRecvError::Empty) => unreachable!("state was finished but channel empty"),
-          }
-        }
+    while done_flag.load(Ordering::Acquire) == STATE_WAITING {
+      let elapsed = start_time.elapsed();
+      if elapsed < timeout {
+        thread::park_timeout(timeout - elapsed);
+        continue;
+      }
+
+      if done_flag
+        .compare_exchange(
+          STATE_WAITING,
+          STATE_CANCELLED,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        )
+        .is_ok()
+      {
+        let mut guard = receiver.shared.internal.lock();
+        guard.waiting_sync_receivers.retain(|w| w.state != done_ptr);
+        return Err(RecvErrorTimeout::Timeout);
       }
     }
 
-    let remaining_timeout = timeout - elapsed;
-    thread::park_timeout(remaining_timeout);
-
-    // Check if a sender committed the handoff.
-    let st = done_flag.load(Ordering::Acquire);
-    if (st & 0x01) != 0 {
-      match receiver.shared.try_recv_core() {
-        Ok(item) => return Ok(item),
-        Err(TryRecvError::Disconnected) => return Err(RecvErrorTimeout::Disconnected),
-        Err(TryRecvError::Empty) => {} // Spurious wakeup - loop to re-check timeout
-      }
+    // Marked by a sender or a close, which also removed the entry. Past the
+    // deadline one more attempt decides between the item and the timeout.
+    if start_time.elapsed() >= timeout {
+      return match receiver.shared.try_recv_core() {
+        Ok(item) => Ok(item),
+        Err(TryRecvError::Disconnected) => Err(RecvErrorTimeout::Disconnected),
+        Err(TryRecvError::Empty) => Err(RecvErrorTimeout::Timeout),
+      };
     }
-    // Spurious wakeup with no handoff committed - loop to re-check timeout without
-    // re-acquiring the lock or re-enqueuing.
   }
 }

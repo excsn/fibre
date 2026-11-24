@@ -49,11 +49,12 @@ Rendezvous channels are a dedicated, zero-capacity family that hand each item di
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | Cancel-safe `recv` future | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Cancel-safe `send` future | ✅ | ✅ | ✅ | N/A | ✅ | N/A |
-| Cancel-safe on rendezvous | ❌ | ❌ | N/A | N/A | ❌ | N/A |
+| Cancel-safe `recv` on rendezvous | ✅ | ✅ | N/A | N/A | ✅ | N/A |
+| Cancel-safe `send` on rendezvous | ❌ | ❌ | N/A | N/A | ❌ | N/A |
 | Order | FIFO | Total order, FIFO per producer | Every consumer sees send order | Send order per consumer, with gaps when its mailbox is full | Total order; each consumer gets an increasing subsequence; FIFO per producer | Single value |
 
 - Cancel-safe means dropping a pending future loses nothing. A dropped `recv` future leaves the message receivable. A dropped `send` future has not sent.
-- Rendezvous is the exception: a dropped receive future can lose an item already handed to it. A dropped send can still be delivered.
+- Rendezvous sends are the exception: a dropped send can still be delivered. A dropped rendezvous receive that was already handed an item passes it to the next receive.
 - Batch sends: dropping a pending `send_batch` future leaves the items already sent delivered and drops the rest. `send_batch_mut` leaves the unsent items in the caller's vector.
 - SPMC Topic and Oneshot sends are not futures.
 

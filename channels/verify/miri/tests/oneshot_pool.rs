@@ -4,10 +4,13 @@
 //! last outstanding retire, the suite's main use-after-free surface).
 
 use fibre::error::{RecvError, TryRecvError, TrySendError};
-use fibre::oneshot::{pair_pool, OneshotHostPool, PoolSlot};
+use fibre::oneshot::{pair_pool, OneshotHostPool, PoolSlot, PooledReceiver};
 use fibre_miri::{block_on, drop_counter, drops, poll_once, DropCounter};
 
+use std::future::Future;
 use std::pin::pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Wake, Waker};
 use std::thread;
 
 #[test]
@@ -292,4 +295,128 @@ fn recv_blocking_parks_and_wakes() {
     assert_eq!(rx.recv_blocking().unwrap(), round);
     t.join().unwrap();
   }
+}
+
+const POOL_DROP_ROUNDS: usize = 16;
+
+#[test]
+fn send_wake_finishes_before_storage_is_released() {
+  for _ in 0..POOL_DROP_ROUNDS {
+    let pool = pair_pool::<u64>(1);
+    let (tx, mut rx) = pool.pair().unwrap();
+    drop(pool);
+    let t = thread::spawn(move || {
+      tx.send(7).unwrap();
+    });
+    assert_eq!(rx.recv_blocking().unwrap(), 7);
+    // Dropped before the join so the sender can still be inside `send`.
+    drop(rx);
+    t.join().unwrap();
+  }
+}
+
+#[test]
+fn close_wake_finishes_before_storage_is_released() {
+  for _ in 0..POOL_DROP_ROUNDS {
+    let pool = pair_pool::<u64>(1);
+    let (tx, mut rx) = pool.pair().unwrap();
+    drop(pool);
+    let t = thread::spawn(move || {
+      drop(tx);
+    });
+    assert!(matches!(rx.recv_blocking(), Err(RecvError::Disconnected)));
+    drop(rx);
+    t.join().unwrap();
+  }
+}
+
+#[test]
+fn storage_outlives_the_sender_when_the_pool_drops_after_the_receiver() {
+  for _ in 0..POOL_DROP_ROUNDS {
+    let pool = pair_pool::<u64>(1);
+    let (tx, mut rx) = pool.pair().unwrap();
+    let t = thread::spawn(move || {
+      tx.send(7).unwrap();
+    });
+    assert_eq!(rx.recv_blocking().unwrap(), 7);
+    drop(rx);
+    drop(pool);
+    t.join().unwrap();
+  }
+}
+
+#[test]
+fn host_send_wake_finishes_before_storage_is_released() {
+  for round in 0..POOL_DROP_ROUNDS as u64 {
+    let pool = OneshotHostPool::new(
+      1,
+      || Req {
+        id: 0,
+        reply: PoolSlot::new(),
+      },
+      |r| &r.reply,
+    );
+    let (tx, mut rx) = pool.pair_init(|r| r.id = round).unwrap();
+    drop(pool);
+    let t = thread::spawn(move || {
+      tx.send(round).unwrap();
+    });
+    assert_eq!(rx.recv_blocking().unwrap(), round);
+    drop(rx);
+    t.join().unwrap();
+  }
+}
+
+/// A waker that finishes the receiver from inside `wake`, so the receiver's
+/// last-out retire runs while the sender is still in its wake call.
+struct FinishOnWake {
+  parked: Mutex<Option<PooledReceiver<u64>>>,
+  outcome: Mutex<Option<Result<u64, TryRecvError>>>,
+}
+
+impl Wake for FinishOnWake {
+  fn wake(self: Arc<Self>) {
+    let parked = self.parked.lock().unwrap().take();
+    if let Some(mut rx) = parked {
+      *self.outcome.lock().unwrap() = Some(rx.try_recv());
+    }
+  }
+}
+
+fn park_then_hand_receiver_to_its_waker(mut rx: PooledReceiver<u64>) -> Arc<FinishOnWake> {
+  let finisher = Arc::new(FinishOnWake {
+    parked: Mutex::new(None),
+    outcome: Mutex::new(None),
+  });
+  let waker = Waker::from(Arc::clone(&finisher));
+  {
+    let mut cx = Context::from_waker(&waker);
+    let mut fut = pin!(rx.recv());
+    assert!(fut.as_mut().poll(&mut cx).is_pending());
+  }
+  *finisher.parked.lock().unwrap() = Some(rx);
+  finisher
+}
+
+#[test]
+fn receiver_can_finish_inside_the_send_wake() {
+  let pool = pair_pool::<u64>(1);
+  let (tx, rx) = pool.pair().unwrap();
+  drop(pool);
+  let finisher = park_then_hand_receiver_to_its_waker(rx);
+  tx.send(7).unwrap();
+  assert_eq!(*finisher.outcome.lock().unwrap(), Some(Ok(7)));
+}
+
+#[test]
+fn receiver_can_finish_inside_the_close_wake() {
+  let pool = pair_pool::<u64>(1);
+  let (tx, rx) = pool.pair().unwrap();
+  drop(pool);
+  let finisher = park_then_hand_receiver_to_its_waker(rx);
+  drop(tx);
+  assert_eq!(
+    *finisher.outcome.lock().unwrap(),
+    Some(Err(TryRecvError::Disconnected))
+  );
 }

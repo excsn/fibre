@@ -251,6 +251,8 @@ pub struct Shared<T> {
   sync_send_waiter_count: CachePadded<AtomicUsize>,
   async_send_waiter_count: CachePadded<AtomicUsize>,
   sync_recv_waiter: Mutex<Option<(Thread, *const AtomicBool)>>,
+  #[cfg(test)]
+  before_sync_register: Mutex<Option<Box<dyn FnOnce() + Send>>>,
   async_recv_waiter: Mutex<Option<Waker>>,
   sync_recv_waiter_count: CachePadded<AtomicUsize>,
   async_recv_waiter_count: CachePadded<AtomicUsize>,
@@ -311,6 +313,8 @@ impl<T> Shared<T> {
       sync_send_waiter_count: CachePadded::new(AtomicUsize::new(0)),
       async_send_waiter_count: CachePadded::new(AtomicUsize::new(0)),
       sync_recv_waiter: Mutex::new(None),
+      #[cfg(test)]
+      before_sync_register: Mutex::new(None),
       async_recv_waiter: Mutex::new(None),
       sync_recv_waiter_count: CachePadded::new(AtomicUsize::new(0)),
       async_recv_waiter_count: CachePadded::new(AtomicUsize::new(0)),
@@ -498,7 +502,33 @@ impl<T> Shared<T> {
 
   // --- ticketless send-waiter registry (fibre protocol) ---
 
+  /// Test seam: `hook` runs once, in the waiting thread, between a sync
+  /// waiter's last failed attempt and its registration.
+  #[cfg(test)]
+  pub(crate) fn before_next_sync_register(&self, hook: impl FnOnce() + Send + 'static) {
+    *self.before_sync_register.lock() = Some(Box::new(hook));
+  }
+
+  #[cfg(test)]
+  fn run_before_sync_register(&self) {
+    let hook = self.before_sync_register.lock().take();
+    if let Some(hook) = hook {
+      hook();
+    }
+  }
+
+  /// Sync send waiters registered and whether a sync receiver is.
+  #[cfg(test)]
+  pub(crate) fn sync_waiters_registered(&self) -> (usize, bool) {
+    (
+      self.sync_send_waiters.lock().queue.len(),
+      self.sync_recv_waiter.lock().is_some(),
+    )
+  }
+
   pub(crate) fn register_sync_send(&self, thread: Thread, notified: *const AtomicBool) -> u64 {
+    #[cfg(test)]
+    self.run_before_sync_register();
     let mut g = self.sync_send_waiters.lock();
     let id = g.next_id;
     g.next_id = g.next_id.wrapping_add(1);
@@ -654,10 +684,12 @@ impl<T> Shared<T> {
       self.awake.fetch_add(n, Ordering::AcqRel);
     }
     self.wake_popped(sync_to_wake, None);
-    for (w, p) in async_to_wake {
+    for (_, p) in &async_to_wake {
       if !p.is_null() {
-        unsafe { (*p).store(true, Ordering::Release) };
+        unsafe { (**p).store(true, Ordering::Release) };
       }
+    }
+    for (w, _) in async_to_wake {
       w.wake();
     }
   }
@@ -744,6 +776,8 @@ impl<T> Shared<T> {
   // --- recv-waiter slots ---
 
   pub(crate) fn register_sync_recv(&self, thread: Thread, notified: *const AtomicBool) {
+    #[cfg(test)]
+    self.run_before_sync_register();
     *self.sync_recv_waiter.lock() = Some((thread, notified));
     self.sync_recv_waiter_count.store(1, Ordering::Release);
   }
@@ -759,6 +793,17 @@ impl<T> Shared<T> {
       while !notified.load(Ordering::Acquire) {
         hint::spin_loop();
       }
+    }
+  }
+
+  /// Clears the sync receiver's registration if it still points at
+  /// `notified`. A notifier stores through that pointer while it holds this
+  /// lock, so once this returns none can still write through it.
+  pub(crate) fn settle_unwound_sync_recv(&self, notified: *const AtomicBool) {
+    let mut slot = self.sync_recv_waiter.lock();
+    if matches!(*slot, Some((_, registered)) if registered == notified) {
+      *slot = None;
+      self.sync_recv_waiter_count.store(0, Ordering::Release);
     }
   }
 

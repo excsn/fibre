@@ -10,7 +10,7 @@ use crate::internal::left_right;
 use crate::telemetry;
 use crate::{sync_util, RecvErrorTimeout};
 
-use core::marker::PhantomPinned;
+use core::marker::{PhantomData, PhantomPinned};
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::future::Future;
@@ -486,6 +486,7 @@ impl<T: Send + Clone> SpmcShared<T> {
 pub struct BoundedSyncSender<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
   pub(crate) closed: AtomicBool,
+  pub(crate) _not_sync: PhantomData<*mut ()>,
 }
 unsafe impl<T: Send + Clone> Send for BoundedSyncSender<T> {}
 
@@ -493,14 +494,21 @@ unsafe impl<T: Send + Clone> Send for BoundedSyncSender<T> {}
 pub struct BoundedAsyncSender<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
   pub(crate) closed: AtomicBool,
+  pub(crate) _not_sync: PhantomData<*mut ()>,
 }
 unsafe impl<T: Send + Clone> Send for BoundedAsyncSender<T> {}
+
+// A receiver clones slot values that receivers on other threads clone at the
+// same time, so it leaves its thread only with a `Sync` payload.
+unsafe impl<T: Send + Sync + Clone> Send for BoundedSyncReceiver<T> {}
+unsafe impl<T: Send + Sync + Clone> Send for BoundedAsyncReceiver<T> {}
 
 #[derive(Debug)]
 pub struct BoundedSyncReceiver<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
   pub(crate) tail: Arc<AtomicUsize>,
   pub(crate) closed: AtomicBool,
+  pub(crate) _not_sync: PhantomData<*mut ()>,
 }
 
 #[derive(Debug)]
@@ -508,6 +516,7 @@ pub struct BoundedAsyncReceiver<T: Send + Clone> {
   pub(crate) shared: Arc<SpmcShared<T>>,
   pub(crate) tail: Arc<AtomicUsize>,
   pub(crate) closed: AtomicBool,
+  pub(crate) _not_sync: PhantomData<*mut ()>,
 }
 
 pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (BoundedSyncSender<T>, BoundedSyncReceiver<T>) {
@@ -521,11 +530,13 @@ pub(crate) fn new_channel<T: Send + Clone>(capacity: usize) -> (BoundedSyncSende
     BoundedSyncSender {
       shared: Arc::clone(&shared),
       closed: AtomicBool::new(false),
+      _not_sync: PhantomData,
     },
     BoundedSyncReceiver {
       shared,
       tail: initial_tail,
       closed: AtomicBool::new(false),
+      _not_sync: PhantomData,
     },
   )
 }
@@ -956,20 +967,20 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
 }
 
 impl<T: Send + Clone> BoundedAsyncReceiver<T> {
-  pub fn try_recv(&self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
     }
     try_recv_internal(&self.shared, &self.tail)
   }
 
-  pub fn recv(&self) -> RecvFuture<'_, T> {
+  pub fn recv(&mut self) -> RecvFuture<'_, T> {
     RecvFuture { receiver: self }
   }
 
   /// Receives up to `max` items asynchronously. Resolves with between 1 and
   /// `max` cloned items once at least one is available. Cancel-safe.
-  pub fn recv_batch(&self, max: usize) -> RecvBatchFuture<'_, T> {
+  pub fn recv_batch(&mut self, max: usize) -> RecvBatchFuture<'_, T> {
     RecvBatchFuture {
       receiver: self,
       max,
@@ -979,7 +990,7 @@ impl<T: Send + Clone> BoundedAsyncReceiver<T> {
   /// Receives up to `max` items asynchronously, appending them to the end of
   /// `out`. Resolves with the number appended. Cancel-safe.
   pub fn recv_batch_mut<'a>(
-    &'a self,
+    &'a mut self,
     out: &'a mut Vec<T>,
     max: usize,
   ) -> RecvBatchMutFuture<'a, T> {
@@ -992,7 +1003,7 @@ impl<T: Send + Clone> BoundedAsyncReceiver<T> {
 
   /// Attempts to receive up to `max` items without blocking. Same semantics
   /// as [`BoundedSyncReceiver::try_recv_batch`].
-  pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError> {
+  pub fn try_recv_batch(&mut self, max: usize) -> Result<Vec<T>, TryRecvError> {
     let mut out = Vec::new();
     self.try_recv_batch_mut(&mut out, max)?;
     Ok(out)
@@ -1000,7 +1011,7 @@ impl<T: Send + Clone> BoundedAsyncReceiver<T> {
 
   /// Attempts to receive up to `max` items without blocking, appending them
   /// to the end of `out`. Returns the number appended.
-  pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
+  pub fn try_recv_batch_mut(&mut self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
     if max == 0 {
       return Ok(0);
     }
@@ -1059,6 +1070,16 @@ impl<T: Send + Clone> Clone for BoundedSyncReceiver<T> {
   fn clone(&self) -> Self {
     let new_tail_val = self.tail.load(Ordering::Acquire);
     let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
+    // A closed receiver's position is no longer in the tails list, so the
+    // producer does not hold slots for it. Its clone must not read either.
+    if self.closed.load(Ordering::Relaxed) {
+      return Self {
+        shared: Arc::clone(&self.shared),
+        tail: new_consumer_tail,
+        closed: AtomicBool::new(true),
+        _not_sync: PhantomData,
+      };
+    }
     let _lock = self.shared.tails_mutex.lock();
     self
       .shared
@@ -1068,6 +1089,7 @@ impl<T: Send + Clone> Clone for BoundedSyncReceiver<T> {
       shared: Arc::clone(&self.shared),
       tail: new_consumer_tail,
       closed: AtomicBool::new(false),
+      _not_sync: PhantomData,
     }
   }
 }
@@ -1075,6 +1097,16 @@ impl<T: Send + Clone> Clone for BoundedAsyncReceiver<T> {
   fn clone(&self) -> Self {
     let new_tail_val = self.tail.load(Ordering::Acquire);
     let new_consumer_tail = Arc::new(AtomicUsize::new(new_tail_val));
+    // A closed receiver's position is no longer in the tails list, so the
+    // producer does not hold slots for it. Its clone must not read either.
+    if self.closed.load(Ordering::Relaxed) {
+      return Self {
+        shared: Arc::clone(&self.shared),
+        tail: new_consumer_tail,
+        closed: AtomicBool::new(true),
+        _not_sync: PhantomData,
+      };
+    }
     let _lock = self.shared.tails_mutex.lock();
     self
       .shared
@@ -1084,6 +1116,7 @@ impl<T: Send + Clone> Clone for BoundedAsyncReceiver<T> {
       shared: Arc::clone(&self.shared),
       tail: new_consumer_tail,
       closed: AtomicBool::new(false),
+      _not_sync: PhantomData,
     }
   }
 }
@@ -1544,14 +1577,14 @@ impl<T: Send + Clone> BoundedSyncSender<T> {
 }
 
 impl<T: Send + Clone> BoundedAsyncSender<T> {
-  pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
+  pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TrySendError::Closed(value));
     }
     self.shared.try_send_internal(value)
   }
 
-  pub fn send(&self, value: T) -> SendFuture<'_, T> {
+  pub fn send(&mut self, value: T) -> SendFuture<'_, T> {
     SendFuture {
       producer: self,
       value: Some(value),
@@ -1564,7 +1597,7 @@ impl<T: Send + Clone> BoundedAsyncSender<T> {
   /// if all consumers drop. If the future is dropped after partial progress,
   /// the unsent remainder is dropped; use
   /// [`send_batch_mut`](Self::send_batch_mut) for cancel safety.
-  pub fn send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T> {
+  pub fn send_batch(&mut self, items: Vec<T>) -> SendBatchFuture<'_, T> {
     let total = items.len();
     SendBatchFuture {
       producer: self,
@@ -1577,7 +1610,7 @@ impl<T: Send + Clone> BoundedAsyncSender<T> {
 
   /// Broadcasts a batch asynchronously in place, draining sent items from the
   /// front of `items`. Cancel-safe: unsent items remain in `items`.
-  pub fn send_batch_mut<'a>(&'a self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T> {
+  pub fn send_batch_mut<'a>(&'a mut self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T> {
     SendBatchMutFuture {
       producer: self,
       items,
@@ -1588,7 +1621,7 @@ impl<T: Send + Clone> BoundedAsyncSender<T> {
 
   /// Attempts to broadcast a batch without blocking. Same semantics as
   /// [`BoundedSyncSender::try_send_batch`].
-  pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
+  pub fn try_send_batch(&mut self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>> {
     let total = items.len();
     if total == 0 {
       return Ok(0);
@@ -1619,7 +1652,7 @@ impl<T: Send + Clone> BoundedAsyncSender<T> {
   /// Attempts to broadcast a batch in place without blocking, draining sent
   /// items from the front of `items`. Same semantics as
   /// [`BoundedSyncSender::try_send_batch_mut`].
-  pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError> {
+  pub fn try_send_batch_mut(&mut self, items: &mut Vec<T>) -> Result<usize, SendError> {
     if items.is_empty() {
       return Ok(0);
     }
@@ -1702,7 +1735,7 @@ impl<T: Send + Clone> Drop for BoundedAsyncSender<T> {
 
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T: Send + Clone> {
-  producer: &'a BoundedAsyncSender<T>,
+  producer: &'a mut BoundedAsyncSender<T>,
   value: Option<T>,
   _phantom: PhantomPinned,
 }
@@ -1780,7 +1813,7 @@ impl<'a, T: Send + Clone> Future for SendFuture<'a, T> {
 /// If dropped before completion, the unsent remainder is dropped.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchFuture<'a, T: Send + Clone> {
-  producer: &'a BoundedAsyncSender<T>,
+  producer: &'a mut BoundedAsyncSender<T>,
   iter: std::vec::IntoIter<T>,
   total: usize,
   sent: usize,
@@ -1852,7 +1885,7 @@ impl<'a, T: Send + Clone> Future for SendBatchFuture<'a, T> {
 /// Cancel-safe: unsent items remain in the caller's vector.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendBatchMutFuture<'a, T: Send + Clone> {
-  producer: &'a BoundedAsyncSender<T>,
+  producer: &'a mut BoundedAsyncSender<T>,
   items: &'a mut Vec<T>,
   sent: usize,
   _phantom: PhantomPinned,
@@ -1911,7 +1944,7 @@ impl<'a, T: Send + Clone> Future for SendBatchMutFuture<'a, T> {
 #[must_use = "futures do nothing unless you .await or poll them"]
 #[derive(Debug)]
 pub struct RecvBatchFuture<'a, T: Send + Clone> {
-  receiver: &'a BoundedAsyncReceiver<T>,
+  receiver: &'a mut BoundedAsyncReceiver<T>,
   max: usize,
 }
 
@@ -1943,7 +1976,7 @@ impl<'a, T: Send + Clone> Future for RecvBatchFuture<'a, T> {
 #[must_use = "futures do nothing unless you .await or poll them"]
 #[derive(Debug)]
 pub struct RecvBatchMutFuture<'a, T: Send + Clone> {
-  receiver: &'a BoundedAsyncReceiver<T>,
+  receiver: &'a mut BoundedAsyncReceiver<T>,
   out: &'a mut Vec<T>,
   max: usize,
 }
@@ -1970,7 +2003,7 @@ impl<'a, T: Send + Clone> Future for RecvBatchMutFuture<'a, T> {
 #[must_use = "futures do nothing unless you .await or poll them"]
 #[derive(Debug)]
 pub struct RecvFuture<'a, T: Send + Clone> {
-  receiver: &'a BoundedAsyncReceiver<T>,
+  receiver: &'a mut BoundedAsyncReceiver<T>,
 }
 
 impl<'a, T: Send + Clone> Future for RecvFuture<'a, T> {
@@ -1999,7 +2032,10 @@ impl<T: Send + Clone> Stream for BoundedAsyncReceiver<T> {
   }
 }
 
+// Receivers on different threads clone the same slot value through a shared
+// reference at the same time, so sharing the ring needs `T: Sync`. A sender
+// never clones a value, which is why its own impls ask only for `T: Send`.
 unsafe impl<T: Send + Clone> Send for SpmcShared<T> {}
-unsafe impl<T: Send + Clone> Sync for SpmcShared<T> {}
+unsafe impl<T: Send + Sync + Clone> Sync for SpmcShared<T> {}
 unsafe impl<T: Send> Send for Slot<T> {}
-unsafe impl<T: Send> Sync for Slot<T> {}
+unsafe impl<T: Send + Sync> Sync for Slot<T> {}

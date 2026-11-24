@@ -5,9 +5,11 @@ use fibre::error::TryRecvError;
 use fibre::mpmc;
 use fibre_miri::{block_on, drop_counter, drops, poll_once, DropCounter, ITEMS_SMALL};
 
-use std::pin::pin;
+use futures::Stream;
+use std::pin::{pin, Pin};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 use std::thread;
 
 #[test]
@@ -223,4 +225,40 @@ fn two_async_consumers_cross_thread() {
   drop(tx);
   let n = c1.join().unwrap() + c2.join().unwrap();
   assert_eq!(n, total);
+}
+
+#[test]
+fn send_after_a_recv_future_took_a_buffered_item_and_was_dropped() {
+  let (tx, rx) = mpmc::bounded_async::<i32>(2);
+  let rx2 = rx.clone();
+
+  let mut woken = Box::pin(rx.recv());
+  let mut bystander = Box::pin(rx2.recv());
+  assert!(poll_once(woken.as_mut()).is_pending());
+  assert!(poll_once(bystander.as_mut()).is_pending());
+
+  tx.try_send(1).unwrap();
+  assert!(matches!(poll_once(bystander.as_mut()), Poll::Ready(Ok(1))));
+  drop(bystander);
+  drop(woken);
+
+  tx.try_send(2).unwrap();
+  assert_eq!(rx.try_recv(), Ok(2));
+}
+
+#[test]
+fn send_after_a_parked_stream_receiver_moved_and_was_dropped() {
+  let (tx, rx) = mpmc::bounded_async::<i32>(1);
+  let keep = rx.clone();
+
+  let moved = {
+    let mut boxed = Box::new(rx);
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(Pin::new(&mut *boxed).poll_next(&mut cx).is_pending());
+    *boxed
+  };
+  drop(moved);
+
+  tx.try_send(1).unwrap();
+  assert_eq!(keep.try_recv(), Ok(1));
 }

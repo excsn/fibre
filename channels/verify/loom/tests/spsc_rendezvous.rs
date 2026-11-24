@@ -8,6 +8,8 @@
 use fibre::spsc::rendezvous::rendezvous;
 use loom::thread;
 
+use std::time::Duration;
+
 /// One value handed off sender -> receiver. Either side may arrive first; loom
 /// explores both interleavings, exercising the park-then-wake on whichever side
 /// blocks waiting for its counterpart.
@@ -34,5 +36,23 @@ fn sender_drop_disconnects_receiver() {
     });
     assert!(rx.recv().is_err());
     t.join().unwrap();
+  });
+}
+
+/// A receive that times out took nothing, so the racing `try_send` must not
+/// report a delivery. A zero timeout reaches the cancel path without parking,
+/// which keeps the model free of timed waits.
+#[test]
+fn timed_out_recv_and_try_send_agree_on_delivery() {
+  loom::model(|| {
+    let (tx, rx) = rendezvous::<u32>();
+    let t = thread::spawn(move || tx.try_send(5).is_ok());
+    let received = rx.recv_timeout(Duration::ZERO);
+    let sent = t.join().unwrap();
+    assert_eq!(
+      sent,
+      received.is_ok(),
+      "try_send returned {sent} and recv_timeout returned {received:?}"
+    );
   });
 }

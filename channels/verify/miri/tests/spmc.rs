@@ -5,6 +5,7 @@ use fibre::error::RecvError;
 use fibre::spmc;
 use fibre_miri::{block_on, drop_counter, drops, poll_once, ITEMS_SMALL};
 
+use std::cell::Cell;
 use std::pin::pin;
 use std::thread;
 
@@ -62,7 +63,7 @@ fn values_dropped_exactly_once_per_clone() {
 
 #[test]
 fn async_recv_registers_then_cancels() {
-  let (tx, rx) = spmc::bounded_async::<u32>(2);
+  let (mut tx, mut rx) = spmc::bounded_async::<u32>(2);
   {
     let mut fut = pin!(rx.recv());
     assert!(poll_once(fut.as_mut()).is_pending());
@@ -131,4 +132,30 @@ fn batch_roundtrip() {
     tx.send(i).unwrap();
   }
   consumer.join().unwrap();
+}
+
+/// `Send` and `Clone` but not `Sync`: its `clone` writes through `&self`.
+struct CloneTally(Cell<u64>);
+
+impl Clone for CloneTally {
+  fn clone(&self) -> Self {
+    self.0.set(self.0.get() + 1);
+    CloneTally(Cell::new(0))
+  }
+}
+
+#[test]
+fn receivers_on_one_thread_clone_a_send_only_payload_sent_from_another() {
+  let (tx, rx1) = spmc::bounded::<CloneTally>(4);
+  let rx2 = rx1.clone();
+  let producer = thread::spawn(move || {
+    for _ in 0..ITEMS_SMALL {
+      assert!(tx.send(CloneTally(Cell::new(0))).is_ok());
+    }
+  });
+  for _ in 0..ITEMS_SMALL {
+    assert!(rx1.recv().is_ok());
+    assert!(rx2.recv().is_ok());
+  }
+  producer.join().unwrap();
 }

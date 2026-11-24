@@ -54,6 +54,22 @@ impl<T: Send> fmt::Debug for AsyncReceiver<T> {
   }
 }
 
+/// Clears a sync receiver's registration when a panic unwinds through its
+/// wait. The recv-waiter slot holds a raw pointer to `notified`, which lives
+/// in the waiting frame. Forgotten on every normal exit.
+struct SyncRecvUnwind<'a, T: Send> {
+  shared: &'a Shared<T>,
+  notified: &'a AtomicBool,
+}
+
+impl<T: Send> Drop for SyncRecvUnwind<'_, T> {
+  #[cold]
+  #[inline(never)]
+  fn drop(&mut self) {
+    self.shared.settle_unwound_sync_recv(self.notified);
+  }
+}
+
 unsafe impl<T: Send> Send for Receiver<T> {}
 unsafe impl<T: Send> Send for AsyncReceiver<T> {}
 unsafe impl<T: Send> Sync for AsyncReceiver<T> {}
@@ -70,6 +86,10 @@ impl<T: Send> Receiver<T> {
     let mut is_registered = false;
     let notified = AtomicBool::new(false);
     let notified_ptr = &notified as *const AtomicBool;
+    let unwind = SyncRecvUnwind {
+      shared: &*self.shared,
+      notified: &notified,
+    };
 
     loop {
       match self.shared.deq_once() {
@@ -77,6 +97,7 @@ impl<T: Send> Receiver<T> {
           if is_registered {
             self.shared.finish_sync_recv(&notified);
           }
+          std::mem::forget(unwind);
           return Ok(v);
         }
         Deq::Empty if !self.shared.senders_alive() => {
@@ -84,12 +105,14 @@ impl<T: Send> Receiver<T> {
             if is_registered {
               self.shared.finish_sync_recv(&notified);
             }
+            std::mem::forget(unwind);
             return Ok(v);
           }
           self.shared.flush_progress();
           if is_registered {
             self.shared.finish_sync_recv(&notified);
           }
+          std::mem::forget(unwind);
           return Err(RecvError::Disconnected);
         }
         _ => {
@@ -134,6 +157,10 @@ impl<T: Send> Receiver<T> {
     let mut is_registered = false;
     let notified = AtomicBool::new(false);
     let notified_ptr = &notified as *const AtomicBool;
+    let unwind = SyncRecvUnwind {
+      shared: &*self.shared,
+      notified: &notified,
+    };
 
     loop {
       match self.shared.deq_once() {
@@ -141,6 +168,7 @@ impl<T: Send> Receiver<T> {
           if is_registered {
             self.shared.finish_sync_recv(&notified);
           }
+          std::mem::forget(unwind);
           return Ok(v);
         }
         Deq::Empty if !self.shared.senders_alive() => {
@@ -148,12 +176,14 @@ impl<T: Send> Receiver<T> {
             if is_registered {
               self.shared.finish_sync_recv(&notified);
             }
+            std::mem::forget(unwind);
             return Ok(v);
           }
           self.shared.flush_progress();
           if is_registered {
             self.shared.finish_sync_recv(&notified);
           }
+          std::mem::forget(unwind);
           return Err(RecvErrorTimeout::Disconnected);
         }
         _ => {
@@ -165,6 +195,7 @@ impl<T: Send> Receiver<T> {
               if is_registered {
                 self.shared.finish_sync_recv(&notified);
               }
+              std::mem::forget(unwind);
               return Err(RecvErrorTimeout::Timeout);
             }
           };
@@ -226,6 +257,10 @@ impl<T: Send> Receiver<T> {
     let mut is_registered = false;
     let notified = AtomicBool::new(false);
     let notified_ptr = &notified as *const AtomicBool;
+    let unwind = SyncRecvUnwind {
+      shared: &*self.shared,
+      notified: &notified,
+    };
 
     loop {
       let k = self.shared.deq_run(out, max);
@@ -234,6 +269,7 @@ impl<T: Send> Receiver<T> {
           self.shared.finish_sync_recv(&notified);
         }
         self.shared.flush_progress();
+        std::mem::forget(unwind);
         return Ok(k);
       }
 
@@ -248,8 +284,10 @@ impl<T: Send> Receiver<T> {
         }
         if k2 > 0 {
           self.shared.flush_progress();
+          std::mem::forget(unwind);
           return Ok(k2);
         }
+        std::mem::forget(unwind);
         return Err(RecvError::Disconnected);
       }
 

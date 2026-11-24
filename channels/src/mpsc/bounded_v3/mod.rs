@@ -122,4 +122,96 @@ mod tests {
       j.join().unwrap();
     }
   }
+
+  mod unwound_waits {
+    use super::*;
+    use crate::internal::sync::Arc;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::task::Wake;
+    use std::time::Duration;
+
+    struct PanicOnWake;
+
+    impl Wake for PanicOnWake {
+      fn wake(self: Arc<Self>) {
+        panic!("this waker panics");
+      }
+    }
+
+    fn park_a_receive_with_a_panicking_waker(rx: &'static AsyncReceiver<u64>) {
+      let waker = Waker::from(Arc::new(PanicOnWake));
+      let mut fut = Box::pin(rx.recv());
+      assert!(fut.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+      std::mem::forget(fut);
+    }
+
+    fn park_a_send_with_a_panicking_waker(tx: &'static AsyncSender<u64>, item: u64) {
+      let waker = Waker::from(Arc::new(PanicOnWake));
+      let mut fut = Box::pin(tx.send(item));
+      assert!(fut.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+      std::mem::forget(fut);
+    }
+
+    #[test]
+    fn send_unwound_by_a_panicking_waker_leaves_no_waiter() {
+      let (tx, rx) = bounded::<u64>(1);
+      let rx: &'static AsyncReceiver<u64> = Box::leak(Box::new(rx.to_async()));
+      tx.send(1).unwrap();
+
+      tx.shared.before_next_sync_register(move || {
+        assert_eq!(rx.try_recv(), Ok(1));
+        park_a_receive_with_a_panicking_waker(rx);
+      });
+
+      let sent = catch_unwind(AssertUnwindSafe(|| tx.send(2)));
+      assert!(sent.is_err(), "send returned {sent:?} without reaching the waker");
+      assert_eq!(tx.shared.sync_waiters_registered(), (0, false));
+    }
+
+    #[test]
+    fn recv_unwound_by_a_panicking_waker_leaves_no_waiter() {
+      let (tx, rx) = bounded::<u64>(1);
+      let tx: &'static AsyncSender<u64> = Box::leak(Box::new(tx.to_async()));
+
+      rx.shared.before_next_sync_register(move || {
+        tx.try_send(1).unwrap();
+        park_a_send_with_a_panicking_waker(tx, 2);
+      });
+
+      let received = catch_unwind(AssertUnwindSafe(|| rx.recv()));
+      assert!(received.is_err(), "recv returned {received:?} without reaching the waker");
+      assert_eq!(rx.shared.sync_waiters_registered(), (0, false));
+    }
+
+    #[test]
+    fn recv_timeout_unwound_by_a_panicking_waker_leaves_no_waiter() {
+      let (tx, rx) = bounded::<u64>(1);
+      let tx: &'static AsyncSender<u64> = Box::leak(Box::new(tx.to_async()));
+
+      rx.shared.before_next_sync_register(move || {
+        tx.try_send(1).unwrap();
+        park_a_send_with_a_panicking_waker(tx, 2);
+      });
+
+      let received = catch_unwind(AssertUnwindSafe(|| rx.recv_timeout(Duration::from_secs(5))));
+      assert!(received.is_err(), "recv_timeout returned {received:?} without reaching the waker");
+      assert_eq!(rx.shared.sync_waiters_registered(), (0, false));
+    }
+
+    #[test]
+    fn recv_batch_unwound_by_a_panicking_waker_leaves_no_waiter() {
+      let (tx, rx) = bounded::<u64>(1);
+      let tx: &'static AsyncSender<u64> = Box::leak(Box::new(tx.to_async()));
+
+      rx.shared.before_next_sync_register(move || {
+        tx.try_send(1).unwrap();
+        park_a_send_with_a_panicking_waker(tx, 2);
+      });
+
+      let mut out = Vec::new();
+      let received = catch_unwind(AssertUnwindSafe(|| rx.recv_batch_mut(&mut out, 8)));
+      assert!(received.is_err(), "recv_batch_mut returned {received:?} without reaching the waker");
+      assert_eq!(rx.shared.sync_waiters_registered(), (0, false));
+    }
+  }
 }

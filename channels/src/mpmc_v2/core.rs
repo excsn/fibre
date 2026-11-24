@@ -144,6 +144,107 @@ impl<T> MpmcChannelInternal<T> {
     }
     self.queue_len -= count;
   }
+
+  /// Moves the first receiver still in `STATE_WAITING` to `to` and removes its
+  /// entry. A waiter is always unlinked in the critical section that marks it,
+  /// so a marked waiter never has to unlink itself.
+  pub(crate) fn take_waiting_receiver(&mut self, to: u8) -> Option<WakeRef> {
+    let mut i = 0;
+    while i < self.waiting_async_receivers.len() {
+      if mark(self.waiting_async_receivers[i].state, to) {
+        let waiter = self.waiting_async_receivers.remove(i).unwrap();
+        return Some(WakeRef::Waker(waiter.waker));
+      }
+      i += 1;
+    }
+    let mut i = 0;
+    while i < self.waiting_sync_receivers.len() {
+      if mark(self.waiting_sync_receivers[i].state, to) {
+        let waiter = self.waiting_sync_receivers.remove(i).unwrap();
+        return Some(WakeRef::Thread(waiter.thread));
+      }
+      i += 1;
+    }
+    None
+  }
+
+  /// Sender counterpart of `take_waiting_receiver`.
+  pub(crate) fn take_waiting_sender(&mut self, to: u8) -> Option<WakeRef> {
+    let mut i = 0;
+    while i < self.waiting_async_senders.len() {
+      if mark(self.waiting_async_senders[i].state, to) {
+        let waiter = self.waiting_async_senders.remove(i).unwrap();
+        return Some(WakeRef::Waker(waiter.waker));
+      }
+      i += 1;
+    }
+    let mut i = 0;
+    while i < self.waiting_sync_senders.len() {
+      if mark(self.waiting_sync_senders[i].state, to) {
+        let waiter = self.waiting_sync_senders.remove(i).unwrap();
+        return Some(WakeRef::Thread(waiter.thread));
+      }
+      i += 1;
+    }
+    None
+  }
+
+  /// Marks every waiting receiver `to` and empties both receiver lists. An
+  /// entry that is not waiting belongs to an owner that is cancelling: it is
+  /// dropped from the list and its owner's own unlink finds nothing.
+  pub(crate) fn drain_receivers(&mut self, to: u8, wakes: &mut Vec<WakeRef>) {
+    for waiter in self.waiting_sync_receivers.drain(..) {
+      if mark(waiter.state, to) {
+        wakes.push(WakeRef::Thread(waiter.thread));
+      }
+    }
+    for waiter in self.waiting_async_receivers.drain(..) {
+      if mark(waiter.state, to) {
+        wakes.push(WakeRef::Waker(waiter.waker));
+      }
+    }
+  }
+
+  /// Tells the front sender of each list to look again. Used when one receiver
+  /// leaves and others remain.
+  pub(crate) fn kick_front_senders(&mut self, wakes: &mut Vec<WakeRef>) {
+    if let Some(front) = self.waiting_sync_senders.front() {
+      if mark(front.state, STATE_SUCCESS_SPACE) {
+        let waiter = self.waiting_sync_senders.pop_front().unwrap();
+        wakes.push(WakeRef::Thread(waiter.thread));
+      }
+    }
+    if let Some(front) = self.waiting_async_senders.front() {
+      if mark(front.state, STATE_SUCCESS_SPACE) {
+        let waiter = self.waiting_async_senders.pop_front().unwrap();
+        wakes.push(WakeRef::Waker(waiter.waker));
+      }
+    }
+  }
+
+  /// Sender counterpart of `drain_receivers`.
+  pub(crate) fn drain_senders(&mut self, to: u8, wakes: &mut Vec<WakeRef>) {
+    for waiter in self.waiting_sync_senders.drain(..) {
+      if mark(waiter.state, to) {
+        wakes.push(WakeRef::Thread(waiter.thread));
+      }
+    }
+    for waiter in self.waiting_async_senders.drain(..) {
+      if mark(waiter.state, to) {
+        wakes.push(WakeRef::Waker(waiter.waker));
+      }
+    }
+  }
+}
+
+/// Safety of the dereference: an entry in a wait list points at a flag whose
+/// owner unlinks it under the channel lock before the flag goes away. The
+/// caller holds that lock.
+#[inline]
+fn mark(state: *const AtomicU8, to: u8) -> bool {
+  unsafe { &*state }
+    .compare_exchange(STATE_WAITING, to, Ordering::SeqCst, Ordering::SeqCst)
+    .is_ok()
 }
 
 /// The shared owner of the channel's internal state, designed to be wrapped in an `Arc`.
@@ -580,6 +681,43 @@ impl<T: Send> MpmcShared<T> {
 
         return Poll::Pending;
       }
+    }
+  }
+}
+
+impl<T> MpmcShared<T> {
+  /// Removes a receiver's entry when it leaves while still waiting. If a
+  /// sender marked it in the meantime, the wake it was given is passed on.
+  pub(crate) fn unlink_async_receiver(&self, state: &AtomicU8) {
+    let state_ptr = state as *const AtomicU8;
+    let wake = {
+      let mut guard = self.internal.lock();
+      guard.waiting_async_receivers.retain(|w| w.state != state_ptr);
+      if state.load(Ordering::SeqCst) == STATE_SUCCESS_SPACE && !guard.is_empty() {
+        guard.take_waiting_receiver(STATE_SUCCESS_SPACE)
+      } else {
+        None
+      }
+    };
+    if let Some(wake) = wake {
+      wake.wake();
+    }
+  }
+
+  /// Sender counterpart of `unlink_async_receiver`.
+  pub(crate) fn unlink_async_sender(&self, state: &AtomicU8) {
+    let state_ptr = state as *const AtomicU8;
+    let wake = {
+      let mut guard = self.internal.lock();
+      guard.waiting_async_senders.retain(|w| w.state != state_ptr);
+      if state.load(Ordering::SeqCst) == STATE_SUCCESS_SPACE && !guard.is_full(self.capacity) {
+        guard.take_waiting_sender(STATE_SUCCESS_SPACE)
+      } else {
+        None
+      }
+    };
+    if let Some(wake) = wake {
+      wake.wake();
     }
   }
 }

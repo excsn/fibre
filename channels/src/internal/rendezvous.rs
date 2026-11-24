@@ -45,6 +45,10 @@
 //! * Cancellation (future `Drop`, `recv_timeout`) also takes the lock, so it
 //!   either finds its still-`WAITING` record and removes it, or observes that
 //!   the peer already completed the handoff under the lock.
+//! * A receive future dropped after a sender filled it gives the item back
+//!   in `abandon_receiver`. The item goes to a parked receiver if there is one.
+//!   Otherwise it waits at the front of the sender queue as an `Orphan`
+//!   record, which the receive paths take like any parked sender.
 //!
 //! Because the peer only ever touches a waiter's inline memory while holding
 //! the lock, and a cancelling waiter only frees that memory after re-acquiring
@@ -58,7 +62,7 @@ use crate::internal::cache_padded::CachePadded;
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::time::{Duration, Instant};
 
 use crate::internal::sync::{thread, AtomicU8, Mutex, Ordering, Thread};
@@ -446,8 +450,8 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
         Some(dl) => {
           let now = Instant::now();
           if now >= dl {
-            // Timed out: try to cancel. If the CAS fails, a sender committed
-            // the handoff concurrently and we must honor the delivery.
+            // Timed out. A failed cancel means a sender committed the handoff
+            // first, so the delivery stands.
             if self.cancel_receiver(state_ptr, &state) {
               return Err(RecvErrorTimeout::Timeout);
             }
@@ -608,13 +612,11 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
   /// and was removed (the owner keeps its payload); `false` if the handoff
   /// already committed (delivery stands).
   pub(crate) fn cancel_sender(&self, state_ptr: *const AtomicU8, state: &AtomicU8) -> bool {
-    if state
-      .compare_exchange(WAITING, CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
-      .is_err()
-    {
+    let mut core = self.core.lock();
+    if state.load(Ordering::Acquire) != WAITING {
       return false;
     }
-    let mut core = self.core.lock();
+    state.store(CANCELLED, Ordering::Release);
     if let Some(pos) = core.sender_waiters.iter().position(|r| r.state == state_ptr) {
       core.sender_waiters.remove(pos);
     }
@@ -625,16 +627,117 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
   /// `WAITING` and was removed; `false` if a sender already committed the
   /// handoff (the item now sits in the receiver's `dest`).
   pub(crate) fn cancel_receiver(&self, state_ptr: *const AtomicU8, state: &AtomicU8) -> bool {
-    if state
-      .compare_exchange(WAITING, CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
-      .is_err()
-    {
+    let mut core = self.core.lock();
+    if state.load(Ordering::Acquire) != WAITING {
       return false;
     }
-    self.core.lock().receivers.remove_receiver(state_ptr);
+    state.store(CANCELLED, Ordering::Release);
+    core.receivers.remove_receiver(state_ptr);
     true
   }
+
+  /// Settles a receive future that is going away while registered. A future
+  /// still `WAITING` is unlinked. One a sender already filled gives its item
+  /// back: the sender was told the send succeeded, so the item goes to a
+  /// parked receiver if there is one and otherwise waits for the next receive.
+  #[cold]
+  #[inline(never)]
+  pub(crate) fn abandon_receiver(&self, state: &AtomicU8, dest: &mut Option<T>) {
+    let mut core = self.core.lock();
+    if state.load(Ordering::Acquire) == WAITING {
+      state.store(CANCELLED, Ordering::Release);
+      core.receivers.remove_receiver(state as *const AtomicU8);
+      return;
+    }
+    let Some(item) = dest.take() else {
+      return;
+    };
+    match core.receivers.pop_receiver() {
+      Some(rec) => {
+        let wake = fulfill_receiver(rec, item);
+        drop(core);
+        wake.wake();
+      }
+      None => {
+        // Returned items are older than any parked sender's item and keep
+        // their own order.
+        let at = core
+          .sender_waiters
+          .iter()
+          .take_while(|rec| rec.is_orphan())
+          .count();
+        core.sender_waiters.insert(at, Orphan::record(item));
+      }
+    }
+  }
 }
+
+// --- Returned items --------------------------------------------------------
+
+/// The part of an `Orphan` its waker reads without knowing `T`.
+#[repr(C)]
+struct OrphanHeader {
+  state: AtomicU8,
+  free: unsafe fn(*const ()),
+}
+
+/// An item with no owner left, queued as a sender record. Its wake handle
+/// owns the allocation: waking it or dropping it frees the box and whatever
+/// is still in `slot`.
+#[repr(C)]
+struct Orphan<T> {
+  header: OrphanHeader,
+  slot: Option<T>,
+}
+
+impl<T> Orphan<T> {
+  fn record(item: T) -> SenderRec<T> {
+    let raw = Box::into_raw(Box::new(Orphan {
+      header: OrphanHeader {
+        state: AtomicU8::new(WAITING),
+        free: Self::free,
+      },
+      slot: Some(item),
+    }));
+    SenderRec {
+      state: unsafe { &raw const (*raw).header.state },
+      src: unsafe { &raw mut (*raw).slot },
+      wake: WakeHandle::Waker(unsafe {
+        Waker::from_raw(RawWaker::new(raw as *const (), &ORPHAN_VTABLE))
+      }),
+    }
+  }
+
+  unsafe fn free(data: *const ()) {
+    drop(unsafe { Box::from_raw(data as *mut Orphan<T>) });
+  }
+}
+
+impl<T> SenderRec<T> {
+  fn is_orphan(&self) -> bool {
+    matches!(&self.wake, WakeHandle::Waker(w) if std::ptr::eq(w.vtable(), &ORPHAN_VTABLE))
+  }
+}
+
+static ORPHAN_VTABLE: RawWakerVTable =
+  RawWakerVTable::new(orphan_clone, orphan_free, orphan_wake_by_ref, orphan_free);
+
+static INERT_VTABLE: RawWakerVTable =
+  RawWakerVTable::new(orphan_clone, inert, inert, inert);
+
+/// The allocation has one owner, so a clone is a waker that does nothing.
+unsafe fn orphan_clone(_: *const ()) -> RawWaker {
+  RawWaker::new(std::ptr::null(), &INERT_VTABLE)
+}
+
+unsafe fn orphan_free(data: *const ()) {
+  let free = unsafe { (*(data as *const OrphanHeader)).free };
+  unsafe { free(data) };
+}
+
+unsafe fn orphan_wake_by_ref(_: *const ()) {}
+
+unsafe fn inert(_: *const ()) {}
 
 // --- Record-level transfer helpers ----------------------------------------
 //

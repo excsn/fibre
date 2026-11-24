@@ -485,9 +485,7 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
 impl<'a, T: Send> Drop for RecvFuture<'a, T> {
   fn drop(&mut self) {
     if self.registered {
-      self
-        .shared
-        .cancel_receiver(&self.state as *const AtomicU8, &self.state);
+      self.shared.abandon_receiver(&self.state, &mut self.dest);
     }
   }
 }

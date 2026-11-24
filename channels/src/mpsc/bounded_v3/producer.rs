@@ -48,6 +48,48 @@ impl<T: Send> fmt::Debug for AsyncSender<T> {
   }
 }
 
+/// What a waiting sync sender holds that has to be given back if a panic
+/// unwinds through the wait: its registration and its awake count. The wait
+/// loop keeps its own copies and writes here only where they change.
+struct SyncSendWait {
+  id: Option<u64>,
+  token: bool,
+}
+
+impl SyncSendWait {
+  #[inline]
+  fn clear(&mut self) {
+    self.id = None;
+    self.token = false;
+  }
+}
+
+/// Settles a sync sender's wait when a panic unwinds through it. The registry
+/// holds a raw pointer to `notified`, which lives in the frame that owns this
+/// guard. The guard is forgotten on a normal return. It sits in the caller
+/// of the wait loop so that the loop itself has no cleanup to run.
+struct SyncSendUnwind<'a, T: Send> {
+  shared: &'a Shared<T>,
+  notified: &'a AtomicBool,
+  wait: SyncSendWait,
+}
+
+impl<T: Send> Drop for SyncSendUnwind<'_, T> {
+  #[cold]
+  #[inline(never)]
+  fn drop(&mut self) {
+    if let Some(id) = self.wait.id.take() {
+      self.shared.finish_sync_send(id, self.notified);
+      if self.notified.load(Ordering::Acquire) {
+        self.shared.awake_release();
+      }
+    }
+    if self.wait.token {
+      self.shared.awake_release();
+    }
+  }
+}
+
 unsafe impl<T: Send> Send for Sender<T> {}
 unsafe impl<T: Send> Send for AsyncSender<T> {}
 unsafe impl<T: Send> Sync for AsyncSender<T> {}
@@ -83,10 +125,27 @@ impl<T: Send> Sender<T> {
       }
     }
 
+    let notified = AtomicBool::new(false);
+    let mut unwind = SyncSendUnwind {
+      shared: &*self.shared,
+      notified: &notified,
+      wait: SyncSendWait {
+        id: None,
+        token: false,
+      },
+    };
+    let sent = self.send_wait(item, &notified, &mut unwind.wait);
+    std::mem::forget(unwind);
+    sent
+  }
+
+  /// The wait loop of `send_inner`. It has no cleanup of its own, so a panic
+  /// from a waker it runs unwinds straight to the caller's guard.
+  #[inline(never)]
+  fn send_wait(&self, mut item: T, notified: &AtomicBool, wait: &mut SyncSendWait) -> Result<(), T> {
     let mut is_registered = false;
     let mut my_id = None;
-    let notified = AtomicBool::new(false);
-    let notified_ptr = &notified as *const AtomicBool;
+    let notified_ptr = notified as *const AtomicBool;
     let mut token = false;
     let mut cold_recheck = false;
     let mut spins = 0u32;
@@ -95,13 +154,15 @@ impl<T: Send> Sender<T> {
 
     loop {
       if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
-        self.leave(my_id, &notified, token);
+        wait.clear();
+        self.leave(my_id, notified, token);
         return Err(item); // no claim held - nothing to tombstone
       }
 
       item = match self.shared.try_send_now(item) {
         Ok(()) => {
-          self.leave(my_id, &notified, token);
+          wait.clear();
+          self.leave(my_id, notified, token);
           return Ok(());
         }
         Err(v) => v,
@@ -110,7 +171,8 @@ impl<T: Send> Sender<T> {
       if cold_recheck {
         item = match self.shared.try_send_now_cold(item) {
           Ok(()) => {
-            self.leave(my_id, &notified, token);
+            wait.clear();
+            self.leave(my_id, notified, token);
             return Ok(());
           }
           Err(v) => v,
@@ -119,6 +181,7 @@ impl<T: Send> Sender<T> {
 
       if ELECT && !token && !is_registered && self.shared.awake_acquire() {
         token = true;
+        wait.token = true;
         spins = 0;
         last = u32::MAX;
         bo = 0;
@@ -127,7 +190,8 @@ impl<T: Send> Sender<T> {
       if token {
         match self.shared.awake_step(item, &mut spins, &mut last) {
           Step::Sent => {
-            self.leave(my_id, &notified, token);
+            wait.clear();
+            self.leave(my_id, notified, token);
             return Ok(());
           }
           Step::Yield(v) => {
@@ -146,6 +210,7 @@ impl<T: Send> Sender<T> {
           Step::Stalled(v) => {
             item = v;
             token = false;
+            wait.token = false;
             self.shared.awake_release();
             cold_recheck = true;
           }
@@ -153,7 +218,7 @@ impl<T: Send> Sender<T> {
       }
 
       if is_registered {
-        spin_before_park_cap1(self.shared.cap(), &notified);
+        spin_before_park_cap1(self.shared.cap(), notified);
         cold_recheck = false;
         if !notified.load(Ordering::Relaxed) {
           sync_util::park_thread();
@@ -162,6 +227,8 @@ impl<T: Send> Sender<T> {
           is_registered = false;
           my_id = None;
           token = true;
+          wait.id = None;
+          wait.token = true;
           spins = 0;
           last = u32::MAX;
           bo = 0;
@@ -174,6 +241,7 @@ impl<T: Send> Sender<T> {
         .register_sync_send(thread::current(), notified_ptr);
       is_registered = true;
       my_id = Some(id);
+      wait.id = Some(id);
       fence(Ordering::SeqCst);
     }
   }
@@ -216,15 +284,32 @@ impl<T: Send> Sender<T> {
   /// `allocate_node` lifetime discipline; reusing one `notified` across the whole
   /// batch loop is a stack-lifetime UAF the miri suite caught).
   fn wait_for_window(&self) -> Result<bool, ()> {
+    let notified = AtomicBool::new(false);
+    let mut unwind = SyncSendUnwind {
+      shared: &*self.shared,
+      notified: &notified,
+      wait: SyncSendWait {
+        id: None,
+        token: false,
+      },
+    };
+    let held = self.window_wait(&notified, &mut unwind.wait);
+    std::mem::forget(unwind);
+    held
+  }
+
+  /// The wait loop of `wait_for_window`, kept free of cleanup like `send_wait`.
+  #[inline(never)]
+  fn window_wait(&self, notified: &AtomicBool, wait: &mut SyncSendWait) -> Result<bool, ()> {
     let mut held = false;
     let mut is_registered = false;
     let mut my_id: Option<u64> = None;
-    let notified = AtomicBool::new(false);
-    let notified_ptr = &notified as *const AtomicBool;
+    let notified_ptr = notified as *const AtomicBool;
 
     loop {
       if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
-        self.leave(my_id, &notified, false);
+        wait.clear();
+        self.leave(my_id, notified, false);
         if held {
           self.shared.awake_release();
         }
@@ -234,15 +319,17 @@ impl<T: Send> Sender<T> {
         self.shared.publish_from_drained();
       }
       if self.shared.window_open() {
-        self.leave(my_id, &notified, false);
+        wait.clear();
+        self.leave(my_id, notified, false);
         return Ok(held);
       }
       if held {
+        wait.token = false;
         self.shared.awake_release();
         held = false;
       }
       if is_registered {
-        spin_before_park_cap1(self.shared.cap(), &notified);
+        spin_before_park_cap1(self.shared.cap(), notified);
         if !notified.load(Ordering::Relaxed) {
           sync_util::park_thread();
         }
@@ -250,6 +337,8 @@ impl<T: Send> Sender<T> {
           is_registered = false;
           my_id = None;
           held = true;
+          wait.id = None;
+          wait.token = true;
         }
         continue;
       }
@@ -258,6 +347,7 @@ impl<T: Send> Sender<T> {
         .register_sync_send(thread::current(), notified_ptr);
       is_registered = true;
       my_id = Some(id);
+      wait.id = Some(id);
       fence(Ordering::SeqCst);
     }
   }

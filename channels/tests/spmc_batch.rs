@@ -192,14 +192,14 @@ mod async_tests {
 
   #[tokio::test]
   async fn async_send_batch_all_fit() {
-    let (tx, rx) = spmc::bounded_async::<u32>(8);
+    let (mut tx, mut rx) = spmc::bounded_async::<u32>(8);
     assert_eq!(tx.send_batch(vec![1, 2, 3]).await.unwrap(), 3);
     assert_eq!(rx.recv_batch(8).await.unwrap(), vec![1, 2, 3]);
   }
 
   #[tokio::test]
   async fn async_send_batch_blocks_then_completes() {
-    let (tx, rx) = spmc::bounded_async::<usize>(4);
+    let (mut tx, mut rx) = spmc::bounded_async::<usize>(4);
     let send_task = tokio::spawn(async move { tx.send_batch((0..16).collect()).await.unwrap() });
 
     let mut got = Vec::new();
@@ -213,7 +213,7 @@ mod async_tests {
 
   #[tokio::test]
   async fn async_send_batch_mut_cancel_safe() {
-    let (tx, rx) = spmc::bounded_async::<u32>(2);
+    let (mut tx, mut rx) = spmc::bounded_async::<u32>(2);
     let mut items = vec![1, 2, 3, 4, 5];
     {
       let fut = tx.send_batch_mut(&mut items);
@@ -226,7 +226,7 @@ mod async_tests {
 
   #[tokio::test]
   async fn async_send_batch_closed_mid_batch() {
-    let (tx, rx) = spmc::bounded_async::<u32>(2);
+    let (mut tx, rx) = spmc::bounded_async::<u32>(2);
     let send_task = tokio::spawn(async move { tx.send_batch((0..10).collect()).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -239,12 +239,12 @@ mod async_tests {
 
   #[tokio::test]
   async fn async_fanout_recv_batch() {
-    let (tx, rx1) = spmc::bounded_async::<u32>(16);
+    let (mut tx, rx1) = spmc::bounded_async::<u32>(16);
     let rx2 = rx1.clone();
 
     assert_eq!(tx.send_batch((0..8).collect()).await.unwrap(), 8);
 
-    for rx in [rx1, rx2] {
+    for mut rx in [rx1, rx2] {
       let mut got = Vec::new();
       while got.len() < 8 {
         let mut out = Vec::new();
@@ -258,7 +258,7 @@ mod async_tests {
 
   #[tokio::test]
   async fn async_recv_batch_cancel_safe() {
-    let (tx, rx) = spmc::bounded_async::<u32>(4);
+    let (mut tx, mut rx) = spmc::bounded_async::<u32>(4);
     {
       let fut = rx.recv_batch(4);
       let res = timeout(Duration::from_millis(50), fut).await;
@@ -270,7 +270,7 @@ mod async_tests {
 
   #[tokio::test]
   async fn async_recv_batch_disconnected() {
-    let (tx, rx) = spmc::bounded_async::<u32>(4);
+    let (mut tx, mut rx) = spmc::bounded_async::<u32>(4);
     tx.try_send_batch(vec![7]).unwrap();
     drop(tx);
     assert_eq!(rx.recv_batch(4).await.unwrap(), vec![7]);

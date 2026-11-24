@@ -170,3 +170,20 @@ async fn async_many_producers_one_consumer() {
   }
   assert_eq!(received.load(Ordering::SeqCst), 200);
 }
+
+#[test]
+fn item_delivered_to_a_dropped_recv_future_goes_to_the_next_receive() {
+  use std::future::Future;
+  use std::task::{Context, Waker};
+
+  let (tx, rx) = rendezvous_async::<u32>();
+  {
+    let mut fut = Box::pin(rx.recv());
+    assert!(fut
+      .as_mut()
+      .poll(&mut Context::from_waker(Waker::noop()))
+      .is_pending());
+    assert!(tx.try_send(5).is_ok());
+  }
+  assert_eq!(rx.try_recv(), Ok(5));
+}

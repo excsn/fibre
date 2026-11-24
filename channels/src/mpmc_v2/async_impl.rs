@@ -2,7 +2,7 @@
 
 use futures_core::Stream;
 
-use super::core::{AsyncWaiter, STATE_CANCELLED, STATE_WAITING};
+use super::core::{AsyncWaiter, MpmcShared, STATE_CANCELLED, STATE_WAITING};
 use super::{AsyncReceiver, AsyncSender};
 use crate::error::{BatchSendErrorReason, SendBatchError, SendError, TrySendError};
 use crate::RecvError;
@@ -12,6 +12,16 @@ use std::future::Future;
 use std::pin::Pin;
 use crate::internal::sync::{AtomicU8, Ordering};
 use std::task::{Context, Poll};
+
+/// Clears a receiver's registration when its receive completes. One that was
+/// still linked removes its own entry.
+#[inline]
+fn settle_receiver<T>(shared: &MpmcShared<T>, state: &AtomicU8, is_registered: &mut bool) {
+  if *is_registered {
+    *is_registered = false;
+    shared.unlink_async_receiver(state);
+  }
+}
 
 // --- SendFuture ---
 
@@ -49,9 +59,7 @@ impl<T: Send> Drop for SendFuture<'_, T> {
         Ordering::SeqCst,
         Ordering::SeqCst,
       );
-      let mut guard = self.sender.shared.internal.lock();
-      let state_ptr = &self.state as *const AtomicU8;
-      guard.waiting_async_senders.retain(|w| w.state != state_ptr);
+      self.sender.shared.unlink_async_sender(&self.state);
     }
   }
 }
@@ -70,15 +78,6 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
         if (st & 0x01) != 0 {
           this.is_registered = false;
 
-          let mut guard = this.sender.shared.internal.lock();
-          if let Some(pos) = guard
-            .waiting_async_senders
-            .iter()
-            .position(|w| w.state == state_ptr)
-          {
-            let _ = guard.waiting_async_senders.remove(pos).unwrap();
-          }
-          drop(guard);
 
           if (st & 0x02) == 0 {
             return Poll::Ready(Err(SendError::Closed));
@@ -95,8 +94,7 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
             return Poll::Pending;
           }
           drop(guard);
-          cx.waker().wake_by_ref();
-          return Poll::Pending;
+          continue 'poll_loop;
         }
       }
 
@@ -197,9 +195,7 @@ impl<T: Send> Drop for SendBatchFuture<'_, T> {
         Ordering::SeqCst,
         Ordering::SeqCst,
       );
-      let mut guard = self.sender.shared.internal.lock();
-      let state_ptr = &self.state as *const AtomicU8;
-      guard.waiting_async_senders.retain(|w| w.state != state_ptr);
+      self.sender.shared.unlink_async_sender(&self.state);
     }
   }
 }
@@ -221,15 +217,6 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
 
           // Check if we closed (Bit 1 / 0x02 is 0)
           if (st & 0x02) == 0 {
-            let mut guard = this.sender.shared.internal.lock();
-            if let Some(pos) = guard
-              .waiting_async_senders
-              .iter()
-              .position(|w| w.state == state_ptr)
-            {
-              let _ = guard.waiting_async_senders.remove(pos).unwrap();
-            }
-            drop(guard);
             return Poll::Ready(Err(SendBatchError {
               sent: this.sent,
               unsent: this.pending
@@ -247,17 +234,6 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
             if this.sent == this.total {
               return Poll::Ready(Ok(this.total));
             }
-          } else {
-            // Space retry: remove the waiter, item stays in this.pending
-            let mut guard = this.sender.shared.internal.lock();
-            if let Some(pos) = guard
-              .waiting_async_senders
-              .iter()
-              .position(|w| w.state == state_ptr)
-            {
-              let _ = guard.waiting_async_senders.remove(pos).unwrap();
-            }
-            drop(guard);
           }
         } else {
           // Still parked: a spurious poll - update the waker in place.
@@ -270,11 +246,8 @@ impl<'a, T: Send> Future for SendBatchFuture<'a, T> {
             w.waker = cx.waker().clone();
             return Poll::Pending;
           }
-          // Popped but our state not yet flipped (a close path holds the
-          // waiter outside the lock): yield back to the executor and re-poll.
           drop(guard);
-          cx.waker().wake_by_ref();
-          return Poll::Pending;
+          continue 'poll_loop;
         }
       }
 
@@ -390,9 +363,7 @@ impl<T: Send> Drop for SendBatchMutFuture<'_, T> {
         Ordering::SeqCst,
         Ordering::SeqCst,
       );
-      let mut guard = self.sender.shared.internal.lock();
-      let state_ptr = &self.state as *const AtomicU8;
-      guard.waiting_async_senders.retain(|w| w.state != state_ptr);
+      self.sender.shared.unlink_async_sender(&self.state);
     }
     if let Some(item) = self.pending.take() {
       self.items.insert(0, item);
@@ -417,32 +388,12 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
 
           // Check if we closed (Bit 1 / 0x02 is 0)
           if (st & 0x02) == 0 {
-            let mut guard = this.sender.shared.internal.lock();
-            if let Some(pos) = guard
-              .waiting_async_senders
-              .iter()
-              .position(|w| w.state == state_ptr)
-            {
-              let _ = guard.waiting_async_senders.remove(pos).unwrap();
-            }
-            drop(guard);
             return Poll::Ready(Err(SendError::Closed));
           }
 
           // It was a success!
           if (st & 0x04) != 0 {
             this.sent += 1;
-          } else {
-            // Space retry: remove the waiter, item stays in this.pending
-            let mut guard = this.sender.shared.internal.lock();
-            if let Some(pos) = guard
-              .waiting_async_senders
-              .iter()
-              .position(|w| w.state == state_ptr)
-            {
-              let _ = guard.waiting_async_senders.remove(pos).unwrap();
-            }
-            drop(guard);
           }
         } else {
           let mut guard = this.sender.shared.internal.lock();
@@ -455,8 +406,7 @@ impl<'a, T: Send> Future for SendBatchMutFuture<'a, T> {
             return Poll::Pending;
           }
           drop(guard);
-          cx.waker().wake_by_ref();
-          return Poll::Pending;
+          continue 'poll_loop;
         }
       }
 
@@ -560,36 +510,27 @@ impl<'a, T: Send> Future for RecvBatchFuture<'a, T> {
     let state_ptr = &this.state as *const AtomicU8;
     let mut out = Vec::new();
 
-    if this.is_registered {
-      let st = this.state.load(Ordering::SeqCst);
-      if (st & 0x01) != 0 {
-        this.is_registered = false;
-        if (st & 0x02) == 0 {
-          let mut guard = this.receiver.shared.internal.lock();
-          guard
-            .waiting_async_receivers
-            .retain(|w| w.state != state_ptr);
-          drop(guard);
-          return Poll::Ready(Err(RecvError::Disconnected));
-        }
-      }
+    if this.is_registered && this.state.load(Ordering::SeqCst) != STATE_WAITING {
+      this.is_registered = false;
     }
 
-    this.is_registered = true;
     match this
       .receiver
       .shared
       .poll_recv_batch_internal(cx, state_ptr, &mut out, this.max)
     {
       Poll::Ready(Ok(_)) => {
-        this.is_registered = false;
+        settle_receiver(&this.receiver.shared, &this.state, &mut this.is_registered);
         Poll::Ready(Ok(out))
       }
       Poll::Ready(Err(e)) => {
-        this.is_registered = false;
+        settle_receiver(&this.receiver.shared, &this.state, &mut this.is_registered);
         Poll::Ready(Err(e))
       }
-      Poll::Pending => Poll::Pending,
+      Poll::Pending => {
+        this.is_registered = true;
+        Poll::Pending
+      }
     }
   }
 }
@@ -603,11 +544,7 @@ impl<T: Send> Drop for RecvBatchFuture<'_, T> {
         Ordering::SeqCst,
         Ordering::SeqCst,
       );
-      let mut guard = self.receiver.shared.internal.lock();
-      let state_ptr = &self.state as *const AtomicU8;
-      guard
-        .waiting_async_receivers
-        .retain(|w| w.state != state_ptr);
+      self.receiver.shared.unlink_async_receiver(&self.state);
     }
   }
 }
@@ -649,32 +586,23 @@ impl<'a, T: Send> Future for RecvBatchMutFuture<'a, T> {
     let state_ptr = &this.state as *const AtomicU8;
     let max = this.max;
 
-    if this.is_registered {
-      let st = this.state.load(Ordering::SeqCst);
-      if (st & 0x01) != 0 {
-        this.is_registered = false;
-        if (st & 0x02) == 0 {
-          let mut guard = this.receiver.shared.internal.lock();
-          guard
-            .waiting_async_receivers
-            .retain(|w| w.state != state_ptr);
-          drop(guard);
-          return Poll::Ready(Err(RecvError::Disconnected));
-        }
-      }
+    if this.is_registered && this.state.load(Ordering::SeqCst) != STATE_WAITING {
+      this.is_registered = false;
     }
 
-    this.is_registered = true;
     match this
       .receiver
       .shared
       .poll_recv_batch_internal(cx, state_ptr, this.out, max)
     {
       Poll::Ready(res) => {
-        this.is_registered = false;
+        settle_receiver(&this.receiver.shared, &this.state, &mut this.is_registered);
         Poll::Ready(res)
       }
-      Poll::Pending => Poll::Pending,
+      Poll::Pending => {
+        this.is_registered = true;
+        Poll::Pending
+      }
     }
   }
 }
@@ -688,11 +616,7 @@ impl<T: Send> Drop for RecvBatchMutFuture<'_, T> {
         Ordering::SeqCst,
         Ordering::SeqCst,
       );
-      let mut guard = self.receiver.shared.internal.lock();
-      let state_ptr = &self.state as *const AtomicU8;
-      guard
-        .waiting_async_receivers
-        .retain(|w| w.state != state_ptr);
+      self.receiver.shared.unlink_async_receiver(&self.state);
     }
   }
 }
@@ -730,28 +654,19 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
     let this = unsafe { self.as_mut().get_unchecked_mut() };
     let state_ptr = &this.state as *const AtomicU8;
 
-    if this.is_registered {
-      let st = this.state.load(Ordering::SeqCst);
-      if (st & 0x01) != 0 {
-        this.is_registered = false;
-        if (st & 0x02) == 0 {
-          let mut guard = this.receiver.shared.internal.lock();
-          guard
-            .waiting_async_receivers
-            .retain(|w| w.state != state_ptr);
-          drop(guard);
-          return Poll::Ready(Err(RecvError::Disconnected));
-        }
-      }
+    if this.is_registered && this.state.load(Ordering::SeqCst) != STATE_WAITING {
+      this.is_registered = false;
     }
 
-    this.is_registered = true;
     match this.receiver.shared.poll_recv_internal(cx, state_ptr) {
       Poll::Ready(res) => {
-        this.is_registered = false;
+        settle_receiver(&this.receiver.shared, &this.state, &mut this.is_registered);
         Poll::Ready(res)
       }
-      Poll::Pending => Poll::Pending,
+      Poll::Pending => {
+        this.is_registered = true;
+        Poll::Pending
+      }
     }
   }
 }
@@ -765,12 +680,7 @@ impl<T: Send> Drop for RecvFuture<'_, T> {
         Ordering::SeqCst,
         Ordering::SeqCst,
       );
-      // Eagerly unlink the waiter so the future's memory can be safely freed.
-      let mut guard = self.receiver.shared.internal.lock();
-      let state_ptr = &self.state as *const AtomicU8;
-      guard
-        .waiting_async_receivers
-        .retain(|w| w.state != state_ptr);
+      self.receiver.shared.unlink_async_receiver(&self.state);
     }
   }
 }
@@ -781,28 +691,28 @@ impl<T: Send> Stream for AsyncReceiver<T> {
   type Item = T;
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-    // AsyncReceiver is Unpin (no PhantomPinned), so get_mut() is safe.
     let this = self.get_mut();
 
     if this.closed.load(Ordering::Relaxed) {
       return Poll::Ready(None);
     }
 
-    let state_ptr = &this.state as *const AtomicU8;
-    this.is_registered = true;
+    let state: &AtomicU8 = this
+      .state
+      .get_or_insert_with(|| Box::new(AtomicU8::new(STATE_WAITING)));
+    if this.is_registered && state.load(Ordering::SeqCst) != STATE_WAITING {
+      this.is_registered = false;
+    }
 
-    match this.shared.poll_recv_internal(cx, state_ptr) {
-      Poll::Ready(Ok(value)) => {
-        this.is_registered = false;
-        this.state.store(STATE_WAITING, Ordering::Relaxed); // Reset for next recv cycle.
-        Poll::Ready(Some(value))
+    match this.shared.poll_recv_internal(cx, state as *const AtomicU8) {
+      Poll::Ready(res) => {
+        settle_receiver(&this.shared, state, &mut this.is_registered);
+        Poll::Ready(res.ok())
       }
-      Poll::Ready(Err(_)) => {
-        this.is_registered = false;
-        this.state.store(STATE_WAITING, Ordering::Relaxed);
-        Poll::Ready(None) // Disconnected
+      Poll::Pending => {
+        this.is_registered = true;
+        Poll::Pending
       }
-      Poll::Pending => Poll::Pending,
     }
   }
 }

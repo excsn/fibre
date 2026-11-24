@@ -59,9 +59,9 @@ fn main() {
 
   println!("\n--- SPMC: Async Sender, Async Receivers ---");
   common_async::run_async(async {
-    let (tx, rx1_orig) = spmc::bounded_async::<String>(capacity);
-    let rx1 = rx1_orig.clone();
-    let rx2 = rx1_orig.clone();
+    let (mut tx, rx1_orig) = spmc::bounded_async::<String>(capacity);
+    let mut rx1 = rx1_orig.clone();
+    let mut rx2 = rx1_orig.clone();
     drop(rx1_orig);
     let num_messages = 3;
 
@@ -107,8 +107,8 @@ fn main() {
   common_async::run_async(async {
     let (tx_async, rx_async1_orig) = spmc::bounded_async::<String>(capacity);
     let tx_sync_converted = tx_async.to_sync(); // Convert producer
-    let rx_async1 = rx_async1_orig.clone();
-    let rx_async2 = rx_async1_orig.clone();
+    let mut rx_async1 = rx_async1_orig.clone();
+    let mut rx_async2 = rx_async1_orig.clone();
     drop(rx_async1_orig);
     let num_messages = 2;
 
@@ -156,7 +156,7 @@ fn main() {
 
     // Run async producer in a separate tokio task/runtime
     common_async::block_on_tokio_task(async move {
-      let tx_async_local = tx_async; // Avoid capturing the original tx_async if it's used elsewhere
+      let mut tx_async_local = tx_async; // Avoid capturing the original tx_async if it's used elsewhere
       for i in 0..num_messages {
         let msg = format!("AsyncToSyncSPMC-M{}", i);
         println!("[Async Sender] Sending: {}", msg);

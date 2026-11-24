@@ -78,7 +78,8 @@ pub mod topic;
 
 use std::mem;
 
-use crate::internal::sync::AtomicBool;
+use crate::internal::sync::{AtomicBool, Ordering};
+use std::marker::PhantomData;
 
 pub use crate::error::{
   BatchSendErrorReason, CloseError, RecvError, SendBatchError, SendError, TryRecvError,
@@ -129,6 +130,7 @@ impl<T: Send + Clone> BoundedSyncSender<T> {
     BoundedAsyncSender {
       shared,
       closed: AtomicBool::new(false),
+      _not_sync: PhantomData,
     }
   }
 }
@@ -145,6 +147,7 @@ impl<T: Send + Clone> BoundedAsyncSender<T> {
     BoundedSyncSender {
       shared,
       closed: AtomicBool::new(false),
+      _not_sync: PhantomData,
     }
   }
 }
@@ -157,11 +160,13 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
   pub fn to_async(self) -> BoundedAsyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     let tail = unsafe { std::ptr::read(&self.tail) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     BoundedAsyncReceiver {
       shared,
       tail,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
+      _not_sync: PhantomData,
     }
   }
 }
@@ -174,11 +179,13 @@ impl<T: Send + Clone> BoundedAsyncReceiver<T> {
   pub fn to_sync(self) -> BoundedSyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
     let tail = unsafe { std::ptr::read(&self.tail) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     BoundedSyncReceiver {
       shared,
       tail,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
+      _not_sync: PhantomData,
     }
   }
 }
@@ -483,5 +490,217 @@ mod tests {
       "Memory leak detected! Only {} out of 8 items were dropped during wrap-around.",
       final_drops
     );
+  }
+
+  mod closed_receivers {
+    use crate::error::TrySendError;
+    use crate::spmc::{bounded, bounded_async};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    type CloneHook = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+
+    /// A payload whose `clone` runs a hook once. The hook stands in for a
+    /// producer that runs while a receiver is in the middle of cloning a slot.
+    struct HookedPayload {
+      dropped: Arc<AtomicBool>,
+      dropped_during_clone: Arc<AtomicBool>,
+      hook: CloneHook,
+    }
+
+    impl HookedPayload {
+      fn new(dropped_during_clone: &Arc<AtomicBool>, hook: &CloneHook) -> Self {
+        HookedPayload {
+          dropped: Arc::new(AtomicBool::new(false)),
+          dropped_during_clone: Arc::clone(dropped_during_clone),
+          hook: Arc::clone(hook),
+        }
+      }
+    }
+
+    impl Clone for HookedPayload {
+      fn clone(&self) -> Self {
+        let dropped = Arc::clone(&self.dropped);
+        let dropped_during_clone = Arc::clone(&self.dropped_during_clone);
+        let hook = Arc::clone(&self.hook);
+        // `self` is not read past this point: when the contract is broken the
+        // hook has dropped it.
+        let pending = hook.lock().unwrap().take();
+        if let Some(run) = pending {
+          run();
+        }
+        if dropped.load(Ordering::SeqCst) {
+          dropped_during_clone.store(true, Ordering::SeqCst);
+        }
+        HookedPayload {
+          dropped: Arc::new(AtomicBool::new(false)),
+          dropped_during_clone,
+          hook,
+        }
+      }
+    }
+
+    impl Drop for HookedPayload {
+      fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+      }
+    }
+
+    #[test]
+    fn closed_receiver_converted_to_async_never_clones_a_value_the_producer_drops() {
+      let dropped_during_clone = Arc::new(AtomicBool::new(false));
+      let hook: CloneHook = Arc::new(Mutex::new(None));
+      let (tx, live) = bounded::<HookedPayload>(1);
+      let closing = live.clone();
+
+      assert!(tx
+        .try_send(HookedPayload::new(&dropped_during_clone, &hook))
+        .is_ok());
+      assert!(live.try_recv().is_ok());
+
+      closing.close().unwrap();
+      let mut converted = closing.to_async();
+
+      let next = HookedPayload::new(&dropped_during_clone, &hook);
+      *hook.lock().unwrap() = Some(Box::new(move || {
+        let _ = tx.try_send(next);
+      }));
+      let _ = converted.try_recv();
+      drop(hook.lock().unwrap().take());
+
+      assert!(
+        !dropped_during_clone.load(Ordering::SeqCst),
+        "the producer dropped a slot value while the converted receiver was cloning it"
+      );
+    }
+
+    #[test]
+    fn closed_receiver_converted_to_sync_never_clones_a_value_the_producer_drops() {
+      let dropped_during_clone = Arc::new(AtomicBool::new(false));
+      let hook: CloneHook = Arc::new(Mutex::new(None));
+      let (mut tx, mut live) = bounded_async::<HookedPayload>(1);
+      let closing = live.clone();
+
+      assert!(tx
+        .try_send(HookedPayload::new(&dropped_during_clone, &hook))
+        .is_ok());
+      assert!(live.try_recv().is_ok());
+
+      closing.close().unwrap();
+      let converted = closing.to_sync();
+
+      let next = HookedPayload::new(&dropped_during_clone, &hook);
+      *hook.lock().unwrap() = Some(Box::new(move || {
+        let _ = tx.try_send(next);
+      }));
+      let _ = converted.try_recv();
+      drop(hook.lock().unwrap().take());
+
+      assert!(
+        !dropped_during_clone.load(Ordering::SeqCst),
+        "the producer dropped a slot value while the converted receiver was cloning it"
+      );
+    }
+
+    #[test]
+    fn clone_of_a_closed_receiver_does_not_wedge_the_channel() {
+      let (tx, live) = bounded::<u32>(1);
+      let closing = live.clone();
+      closing.close().unwrap();
+
+      tx.try_send(1).unwrap();
+      assert_eq!(live.try_recv(), Ok(1));
+      tx.try_send(2).unwrap();
+      assert_eq!(live.try_recv(), Ok(2));
+
+      let cloned = closing.clone();
+
+      let producer_blocked = matches!(tx.try_send(3), Err(TrySendError::Full(_)));
+      let clone_can_receive = cloned.try_recv().is_ok();
+      assert!(
+        !producer_blocked || clone_can_receive,
+        "the clone holds the producer back and has nothing it can receive"
+      );
+    }
+  }
+
+  mod handle_sharing {
+    use crate::spmc::{BoundedAsyncReceiver, BoundedAsyncSender, BoundedSyncReceiver, BoundedSyncSender};
+    use std::marker::PhantomData;
+
+    trait NotSync {
+      const IS_SYNC: bool = false;
+    }
+    impl<T: ?Sized> NotSync for T {}
+
+    #[allow(dead_code)]
+    struct SyncProbe<T: ?Sized>(PhantomData<T>);
+    impl<T: ?Sized + Sync> SyncProbe<T> {
+      #[allow(dead_code)]
+      const IS_SYNC: bool = true;
+    }
+
+    #[test]
+    fn sender_handles_cannot_be_shared_between_threads() {
+      assert!(!<SyncProbe<BoundedSyncSender<u32>>>::IS_SYNC);
+      assert!(!<SyncProbe<BoundedAsyncSender<u32>>>::IS_SYNC);
+    }
+
+    #[test]
+    fn receiver_handles_cannot_be_shared_between_threads() {
+      assert!(!<SyncProbe<BoundedSyncReceiver<u32>>>::IS_SYNC);
+      assert!(!<SyncProbe<BoundedAsyncReceiver<u32>>>::IS_SYNC);
+    }
+
+    trait NotSend {
+      const IS_SEND: bool = false;
+    }
+    impl<T: ?Sized> NotSend for T {}
+
+    #[allow(dead_code)]
+    struct SendProbe<T: ?Sized>(PhantomData<T>);
+    impl<T: ?Sized + Send> SendProbe<T> {
+      const IS_SEND: bool = true;
+    }
+
+    /// `Send` and `Clone` but not `Sync`.
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    struct SendOnly(std::cell::Cell<u64>);
+
+    fn is_send<F: Send>(_: &F) {}
+
+    #[test]
+    fn receivers_of_a_send_only_payload_stay_on_one_thread() {
+      assert!(!<SendProbe<BoundedSyncReceiver<SendOnly>>>::IS_SEND);
+      assert!(!<SendProbe<BoundedAsyncReceiver<SendOnly>>>::IS_SEND);
+    }
+
+    #[test]
+    fn senders_of_a_send_only_payload_move_between_threads() {
+      assert!(<SendProbe<BoundedSyncSender<SendOnly>>>::IS_SEND);
+      assert!(<SendProbe<BoundedAsyncSender<SendOnly>>>::IS_SEND);
+    }
+
+    #[test]
+    fn handles_of_a_sync_payload_move_between_threads() {
+      assert!(<SendProbe<BoundedSyncSender<u32>>>::IS_SEND);
+      assert!(<SendProbe<BoundedAsyncSender<u32>>>::IS_SEND);
+      assert!(<SendProbe<BoundedSyncReceiver<u32>>>::IS_SEND);
+      assert!(<SendProbe<BoundedAsyncReceiver<u32>>>::IS_SEND);
+    }
+
+    #[test]
+    fn async_futures_of_a_sync_payload_are_send() {
+      let (mut tx, mut rx) = crate::spmc::bounded_async::<u32>(4);
+      is_send(&tx.send(1));
+      is_send(&tx.send_batch(vec![1, 2]));
+      let mut items = vec![1, 2];
+      is_send(&tx.send_batch_mut(&mut items));
+      is_send(&rx.recv());
+      is_send(&rx.recv_batch(2));
+      let mut out = Vec::new();
+      is_send(&rx.recv_batch_mut(&mut out, 2));
+    }
   }
 }

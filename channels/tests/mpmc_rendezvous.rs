@@ -265,3 +265,110 @@ async fn hybrid_sync_sender_async_receiver() {
   got.sort();
   assert_eq!(got, vec![0, 1, 2]);
 }
+
+#[test]
+fn item_delivered_to_a_dropped_recv_future_goes_to_the_next_receive() {
+  use std::future::Future;
+  use std::task::{Context, Waker};
+
+  let (tx, rx) = rendezvous_async::<u32>();
+  {
+    let mut fut = Box::pin(rx.recv());
+    assert!(fut
+      .as_mut()
+      .poll(&mut Context::from_waker(Waker::noop()))
+      .is_pending());
+    assert!(tx.try_send(5).is_ok());
+  }
+  assert_eq!(rx.try_recv(), Ok(5));
+}
+
+#[test]
+fn items_returned_by_dropped_recv_futures_keep_their_order() {
+  use std::future::Future;
+  use std::task::{Context, Waker};
+
+  let (tx, rx) = rendezvous_async::<u32>();
+  let rx2 = rx.clone();
+  let mut cx = Context::from_waker(Waker::noop());
+  let mut first = Box::pin(rx.recv());
+  let mut second = Box::pin(rx2.recv());
+  assert!(first.as_mut().poll(&mut cx).is_pending());
+  assert!(second.as_mut().poll(&mut cx).is_pending());
+  assert!(tx.try_send(1).is_ok());
+  assert!(tx.try_send(2).is_ok());
+  drop(first);
+  drop(second);
+
+  assert_eq!(rx.try_recv(), Ok(1));
+  assert_eq!(rx.try_recv(), Ok(2));
+  assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[test]
+fn returned_item_is_received_before_a_parked_senders_item() {
+  use std::future::Future;
+  use std::task::{Context, Poll, Waker};
+
+  let (tx, rx) = rendezvous_async::<u32>();
+  let mut cx = Context::from_waker(Waker::noop());
+  {
+    let mut fut = Box::pin(rx.recv());
+    assert!(fut.as_mut().poll(&mut cx).is_pending());
+    assert!(tx.try_send(1).is_ok());
+  }
+  let mut parked = Box::pin(tx.send(2));
+  assert!(parked.as_mut().poll(&mut cx).is_pending());
+
+  assert_eq!(rx.try_recv(), Ok(1));
+  assert_eq!(rx.try_recv(), Ok(2));
+  assert!(matches!(parked.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+}
+
+#[test]
+fn returned_item_is_received_after_the_last_sender_is_gone() {
+  use std::future::Future;
+  use std::task::{Context, Waker};
+
+  let (tx, rx) = rendezvous_async::<u32>();
+  {
+    let mut fut = Box::pin(rx.recv());
+    assert!(fut
+      .as_mut()
+      .poll(&mut Context::from_waker(Waker::noop()))
+      .is_pending());
+    assert!(tx.try_send(7).is_ok());
+  }
+  drop(tx);
+
+  assert_eq!(rx.try_recv(), Ok(7));
+  assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+fn returned_item_is_dropped_with_the_last_receiver() {
+  use std::future::Future;
+  use std::task::{Context, Waker};
+
+  struct Counted(Arc<AtomicUsize>);
+  impl Drop for Counted {
+    fn drop(&mut self) {
+      self.0.fetch_add(1, Ordering::SeqCst);
+    }
+  }
+
+  let dropped = Arc::new(AtomicUsize::new(0));
+  let (tx, rx) = rendezvous_async::<Counted>();
+  {
+    let mut fut = Box::pin(rx.recv());
+    assert!(fut
+      .as_mut()
+      .poll(&mut Context::from_waker(Waker::noop()))
+      .is_pending());
+    assert!(tx.try_send(Counted(Arc::clone(&dropped))).is_ok());
+  }
+  assert_eq!(dropped.load(Ordering::SeqCst), 0);
+  drop(rx);
+  assert_eq!(dropped.load(Ordering::SeqCst), 1);
+  drop(tx);
+}

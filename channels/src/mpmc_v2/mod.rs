@@ -26,8 +26,7 @@ use crate::error::{
 };
 
 use self::core::{
-  MpmcShared, STATE_CANCELLED, STATE_CLOSED_BUFFERED, STATE_CLOSED_RENDEZVOUS, STATE_SUCCESS_SPACE,
-  STATE_WAITING,
+  MpmcShared, STATE_CANCELLED, STATE_CLOSED_BUFFERED, STATE_CLOSED_RENDEZVOUS, STATE_WAITING,
 };
 
 pub use async_impl::{
@@ -104,10 +103,11 @@ pub struct AsyncSender<T: Send> {
 pub struct AsyncReceiver<T: Send> {
   shared: Arc<MpmcShared<T>>,
   closed: AtomicBool,
-  /// Inline state flag for the `Stream` impl. A raw pointer to this field is stored
-  /// in `waiting_async_receivers` while the stream is parked. Eagerly unlinked on
-  /// drop / `to_sync` before the struct is freed.
-  pub(super) state: AtomicU8,
+  /// State flag for the `Stream` impl, allocated on the first `poll_next`. A raw
+  /// pointer to it is stored in `waiting_async_receivers` while the stream is
+  /// parked. It lives on the heap because the receiver is `Unpin` and may move
+  /// while parked.
+  pub(super) state: Option<Box<AtomicU8>>,
   pub(super) is_registered: bool,
 }
 
@@ -173,7 +173,7 @@ pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver
     AsyncReceiver {
       shared,
       closed: AtomicBool::new(false),
-      state: AtomicU8::new(STATE_WAITING),
+      state: None,
       is_registered: false,
     },
   )
@@ -226,7 +226,7 @@ impl<T: Send> Clone for AsyncReceiver<T> {
     AsyncReceiver {
       shared: Arc::clone(&self.shared),
       closed: AtomicBool::new(false),
-      state: AtomicU8::new(STATE_WAITING),
+      state: None,
       is_registered: false,
     }
   }
@@ -361,32 +361,7 @@ impl<T: Send> Sender<T> {
       let mut guard = self.shared.internal.lock();
       guard.sender_count -= 1;
       if guard.sender_count == 0 {
-        for waiter in &guard.waiting_sync_receivers {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              STATE_CLOSED_BUFFERED,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
-          }
-        }
-        for waiter in &guard.waiting_async_receivers {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              STATE_CLOSED_BUFFERED,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
-          }
-        }
+        guard.drain_receivers(STATE_CLOSED_BUFFERED, &mut to_wake);
       }
     }
     for w in to_wake {
@@ -543,75 +518,17 @@ impl<T: Send> Receiver<T> {
     {
       let mut guard = self.shared.internal.lock();
       guard.receiver_count -= 1;
-      let is_real_close = guard.receiver_count == 0;
-
-      let closed_state = if is_real_close {
-        if self.shared.capacity == 0 {
+      if guard.receiver_count == 0 {
+        let closed_state = if self.shared.capacity == 0 {
           STATE_CLOSED_RENDEZVOUS
         } else {
           STATE_CLOSED_BUFFERED
-        }
+        };
+        guard.drain_senders(closed_state, &mut to_wake);
       } else {
-        STATE_SUCCESS_SPACE
-      };
-
-      if is_real_close {
-        for waiter in &guard.waiting_sync_senders {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              closed_state,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
-          }
-        }
-        for waiter in &guard.waiting_async_senders {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              closed_state,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
-          }
-        }
-      } else {
-        if let Some(waiter) = guard.waiting_sync_senders.front() {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              closed_state,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
-          }
-        }
-        if let Some(waiter) = guard.waiting_async_senders.front() {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              closed_state,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
-          }
-        }
+        guard.kick_front_senders(&mut to_wake);
       }
     }
-
     for w in to_wake {
       w.wake();
     }
@@ -640,7 +557,7 @@ impl<T: Send> Receiver<T> {
     AsyncReceiver {
       shared,
       closed: AtomicBool::new(false),
-      state: AtomicU8::new(STATE_WAITING),
+      state: None,
       is_registered: false,
     }
   }
@@ -781,32 +698,7 @@ impl<T: Send> AsyncSender<T> {
       let mut guard = self.shared.internal.lock();
       guard.sender_count -= 1;
       if guard.sender_count == 0 {
-        for waiter in &guard.waiting_sync_receivers {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              STATE_CLOSED_BUFFERED,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
-          }
-        }
-        for waiter in &guard.waiting_async_receivers {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              STATE_CLOSED_BUFFERED,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
-          }
-        }
+        guard.drain_receivers(STATE_CLOSED_BUFFERED, &mut to_wake);
       }
     }
     for w in to_wake {
@@ -939,75 +831,17 @@ impl<T: Send> AsyncReceiver<T> {
     {
       let mut guard = self.shared.internal.lock();
       guard.receiver_count -= 1;
-      let is_real_close = guard.receiver_count == 0;
-
-      let closed_state = if is_real_close {
-        if self.shared.capacity == 0 {
+      if guard.receiver_count == 0 {
+        let closed_state = if self.shared.capacity == 0 {
           STATE_CLOSED_RENDEZVOUS
         } else {
           STATE_CLOSED_BUFFERED
-        }
+        };
+        guard.drain_senders(closed_state, &mut to_wake);
       } else {
-        STATE_SUCCESS_SPACE
-      };
-
-      if is_real_close {
-        for waiter in &guard.waiting_sync_senders {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              closed_state,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
-          }
-        }
-        for waiter in &guard.waiting_async_senders {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              closed_state,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
-          }
-        }
-      } else {
-        if let Some(waiter) = guard.waiting_sync_senders.front() {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              closed_state,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Thread(waiter.thread.clone()));
-          }
-        }
-        if let Some(waiter) = guard.waiting_async_senders.front() {
-          if unsafe { &*waiter.state }
-            .compare_exchange(
-              STATE_WAITING,
-              closed_state,
-              Ordering::SeqCst,
-              Ordering::SeqCst,
-            )
-            .is_ok()
-          {
-            to_wake.push(core::WakeRef::Waker(waiter.waker.clone()));
-          }
-        }
+        guard.kick_front_senders(&mut to_wake);
       }
     }
-
     for w in to_wake {
       w.wake();
     }
@@ -1030,28 +864,11 @@ impl<T: Send> AsyncReceiver<T> {
   ///
   /// This is a zero-cost conversion. The `Drop` implementation of the original
   /// `AsyncReceiver` is not called.
-  pub fn to_sync(self) -> Receiver<T> {
-    if self.is_registered {
-      let state_ptr = &self.state as *const AtomicU8;
-      if self
-        .state
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_CANCELLED,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-      {
-        // Eagerly unlink before mem::forget so the pointer doesn't dangle.
-        let mut guard = self.shared.internal.lock();
-        guard
-          .waiting_async_receivers
-          .retain(|w| w.state != state_ptr);
-      }
-    }
+  pub fn to_sync(mut self) -> Receiver<T> {
+    self.unlink_stream();
+    drop(self.state.take());
     let shared = unsafe { std::ptr::read(&self.shared) };
-    mem::forget(self); // AtomicU8 has no destructor; safe to forget.
+    mem::forget(self);
     Receiver {
       shared,
       closed: AtomicBool::new(false),
@@ -1083,23 +900,26 @@ impl<T: Send> AsyncReceiver<T> {
 impl<T: Send> Drop for AsyncReceiver<T> {
   fn drop(&mut self) {
     let _ = self.close();
-    if self.is_registered {
-      let state_ptr = &self.state as *const AtomicU8;
-      if self
-        .state
-        .compare_exchange(
-          STATE_WAITING,
-          STATE_CANCELLED,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        )
-        .is_ok()
-      {
-        let mut guard = self.shared.internal.lock();
-        guard
-          .waiting_async_receivers
-          .retain(|w| w.state != state_ptr);
-      }
+    self.unlink_stream();
+  }
+}
+
+impl<T: Send> AsyncReceiver<T> {
+  /// Removes the `Stream` registration, whatever state a sender or a close
+  /// left it in.
+  fn unlink_stream(&mut self) {
+    if !self.is_registered {
+      return;
+    }
+    self.is_registered = false;
+    if let Some(state) = self.state.as_deref() {
+      let _ = state.compare_exchange(
+        STATE_WAITING,
+        STATE_CANCELLED,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+      );
+      self.shared.unlink_async_receiver(state);
     }
   }
 }
@@ -1107,10 +927,13 @@ impl<T: Send> Drop for AsyncReceiver<T> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use futures_core::Stream;
   use std::future::Future;
-  use std::task::{Context, RawWaker, RawWakerVTable, Waker};
+  use std::pin::Pin;
+  use std::sync::atomic::AtomicUsize;
+  use std::task::{Context, Poll, RawWaker, RawWakerVTable, Wake, Waker};
   use std::thread;
-  use std::time::Duration;
+  use std::time::{Duration, Instant};
 
   /// `send_batch`/`recv_batch` with a batch far larger than the channel
   /// capacity must still deliver every item exactly once - it just clamps to
@@ -1464,5 +1287,312 @@ mod tests {
       "REGRESSION: Dropped RecvBatchFuture left a dangling pointer in the queue! \
              This will cause a Use-After-Free segfault (address 0x3) on the next channel operation."
     );
+  }
+
+  struct WakeCount(AtomicUsize);
+
+  impl Wake for WakeCount {
+    fn wake(self: Arc<Self>) {
+      self.0.fetch_add(1, Ordering::SeqCst);
+    }
+  }
+
+  fn counting_waker() -> (Arc<WakeCount>, Waker) {
+    let count = Arc::new(WakeCount(AtomicUsize::new(0)));
+    let waker = Waker::from(Arc::clone(&count));
+    (count, waker)
+  }
+
+  #[test]
+  fn woken_receiver_dropped_before_polling_passes_its_wake_on() {
+    let (first_count, first_waker) = counting_waker();
+    let (second_count, second_waker) = counting_waker();
+    let (tx, rx) = bounded_async::<i32>(2);
+    let rx2 = rx.clone();
+
+    let mut first = Box::pin(rx.recv());
+    let mut second = Box::pin(rx2.recv());
+    assert!(first
+      .as_mut()
+      .poll(&mut Context::from_waker(&first_waker))
+      .is_pending());
+    assert!(second
+      .as_mut()
+      .poll(&mut Context::from_waker(&second_waker))
+      .is_pending());
+
+    tx.try_send(1).unwrap();
+    assert_eq!(first_count.0.load(Ordering::SeqCst), 1);
+    assert_eq!(second_count.0.load(Ordering::SeqCst), 0);
+
+    drop(first);
+    assert_eq!(second_count.0.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+      second
+        .as_mut()
+        .poll(&mut Context::from_waker(&second_waker)),
+      Poll::Ready(Ok(1))
+    ));
+  }
+
+  #[test]
+  fn woken_sender_dropped_before_polling_passes_its_wake_on() {
+    let (first_count, first_waker) = counting_waker();
+    let (second_count, second_waker) = counting_waker();
+    let (tx, rx) = bounded_async::<i32>(1);
+    let tx2 = tx.clone();
+    tx.try_send(0).unwrap();
+
+    let mut first = Box::pin(tx.send(1));
+    let mut second = Box::pin(tx2.send(2));
+    assert!(first
+      .as_mut()
+      .poll(&mut Context::from_waker(&first_waker))
+      .is_pending());
+    assert!(second
+      .as_mut()
+      .poll(&mut Context::from_waker(&second_waker))
+      .is_pending());
+
+    assert_eq!(rx.try_recv(), Ok(0));
+    assert_eq!(first_count.0.load(Ordering::SeqCst), 1);
+    assert_eq!(second_count.0.load(Ordering::SeqCst), 0);
+
+    drop(first);
+    assert_eq!(second_count.0.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+      second
+        .as_mut()
+        .poll(&mut Context::from_waker(&second_waker)),
+      Poll::Ready(Ok(()))
+    ));
+    assert_eq!(rx.try_recv(), Ok(2));
+  }
+
+  #[test]
+  fn recv_timeout_times_out_on_an_empty_channel_and_leaves_no_waiter() {
+    let (_tx, rx) = bounded::<i32>(1);
+    let shared = Arc::clone(&rx.shared);
+    assert_eq!(
+      rx.recv_timeout(Duration::from_millis(20)),
+      Err(RecvErrorTimeout::Timeout)
+    );
+    assert_eq!(take_sync_receiver_waiters(&shared), 0);
+  }
+
+  #[test]
+  fn recv_timeout_returns_an_item_sent_while_it_waits() {
+    let (tx, rx) = bounded::<i32>(1);
+    let shared = Arc::clone(&rx.shared);
+    let receiver = thread::spawn(move || rx.recv_timeout(Duration::from_secs(30)));
+    wait_for_parked_sync_receiver(&shared);
+    tx.send(7).unwrap();
+    assert_eq!(receiver.join().unwrap(), Ok(7));
+    assert_eq!(take_sync_receiver_waiters(&shared), 0);
+  }
+  /// Empties the list as it counts, so a stale entry is never dereferenced
+  /// when the test's handles drop.
+  fn take_async_receiver_waiters<T>(shared: &MpmcShared<T>) -> usize {
+    let mut guard = shared.internal.lock();
+    let count = guard.waiting_async_receivers.len();
+    guard.waiting_async_receivers.clear();
+    count
+  }
+
+  /// See `take_async_receiver_waiters`.
+  fn take_sync_receiver_waiters<T>(shared: &MpmcShared<T>) -> usize {
+    let mut guard = shared.internal.lock();
+    let count = guard.waiting_sync_receivers.len();
+    guard.waiting_sync_receivers.clear();
+    count
+  }
+
+  fn wait_for_parked_sync_receiver<T>(shared: &MpmcShared<T>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while shared.internal.lock().waiting_sync_receivers.len() != 1 {
+      assert!(Instant::now() < deadline, "receiver never registered");
+      thread::yield_now();
+    }
+  }
+
+  #[test]
+  fn recv_future_completing_from_the_buffer_leaves_no_waiter() {
+    let mut cx = Context::from_waker(Waker::noop());
+    let (tx, rx) = bounded_async::<i32>(2);
+    let rx2 = rx.clone();
+    let shared = Arc::clone(&rx.shared);
+
+    let mut woken = Box::pin(rx.recv());
+    let mut bystander = Box::pin(rx2.recv());
+    assert!(woken.as_mut().poll(&mut cx).is_pending());
+    assert!(bystander.as_mut().poll(&mut cx).is_pending());
+
+    // The send wakes `woken` and leaves the item in the buffer. `bystander` is
+    // still registered when it is polled next and takes the item.
+    tx.try_send(1).unwrap();
+    assert!(matches!(
+      bystander.as_mut().poll(&mut cx),
+      Poll::Ready(Ok(1))
+    ));
+    drop(bystander);
+    drop(woken);
+
+    assert_eq!(take_async_receiver_waiters(&shared), 0);
+  }
+
+  #[test]
+  fn recv_batch_future_completing_from_the_buffer_leaves_no_waiter() {
+    let mut cx = Context::from_waker(Waker::noop());
+    let (tx, rx) = bounded_async::<i32>(2);
+    let rx2 = rx.clone();
+    let shared = Arc::clone(&rx.shared);
+
+    let mut woken = Box::pin(rx.recv());
+    let mut bystander = Box::pin(rx2.recv_batch(1));
+    assert!(woken.as_mut().poll(&mut cx).is_pending());
+    assert!(bystander.as_mut().poll(&mut cx).is_pending());
+
+    tx.try_send(1).unwrap();
+    match bystander.as_mut().poll(&mut cx) {
+      Poll::Ready(Ok(items)) => assert_eq!(items, vec![1]),
+      other => panic!("expected the buffered item, got {other:?}"),
+    }
+    drop(bystander);
+    drop(woken);
+
+    assert_eq!(take_async_receiver_waiters(&shared), 0);
+  }
+
+  #[test]
+  fn recv_batch_mut_future_completing_from_the_buffer_leaves_no_waiter() {
+    let mut cx = Context::from_waker(Waker::noop());
+    let (tx, rx) = bounded_async::<i32>(2);
+    let rx2 = rx.clone();
+    let shared = Arc::clone(&rx.shared);
+    let mut out = Vec::new();
+
+    let mut woken = Box::pin(rx.recv());
+    let mut bystander = Box::pin(rx2.recv_batch_mut(&mut out, 1));
+    assert!(woken.as_mut().poll(&mut cx).is_pending());
+    assert!(bystander.as_mut().poll(&mut cx).is_pending());
+
+    tx.try_send(1).unwrap();
+    assert!(matches!(
+      bystander.as_mut().poll(&mut cx),
+      Poll::Ready(Ok(1))
+    ));
+    drop(bystander);
+    drop(woken);
+    assert_eq!(out, vec![1]);
+
+    assert_eq!(take_async_receiver_waiters(&shared), 0);
+  }
+
+  #[test]
+  fn stream_receiver_completing_from_the_buffer_leaves_no_waiter_after_drop() {
+    let mut cx = Context::from_waker(Waker::noop());
+    let (tx, rx) = bounded_async::<i32>(2);
+    let mut stream_rx = rx.clone();
+    let shared = Arc::clone(&rx.shared);
+
+    let mut woken = Box::pin(rx.recv());
+    assert!(woken.as_mut().poll(&mut cx).is_pending());
+    assert!(Pin::new(&mut stream_rx).poll_next(&mut cx).is_pending());
+
+    tx.try_send(1).unwrap();
+    assert_eq!(
+      Pin::new(&mut stream_rx).poll_next(&mut cx),
+      Poll::Ready(Some(1))
+    );
+    drop(stream_rx);
+    drop(woken);
+
+    assert_eq!(take_async_receiver_waiters(&shared), 0);
+  }
+
+  #[test]
+  fn parked_stream_receiver_moved_then_dropped_leaves_no_waiter() {
+    let mut cx = Context::from_waker(Waker::noop());
+    let (_tx, rx) = bounded_async::<i32>(1);
+    let shared = Arc::clone(&rx.shared);
+
+    let mut boxed = Box::new(rx);
+    assert!(Pin::new(&mut *boxed).poll_next(&mut cx).is_pending());
+    let moved = *boxed;
+    drop(moved);
+
+    assert_eq!(take_async_receiver_waiters(&shared), 0);
+  }
+
+  #[test]
+  fn parked_stream_receiver_dropped_after_sender_close_leaves_no_waiter() {
+    let mut cx = Context::from_waker(Waker::noop());
+    let (tx, mut rx) = bounded_async::<i32>(1);
+    let shared = Arc::clone(&rx.shared);
+
+    assert!(Pin::new(&mut rx).poll_next(&mut cx).is_pending());
+    tx.close().unwrap();
+    drop(rx);
+
+    assert_eq!(take_async_receiver_waiters(&shared), 0);
+  }
+
+  #[test]
+  fn stream_receiver_ending_on_sender_close_leaves_no_waiter_after_drop() {
+    let mut cx = Context::from_waker(Waker::noop());
+    let (tx, mut rx) = bounded_async::<i32>(1);
+    let shared = Arc::clone(&rx.shared);
+
+    assert!(Pin::new(&mut rx).poll_next(&mut cx).is_pending());
+    tx.close().unwrap();
+    assert_eq!(Pin::new(&mut rx).poll_next(&mut cx), Poll::Ready(None));
+    drop(rx);
+
+    assert_eq!(take_async_receiver_waiters(&shared), 0);
+  }
+
+  #[test]
+  fn parked_stream_receiver_converted_after_sender_close_leaves_no_waiter() {
+    let mut cx = Context::from_waker(Waker::noop());
+    let (tx, mut rx) = bounded_async::<i32>(1);
+    let shared = Arc::clone(&rx.shared);
+
+    assert!(Pin::new(&mut rx).poll_next(&mut cx).is_pending());
+    tx.close().unwrap();
+    let sync_rx = rx.to_sync();
+
+    assert_eq!(take_async_receiver_waiters(&shared), 0);
+    drop(sync_rx);
+  }
+
+  #[test]
+  fn recv_timeout_seeing_sender_close_leaves_no_waiter() {
+    let (tx, rx) = bounded::<i32>(1);
+    let shared = Arc::clone(&rx.shared);
+
+    let receiver = thread::spawn(move || rx.recv_timeout(Duration::from_secs(30)));
+    wait_for_parked_sync_receiver(&shared);
+
+    tx.close().unwrap();
+    assert_eq!(
+      receiver.join().unwrap(),
+      Err(RecvErrorTimeout::Disconnected)
+    );
+
+    assert_eq!(take_sync_receiver_waiters(&shared), 0);
+  }
+
+  #[test]
+  fn recv_seeing_sender_close_leaves_no_waiter() {
+    let (tx, rx) = bounded::<i32>(1);
+    let shared = Arc::clone(&rx.shared);
+
+    let receiver = thread::spawn(move || rx.recv());
+    wait_for_parked_sync_receiver(&shared);
+
+    tx.close().unwrap();
+    assert_eq!(receiver.join().unwrap(), Err(RecvError::Disconnected));
+
+    assert_eq!(take_sync_receiver_waiters(&shared), 0);
   }
 }

@@ -167,7 +167,7 @@ A pool of `capacity` recycled oneshot channels. `Send + Sync`; share it by refer
 
 *   `pub fn new(capacity: usize) -> Self`
 *   `pub fn capacity(&self) -> usize`
-*   `pub fn pair(&self) -> Option<(PooledSender<T>, PooledReceiver<T>)>`: `None` when the pool is exhausted; a retired slot becomes available again immediately.
+*   `pub fn pair(&self) -> Option<(PooledSender<T>, PooledReceiver<T>)>`: `None` when the pool is exhausted. A slot is available again once both handles are done with it. After a receive that waited, that is when the sender's `send` has returned, which can be a moment after the receiver has its value.
 *   `pub fn pair_batch(&self, n: usize) -> Option<Vec<(PooledSender<T>, PooledReceiver<T>)>>`: All-or-nothing in one freelist operation; conservatively `None` when fewer than `n` slots were observed at once.
 
 ### Struct `oneshot::PooledSender<T>`
@@ -369,7 +369,7 @@ Asynchronous sender. Not `Clone`. No batch API.
 
 Asynchronous receiver. Not `Clone`. No batch API. Does not implement `futures::Stream`.
 
-*   `pub fn recv(&self) -> RecvFuture<'_, T>`: Not cancel-safe: a dropped receive can lose an item already handed to it.
+*   `pub fn recv(&self) -> RecvFuture<'_, T>`: Cancel-safe: a dropped receive that was already handed an item passes it to the next receive.
 *   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
 *   `pub fn close(&self) -> Result<(), CloseError>`
 *   `pub fn is_closed(&self) -> bool`
@@ -595,7 +595,7 @@ Asynchronous sender. `Clone`. No batch API.
 
 Asynchronous receiver. Not `Clone`. No batch API. Does not implement `futures::Stream`.
 
-*   `pub fn recv(&self) -> RecvFuture<'_, T>`: Not cancel-safe: a dropped receive can lose an item already handed to it.
+*   `pub fn recv(&self) -> RecvFuture<'_, T>`: Cancel-safe: a dropped receive that was already handed an item passes it to the next receive.
 *   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
 *   `pub fn close(&self) -> Result<(), CloseError>`
 *   `pub fn is_closed(&self) -> bool`
@@ -612,7 +612,7 @@ Asynchronous receiver. Not `Clone`. No batch API. Does not implement `futures::S
 
 ## 4. Module `fibre::spmc`
 
-A broadcast channel for one producer and multiple consumers. `T` must be `Send + Clone`.
+A broadcast channel for one producer and multiple consumers. `T` must be `Send + Clone`. Every handle is used by one caller at a time: no handle is `Sync`. A sender is `Send` for any `T`. A receiver is `Send` only when `T` is also `Sync`, because receivers on different threads clone the same value at the same time.
 
 ### spmc functions
 
@@ -621,7 +621,7 @@ A broadcast channel for one producer and multiple consumers. `T` must be `Send +
 
 ### Struct `spmc::BoundedSyncSender<T>`
 
-The synchronous sending handle. Not `Clone`.
+The synchronous sending handle. Not `Clone`; `!Sync`.
 
 *   `pub fn send(&self, value: T) -> Result<(), SendError>`: Blocks if any consumer's buffer is full.
 *   `pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>>`
@@ -639,7 +639,7 @@ The synchronous sending handle. Not `Clone`.
 
 ### Struct `spmc::BoundedSyncReceiver<T>`
 
-The synchronous receiving handle. `Clone`. A clone starts at the position of the handle it was cloned from, so it receives everything that handle has not yet consumed. This differs from `spmc::topic` and from `tokio::sync::broadcast::subscribe`.
+The synchronous receiving handle. `Clone`; `!Sync`. A clone of a closed receiver is closed. A clone starts at the position of the handle it was cloned from, so it receives everything that handle has not yet consumed. This differs from `spmc::topic` and from `tokio::sync::broadcast::subscribe`.
 
 *   `pub fn recv(&self) -> Result<T, RecvError>`: Blocks if this consumer's buffer is empty.
 *   `pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
@@ -658,14 +658,14 @@ The synchronous receiving handle. `Clone`. A clone starts at the position of the
 
 ### Struct `spmc::BoundedAsyncSender<T>`
 
-The asynchronous sending handle. Not `Clone`.
+The asynchronous sending handle. Not `Clone`; `!Sync`. All send methods take `&mut self`; the returned futures are `Send`.
 
-*   `pub fn send(&self, value: T) -> SendFuture<'_, T>`: Cancel-safe.
-*   `pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>>`
-*   `pub fn send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T>`
-*   `pub fn send_batch_mut<'a>(&'a self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T>`
-*   `pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`
-*   `pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError>`
+*   `pub fn send(&mut self, value: T) -> SendFuture<'_, T>`: Cancel-safe.
+*   `pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>>`
+*   `pub fn send_batch(&mut self, items: Vec<T>) -> SendBatchFuture<'_, T>`
+*   `pub fn send_batch_mut<'a>(&'a mut self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T>`
+*   `pub fn try_send_batch(&mut self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`
+*   `pub fn try_send_batch_mut(&mut self, items: &mut Vec<T>) -> Result<usize, SendError>`
 *   `pub fn close(&mut self) -> Result<(), CloseError>`
 *   `pub fn is_closed(&self) -> bool`
 *   `pub fn capacity(&self) -> usize`
@@ -676,14 +676,14 @@ The asynchronous sending handle. Not `Clone`.
 
 ### Struct `spmc::BoundedAsyncReceiver<T>`
 
-The asynchronous receiving handle. `Clone`. Implements `futures::Stream`. A clone starts at the position of the handle it was cloned from, so it receives everything that handle has not yet consumed. This differs from `spmc::topic` and from `tokio::sync::broadcast::subscribe`.
+The asynchronous receiving handle. `Clone`; `!Sync`. Implements `futures::Stream`. All receive methods take `&mut self`; the returned futures are `Send` when `T` is `Sync`. A clone of a closed receiver is closed. A clone starts at the position of the handle it was cloned from, so it receives everything that handle has not yet consumed. This differs from `spmc::topic` and from `tokio::sync::broadcast::subscribe`.
 
-*   `pub fn recv(&self) -> RecvFuture<'_, T>`: Cancel-safe.
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn recv_batch(&self, max: usize) -> RecvBatchFuture<'_, T>`
-*   `pub fn recv_batch_mut<'a>(&'a self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T>`
-*   `pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError>`
-*   `pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError>`
+*   `pub fn recv(&mut self) -> RecvFuture<'_, T>`: Cancel-safe.
+*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
+*   `pub fn recv_batch(&mut self, max: usize) -> RecvBatchFuture<'_, T>`
+*   `pub fn recv_batch_mut<'a>(&'a mut self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T>`
+*   `pub fn try_recv_batch(&mut self, max: usize) -> Result<Vec<T>, TryRecvError>`
+*   `pub fn try_recv_batch_mut(&mut self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError>`
 *   `pub fn close(&self) -> Result<(), CloseError>`
 *   `pub fn is_closed(&self) -> bool`
 *   `pub fn capacity(&self) -> usize`
@@ -986,7 +986,7 @@ Asynchronous sender. `Clone`. No batch API.
 
 Asynchronous receiver. `Clone`. No batch API. Does not implement `futures::Stream`.
 
-*   `pub fn recv(&self) -> RecvFuture<'_, T>`: Not cancel-safe: a dropped receive can lose an item already handed to it.
+*   `pub fn recv(&self) -> RecvFuture<'_, T>`: Cancel-safe: a dropped receive that was already handed an item passes it to the next receive.
 *   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
 *   `pub fn close(&self) -> Result<(), CloseError>`
 *   `pub fn is_closed(&self) -> bool`

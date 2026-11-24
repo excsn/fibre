@@ -44,8 +44,18 @@ const VALUE: u8 = 1 << 0;
 const SENDER_GONE: u8 = 1 << 1;
 const RECEIVER_GONE: u8 = 1 << 2;
 const WAITING: u8 = 1 << 3;
+/// Set by a sender that saw `WAITING`, as its last access to the slot.
+const SENDER_DONE: u8 = 1 << 4;
 
 struct SenderGoneMark;
+
+enum Sent<T> {
+  Delivered,
+  /// Delivered to a receiver that has already exited: the caller recycles.
+  DeliveredLastOut,
+  /// The receiver exited first: the value comes back and the caller recycles.
+  Rejected(T),
+}
 
 /// One recycled channel core. The value cell is initialized iff `VALUE` is set
 /// and the receiving side has not consumed it; taken-ness lives in the receiver
@@ -69,42 +79,69 @@ impl<T> Slot<T> {
     }
   }
 
-  /// Publish-then-wake. The wake is gated on the receiver's `WAITING`
-  /// announcement, which always precedes its first waker registration, so a
-  /// never-parked exchange touches the waker zero times. `Err` means the
-  /// receiver already exited: the value comes back and the caller is the
-  /// recycler.
-  fn send(&self, value: T) -> Result<(), T> {
-    unsafe { (*self.value.get()).write(value) };
-    let prev = self.state.fetch_or(VALUE, Ordering::AcqRel);
+  /// Publishes the value, then wakes a receiver that announced `WAITING`. The
+  /// announcement always precedes the receiver's first waker registration, so
+  /// a never-parked exchange touches the waker zero times.
+  ///
+  /// A sender that saw `WAITING` takes the waker out, sets `SENDER_DONE` as its
+  /// last access to the slot and wakes with its own copy. A receiver that
+  /// announced is not the recycler until it has seen `SENDER_DONE`.
+  ///
+  /// Takes a pointer because the receiver may free the slot's storage as soon
+  /// as the sender's last access has landed.
+  ///
+  /// Safety: `this` is a live slot and the caller is its only sender.
+  unsafe fn send(this: NonNull<Self>, value: T) -> Sent<T> {
+    let slot = this.as_ptr();
+    unsafe { (*(*slot).value.get()).write(value) };
+    let prev = unsafe { (*slot).state.fetch_or(VALUE, Ordering::AcqRel) };
     debug_assert_eq!(prev & (VALUE | SENDER_GONE), 0, "pool Slot::send called twice");
     if prev & RECEIVER_GONE != 0 {
-      return Err(unsafe { (*self.value.get()).assume_init_read() });
+      return Sent::Rejected(unsafe { (*(*slot).value.get()).assume_init_read() });
     }
-    if prev & WAITING != 0 {
-      self.waker.wake();
+    if prev & WAITING == 0 {
+      return Sent::Delivered;
     }
-    Ok(())
+    let waker = unsafe { (*slot).waker.take() };
+    let prev = unsafe { (*slot).state.fetch_or(SENDER_DONE, Ordering::AcqRel) };
+    if let Some(waker) = waker {
+      waker.wake();
+    }
+    if prev & RECEIVER_GONE != 0 {
+      Sent::DeliveredLastOut
+    } else {
+      Sent::Delivered
+    }
   }
 
-  /// Returns true when the receiver already exited, making the caller the
-  /// recycler.
-  fn close_sender(&self) -> bool {
-    let prev = self.state.fetch_or(SENDER_GONE, Ordering::AcqRel);
+  /// Returns true when the caller is the recycler: the receiver had already
+  /// exited when this close set `SENDER_GONE`. A close that saw `WAITING`
+  /// looks again when it sets `SENDER_DONE`.
+  ///
+  /// Safety: same contract as [`Slot::send`].
+  unsafe fn close_sender(this: NonNull<Self>) -> bool {
+    let slot = this.as_ptr();
+    let prev = unsafe { (*slot).state.fetch_or(SENDER_GONE, Ordering::AcqRel) };
     if prev & RECEIVER_GONE != 0 {
       return true;
     }
-    if prev & WAITING != 0 {
-      self.waker.wake();
+    if prev & WAITING == 0 {
+      return false;
     }
-    false
+    let waker = unsafe { (*slot).waker.take() };
+    let prev = unsafe { (*slot).state.fetch_or(SENDER_DONE, Ordering::AcqRel) };
+    if let Some(waker) = waker {
+      waker.wake();
+    }
+    prev & RECEIVER_GONE != 0
   }
 
-  /// `waiting_set` is the receiver handle's record of having announced; the
-  /// announcement is a fetch_or made before the first registration, which is
-  /// what makes the sender's gated wake race-free: a sender that misses the
-  /// announcement is ordered before it, and the register-then-recheck below
-  /// observes that sender's value.
+  /// `waiting_set` records that the receiver announced before the sender
+  /// published, which is when the sender takes the `SENDER_DONE` path. The
+  /// announcement is a fetch_or made before the first registration. A sender
+  /// ordered before it has already published, so its outcome is returned here
+  /// and `waiting_set` stays false. A sender ordered after it sees `WAITING`,
+  /// and the register-then-recheck below observes its value.
   fn poll_recv(&self, cx: &mut Context<'_>, waiting_set: &mut bool) -> Poll<Result<T, SenderGoneMark>> {
     let state = self.state.load(Ordering::Acquire);
     if state & VALUE != 0 {
@@ -114,7 +151,13 @@ impl<T> Slot<T> {
       return Poll::Ready(Err(SenderGoneMark));
     }
     if !*waiting_set {
-      self.state.fetch_or(WAITING, Ordering::AcqRel);
+      let prev = self.state.fetch_or(WAITING, Ordering::AcqRel);
+      if prev & VALUE != 0 {
+        return Poll::Ready(Ok(unsafe { (*self.value.get()).assume_init_read() }));
+      }
+      if prev & SENDER_GONE != 0 {
+        return Poll::Ready(Err(SenderGoneMark));
+      }
       *waiting_set = true;
     }
     self.waker.register(cx.waker());
@@ -140,30 +183,62 @@ impl<T> Slot<T> {
   }
 
   /// Cancel-path receiver exit; the caller must be a receiver that never took
-  /// the value, so a present value is by definition unconsumed. A value
-  /// published between the load and the exit fetch_or is caught by the second
-  /// check: that sender saw no `RECEIVER_GONE`, returned `Ok`, and will never
-  /// touch the cell again. Returns true when the sender already exited, making
-  /// the caller the recycler.
-  fn close_receiver(&self) -> bool {
-    let state = self.state.load(Ordering::Acquire);
-    if state & VALUE != 0 {
-      unsafe { (*self.value.get()).assume_init_drop() };
+  /// the value, so a present value is by definition unconsumed and is dropped
+  /// here before `RECEIVER_GONE` goes in. The compare-exchange leaves no window
+  /// for a value to arrive in between: a sender that publishes later sees
+  /// `RECEIVER_GONE` and takes its value back. Returns true when the caller is
+  /// the recycler.
+  ///
+  /// Safety: `this` is a live slot and the caller is its only receiver.
+  unsafe fn close_receiver(this: NonNull<Self>, waiting_set: bool) -> bool {
+    let slot = this.as_ptr();
+    let mut state = unsafe { (*slot).state.load(Ordering::Acquire) };
+    let mut dropped = false;
+    loop {
+      if state & VALUE != 0 && !dropped {
+        unsafe { (*(*slot).value.get()).assume_init_drop() };
+        dropped = true;
+      }
+      match unsafe {
+        (*slot).state.compare_exchange_weak(
+          state,
+          state | RECEIVER_GONE,
+          Ordering::AcqRel,
+          Ordering::Acquire,
+        )
+      } {
+        Ok(_) => break,
+        Err(now) => state = now,
+      }
     }
-    let prev = self.state.fetch_or(RECEIVER_GONE, Ordering::AcqRel);
-    if prev & VALUE != 0 && state & VALUE == 0 {
-      unsafe { (*self.value.get()).assume_init_drop() };
+    if state & (VALUE | SENDER_GONE) == 0 {
+      return false;
     }
-    prev & (VALUE | SENDER_GONE) != 0
+    !waiting_set || state & SENDER_DONE != 0
+  }
+
+  /// Receiver exit after it took the value or saw the disconnect. Returns true
+  /// when the caller is the recycler. A receiver that never announced always
+  /// is, with no atomic operation.
+  ///
+  /// Safety: same contract as [`Slot::close_receiver`].
+  #[inline]
+  unsafe fn finish_receiver(this: NonNull<Self>, waiting_set: bool) -> bool {
+    if !waiting_set {
+      return true;
+    }
+    let slot = this.as_ptr();
+    if unsafe { (*slot).state.load(Ordering::Acquire) } & SENDER_DONE != 0 {
+      return true;
+    }
+    let prev = unsafe { (*slot).state.fetch_or(RECEIVER_GONE, Ordering::AcqRel) };
+    prev & SENDER_DONE != 0
   }
 
   /// Recycler-only: the caller holds the slot exclusively as this channel's
   /// last-out. Every exit path leaves the value cell uninitialized before
   /// reaching here. The waker take is gated on `WAITING` since no announcement
-  /// means no registration ever happened; a stale sender may still be inside
-  /// its gated `wake`, which only touches the waker, and concurrent take/wake
-  /// is within AtomicWaker's contract, at worst spuriously waking the slot's
-  /// next user.
+  /// means no registration ever happened.
   fn reset(&self) {
     if self.state.load(Ordering::Relaxed) & WAITING != 0 {
       drop(self.waker.take());
@@ -414,9 +489,13 @@ impl<T: Send> PooledSender<T> {
     let inner = self.inner;
     let idx = self.idx;
     std::mem::forget(self);
-    match unsafe { slot.as_ref() }.send(value) {
-      Ok(()) => Ok(()),
-      Err(v) => {
+    match unsafe { Slot::send(slot, value) } {
+      Sent::Delivered => Ok(()),
+      Sent::DeliveredLastOut => {
+        unsafe { PairInner::retire(inner, idx) };
+        Ok(())
+      }
+      Sent::Rejected(v) => {
         unsafe { PairInner::retire(inner, idx) };
         Err(TrySendError::Closed(v))
       }
@@ -434,7 +513,7 @@ impl<T: Send> PooledSender<T> {
 
 impl<T: Send> Drop for PooledSender<T> {
   fn drop(&mut self) {
-    if unsafe { self.slot.as_ref() }.close_sender() {
+    if unsafe { Slot::close_sender(self.slot) } {
       unsafe { PairInner::retire(self.inner, self.idx) };
     }
   }
@@ -504,10 +583,10 @@ impl<T: Send> PooledReceiver<T> {
     }
     self.exited = true;
     let sender_exited = if self.done {
-      true
+      unsafe { Slot::finish_receiver(self.slot, self.waiting_set) }
     } else {
       self.done = true;
-      unsafe { self.slot.as_ref() }.close_receiver()
+      unsafe { Slot::close_receiver(self.slot, self.waiting_set) }
     };
     if sender_exited {
       unsafe { PairInner::retire(self.inner, self.idx) };
@@ -527,9 +606,9 @@ impl<T: Send> Drop for PooledReceiver<T> {
       return;
     }
     let sender_exited = if self.done {
-      true
+      unsafe { Slot::finish_receiver(self.slot, self.waiting_set) }
     } else {
-      unsafe { self.slot.as_ref() }.close_receiver()
+      unsafe { Slot::close_receiver(self.slot, self.waiting_set) }
     };
     if sender_exited {
       unsafe { PairInner::retire(self.inner, self.idx) };
@@ -746,9 +825,13 @@ impl<H: Send + Sync, T: Send> HostSender<H, T> {
     let inner = self.inner;
     let idx = self.idx;
     std::mem::forget(self);
-    match unsafe { slot.as_ref() }.send(value) {
-      Ok(()) => Ok(()),
-      Err(v) => {
+    match unsafe { Slot::send(slot, value) } {
+      Sent::Delivered => Ok(()),
+      Sent::DeliveredLastOut => {
+        unsafe { HostInner::retire(inner, idx) };
+        Ok(())
+      }
+      Sent::Rejected(v) => {
         unsafe { HostInner::retire(inner, idx) };
         Err(TrySendError::Closed(v))
       }
@@ -766,7 +849,7 @@ impl<H: Send + Sync, T: Send> HostSender<H, T> {
 
 impl<H: Send + Sync, T: Send> Drop for HostSender<H, T> {
   fn drop(&mut self) {
-    if unsafe { self.slot.as_ref() }.close_sender() {
+    if unsafe { Slot::close_sender(self.slot) } {
       unsafe { HostInner::retire(self.inner, self.idx) };
     }
   }
@@ -835,10 +918,10 @@ impl<H: Send + Sync, T: Send> HostReceiver<H, T> {
     }
     self.exited = true;
     let sender_exited = if self.done {
-      true
+      unsafe { Slot::finish_receiver(self.slot, self.waiting_set) }
     } else {
       self.done = true;
-      unsafe { self.slot.as_ref() }.close_receiver()
+      unsafe { Slot::close_receiver(self.slot, self.waiting_set) }
     };
     if sender_exited {
       unsafe { HostInner::retire(self.inner, self.idx) };
@@ -857,9 +940,9 @@ impl<H: Send + Sync, T: Send> Drop for HostReceiver<H, T> {
       return;
     }
     let sender_exited = if self.done {
-      true
+      unsafe { Slot::finish_receiver(self.slot, self.waiting_set) }
     } else {
-      unsafe { self.slot.as_ref() }.close_receiver()
+      unsafe { Slot::close_receiver(self.slot, self.waiting_set) }
     };
     if sender_exited {
       unsafe { HostInner::retire(self.inner, self.idx) };
