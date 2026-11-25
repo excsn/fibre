@@ -15,17 +15,17 @@ Handoff rows carry a lower item ceiling than the rest of the arena, since every 
 
 | Stage | fibre | fibre-exclusive | fibre-pool | fibre-pool-host | lite-sync | oneshot | sync-oneshot | tokio |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| full-cycle | 41.9 | 47.0 | **118.6** | 114.4 | 65.7 | 48.7 | 44.6 | 31.8 |
-| handoff | 82.8 | 103.2 | 189.7 | **190.5** | 97.7 | 97.5 | 80.6 | 50.1 |
+| full-cycle | 43.3 | 46.6 | **152.9** | 149.4 | 65.8 | 48.7 | 44.6 | 31.8 |
+| handoff | 83.8 | 106.7 | **327.6** | 295.6 | 97.7 | 97.5 | 80.6 | 50.1 |
 
-Unreliable, sample spread over 2x on a 1×1 cell where the rest of the matrix holds within a few percent: fibre-exclusive at handoff (2.8x, 37.6 to 104.5), lite-sync at handoff (2.8x, 77.3 to 214.0). Those medians do not support a comparison.
+Unreliable, sample spread over 2x on a 1×1 cell where the rest of the matrix holds within a few percent: lite-sync at handoff (2.8x, 77.3 to 214.0). Those medians do not support a comparison.
 
 ## async
 
 | Stage | fibre | fibre-exclusive | fibre-pool | fibre-pool-host | async-oneshot | futures | lite-sync | oneshot | tokio |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| full-cycle | 42.9 | 52.4 | **120.4** | 110.6 | 53.2 | 37.7 | 59.9 | 45.6 | 39.0 |
-| handoff | 55.3 | 57.9 | 129.6 | 102.1 | 77.2 | 60.8 | **184.2** | 79.1 | 42.5 |
+| full-cycle | 38.4 | 53.8 | **134.1** | 131.5 | 53.2 | 37.7 | 59.9 | 45.6 | 39.0 |
+| handoff | 56.1 | 75.0 | 177.8 | 166.5 | 77.2 | 60.8 | **184.2** | 79.1 | 42.5 |
 
 ## Implementations
 

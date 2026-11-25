@@ -49,6 +49,62 @@ const SENDER_DONE: u8 = 1 << 4;
 
 struct SenderGoneMark;
 
+/// A receiver's slot index and its flags in one word. With the pool pointer
+/// that makes a receiver two words, which a call passes in registers. A wider
+/// receiver is passed through memory. Each such trip costs a never-parked
+/// exchange one to two nanoseconds.
+#[derive(Clone, Copy)]
+struct ReceiverWord(u64);
+
+impl ReceiverWord {
+  /// The receiver took its value or saw the disconnect.
+  const DONE: u64 = 1 << 32;
+  /// The receiver has settled its slot.
+  const EXITED: u64 = 1 << 33;
+  /// The receiver announced `WAITING` before the sender published.
+  const WAITING: u64 = 1 << 34;
+
+  #[inline]
+  fn new(idx: u32) -> Self {
+    ReceiverWord(idx as u64)
+  }
+
+  #[inline]
+  fn idx(self) -> u32 {
+    self.0 as u32
+  }
+
+  #[inline]
+  fn done(self) -> bool {
+    self.0 & Self::DONE != 0
+  }
+
+  #[inline]
+  fn exited(self) -> bool {
+    self.0 & Self::EXITED != 0
+  }
+
+  #[inline]
+  fn waiting_set(self) -> bool {
+    self.0 & Self::WAITING != 0
+  }
+
+  #[inline]
+  fn set_done(&mut self) {
+    self.0 |= Self::DONE;
+  }
+
+  #[inline]
+  fn set_exited(&mut self) {
+    self.0 |= Self::EXITED;
+  }
+
+  #[inline]
+  fn set_waiting(&mut self) {
+    self.0 |= Self::WAITING;
+  }
+}
+
 enum Sent<T> {
   Delivered,
   /// Delivered to a receiver that has already exited: the caller recycles.
@@ -142,7 +198,7 @@ impl<T> Slot<T> {
   /// ordered before it has already published, so its outcome is returned here
   /// and `waiting_set` stays false. A sender ordered after it sees `WAITING`,
   /// and the register-then-recheck below observes its value.
-  fn poll_recv(&self, cx: &mut Context<'_>, waiting_set: &mut bool) -> Poll<Result<T, SenderGoneMark>> {
+  fn poll_recv(&self, cx: &mut Context<'_>, word: &mut ReceiverWord) -> Poll<Result<T, SenderGoneMark>> {
     let state = self.state.load(Ordering::Acquire);
     if state & VALUE != 0 {
       return Poll::Ready(Ok(unsafe { (*self.value.get()).assume_init_read() }));
@@ -150,7 +206,7 @@ impl<T> Slot<T> {
     if state & SENDER_GONE != 0 {
       return Poll::Ready(Err(SenderGoneMark));
     }
-    if !*waiting_set {
+    if !word.waiting_set() {
       let prev = self.state.fetch_or(WAITING, Ordering::AcqRel);
       if prev & VALUE != 0 {
         return Poll::Ready(Ok(unsafe { (*self.value.get()).assume_init_read() }));
@@ -158,7 +214,7 @@ impl<T> Slot<T> {
       if prev & SENDER_GONE != 0 {
         return Poll::Ready(Err(SenderGoneMark));
       }
-      *waiting_set = true;
+      word.set_waiting();
     }
     self.waker.register(cx.waker());
     let state = self.state.load(Ordering::Acquire);
@@ -357,13 +413,44 @@ impl Freelist {
 const CLOSED: usize = 1;
 const STAKE: usize = 2;
 
+/// A value on a cache line of its own. Every pair and every retire writes the
+/// pool's freelist head and stake count. A receiver reads the slot table's
+/// address on every receive, so that address is kept off their line.
+#[repr(align(128))]
+struct OwnLine<T>(T);
+
 struct PairInner<T: Send> {
   list: Freelist,
   slots: Box<[Slot<T>]>,
+  /// The address of `slots`, for receivers.
+  slot_table: OwnLine<NonNull<Slot<T>>>,
   lifecycle: AtomicUsize,
 }
 
 impl<T: Send> PairInner<T> {
+  /// A receiver's exit: settles the slot and recycles it when the receiver is
+  /// the last one out. `done` says the receiver took its value or saw the
+  /// disconnect.
+  ///
+  /// Out of line and by value, so that a receiver's `Drop` is one flag test
+  /// and one call that does not take the handle's address. A `Drop` that
+  /// passes `&mut self` to a function the compiler does not inline keeps the
+  /// handle in memory.
+  ///
+  /// Safety: the caller is the slot's only receiver and `inner` and `idx`
+  /// name that slot.
+  #[inline(never)]
+  unsafe fn exit_receiver(inner: NonNull<Self>, slot: NonNull<Slot<T>>, idx: u32, done: bool, waiting_set: bool) {
+    let last_out = if done {
+      unsafe { Slot::finish_receiver(slot, waiting_set) }
+    } else {
+      unsafe { Slot::close_receiver(slot, waiting_set) }
+    };
+    if last_out {
+      unsafe { Self::retire(inner, idx) };
+    }
+  }
+
   /// Settles one channel's stake after recycling its slot.
   ///
   /// Safety: the caller must be the channel's last-out handle, and `inner` must
@@ -394,11 +481,13 @@ pub fn pair_pool<T: Send>(capacity: usize) -> OneshotPairPool<T> {
 
 impl<T: Send> OneshotPairPool<T> {
   pub fn new(capacity: usize) -> Self {
-    let inner = Box::new(PairInner {
+    let mut inner = Box::new(PairInner {
       list: Freelist::new(capacity),
       slots: (0..capacity).map(|_| Slot::new()).collect(),
+      slot_table: OwnLine(NonNull::dangling()),
       lifecycle: AtomicUsize::new(0),
     });
+    inner.slot_table = OwnLine(NonNull::from(&inner.slots[..]).cast());
     OneshotPairPool {
       inner: unsafe { NonNull::new_unchecked(Box::into_raw(inner)) },
     }
@@ -440,12 +529,8 @@ impl<T: Send> OneshotPairPool<T> {
         idx,
       },
       PooledReceiver {
-        slot,
         inner: self.inner,
-        idx,
-        done: false,
-        exited: false,
-        waiting_set: false,
+        word: ReceiverWord::new(idx),
       },
     )
   }
@@ -529,33 +614,36 @@ impl<T: Send> fmt::Debug for PooledSender<T> {
 
 /// The receiving side of a pooled oneshot channel. Not clonable.
 pub struct PooledReceiver<T: Send> {
-  slot: NonNull<Slot<T>>,
   inner: NonNull<PairInner<T>>,
-  idx: u32,
-  done: bool,
-  exited: bool,
-  waiting_set: bool,
+  word: ReceiverWord,
 }
 
 unsafe impl<T: Send> Send for PooledReceiver<T> {}
 
 impl<T: Send> PooledReceiver<T> {
+  /// The receiver's slot, derived from the pool's slot table and the index.
+  /// The handle is two words without it, so it moves in registers.
+  #[inline]
+  fn slot(&self) -> NonNull<Slot<T>> {
+    unsafe { self.inner.as_ref().slot_table.0.add(self.word.idx() as usize) }
+  }
+
   /// Attempts to receive the value non-blockingly.
   ///
   /// Returns `Err(TryRecvError::Empty)` while the sender is alive and has not
   /// sent, and `Err(TryRecvError::Disconnected)` once the value has been taken,
   /// the sender dropped without sending, or this handle was closed.
   pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-    if self.done || self.exited {
+    if self.word.done() || self.word.exited() {
       return Err(TryRecvError::Disconnected);
     }
-    match unsafe { self.slot.as_ref() }.try_recv() {
+    match unsafe { self.slot().as_ref() }.try_recv() {
       Some(Ok(value)) => {
-        self.done = true;
+        self.word.set_done();
         Ok(value)
       }
       Some(Err(SenderGoneMark)) => {
-        self.done = true;
+        self.word.set_done();
         Err(TryRecvError::Disconnected)
       }
       None => Err(TryRecvError::Empty),
@@ -569,8 +657,14 @@ impl<T: Send> PooledReceiver<T> {
 
   /// Blocking receive for synchronous callers: parks the thread until the
   /// value arrives or the channel disconnects.
+  // Out of line: inlined, it keeps a caller that wraps it from being inlined.
+  #[inline(never)]
   pub fn recv_blocking(&mut self) -> Result<T, RecvError> {
-    crate::sync_util::block_on(self.recv())
+    match self.try_recv() {
+      Ok(value) => Ok(value),
+      Err(TryRecvError::Disconnected) => Err(RecvError::Disconnected),
+      Err(TryRecvError::Empty) => crate::sync_util::block_on(self.recv()),
+    }
   }
 
   /// Closes the receiving end. After this, `send` fails and returns the value.
@@ -578,48 +672,36 @@ impl<T: Send> PooledReceiver<T> {
   /// This is an explicit alternative to `drop`. If a value was already sent
   /// but not yet received, it is dropped.
   pub fn close(&mut self) {
-    if self.exited {
+    if self.word.exited() {
       return;
     }
-    self.exited = true;
-    let sender_exited = if self.done {
-      unsafe { Slot::finish_receiver(self.slot, self.waiting_set) }
-    } else {
-      self.done = true;
-      unsafe { Slot::close_receiver(self.slot, self.waiting_set) }
-    };
-    if sender_exited {
-      unsafe { PairInner::retire(self.inner, self.idx) };
-    }
+    let done = self.word.done();
+    self.word.set_exited();
+    self.word.set_done();
+    unsafe { PairInner::exit_receiver(self.inner, self.slot(), self.word.idx(), done, self.word.waiting_set()) };
   }
 
   /// Checks if no value can ever be received anymore: the value was taken,
   /// this handle was closed, or the sender dropped without sending.
   pub fn is_closed(&self) -> bool {
-    self.done || self.exited || unsafe { self.slot.as_ref() }.is_disconnected()
+    self.word.done() || self.word.exited() || unsafe { self.slot().as_ref() }.is_disconnected()
   }
 }
 
 impl<T: Send> Drop for PooledReceiver<T> {
+  #[inline]
   fn drop(&mut self) {
-    if self.exited {
+    if self.word.exited() {
       return;
     }
-    let sender_exited = if self.done {
-      unsafe { Slot::finish_receiver(self.slot, self.waiting_set) }
-    } else {
-      unsafe { Slot::close_receiver(self.slot, self.waiting_set) }
-    };
-    if sender_exited {
-      unsafe { PairInner::retire(self.inner, self.idx) };
-    }
+    unsafe { PairInner::exit_receiver(self.inner, self.slot(), self.word.idx(), self.word.done(), self.word.waiting_set()) };
   }
 }
 
 impl<T: Send> fmt::Debug for PooledReceiver<T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("PooledReceiver")
-      .field("done", &self.done)
+      .field("done", &self.word.done())
       .finish_non_exhaustive()
   }
 }
@@ -634,17 +716,17 @@ impl<'a, T: Send> Future for PooledReceiveFuture<'a, T> {
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let rx = &mut *self.receiver;
-    if rx.done || rx.exited {
+    if rx.word.done() || rx.word.exited() {
       return Poll::Ready(Err(RecvError::Disconnected));
     }
-    let polled = unsafe { rx.slot.as_ref() }.poll_recv(cx, &mut rx.waiting_set);
+    let polled = unsafe { rx.slot().as_ref() }.poll_recv(cx, &mut rx.word);
     match polled {
       Poll::Ready(Ok(value)) => {
-        rx.done = true;
+        rx.word.set_done();
         Poll::Ready(Ok(value))
       }
       Poll::Ready(Err(SenderGoneMark)) => {
-        rx.done = true;
+        rx.word.set_done();
         Poll::Ready(Err(RecvError::Disconnected))
       }
       Poll::Pending => Poll::Pending,
@@ -679,6 +761,11 @@ impl<T> fmt::Debug for PoolSlot<T> {
 struct HostInner<H: Send + Sync, T: Send> {
   list: Freelist,
   cells: Box<[UnsafeCell<H>]>,
+  /// The slot each live channel runs on, by cell index. The thread that
+  /// assembles a pair writes its entry while it holds the index. Only that
+  /// pair's receiver reads it, before it exits. An entry is dangling until
+  /// its first pair.
+  live_slots: Box<[UnsafeCell<NonNull<Slot<T>>>]>,
   project: fn(&H) -> &PoolSlot<T>,
   lifecycle: AtomicUsize,
 }
@@ -689,6 +776,21 @@ unsafe impl<H: Send + Sync, T: Send> Sync for HostInner<H, T> {}
 impl<H: Send + Sync, T: Send> HostInner<H, T> {
   fn slot(&self, idx: u32) -> &Slot<T> {
     &(self.project)(unsafe { &*self.cells[idx as usize].get() }).slot
+  }
+
+  /// See [`PairInner::exit_receiver`].
+  ///
+  /// Safety: same contract as [`PairInner::exit_receiver`].
+  #[inline(never)]
+  unsafe fn exit_receiver(inner: NonNull<Self>, slot: NonNull<Slot<T>>, idx: u32, done: bool, waiting_set: bool) {
+    let last_out = if done {
+      unsafe { Slot::finish_receiver(slot, waiting_set) }
+    } else {
+      unsafe { Slot::close_receiver(slot, waiting_set) }
+    };
+    if last_out {
+      unsafe { Self::retire(inner, idx) };
+    }
   }
 
   /// Safety: same contract as [`PairInner::retire`].
@@ -720,6 +822,7 @@ impl<H: Send + Sync, T: Send> OneshotHostPool<H, T> {
     let inner = Box::new(HostInner {
       list: Freelist::new(capacity),
       cells: (0..capacity).map(|_| UnsafeCell::new(make())).collect(),
+      live_slots: (0..capacity).map(|_| UnsafeCell::new(NonNull::dangling())).collect(),
       project,
       lifecycle: AtomicUsize::new(0),
     });
@@ -770,7 +873,7 @@ impl<H: Send + Sync, T: Send> OneshotHostPool<H, T> {
   fn assemble(&self, idx: u32) -> (HostSender<H, T>, HostReceiver<H, T>) {
     let inner = unsafe { self.inner.as_ref() };
     let slot = NonNull::from(inner.slot(idx));
-    let cell = NonNull::from(&inner.cells[idx as usize]);
+    unsafe { *inner.live_slots[idx as usize].get() = slot };
     (
       HostSender {
         slot,
@@ -778,13 +881,8 @@ impl<H: Send + Sync, T: Send> OneshotHostPool<H, T> {
         idx,
       },
       HostReceiver {
-        cell,
-        slot,
         inner: self.inner,
-        idx,
-        done: false,
-        exited: false,
-        waiting_set: false,
+        word: ReceiverWord::new(idx),
       },
     )
   }
@@ -865,35 +963,37 @@ impl<H: Send + Sync, T: Send> fmt::Debug for HostSender<H, T> {
 
 /// The receiving side of a hosted pooled oneshot channel. Not clonable.
 pub struct HostReceiver<H: Send + Sync, T: Send> {
-  cell: NonNull<UnsafeCell<H>>,
-  slot: NonNull<Slot<T>>,
   inner: NonNull<HostInner<H, T>>,
-  idx: u32,
-  done: bool,
-  exited: bool,
-  waiting_set: bool,
+  word: ReceiverWord,
 }
 
 unsafe impl<H: Send + Sync, T: Send> Send for HostReceiver<H, T> {}
 
 impl<H: Send + Sync, T: Send> HostReceiver<H, T> {
+  /// The receiver's slot, read from the pool. The handle is two words without
+  /// it, so it moves in registers.
+  #[inline]
+  fn slot(&self) -> NonNull<Slot<T>> {
+    unsafe { *self.inner.as_ref().live_slots.get_unchecked(self.word.idx() as usize).get() }
+  }
+
   /// The record this channel rides in, readable until the receiver finishes.
   pub fn host(&self) -> &H {
-    unsafe { &*self.cell.as_ref().get() }
+    unsafe { &*self.inner.as_ref().cells.get_unchecked(self.word.idx() as usize).get() }
   }
 
   /// See [`PooledReceiver::try_recv`].
   pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-    if self.done || self.exited {
+    if self.word.done() || self.word.exited() {
       return Err(TryRecvError::Disconnected);
     }
-    match unsafe { self.slot.as_ref() }.try_recv() {
+    match unsafe { self.slot().as_ref() }.try_recv() {
       Some(Ok(value)) => {
-        self.done = true;
+        self.word.set_done();
         Ok(value)
       }
       Some(Err(SenderGoneMark)) => {
-        self.done = true;
+        self.word.set_done();
         Err(TryRecvError::Disconnected)
       }
       None => Err(TryRecvError::Empty),
@@ -907,53 +1007,47 @@ impl<H: Send + Sync, T: Send> HostReceiver<H, T> {
 
   /// Blocking receive for synchronous callers: parks the thread until the
   /// value arrives or the channel disconnects.
+  // Out of line: inlined, it keeps a caller that wraps it from being inlined.
+  #[inline(never)]
   pub fn recv_blocking(&mut self) -> Result<T, RecvError> {
-    crate::sync_util::block_on(self.recv())
+    match self.try_recv() {
+      Ok(value) => Ok(value),
+      Err(TryRecvError::Disconnected) => Err(RecvError::Disconnected),
+      Err(TryRecvError::Empty) => crate::sync_util::block_on(self.recv()),
+    }
   }
 
   /// See [`PooledReceiver::close`].
   pub fn close(&mut self) {
-    if self.exited {
+    if self.word.exited() {
       return;
     }
-    self.exited = true;
-    let sender_exited = if self.done {
-      unsafe { Slot::finish_receiver(self.slot, self.waiting_set) }
-    } else {
-      self.done = true;
-      unsafe { Slot::close_receiver(self.slot, self.waiting_set) }
-    };
-    if sender_exited {
-      unsafe { HostInner::retire(self.inner, self.idx) };
-    }
+    let done = self.word.done();
+    self.word.set_exited();
+    self.word.set_done();
+    unsafe { HostInner::exit_receiver(self.inner, self.slot(), self.word.idx(), done, self.word.waiting_set()) };
   }
 
   /// See [`PooledReceiver::is_closed`].
   pub fn is_closed(&self) -> bool {
-    self.done || self.exited || unsafe { self.slot.as_ref() }.is_disconnected()
+    self.word.done() || self.word.exited() || unsafe { self.slot().as_ref() }.is_disconnected()
   }
 }
 
 impl<H: Send + Sync, T: Send> Drop for HostReceiver<H, T> {
+  #[inline]
   fn drop(&mut self) {
-    if self.exited {
+    if self.word.exited() {
       return;
     }
-    let sender_exited = if self.done {
-      unsafe { Slot::finish_receiver(self.slot, self.waiting_set) }
-    } else {
-      unsafe { Slot::close_receiver(self.slot, self.waiting_set) }
-    };
-    if sender_exited {
-      unsafe { HostInner::retire(self.inner, self.idx) };
-    }
+    unsafe { HostInner::exit_receiver(self.inner, self.slot(), self.word.idx(), self.word.done(), self.word.waiting_set()) };
   }
 }
 
 impl<H: Send + Sync, T: Send> fmt::Debug for HostReceiver<H, T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("HostReceiver")
-      .field("done", &self.done)
+      .field("done", &self.word.done())
       .finish_non_exhaustive()
   }
 }
@@ -968,17 +1062,17 @@ impl<'a, H: Send + Sync, T: Send> Future for HostReceiveFuture<'a, H, T> {
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let rx = &mut *self.receiver;
-    if rx.done || rx.exited {
+    if rx.word.done() || rx.word.exited() {
       return Poll::Ready(Err(RecvError::Disconnected));
     }
-    let polled = unsafe { rx.slot.as_ref() }.poll_recv(cx, &mut rx.waiting_set);
+    let polled = unsafe { rx.slot().as_ref() }.poll_recv(cx, &mut rx.word);
     match polled {
       Poll::Ready(Ok(value)) => {
-        rx.done = true;
+        rx.word.set_done();
         Poll::Ready(Ok(value))
       }
       Poll::Ready(Err(SenderGoneMark)) => {
-        rx.done = true;
+        rx.word.set_done();
         Poll::Ready(Err(RecvError::Disconnected))
       }
       Poll::Pending => Poll::Pending,

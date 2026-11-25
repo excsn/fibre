@@ -94,9 +94,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.617,
-        "median": 0.561,
-        "min": 0.531
+        "max": 0.646,
+        "median": 0.572,
+        "min": 0.56
       },
       {
         "d": [
@@ -164,9 +164,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.28,
-        "median": 0.263,
-        "min": 0.244
+        "max": 0.268,
+        "median": 0.265,
+        "min": 0.26
       },
       {
         "d": [
@@ -234,9 +234,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 32.547,
-        "median": 30.044,
-        "min": 28.801
+        "max": 29.51,
+        "median": 28.586,
+        "min": 27.952
       },
       {
         "d": [
@@ -304,9 +304,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 24.72,
-        "median": 24.493,
-        "min": 24.129
+        "max": 25.493,
+        "median": 25.162,
+        "min": 24.551
       },
       {
         "d": [
@@ -332,9 +332,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 50.521,
-        "median": 46.558,
-        "min": 44.424
+        "max": 46.44,
+        "median": 44.421,
+        "min": 43.417
       },
       {
         "d": [
@@ -402,9 +402,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 475.796,
-        "median": 470.363,
-        "min": 448.368
+        "max": 459.365,
+        "median": 447.168,
+        "min": 444.416
       },
       {
         "d": [
@@ -500,9 +500,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 24.505,
-        "median": 24.272,
-        "min": 24.054
+        "max": 25.831,
+        "median": 25.669,
+        "min": 24.022
       },
       {
         "d": [
@@ -542,9 +542,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 11.765,
-        "median": 11.573,
-        "min": 11.023
+        "max": 13.22,
+        "median": 12.233,
+        "min": 11.38
       },
       {
         "d": [
@@ -612,9 +612,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 116.36,
-        "median": 109.096,
-        "min": 106.253
+        "max": 116.917,
+        "median": 115.796,
+        "min": 111.552
       },
       {
         "d": [
@@ -682,9 +682,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 176.794,
-        "median": 174.282,
-        "min": 172.088
+        "max": 173.619,
+        "median": 172.676,
+        "min": 172.373
       },
       {
         "d": [
@@ -724,9 +724,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 168.439,
-        "median": 154.924,
-        "min": 127.323
+        "max": 161.205,
+        "median": 152.729,
+        "min": 135.645
       },
       {
         "d": [
@@ -794,9 +794,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 235.814,
-        "median": 223.789,
-        "min": 207.321
+        "max": 209.198,
+        "median": 207.539,
+        "min": 205.93
       },
       {
         "d": [
@@ -920,9 +920,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.589,
-        "median": 0.545,
-        "min": 0.53
+        "max": 0.57,
+        "median": 0.559,
+        "min": 0.553
       },
       {
         "d": [
@@ -990,9 +990,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.74,
-        "median": 0.665,
-        "min": 0.636
+        "max": 0.705,
+        "median": 0.692,
+        "min": 0.663
       },
       {
         "d": [
@@ -1060,9 +1060,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.742,
-        "median": 0.56,
-        "min": 0.448
+        "max": 0.734,
+        "median": 0.72,
+        "min": 0.646
       },
       {
         "d": [
@@ -1130,9 +1130,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 7.155,
-        "median": 7.046,
-        "min": 6.666
+        "max": 7.213,
+        "median": 7.125,
+        "min": 7.047
       },
       {
         "d": [
@@ -1200,9 +1200,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 1.353,
-        "median": 1.169,
-        "min": 1.166
+        "max": 1.266,
+        "median": 1.227,
+        "min": 1.21
       },
       {
         "d": [
@@ -1270,9 +1270,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 1.211,
-        "median": 1.174,
-        "min": 1.167
+        "max": 1.637,
+        "median": 1.234,
+        "min": 1.227
       },
       {
         "d": [
@@ -1340,9 +1340,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 76.935,
-        "median": 75.8,
-        "min": 71.832
+        "max": 75.539,
+        "median": 73.656,
+        "min": 69.781
       },
       {
         "d": [
@@ -1410,9 +1410,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 27.954,
-        "median": 27.42,
-        "min": 22.606
+        "max": 28.623,
+        "median": 27.936,
+        "min": 27.516
       },
       {
         "d": [
@@ -1438,9 +1438,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 36.475,
-        "median": 33.865,
-        "min": 30.075
+        "max": 37.386,
+        "median": 35.955,
+        "min": 34.115
       },
       {
         "d": [
@@ -1508,9 +1508,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 26.938,
-        "median": 26.183,
-        "min": 23.467
+        "max": 27.241,
+        "median": 26.987,
+        "min": 26.06
       },
       {
         "d": [
@@ -1536,9 +1536,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 34.815,
-        "median": 30.867,
-        "min": 23.201
+        "max": 38.171,
+        "median": 36.731,
+        "min": 25.017
       },
       {
         "d": [
@@ -1606,9 +1606,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 26.913,
-        "median": 25.987,
-        "min": 21.448
+        "max": 27.26,
+        "median": 26.929,
+        "min": 25.629
       },
       {
         "d": [
@@ -1634,9 +1634,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 169.657,
-        "median": 165.093,
-        "min": 128.813
+        "max": 149.927,
+        "median": 149.449,
+        "min": 141.394
       },
       {
         "d": [
@@ -1704,9 +1704,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 305.332,
-        "median": 278.445,
-        "min": 238.16
+        "max": 275.415,
+        "median": 256.735,
+        "min": 228.321
       },
       {
         "d": [
@@ -1732,9 +1732,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 22.324,
-        "median": 20.86,
-        "min": 19.322
+        "max": 25.284,
+        "median": 24.421,
+        "min": 23.269
       },
       {
         "d": [
@@ -1802,9 +1802,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 251.013,
-        "median": 235.373,
-        "min": 230.081
+        "max": 274.532,
+        "median": 257.452,
+        "min": 222.798
       },
       {
         "d": [
@@ -1830,9 +1830,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 21.435,
-        "median": 20.116,
-        "min": 19.648
+        "max": 27.009,
+        "median": 24.895,
+        "min": 23.095
       },
       {
         "d": [
@@ -1900,9 +1900,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 253.539,
-        "median": 247.072,
-        "min": 236.371
+        "max": 260.677,
+        "median": 254.331,
+        "min": 242.426
       },
       {
         "d": [
@@ -1928,9 +1928,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 231.111,
-        "median": 228.894,
-        "min": 227.148
+        "max": 235.419,
+        "median": 234.199,
+        "min": 229.189
       },
       {
         "d": [
@@ -1998,9 +1998,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 334.709,
-        "median": 324.944,
-        "min": 314.717
+        "max": 327.94,
+        "median": 323.633,
+        "min": 322.36
       },
       {
         "d": [
@@ -2026,9 +2026,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 14.606,
-        "median": 13.227,
-        "min": 12.791
+        "max": 16.176,
+        "median": 13.003,
+        "min": 12.787
       },
       {
         "d": [
@@ -2096,9 +2096,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 225.536,
-        "median": 214.479,
-        "min": 207.634
+        "max": 239.602,
+        "median": 229.117,
+        "min": 221.284
       },
       {
         "d": [
@@ -2124,9 +2124,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 54.008,
-        "median": 36.292,
-        "min": 22.465
+        "max": 25.658,
+        "median": 20.378,
+        "min": 14.924
       },
       {
         "d": [
@@ -2194,9 +2194,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 223.847,
-        "median": 212.734,
-        "min": 205.416
+        "max": 231.772,
+        "median": 226.157,
+        "min": 212.809
       },
       {
         "d": [
@@ -2222,9 +2222,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 26.315,
-        "median": 26.038,
-        "min": 25.75
+        "max": 26.796,
+        "median": 26.594,
+        "min": 25.649
       },
       {
         "d": [
@@ -2264,9 +2264,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 7.037,
-        "median": 6.959,
-        "min": 6.82
+        "max": 7.906,
+        "median": 7.717,
+        "min": 7.548
       },
       {
         "d": [
@@ -2306,9 +2306,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 3.992,
-        "median": 3.955,
-        "min": 3.766
+        "max": 4.63,
+        "median": 4.501,
+        "min": 4.363
       },
       {
         "d": [
@@ -2348,9 +2348,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 9.715,
-        "median": 9.482,
-        "min": 8.484
+        "max": 9.664,
+        "median": 9.587,
+        "min": 9.369
       },
       {
         "d": [
@@ -2418,9 +2418,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 8.591,
-        "median": 8.194,
-        "min": 8.058
+        "max": 8.789,
+        "median": 8.688,
+        "min": 7.729
       },
       {
         "d": [
@@ -2488,9 +2488,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 7.2,
-        "median": 6.915,
-        "min": 6.605
+        "max": 7.803,
+        "median": 7.14,
+        "min": 6.695
       },
       {
         "d": [
@@ -2558,9 +2558,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 66.483,
-        "median": 64.389,
-        "min": 61.664
+        "max": 66.276,
+        "median": 63.513,
+        "min": 59.121
       },
       {
         "d": [
@@ -2628,9 +2628,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 223.508,
-        "median": 222.863,
-        "min": 221.848
+        "max": 226.292,
+        "median": 225.306,
+        "min": 225.09
       },
       {
         "d": [
@@ -2670,9 +2670,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 65.491,
-        "median": 65.109,
-        "min": 61.888
+        "max": 66.744,
+        "median": 66.14,
+        "min": 65.871
       },
       {
         "d": [
@@ -2740,9 +2740,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 217.88,
-        "median": 214.517,
-        "min": 210.59
+        "max": 222.778,
+        "median": 218.561,
+        "min": 207.121
       },
       {
         "d": [
@@ -2782,9 +2782,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 66.322,
-        "median": 62.721,
-        "min": 57.302
+        "max": 66.48,
+        "median": 65.874,
+        "min": 63.725
       },
       {
         "d": [
@@ -2852,9 +2852,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 210.361,
-        "median": 198.647,
-        "min": 193.89
+        "max": 210.856,
+        "median": 202.493,
+        "min": 198.658
       },
       {
         "d": [
@@ -2894,9 +2894,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 77.636,
-        "median": 77.217,
-        "min": 76.826
+        "max": 79.357,
+        "median": 79.079,
+        "min": 78.747
       },
       {
         "d": [
@@ -2964,9 +2964,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 298.865,
-        "median": 295.19,
-        "min": 292.315
+        "max": 305.536,
+        "median": 295.091,
+        "min": 294.449
       },
       {
         "d": [
@@ -3006,9 +3006,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 79.449,
-        "median": 77.597,
-        "min": 75.005
+        "max": 80.53,
+        "median": 79.22,
+        "min": 78.638
       },
       {
         "d": [
@@ -3076,9 +3076,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 296.953,
-        "median": 290.705,
-        "min": 281.889
+        "max": 290.321,
+        "median": 285.199,
+        "min": 283.164
       },
       {
         "d": [
@@ -3118,9 +3118,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 80.048,
-        "median": 76.356,
-        "min": 73.252
+        "max": 79.169,
+        "median": 78.895,
+        "min": 78.143
       },
       {
         "d": [
@@ -3188,9 +3188,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 288.99,
-        "median": 284.516,
-        "min": 282.348
+        "max": 283.753,
+        "median": 282.571,
+        "min": 281.669
       },
       {
         "d": [
@@ -3230,9 +3230,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 110.959,
-        "median": 109.219,
-        "min": 107.58
+        "max": 123.625,
+        "median": 121.617,
+        "min": 118.103
       },
       {
         "d": [
@@ -3300,9 +3300,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 195.297,
-        "median": 190.931,
-        "min": 180.23
+        "max": 225.225,
+        "median": 224.789,
+        "min": 223.693
       },
       {
         "d": [
@@ -3342,9 +3342,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 14.095,
-        "median": 13.233,
-        "min": 12.648
+        "max": 14.377,
+        "median": 13.99,
+        "min": 13.333
       },
       {
         "d": [
@@ -3412,9 +3412,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 216.691,
-        "median": 210.839,
-        "min": 202.718
+        "max": 223.098,
+        "median": 220.461,
+        "min": 210.722
       },
       {
         "d": [
@@ -3454,9 +3454,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 13.265,
-        "median": 12.791,
-        "min": 12.603
+        "max": 12.697,
+        "median": 12.481,
+        "min": 12.209
       },
       {
         "d": [
@@ -3524,9 +3524,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 209.362,
-        "median": 204.297,
-        "min": 197.531
+        "max": 224.795,
+        "median": 217.433,
+        "min": 201.371
       },
       {
         "d": [
@@ -3902,9 +3902,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.252,
-        "median": 0.246,
-        "min": 0.243
+        "max": 0.246,
+        "median": 0.237,
+        "min": 0.231
       },
       {
         "d": [
@@ -3916,9 +3916,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.032,
-        "median": 0.032,
-        "min": 0.03
+        "max": 0.034,
+        "median": 0.031,
+        "min": 0.031
       },
       {
         "d": [
@@ -3944,9 +3944,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 15.315,
-        "median": 14.863,
-        "min": 13.406
+        "max": 16.848,
+        "median": 16.738,
+        "min": 16.626
       },
       {
         "d": [
@@ -3958,9 +3958,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 31.732,
-        "median": 30.383,
-        "min": 29.938
+        "max": 32.686,
+        "median": 32.165,
+        "min": 31.616
       },
       {
         "d": [
@@ -3972,107 +3972,107 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.019,
-        "median": 0.016,
+        "max": 0.016,
+        "median": 0.014,
+        "min": 0.012
+      },
+      {
+        "d": [
+          "spmc",
+          "sync",
+          "128",
+          "1x16",
+          "batch-512",
+          "stream"
+        ],
+        "library": "fibre",
+        "max": 3.757,
+        "median": 3.734,
+        "min": 3.684
+      },
+      {
+        "d": [
+          "spmc",
+          "sync",
+          "128",
+          "1x64",
+          "single",
+          "stream"
+        ],
+        "library": "fibre",
+        "max": 0.009,
+        "median": 0.005,
+        "min": 0.005
+      },
+      {
+        "d": [
+          "spmc",
+          "sync",
+          "128",
+          "1x64",
+          "batch-512",
+          "stream"
+        ],
+        "library": "fibre",
+        "max": 1.232,
+        "median": 1.219,
+        "min": 1.194
+      },
+      {
+        "d": [
+          "spmc",
+          "sync",
+          "1024",
+          "1x1",
+          "single",
+          "stream"
+        ],
+        "library": "fibre",
+        "max": 19.139,
+        "median": 18.504,
+        "min": 17.308
+      },
+      {
+        "d": [
+          "spmc",
+          "sync",
+          "1024",
+          "1x1",
+          "batch-512",
+          "stream"
+        ],
+        "library": "fibre",
+        "max": 87.855,
+        "median": 87.119,
+        "min": 85.239
+      },
+      {
+        "d": [
+          "spmc",
+          "sync",
+          "1024",
+          "1x16",
+          "single",
+          "stream"
+        ],
+        "library": "fibre",
+        "max": 0.796,
+        "median": 0.018,
         "min": 0.013
       },
       {
         "d": [
           "spmc",
           "sync",
-          "128",
-          "1x16",
-          "batch-512",
-          "stream"
-        ],
-        "library": "fibre",
-        "max": 3.794,
-        "median": 3.774,
-        "min": 3.75
-      },
-      {
-        "d": [
-          "spmc",
-          "sync",
-          "128",
-          "1x64",
-          "single",
-          "stream"
-        ],
-        "library": "fibre",
-        "max": 0.007,
-        "median": 0.005,
-        "min": 0.003
-      },
-      {
-        "d": [
-          "spmc",
-          "sync",
-          "128",
-          "1x64",
-          "batch-512",
-          "stream"
-        ],
-        "library": "fibre",
-        "max": 1.107,
-        "median": 1.019,
-        "min": 0.844
-      },
-      {
-        "d": [
-          "spmc",
-          "sync",
-          "1024",
-          "1x1",
-          "single",
-          "stream"
-        ],
-        "library": "fibre",
-        "max": 19.512,
-        "median": 17.708,
-        "min": 14.2
-      },
-      {
-        "d": [
-          "spmc",
-          "sync",
-          "1024",
-          "1x1",
-          "batch-512",
-          "stream"
-        ],
-        "library": "fibre",
-        "max": 82.571,
-        "median": 81.641,
-        "min": 81.081
-      },
-      {
-        "d": [
-          "spmc",
-          "sync",
-          "1024",
-          "1x16",
-          "single",
-          "stream"
-        ],
-        "library": "fibre",
-        "max": 1.008,
-        "median": 0.029,
-        "min": 0.019
-      },
-      {
-        "d": [
-          "spmc",
-          "sync",
           "1024",
           "1x16",
           "batch-512",
           "stream"
         ],
         "library": "fibre",
-        "max": 14.421,
-        "median": 13.617,
-        "min": 12.995
+        "max": 14.592,
+        "median": 14.529,
+        "min": 14.314
       },
       {
         "d": [
@@ -4084,7 +4084,7 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.362,
+        "max": 0.555,
         "median": 0.007,
         "min": 0.006
       },
@@ -4098,9 +4098,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 4.386,
-        "median": 4.096,
-        "min": 3.765
+        "max": 4.833,
+        "median": 3.862,
+        "min": 2.889
       },
       {
         "d": [
@@ -4112,9 +4112,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 7.721,
-        "median": 7.622,
-        "min": 7.282
+        "max": 8.244,
+        "median": 8.21,
+        "min": 8.077
       },
       {
         "d": [
@@ -4126,9 +4126,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.367,
-        "median": 0.354,
-        "min": 0.336
+        "max": 0.385,
+        "median": 0.382,
+        "min": 0.376
       },
       {
         "d": [
@@ -4140,9 +4140,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.079,
-        "median": 0.078,
-        "min": 0.077
+        "max": 0.088,
+        "median": 0.086,
+        "min": 0.08
       },
       {
         "d": [
@@ -4154,9 +4154,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 44.782,
-        "median": 43.084,
-        "min": 27.847
+        "max": 45.011,
+        "median": 42.799,
+        "min": 30.372
       },
       {
         "d": [
@@ -4168,9 +4168,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 113.214,
-        "median": 112.764,
-        "min": 111.748
+        "max": 127.785,
+        "median": 127.171,
+        "min": 126.499
       },
       {
         "d": [
@@ -4182,9 +4182,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.779,
-        "median": 0.755,
-        "min": 0.744
+        "max": 0.746,
+        "median": 0.736,
+        "min": 0.735
       },
       {
         "d": [
@@ -4196,9 +4196,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 24.204,
-        "median": 23.962,
-        "min": 23.301
+        "max": 24.528,
+        "median": 24.374,
+        "min": 23.972
       },
       {
         "d": [
@@ -4210,9 +4210,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.209,
-        "median": 0.204,
-        "min": 0.203
+        "max": 0.203,
+        "median": 0.201,
+        "min": 0.2
       },
       {
         "d": [
@@ -4224,9 +4224,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 10.006,
-        "median": 9.927,
-        "min": 9.813
+        "max": 9.798,
+        "median": 9.709,
+        "min": 8.957
       },
       {
         "d": [
@@ -4238,9 +4238,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 20.918,
-        "median": 20.368,
-        "min": 18.932
+        "max": 18.495,
+        "median": 18.169,
+        "min": 17.942
       },
       {
         "d": [
@@ -4252,9 +4252,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 143.498,
-        "median": 142.91,
-        "min": 142.433
+        "max": 147.118,
+        "median": 146.695,
+        "min": 146.459
       },
       {
         "d": [
@@ -4266,9 +4266,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.762,
-        "median": 0.759,
-        "min": 0.756
+        "max": 0.743,
+        "median": 0.741,
+        "min": 0.74
       },
       {
         "d": [
@@ -4280,9 +4280,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 58.752,
-        "median": 58.23,
-        "min": 57.991
+        "max": 60.883,
+        "median": 60.447,
+        "min": 59.742
       },
       {
         "d": [
@@ -4294,9 +4294,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.214,
-        "median": 0.212,
-        "min": 0.21
+        "max": 0.211,
+        "median": 0.206,
+        "min": 0.205
       },
       {
         "d": [
@@ -4308,9 +4308,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 24.638,
-        "median": 23.556,
-        "min": 22.299
+        "max": 24.629,
+        "median": 23.009,
+        "min": 20.426
       },
       {
         "d": [
@@ -4322,9 +4322,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.573,
-        "median": 0.565,
-        "min": 0.547
+        "max": 0.593,
+        "median": 0.582,
+        "min": 0.553
       },
       {
         "d": [
@@ -4378,9 +4378,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.578,
-        "median": 0.545,
-        "min": 0.512
+        "max": 0.741,
+        "median": 0.684,
+        "min": 0.68
       },
       {
         "d": [
@@ -4434,9 +4434,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.593,
-        "median": 0.558,
-        "min": 0.517
+        "max": 0.727,
+        "median": 0.719,
+        "min": 0.708
       },
       {
         "d": [
@@ -4490,9 +4490,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.592,
-        "median": 0.519,
-        "min": 0.444
+        "max": 0.702,
+        "median": 0.68,
+        "min": 0.533
       },
       {
         "d": [
@@ -4546,9 +4546,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.691,
-        "median": 0.615,
-        "min": 0.539
+        "max": 0.699,
+        "median": 0.641,
+        "min": 0.605
       },
       {
         "d": [
@@ -4602,9 +4602,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.727,
-        "median": 0.635,
-        "min": 0.581
+        "max": 0.694,
+        "median": 0.602,
+        "min": 0.423
       },
       {
         "d": [
@@ -4658,9 +4658,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.629,
-        "median": 0.526,
-        "min": 0.475
+        "max": 0.68,
+        "median": 0.64,
+        "min": 0.603
       },
       {
         "d": [
@@ -4714,9 +4714,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 1.754,
-        "median": 1.693,
-        "min": 1.422
+        "max": 2.136,
+        "median": 2.098,
+        "min": 2.078
       },
       {
         "d": [
@@ -4770,9 +4770,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.133,
-        "median": 0.125,
-        "min": 0.115
+        "max": 0.136,
+        "median": 0.135,
+        "min": 0.133
       },
       {
         "d": [
@@ -4826,9 +4826,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.119,
-        "median": 0.106,
-        "min": 0.076
+        "max": 0.132,
+        "median": 0.131,
+        "min": 0.13
       },
       {
         "d": [
@@ -4882,9 +4882,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.187,
-        "median": 0.179,
-        "min": 0.161
+        "max": 0.189,
+        "median": 0.187,
+        "min": 0.182
       },
       {
         "d": [
@@ -4938,9 +4938,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.181,
-        "median": 0.174,
-        "min": 0.149
+        "max": 0.184,
+        "median": 0.183,
+        "min": 0.18
       },
       {
         "d": [
@@ -4994,9 +4994,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.181,
-        "median": 0.172,
-        "min": 0.168
+        "max": 0.186,
+        "median": 0.183,
+        "min": 0.163
       },
       {
         "d": [
@@ -5050,9 +5050,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.18,
-        "median": 0.174,
-        "min": 0.15
+        "max": 0.182,
+        "median": 0.18,
+        "min": 0.178
       },
       {
         "d": [
@@ -5106,9 +5106,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 43.357,
-        "median": 39.727,
-        "min": 38.883
+        "max": 43.722,
+        "median": 43.294,
+        "min": 41.408
       },
       {
         "d": [
@@ -5162,9 +5162,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 138.846,
-        "median": 135.242,
-        "min": 127.196
+        "max": 151.868,
+        "median": 150.176,
+        "min": 147.351
       },
       {
         "d": [
@@ -5190,9 +5190,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 19.449,
-        "median": 18.844,
-        "min": 18.325
+        "max": 19.036,
+        "median": 18.795,
+        "min": 18.186
       },
       {
         "d": [
@@ -5246,9 +5246,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 30.542,
-        "median": 29.486,
-        "min": 28.885
+        "max": 32.648,
+        "median": 31.436,
+        "min": 29.773
       },
       {
         "d": [
@@ -5274,9 +5274,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 17.273,
-        "median": 16.89,
-        "min": 8.771
+        "max": 14.803,
+        "median": 13.207,
+        "min": 12.59
       },
       {
         "d": [
@@ -5330,9 +5330,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 31.526,
-        "median": 25.102,
-        "min": 16.192
+        "max": 26.542,
+        "median": 24.402,
+        "min": 18.791
       },
       {
         "d": [
@@ -5358,9 +5358,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 10.551,
-        "median": 8.879,
-        "min": 8.174
+        "max": 10.307,
+        "median": 9.19,
+        "min": 8.349
       },
       {
         "d": [
@@ -5414,9 +5414,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 20.616,
-        "median": 15.642,
-        "min": 12.07
+        "max": 14.247,
+        "median": 13.056,
+        "min": 12.025
       },
       {
         "d": [
@@ -5442,9 +5442,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 10.719,
-        "median": 9.909,
-        "min": 9.425
+        "max": 10.073,
+        "median": 9.172,
+        "min": 8.135
       },
       {
         "d": [
@@ -5498,9 +5498,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 16.325,
-        "median": 12.112,
-        "min": 10.506
+        "max": 12.166,
+        "median": 11.013,
+        "min": 10.336
       },
       {
         "d": [
@@ -5526,9 +5526,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 6.905,
-        "median": 5.916,
-        "min": 4.426
+        "max": 7.882,
+        "median": 7.018,
+        "min": 5.39
       },
       {
         "d": [
@@ -5582,9 +5582,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 9.92,
-        "median": 8.65,
-        "min": 7.397
+        "max": 11.601,
+        "median": 9.018,
+        "min": 8.257
       },
       {
         "d": [
@@ -5610,9 +5610,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 10.207,
-        "median": 5.584,
-        "min": 3.158
+        "max": 11.589,
+        "median": 8.789,
+        "min": 5.92
       },
       {
         "d": [
@@ -5666,9 +5666,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 16.987,
-        "median": 12.145,
-        "min": 9.081
+        "max": 17.496,
+        "median": 7.081,
+        "min": 6.42
       },
       {
         "d": [
@@ -5694,9 +5694,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 55.282,
-        "median": 52.903,
-        "min": 50.885
+        "max": 54.06,
+        "median": 52.314,
+        "min": 29.267
       },
       {
         "d": [
@@ -5750,9 +5750,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 234.49,
-        "median": 216.454,
-        "min": 187.967
+        "max": 293.886,
+        "median": 289.337,
+        "min": 285.956
       },
       {
         "d": [
@@ -5778,9 +5778,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 44.795,
-        "median": 43.872,
-        "min": 42.52
+        "max": 46.182,
+        "median": 45.738,
+        "min": 43.611
       },
       {
         "d": [
@@ -5834,9 +5834,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 119.337,
-        "median": 117.548,
-        "min": 111.467
+        "max": 136.737,
+        "median": 129.608,
+        "min": 119.373
       },
       {
         "d": [
@@ -5862,9 +5862,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 40.072,
-        "median": 36.005,
-        "min": 34.778
+        "max": 38.464,
+        "median": 35.063,
+        "min": 32.605
       },
       {
         "d": [
@@ -5918,9 +5918,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 99.989,
-        "median": 92.275,
-        "min": 81.741
+        "max": 118.724,
+        "median": 104.254,
+        "min": 87.383
       },
       {
         "d": [
@@ -5946,9 +5946,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 25.272,
-        "median": 24.227,
-        "min": 21.158
+        "max": 24.899,
+        "median": 23.56,
+        "min": 20.599
       },
       {
         "d": [
@@ -6002,9 +6002,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 71.154,
-        "median": 65.104,
-        "min": 57.34
+        "max": 87.655,
+        "median": 77.126,
+        "min": 71.177
       },
       {
         "d": [
@@ -6030,9 +6030,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 29.993,
-        "median": 27.529,
-        "min": 24.769
+        "max": 31.713,
+        "median": 29.861,
+        "min": 28.135
       },
       {
         "d": [
@@ -6086,9 +6086,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 65.438,
-        "median": 63.619,
-        "min": 63.014
+        "max": 76.335,
+        "median": 72.025,
+        "min": 69.557
       },
       {
         "d": [
@@ -6114,9 +6114,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 24.878,
-        "median": 19.005,
-        "min": 13.961
+        "max": 19.101,
+        "median": 17.61,
+        "min": 11.586
       },
       {
         "d": [
@@ -6170,9 +6170,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 54.731,
-        "median": 39.348,
-        "min": 21.26
+        "max": 61.672,
+        "median": 36.179,
+        "min": 29.051
       },
       {
         "d": [
@@ -6198,9 +6198,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 25.675,
-        "median": 20.428,
-        "min": 9.753
+        "max": 18.012,
+        "median": 14.247,
+        "min": 10.648
       },
       {
         "d": [
@@ -6254,9 +6254,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 53.372,
-        "median": 38.708,
-        "min": 22.579
+        "max": 59.085,
+        "median": 40.343,
+        "min": 28.974
       },
       {
         "d": [
@@ -6282,9 +6282,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 137.536,
-        "median": 134.4,
-        "min": 48.365
+        "max": 134.561,
+        "median": 134.19,
+        "min": 133.876
       },
       {
         "d": [
@@ -6338,9 +6338,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 326.878,
-        "median": 225.56,
-        "min": 195.475
+        "max": 330.474,
+        "median": 325.538,
+        "min": 323.529
       },
       {
         "d": [
@@ -6366,9 +6366,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 10.036,
-        "median": 9.761,
-        "min": 8.934
+        "max": 10.19,
+        "median": 9.447,
+        "min": 9.177
       },
       {
         "d": [
@@ -6422,9 +6422,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 165.497,
-        "median": 157.282,
-        "min": 148.23
+        "max": 178.542,
+        "median": 160.124,
+        "min": 153.562
       },
       {
         "d": [
@@ -6450,9 +6450,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 29.885,
-        "median": 9.363,
-        "min": 6.201
+        "max": 12.832,
+        "median": 10.121,
+        "min": 9.146
       },
       {
         "d": [
@@ -6506,9 +6506,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 174.258,
-        "median": 151.176,
-        "min": 98.679
+        "max": 169.744,
+        "median": 162.008,
+        "min": 156.415
       },
       {
         "d": [
@@ -6534,9 +6534,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 14.344,
-        "median": 12.022,
-        "min": 11.689
+        "max": 11.921,
+        "median": 11.714,
+        "min": 11.611
       },
       {
         "d": [
@@ -6590,9 +6590,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 218.506,
-        "median": 203.176,
-        "min": 195.168
+        "max": 226.64,
+        "median": 218.301,
+        "min": 198.585
       },
       {
         "d": [
@@ -6618,9 +6618,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 18.83,
-        "median": 0.5,
-        "min": 0.409
+        "max": 0.531,
+        "median": 0.484,
+        "min": 0.43
       },
       {
         "d": [
@@ -6674,9 +6674,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 104.79,
-        "median": 101.413,
-        "min": 88.157
+        "max": 108.264,
+        "median": 106.788,
+        "min": 99.313
       },
       {
         "d": [
@@ -6702,9 +6702,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 17.336,
-        "median": 13.278,
-        "min": 12.394
+        "max": 22.951,
+        "median": 19.066,
+        "min": 15.284
       },
       {
         "d": [
@@ -6758,9 +6758,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 212.798,
-        "median": 202.241,
-        "min": 194.937
+        "max": 226.734,
+        "median": 223.689,
+        "min": 209.867
       },
       {
         "d": [
@@ -6786,9 +6786,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 0.517,
-        "median": 0.445,
-        "min": 0.401
+        "max": 0.475,
+        "median": 0.457,
+        "min": 0.406
       },
       {
         "d": [
@@ -6842,9 +6842,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 94.856,
-        "median": 91.07,
-        "min": 80.855
+        "max": 104.986,
+        "median": 102.552,
+        "min": 99.764
       },
       {
         "d": [
@@ -6870,9 +6870,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 26.062,
-        "median": 25.441,
-        "min": 24.844
+        "max": 25.59,
+        "median": 25.56,
+        "min": 25.269
       },
       {
         "d": [
@@ -6912,9 +6912,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 5.625,
-        "median": 5.363,
-        "min": 5.221
+        "max": 7.415,
+        "median": 7.271,
+        "min": 7.137
       },
       {
         "d": [
@@ -6954,9 +6954,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 4.93,
-        "median": 4.77,
-        "min": 4.631
+        "max": 6.489,
+        "median": 6.414,
+        "min": 6.295
       },
       {
         "d": [
@@ -6996,9 +6996,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 6.831,
-        "median": 6.628,
-        "min": 6.448
+        "max": 24.228,
+        "median": 7.492,
+        "min": 7.361
       },
       {
         "d": [
@@ -7038,9 +7038,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 7.196,
-        "median": 7.053,
-        "min": 6.921
+        "max": 8.091,
+        "median": 7.813,
+        "min": 7.674
       },
       {
         "d": [
@@ -7080,9 +7080,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 4.236,
-        "median": 4.123,
-        "min": 4.021
+        "max": 4.513,
+        "median": 4.465,
+        "min": 4.393
       },
       {
         "d": [
@@ -7122,9 +7122,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 3.972,
-        "median": 3.949,
-        "min": 3.283
+        "max": 4.441,
+        "median": 4.297,
+        "min": 4.066
       },
       {
         "d": [
@@ -7164,9 +7164,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 10.198,
-        "median": 10.043,
-        "min": 9.24
+        "max": 10.932,
+        "median": 10.866,
+        "min": 10.825
       },
       {
         "d": [
@@ -7220,9 +7220,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 7.003,
-        "median": 6.851,
-        "min": 6.563
+        "max": 7.838,
+        "median": 7.273,
+        "min": 7.122
       },
       {
         "d": [
@@ -7276,9 +7276,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 5.362,
-        "median": 5.101,
-        "min": 3.327
+        "max": 6.108,
+        "median": 5.723,
+        "min": 5.416
       },
       {
         "d": [
@@ -7332,9 +7332,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 7.969,
-        "median": 7.858,
-        "min": 7.353
+        "max": 9.8,
+        "median": 9.548,
+        "min": 9.31
       },
       {
         "d": [
@@ -7388,9 +7388,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 8.139,
-        "median": 7.803,
-        "min": 7.685
+        "max": 8.465,
+        "median": 8.257,
+        "min": 7.964
       },
       {
         "d": [
@@ -7444,9 +7444,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 7.06,
-        "median": 6.586,
-        "min": 6.357
+        "max": 8.526,
+        "median": 8.034,
+        "min": 7.914
       },
       {
         "d": [
@@ -7500,9 +7500,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 7.215,
-        "median": 6.841,
-        "min": 5.966
+        "max": 6.905,
+        "median": 6.678,
+        "min": 6.312
       },
       {
         "d": [
@@ -7556,9 +7556,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 57.301,
-        "median": 57.022,
-        "min": 56.347
+        "max": 70.627,
+        "median": 70.327,
+        "min": 70.002
       },
       {
         "d": [
@@ -7612,9 +7612,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 156.413,
-        "median": 155.397,
-        "min": 154.474
+        "max": 160.158,
+        "median": 157.338,
+        "min": 147.195
       },
       {
         "d": [
@@ -7640,9 +7640,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 25.281,
-        "median": 23.708,
-        "min": 18.621
+        "max": 29.764,
+        "median": 29.107,
+        "min": 23.567
       },
       {
         "d": [
@@ -7696,9 +7696,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 88.024,
-        "median": 74.85,
-        "min": 68.551
+        "max": 81.403,
+        "median": 73.323,
+        "min": 72.138
       },
       {
         "d": [
@@ -7724,9 +7724,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 22.186,
-        "median": 21.339,
-        "min": 14.574
+        "max": 29.493,
+        "median": 28.771,
+        "min": 24.873
       },
       {
         "d": [
@@ -7780,9 +7780,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 75.74,
-        "median": 72.025,
-        "min": 71.101
+        "max": 71.715,
+        "median": 70.674,
+        "min": 69.825
       },
       {
         "d": [
@@ -7808,9 +7808,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 18.781,
-        "median": 18.451,
-        "min": 18.156
+        "max": 23.124,
+        "median": 22.541,
+        "min": 22.464
       },
       {
         "d": [
@@ -7864,9 +7864,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 59.747,
-        "median": 58.462,
-        "min": 57.508
+        "max": 66.291,
+        "median": 65.392,
+        "min": 60.139
       },
       {
         "d": [
@@ -7892,9 +7892,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 20.696,
-        "median": 20.282,
-        "min": 20.158
+        "max": 23.125,
+        "median": 22.72,
+        "min": 22.67
       },
       {
         "d": [
@@ -7948,9 +7948,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 77.213,
-        "median": 76.326,
-        "min": 75.496
+        "max": 76.942,
+        "median": 76.545,
+        "min": 75.647
       },
       {
         "d": [
@@ -7976,9 +7976,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 7.335,
-        "median": 7.112,
-        "min": 6.924
+        "max": 12.199,
+        "median": 11.895,
+        "min": 11.242
       },
       {
         "d": [
@@ -8032,9 +8032,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 23.464,
-        "median": 21.52,
-        "min": 19.94
+        "max": 37.123,
+        "median": 33.139,
+        "min": 24.815
       },
       {
         "d": [
@@ -8060,9 +8060,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 10.623,
-        "median": 10.262,
-        "min": 9.899
+        "max": 11.718,
+        "median": 10.423,
+        "min": 9.785
       },
       {
         "d": [
@@ -8116,9 +8116,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 31.226,
-        "median": 29.004,
-        "min": 28.699
+        "max": 30.753,
+        "median": 29.956,
+        "min": 27.996
       },
       {
         "d": [
@@ -8144,9 +8144,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 59.967,
-        "median": 58.801,
-        "min": 57.917
+        "max": 70.335,
+        "median": 68.801,
+        "min": 67.852
       },
       {
         "d": [
@@ -8200,9 +8200,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 214.219,
-        "median": 213.505,
-        "min": 212.367
+        "max": 197.183,
+        "median": 195.92,
+        "min": 195.382
       },
       {
         "d": [
@@ -8228,9 +8228,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 31.671,
-        "median": 30.166,
-        "min": 24.591
+        "max": 35.188,
+        "median": 27.879,
+        "min": 26.922
       },
       {
         "d": [
@@ -8284,9 +8284,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 177.337,
-        "median": 168.163,
-        "min": 148.963
+        "max": 179.742,
+        "median": 169.525,
+        "min": 154.953
       },
       {
         "d": [
@@ -8312,9 +8312,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 27.706,
-        "median": 25.675,
-        "min": 16.719
+        "max": 34.503,
+        "median": 33.996,
+        "min": 30.374
       },
       {
         "d": [
@@ -8368,9 +8368,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 179.697,
-        "median": 164.755,
-        "min": 159.24
+        "max": 167.177,
+        "median": 164.769,
+        "min": 161.105
       },
       {
         "d": [
@@ -8396,9 +8396,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 21.001,
-        "median": 20.411,
-        "min": 19.814
+        "max": 24.406,
+        "median": 24.058,
+        "min": 23.467
       },
       {
         "d": [
@@ -8452,9 +8452,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 116.6,
-        "median": 115.147,
-        "min": 113.739
+        "max": 131.9,
+        "median": 128.907,
+        "min": 123.432
       },
       {
         "d": [
@@ -8480,9 +8480,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 22.506,
-        "median": 21.733,
-        "min": 21.568
+        "max": 24.839,
+        "median": 24.331,
+        "min": 24.076
       },
       {
         "d": [
@@ -8536,9 +8536,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 132.663,
-        "median": 130.784,
-        "min": 129.126
+        "max": 142.638,
+        "median": 136.104,
+        "min": 132.431
       },
       {
         "d": [
@@ -8564,9 +8564,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 10.544,
-        "median": 10.36,
-        "min": 9.751
+        "max": 19.521,
+        "median": 17.17,
+        "min": 15.673
       },
       {
         "d": [
@@ -8620,9 +8620,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 73.029,
-        "median": 70.41,
-        "min": 66.898
+        "max": 89.44,
+        "median": 83.14,
+        "min": 78.515
       },
       {
         "d": [
@@ -8648,9 +8648,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 17.974,
-        "median": 15.027,
-        "min": 14.434
+        "max": 18.937,
+        "median": 16.916,
+        "min": 14.886
       },
       {
         "d": [
@@ -8704,9 +8704,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 99.757,
-        "median": 88.106,
-        "min": 85.059
+        "max": 91.941,
+        "median": 83.617,
+        "min": 76.916
       },
       {
         "d": [
@@ -8732,9 +8732,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 75.514,
-        "median": 74.641,
-        "min": 51.895
+        "max": 73.925,
+        "median": 72.266,
+        "min": 62.972
       },
       {
         "d": [
@@ -8788,9 +8788,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 186.727,
-        "median": 182.938,
-        "min": 179.407
+        "max": 211.439,
+        "median": 205.56,
+        "min": 186.727
       },
       {
         "d": [
@@ -8816,9 +8816,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 10.531,
-        "median": 9.443,
-        "min": 8.392
+        "max": 10.941,
+        "median": 10.622,
+        "min": 9.514
       },
       {
         "d": [
@@ -8872,9 +8872,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 134.037,
-        "median": 125.19,
-        "min": 115.748
+        "max": 134.955,
+        "median": 126.884,
+        "min": 126.115
       },
       {
         "d": [
@@ -8900,9 +8900,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 10.215,
-        "median": 8.436,
-        "min": 7.819
+        "max": 12.524,
+        "median": 10.414,
+        "min": 9.761
       },
       {
         "d": [
@@ -8956,9 +8956,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 132.937,
-        "median": 118.221,
-        "min": 114.382
+        "max": 137.01,
+        "median": 126.445,
+        "min": 119.609
       },
       {
         "d": [
@@ -8984,9 +8984,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 13.749,
-        "median": 12.984,
-        "min": 11.674
+        "max": 13.676,
+        "median": 13.026,
+        "min": 11.75
       },
       {
         "d": [
@@ -9040,9 +9040,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 210.489,
-        "median": 201.747,
-        "min": 195.516
+        "max": 225.865,
+        "median": 214.508,
+        "min": 204.616
       },
       {
         "d": [
@@ -9068,9 +9068,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 33.202,
-        "median": 28.976,
-        "min": 22.611
+        "max": 33.712,
+        "median": 30.933,
+        "min": 26.142
       },
       {
         "d": [
@@ -9124,9 +9124,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 104.177,
-        "median": 91.253,
-        "min": 87.125
+        "max": 134.455,
+        "median": 98.174,
+        "min": 90.475
       },
       {
         "d": [
@@ -9152,9 +9152,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 12.571,
-        "median": 11.884,
-        "min": 11.641
+        "max": 12.144,
+        "median": 11.769,
+        "min": 11.548
       },
       {
         "d": [
@@ -9208,9 +9208,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 206.954,
-        "median": 203.104,
-        "min": 189.542
+        "max": 226.503,
+        "median": 220.301,
+        "min": 217.405
       },
       {
         "d": [
@@ -9236,9 +9236,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 25.247,
-        "median": 23.64,
-        "min": 16.67
+        "max": 33.538,
+        "median": 31.968,
+        "min": 29.992
       },
       {
         "d": [
@@ -9292,9 +9292,9 @@
           "stream"
         ],
         "library": "fibre",
-        "max": 106.61,
-        "median": 93.237,
-        "min": 89.816
+        "max": 147.526,
+        "median": 102.41,
+        "min": 94.719
       },
       {
         "d": [
@@ -10104,9 +10104,9 @@
           "full-cycle"
         ],
         "library": "fibre",
-        "max": 42.292,
-        "median": 41.93,
-        "min": 41.242
+        "max": 43.623,
+        "median": 43.3,
+        "min": 39.521
       },
       {
         "d": [
@@ -10118,9 +10118,9 @@
           "full-cycle"
         ],
         "library": "fibre-exclusive",
-        "max": 47.565,
-        "median": 46.993,
-        "min": 46.014
+        "max": 47.36,
+        "median": 46.6,
+        "min": 38.603
       },
       {
         "d": [
@@ -10132,9 +10132,9 @@
           "full-cycle"
         ],
         "library": "fibre-pool",
-        "max": 120.624,
-        "median": 118.633,
-        "min": 118.2
+        "max": 153.226,
+        "median": 152.915,
+        "min": 150.896
       },
       {
         "d": [
@@ -10146,9 +10146,9 @@
           "full-cycle"
         ],
         "library": "fibre-pool-host",
-        "max": 115.441,
-        "median": 114.411,
-        "min": 113.308
+        "max": 152.059,
+        "median": 149.415,
+        "min": 147.793
       },
       {
         "d": [
@@ -10216,9 +10216,9 @@
           "handoff"
         ],
         "library": "fibre",
-        "max": 84.161,
-        "median": 82.752,
-        "min": 81.962
+        "max": 84.137,
+        "median": 83.756,
+        "min": 83.475
       },
       {
         "d": [
@@ -10230,9 +10230,9 @@
           "handoff"
         ],
         "library": "fibre-exclusive",
-        "max": 104.496,
-        "median": 103.229,
-        "min": 37.617
+        "max": 107.001,
+        "median": 106.716,
+        "min": 98.78
       },
       {
         "d": [
@@ -10244,9 +10244,9 @@
           "handoff"
         ],
         "library": "fibre-pool",
-        "max": 192.856,
-        "median": 189.734,
-        "min": 181.857
+        "max": 339.934,
+        "median": 327.56,
+        "min": 263.412
       },
       {
         "d": [
@@ -10258,9 +10258,9 @@
           "handoff"
         ],
         "library": "fibre-pool-host",
-        "max": 192.76,
-        "median": 190.464,
-        "min": 180.968
+        "max": 299.058,
+        "median": 295.632,
+        "min": 279.851
       },
       {
         "d": [
@@ -10328,9 +10328,9 @@
           "full-cycle"
         ],
         "library": "fibre",
-        "max": 43.328,
-        "median": 42.9,
-        "min": 41.303
+        "max": 43.231,
+        "median": 38.41,
+        "min": 36.338
       },
       {
         "d": [
@@ -10342,9 +10342,9 @@
           "full-cycle"
         ],
         "library": "fibre-exclusive",
-        "max": 52.519,
-        "median": 52.395,
-        "min": 51.583
+        "max": 54.769,
+        "median": 53.783,
+        "min": 52.613
       },
       {
         "d": [
@@ -10356,9 +10356,9 @@
           "full-cycle"
         ],
         "library": "fibre-pool",
-        "max": 121.018,
-        "median": 120.374,
-        "min": 97.681
+        "max": 134.491,
+        "median": 134.089,
+        "min": 133.264
       },
       {
         "d": [
@@ -10370,9 +10370,9 @@
           "full-cycle"
         ],
         "library": "fibre-pool-host",
-        "max": 111.101,
-        "median": 110.562,
-        "min": 109.946
+        "max": 131.615,
+        "median": 131.518,
+        "min": 130.787
       },
       {
         "d": [
@@ -10454,9 +10454,9 @@
           "handoff"
         ],
         "library": "fibre",
-        "max": 56.701,
-        "median": 55.255,
-        "min": 54.493
+        "max": 57.585,
+        "median": 56.114,
+        "min": 55.573
       },
       {
         "d": [
@@ -10468,9 +10468,9 @@
           "handoff"
         ],
         "library": "fibre-exclusive",
-        "max": 75.355,
-        "median": 57.86,
-        "min": 53.077
+        "max": 75.151,
+        "median": 74.986,
+        "min": 71.248
       },
       {
         "d": [
@@ -10482,9 +10482,9 @@
           "handoff"
         ],
         "library": "fibre-pool",
-        "max": 133.749,
-        "median": 129.581,
-        "min": 127.535
+        "max": 180.997,
+        "median": 177.817,
+        "min": 170.389
       },
       {
         "d": [
@@ -10496,9 +10496,9 @@
           "handoff"
         ],
         "library": "fibre-pool-host",
-        "max": 107.735,
-        "median": 102.139,
-        "min": 99.222
+        "max": 173.144,
+        "median": 166.47,
+        "min": 166.132
       },
       {
         "d": [
@@ -10603,10 +10603,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.561",
-                  "max": 0.617,
-                  "median": 0.561,
-                  "min": 0.531
+                  "display": "0.572",
+                  "max": 0.646,
+                  "median": 0.572,
+                  "min": 0.56
                 },
                 {
                   "best": false,
@@ -10646,10 +10646,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.263",
-                  "max": 0.28,
-                  "median": 0.263,
-                  "min": 0.244
+                  "display": "0.265",
+                  "max": 0.268,
+                  "median": 0.265,
+                  "min": 0.26
                 },
                 {
                   "best": false,
@@ -10689,10 +10689,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "30.0",
-                  "max": 32.547,
-                  "median": 30.044,
-                  "min": 28.801
+                  "display": "28.6",
+                  "max": 29.51,
+                  "median": 28.586,
+                  "min": 27.952
                 },
                 {
                   "best": false,
@@ -10732,10 +10732,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "46.6",
-                  "max": 50.521,
-                  "median": 46.558,
-                  "min": 44.424
+                  "display": "44.4",
+                  "max": 46.44,
+                  "median": 44.421,
+                  "min": 43.417
                 },
                 {
                   "best": false,
@@ -10831,10 +10831,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "24.5 (0.8x)",
-                  "max": 24.72,
-                  "median": 24.493,
-                  "min": 24.129
+                  "display": "25.2 (0.9x)",
+                  "max": 25.493,
+                  "median": 25.162,
+                  "min": 24.551
                 },
                 {
                   "best": false,
@@ -10853,10 +10853,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "470.4 (10.1x)",
-                  "max": 475.796,
-                  "median": 470.363,
-                  "min": 448.368
+                  "display": "447.2 (10.1x)",
+                  "max": 459.365,
+                  "median": 447.168,
+                  "min": 444.416
                 },
                 {
                   "best": false,
@@ -10911,10 +10911,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "24.3",
-                  "max": 24.505,
-                  "median": 24.272,
-                  "min": 24.054
+                  "display": "25.7",
+                  "max": 25.831,
+                  "median": 25.669,
+                  "min": 24.022
                 },
                 null,
                 {
@@ -10942,10 +10942,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "11.6",
-                  "max": 11.765,
-                  "median": 11.573,
-                  "min": 11.023
+                  "display": "12.2",
+                  "max": 13.22,
+                  "median": 12.233,
+                  "min": 11.38
                 },
                 {
                   "best": false,
@@ -10985,10 +10985,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "109.1",
-                  "max": 116.36,
-                  "median": 109.096,
-                  "min": 106.253
+                  "display": "115.8",
+                  "max": 116.917,
+                  "median": 115.796,
+                  "min": 111.552
                 },
                 {
                   "best": false,
@@ -11028,10 +11028,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "154.9",
-                  "max": 168.439,
-                  "median": 154.924,
-                  "min": 127.323
+                  "display": "152.7",
+                  "max": 161.205,
+                  "median": 152.729,
+                  "min": 135.645
                 },
                 {
                   "best": false,
@@ -11128,10 +11128,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "174.3 (1.6x)",
-                  "max": 176.794,
-                  "median": 174.282,
-                  "min": 172.088
+                  "display": "172.7 (1.5x)",
+                  "max": 173.619,
+                  "median": 172.676,
+                  "min": 172.373
                 },
                 {
                   "best": false,
@@ -11157,10 +11157,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "223.8 (1.4x)",
-                  "max": 235.814,
-                  "median": 223.789,
-                  "min": 207.321
+                  "display": "207.5 (1.4x)",
+                  "max": 209.198,
+                  "median": 207.539,
+                  "min": 205.93
                 },
                 {
                   "best": false,
@@ -11238,10 +11238,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.545",
-                  "max": 0.589,
-                  "median": 0.545,
-                  "min": 0.53
+                  "display": "0.559",
+                  "max": 0.57,
+                  "median": 0.559,
+                  "min": 0.553
                 },
                 {
                   "best": false,
@@ -11282,10 +11282,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.665",
-                  "max": 0.74,
-                  "median": 0.665,
-                  "min": 0.636
+                  "display": "0.692",
+                  "max": 0.705,
+                  "median": 0.692,
+                  "min": 0.663
                 },
                 {
                   "best": false,
@@ -11326,10 +11326,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "0.560",
-                  "max": 0.742,
-                  "median": 0.56,
-                  "min": 0.448
+                  "display": "0.720",
+                  "max": 0.734,
+                  "median": 0.72,
+                  "min": 0.646
                 },
                 {
                   "best": false,
@@ -11370,10 +11370,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "7.05",
-                  "max": 7.155,
-                  "median": 7.046,
-                  "min": 6.666
+                  "display": "7.12",
+                  "max": 7.213,
+                  "median": 7.125,
+                  "min": 7.047
                 },
                 {
                   "best": false,
@@ -11420,10 +11420,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "1.17",
-                  "max": 1.353,
-                  "median": 1.169,
-                  "min": 1.166
+                  "display": "1.23",
+                  "max": 1.266,
+                  "median": 1.227,
+                  "min": 1.21
                 },
                 {
                   "best": false,
@@ -11470,10 +11470,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "1.17",
-                  "max": 1.211,
-                  "median": 1.174,
-                  "min": 1.167
+                  "display": "1.23",
+                  "max": 1.637,
+                  "median": 1.234,
+                  "min": 1.227
                 },
                 {
                   "best": false,
@@ -11520,10 +11520,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "75.8",
-                  "max": 76.935,
-                  "median": 75.8,
-                  "min": 71.832
+                  "display": "73.7",
+                  "max": 75.539,
+                  "median": 73.656,
+                  "min": 69.781
                 },
                 {
                   "best": false,
@@ -11570,10 +11570,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "33.9",
-                  "max": 36.475,
-                  "median": 33.865,
-                  "min": 30.075
+                  "display": "36.0",
+                  "max": 37.386,
+                  "median": 35.955,
+                  "min": 34.115
                 },
                 {
                   "best": false,
@@ -11620,10 +11620,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "30.9",
-                  "max": 34.815,
-                  "median": 30.867,
-                  "min": 23.201
+                  "display": "36.7",
+                  "max": 38.171,
+                  "median": 36.731,
+                  "min": 25.017
                 },
                 {
                   "best": false,
@@ -11670,10 +11670,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "165.1",
-                  "max": 169.657,
-                  "median": 165.093,
-                  "min": 128.813
+                  "display": "149.4",
+                  "max": 149.927,
+                  "median": 149.449,
+                  "min": 141.394
                 },
                 {
                   "best": false,
@@ -11720,10 +11720,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "20.9",
-                  "max": 22.324,
-                  "median": 20.86,
-                  "min": 19.322
+                  "display": "24.4",
+                  "max": 25.284,
+                  "median": 24.421,
+                  "min": 23.269
                 },
                 {
                   "best": false,
@@ -11770,10 +11770,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "20.1",
-                  "max": 21.435,
-                  "median": 20.116,
-                  "min": 19.648
+                  "display": "24.9",
+                  "max": 27.009,
+                  "median": 24.895,
+                  "min": 23.095
                 },
                 {
                   "best": false,
@@ -11820,10 +11820,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "228.9",
-                  "max": 231.111,
-                  "median": 228.894,
-                  "min": 227.148
+                  "display": "234.2",
+                  "max": 235.419,
+                  "median": 234.199,
+                  "min": 229.189
                 },
                 {
                   "best": false,
@@ -11870,10 +11870,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "13.2",
-                  "max": 14.606,
-                  "median": 13.227,
-                  "min": 12.791
+                  "display": "13.0",
+                  "max": 16.176,
+                  "median": 13.003,
+                  "min": 12.787
                 },
                 {
                   "best": false,
@@ -11920,10 +11920,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "36.3",
-                  "max": 54.008,
-                  "median": 36.292,
-                  "min": 22.465
+                  "display": "20.4",
+                  "max": 25.658,
+                  "median": 20.378,
+                  "min": 14.924
                 },
                 {
                   "best": false,
@@ -11989,10 +11989,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "27.4 (0.4x)",
-                  "max": 27.954,
-                  "median": 27.42,
-                  "min": 22.606
+                  "display": "27.9 (0.4x)",
+                  "max": 28.623,
+                  "median": 27.936,
+                  "min": 27.516
                 },
                 {
                   "best": false,
@@ -12011,10 +12011,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "26.2 (0.8x)",
-                  "max": 26.938,
-                  "median": 26.183,
-                  "min": 23.467
+                  "display": "27.0 (0.8x)",
+                  "max": 27.241,
+                  "median": 26.987,
+                  "min": 26.06
                 },
                 {
                   "best": false,
@@ -12033,10 +12033,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "26.0 (0.8x)",
-                  "max": 26.913,
-                  "median": 25.987,
-                  "min": 21.448
+                  "display": "26.9 (0.7x)",
+                  "max": 27.26,
+                  "median": 26.929,
+                  "min": 25.629
                 },
                 {
                   "best": false,
@@ -12055,10 +12055,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "278.4 (1.7x)",
-                  "max": 305.332,
-                  "median": 278.445,
-                  "min": 238.16
+                  "display": "256.7 (1.7x)",
+                  "max": 275.415,
+                  "median": 256.735,
+                  "min": 228.321
                 },
                 {
                   "best": false,
@@ -12077,10 +12077,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "235.4 (11.3x)",
-                  "max": 251.013,
-                  "median": 235.373,
-                  "min": 230.081
+                  "display": "257.5 (10.5x)",
+                  "max": 274.532,
+                  "median": 257.452,
+                  "min": 222.798
                 },
                 {
                   "best": false,
@@ -12099,10 +12099,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "247.1 (12.3x)",
-                  "max": 253.539,
-                  "median": 247.072,
-                  "min": 236.371
+                  "display": "254.3 (10.2x)",
+                  "max": 260.677,
+                  "median": 254.331,
+                  "min": 242.426
                 },
                 {
                   "best": false,
@@ -12121,10 +12121,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "324.9 (1.4x)",
-                  "max": 334.709,
-                  "median": 324.944,
-                  "min": 314.717
+                  "display": "323.6 (1.4x)",
+                  "max": 327.94,
+                  "median": 323.633,
+                  "min": 322.36
                 },
                 {
                   "best": false,
@@ -12143,10 +12143,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "214.5 (16.2x)",
-                  "max": 225.536,
-                  "median": 214.479,
-                  "min": 207.634
+                  "display": "229.1 (17.6x)",
+                  "max": 239.602,
+                  "median": 229.117,
+                  "min": 221.284
                 },
                 {
                   "best": false,
@@ -12165,10 +12165,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "212.7 (5.9x)",
-                  "max": 223.847,
-                  "median": 212.734,
-                  "min": 205.416
+                  "display": "226.2 (11.1x)",
+                  "max": 231.772,
+                  "median": 226.157,
+                  "min": 212.809
                 },
                 {
                   "best": false,
@@ -12210,10 +12210,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "26.0",
-                  "max": 26.315,
-                  "median": 26.038,
-                  "min": 25.75
+                  "display": "26.6",
+                  "max": 26.796,
+                  "median": 26.594,
+                  "min": 25.649
                 },
                 null,
                 null,
@@ -12242,10 +12242,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "6.96",
-                  "max": 7.037,
-                  "median": 6.959,
-                  "min": 6.82
+                  "display": "7.72",
+                  "max": 7.906,
+                  "median": 7.717,
+                  "min": 7.548
                 },
                 null,
                 null,
@@ -12274,10 +12274,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "3.96",
-                  "max": 3.992,
-                  "median": 3.955,
-                  "min": 3.766
+                  "display": "4.50",
+                  "max": 4.63,
+                  "median": 4.501,
+                  "min": 4.363
                 },
                 null,
                 null,
@@ -12306,10 +12306,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "9.48",
-                  "max": 9.715,
-                  "median": 9.482,
-                  "min": 8.484
+                  "display": "9.59",
+                  "max": 9.664,
+                  "median": 9.587,
+                  "min": 9.369
                 },
                 {
                   "best": false,
@@ -12356,10 +12356,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "8.19",
-                  "max": 8.591,
-                  "median": 8.194,
-                  "min": 8.058
+                  "display": "8.69",
+                  "max": 8.789,
+                  "median": 8.688,
+                  "min": 7.729
                 },
                 {
                   "best": false,
@@ -12406,10 +12406,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "6.92",
-                  "max": 7.2,
-                  "median": 6.915,
-                  "min": 6.605
+                  "display": "7.14",
+                  "max": 7.803,
+                  "median": 7.14,
+                  "min": 6.695
                 },
                 {
                   "best": false,
@@ -12456,10 +12456,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "64.4",
-                  "max": 66.483,
-                  "median": 64.389,
-                  "min": 61.664
+                  "display": "63.5",
+                  "max": 66.276,
+                  "median": 63.513,
+                  "min": 59.121
                 },
                 {
                   "best": false,
@@ -12506,10 +12506,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "65.1",
-                  "max": 65.491,
-                  "median": 65.109,
-                  "min": 61.888
+                  "display": "66.1",
+                  "max": 66.744,
+                  "median": 66.14,
+                  "min": 65.871
                 },
                 {
                   "best": false,
@@ -12556,10 +12556,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "62.7",
-                  "max": 66.322,
-                  "median": 62.721,
-                  "min": 57.302
+                  "display": "65.9",
+                  "max": 66.48,
+                  "median": 65.874,
+                  "min": 63.725
                 },
                 {
                   "best": false,
@@ -12606,10 +12606,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "77.2",
-                  "max": 77.636,
-                  "median": 77.217,
-                  "min": 76.826
+                  "display": "79.1",
+                  "max": 79.357,
+                  "median": 79.079,
+                  "min": 78.747
                 },
                 {
                   "best": false,
@@ -12656,10 +12656,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "77.6",
-                  "max": 79.449,
-                  "median": 77.597,
-                  "min": 75.005
+                  "display": "79.2",
+                  "max": 80.53,
+                  "median": 79.22,
+                  "min": 78.638
                 },
                 {
                   "best": false,
@@ -12706,10 +12706,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "76.4",
-                  "max": 80.048,
-                  "median": 76.356,
-                  "min": 73.252
+                  "display": "78.9",
+                  "max": 79.169,
+                  "median": 78.895,
+                  "min": 78.143
                 },
                 {
                   "best": false,
@@ -12755,11 +12755,11 @@
             {
               "cells": [
                 {
-                  "best": false,
-                  "display": "109.2",
-                  "max": 110.959,
-                  "median": 109.219,
-                  "min": 107.58
+                  "best": true,
+                  "display": "121.6",
+                  "max": 123.625,
+                  "median": 121.617,
+                  "min": 118.103
                 },
                 {
                   "best": false,
@@ -12769,7 +12769,7 @@
                   "min": 29.951
                 },
                 {
-                  "best": true,
+                  "best": false,
                   "display": "109.2",
                   "max": 113.573,
                   "median": 109.234,
@@ -12806,10 +12806,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "13.2",
-                  "max": 14.095,
-                  "median": 13.233,
-                  "min": 12.648
+                  "display": "14.0",
+                  "max": 14.377,
+                  "median": 13.99,
+                  "min": 13.333
                 },
                 {
                   "best": false,
@@ -12856,10 +12856,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "12.8",
-                  "max": 13.265,
-                  "median": 12.791,
-                  "min": 12.603
+                  "display": "12.5",
+                  "max": 12.697,
+                  "median": 12.481,
+                  "min": 12.209
                 },
                 {
                   "best": false,
@@ -12926,10 +12926,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "222.9 (3.5x)",
-                  "max": 223.508,
-                  "median": 222.863,
-                  "min": 221.848
+                  "display": "225.3 (3.5x)",
+                  "max": 226.292,
+                  "median": 225.306,
+                  "min": 225.09
                 },
                 {
                   "best": false,
@@ -12955,10 +12955,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "214.5 (3.3x)",
-                  "max": 217.88,
-                  "median": 214.517,
-                  "min": 210.59
+                  "display": "218.6 (3.3x)",
+                  "max": 222.778,
+                  "median": 218.561,
+                  "min": 207.121
                 },
                 {
                   "best": false,
@@ -12984,10 +12984,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "198.6 (3.2x)",
-                  "max": 210.361,
-                  "median": 198.647,
-                  "min": 193.89
+                  "display": "202.5 (3.1x)",
+                  "max": 210.856,
+                  "median": 202.493,
+                  "min": 198.658
                 },
                 {
                   "best": false,
@@ -13013,10 +13013,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "295.2 (3.8x)",
-                  "max": 298.865,
-                  "median": 295.19,
-                  "min": 292.315
+                  "display": "295.1 (3.7x)",
+                  "max": 305.536,
+                  "median": 295.091,
+                  "min": 294.449
                 },
                 {
                   "best": false,
@@ -13042,10 +13042,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "290.7 (3.7x)",
-                  "max": 296.953,
-                  "median": 290.705,
-                  "min": 281.889
+                  "display": "285.2 (3.6x)",
+                  "max": 290.321,
+                  "median": 285.199,
+                  "min": 283.164
                 },
                 {
                   "best": false,
@@ -13071,10 +13071,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "284.5 (3.7x)",
-                  "max": 288.99,
-                  "median": 284.516,
-                  "min": 282.348
+                  "display": "282.6 (3.6x)",
+                  "max": 283.753,
+                  "median": 282.571,
+                  "min": 281.669
                 },
                 {
                   "best": false,
@@ -13100,10 +13100,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "190.9 (1.7x)",
-                  "max": 195.297,
-                  "median": 190.931,
-                  "min": 180.23
+                  "display": "224.8 (1.8x)",
+                  "max": 225.225,
+                  "median": 224.789,
+                  "min": 223.693
                 },
                 {
                   "best": false,
@@ -13129,10 +13129,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "210.8 (15.9x)",
-                  "max": 216.691,
-                  "median": 210.839,
-                  "min": 202.718
+                  "display": "220.5 (15.8x)",
+                  "max": 223.098,
+                  "median": 220.461,
+                  "min": 210.722
                 },
                 {
                   "best": false,
@@ -13158,10 +13158,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "204.3 (16.0x)",
-                  "max": 209.362,
-                  "median": 204.297,
-                  "min": 197.531
+                  "display": "217.4 (17.4x)",
+                  "max": 224.795,
+                  "median": 217.433,
+                  "min": 201.371
                 },
                 {
                   "best": false,
@@ -13213,10 +13213,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.246",
-                  "max": 0.252,
-                  "median": 0.246,
-                  "min": 0.243
+                  "display": "0.237",
+                  "max": 0.246,
+                  "median": 0.237,
+                  "min": 0.231
                 }
               ],
               "head": [
@@ -13228,10 +13228,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.032",
-                  "max": 0.032,
-                  "median": 0.032,
-                  "min": 0.03
+                  "display": "0.031",
+                  "max": 0.034,
+                  "median": 0.031,
+                  "min": 0.031
                 }
               ],
               "head": [
@@ -13258,10 +13258,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "14.9",
-                  "max": 15.315,
-                  "median": 14.863,
-                  "min": 13.406
+                  "display": "16.7",
+                  "max": 16.848,
+                  "median": 16.738,
+                  "min": 16.626
                 }
               ],
               "head": [
@@ -13273,10 +13273,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.016",
-                  "max": 0.019,
-                  "median": 0.016,
-                  "min": 0.013
+                  "display": "0.014",
+                  "max": 0.016,
+                  "median": 0.014,
+                  "min": 0.012
                 }
               ],
               "head": [
@@ -13289,9 +13289,9 @@
                 {
                   "best": false,
                   "display": "0.005",
-                  "max": 0.007,
+                  "max": 0.009,
                   "median": 0.005,
-                  "min": 0.003
+                  "min": 0.005
                 }
               ],
               "head": [
@@ -13303,10 +13303,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "17.7",
-                  "max": 19.512,
-                  "median": 17.708,
-                  "min": 14.2
+                  "display": "18.5",
+                  "max": 19.139,
+                  "median": 18.504,
+                  "min": 17.308
                 }
               ],
               "head": [
@@ -13318,10 +13318,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.029",
-                  "max": 1.008,
-                  "median": 0.029,
-                  "min": 0.019
+                  "display": "0.018",
+                  "max": 0.796,
+                  "median": 0.018,
+                  "min": 0.013
                 }
               ],
               "head": [
@@ -13334,7 +13334,7 @@
                 {
                   "best": false,
                   "display": "0.007",
-                  "max": 0.362,
+                  "max": 0.555,
                   "median": 0.007,
                   "min": 0.006
                 }
@@ -13366,10 +13366,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "30.4 (2.0x)",
-                  "max": 31.732,
-                  "median": 30.383,
-                  "min": 29.938
+                  "display": "32.2 (1.9x)",
+                  "max": 32.686,
+                  "median": 32.165,
+                  "min": 31.616
                 }
               ],
               "head": [
@@ -13381,10 +13381,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "3.77 (235.9x)",
-                  "max": 3.794,
-                  "median": 3.774,
-                  "min": 3.75
+                  "display": "3.73 (266.7x)",
+                  "max": 3.757,
+                  "median": 3.734,
+                  "min": 3.684
                 }
               ],
               "head": [
@@ -13396,10 +13396,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "1.02 (203.8x)",
-                  "max": 1.107,
-                  "median": 1.019,
-                  "min": 0.844
+                  "display": "1.22 (243.8x)",
+                  "max": 1.232,
+                  "median": 1.219,
+                  "min": 1.194
                 }
               ],
               "head": [
@@ -13411,10 +13411,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "81.6 (4.6x)",
-                  "max": 82.571,
-                  "median": 81.641,
-                  "min": 81.081
+                  "display": "87.1 (4.7x)",
+                  "max": 87.855,
+                  "median": 87.119,
+                  "min": 85.239
                 }
               ],
               "head": [
@@ -13426,10 +13426,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "13.6 (469.6x)",
-                  "max": 14.421,
-                  "median": 13.617,
-                  "min": 12.995
+                  "display": "14.5 (807.2x)",
+                  "max": 14.592,
+                  "median": 14.529,
+                  "min": 14.314
                 }
               ],
               "head": [
@@ -13441,10 +13441,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "4.10 (585.1x)",
-                  "max": 4.386,
-                  "median": 4.096,
-                  "min": 3.765
+                  "display": "3.86 (551.7x)",
+                  "max": 4.833,
+                  "median": 3.862,
+                  "min": 2.889
                 }
               ],
               "head": [
@@ -13472,10 +13472,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "7.62",
-                  "max": 7.721,
-                  "median": 7.622,
-                  "min": 7.282
+                  "display": "8.21",
+                  "max": 8.244,
+                  "median": 8.21,
+                  "min": 8.077
                 }
               ],
               "head": [
@@ -13487,10 +13487,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.354",
-                  "max": 0.367,
-                  "median": 0.354,
-                  "min": 0.336
+                  "display": "0.382",
+                  "max": 0.385,
+                  "median": 0.382,
+                  "min": 0.376
                 }
               ],
               "head": [
@@ -13502,10 +13502,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.078",
-                  "max": 0.079,
-                  "median": 0.078,
-                  "min": 0.077
+                  "display": "0.086",
+                  "max": 0.088,
+                  "median": 0.086,
+                  "min": 0.08
                 }
               ],
               "head": [
@@ -13517,10 +13517,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "43.1",
-                  "max": 44.782,
-                  "median": 43.084,
-                  "min": 27.847
+                  "display": "42.8",
+                  "max": 45.011,
+                  "median": 42.799,
+                  "min": 30.372
                 }
               ],
               "head": [
@@ -13532,10 +13532,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.755",
-                  "max": 0.779,
-                  "median": 0.755,
-                  "min": 0.744
+                  "display": "0.736",
+                  "max": 0.746,
+                  "median": 0.736,
+                  "min": 0.735
                 }
               ],
               "head": [
@@ -13547,10 +13547,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.204",
-                  "max": 0.209,
-                  "median": 0.204,
-                  "min": 0.203
+                  "display": "0.201",
+                  "max": 0.203,
+                  "median": 0.201,
+                  "min": 0.2
                 }
               ],
               "head": [
@@ -13562,10 +13562,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "20.4",
-                  "max": 20.918,
-                  "median": 20.368,
-                  "min": 18.932
+                  "display": "18.2",
+                  "max": 18.495,
+                  "median": 18.169,
+                  "min": 17.942
                 }
               ],
               "head": [
@@ -13577,10 +13577,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.759",
-                  "max": 0.762,
-                  "median": 0.759,
-                  "min": 0.756
+                  "display": "0.741",
+                  "max": 0.743,
+                  "median": 0.741,
+                  "min": 0.74
                 }
               ],
               "head": [
@@ -13592,10 +13592,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.212",
-                  "max": 0.214,
-                  "median": 0.212,
-                  "min": 0.21
+                  "display": "0.206",
+                  "max": 0.211,
+                  "median": 0.206,
+                  "min": 0.205
                 }
               ],
               "head": [
@@ -13625,10 +13625,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "112.8 (2.6x)",
-                  "max": 113.214,
-                  "median": 112.764,
-                  "min": 111.748
+                  "display": "127.2 (3.0x)",
+                  "max": 127.785,
+                  "median": 127.171,
+                  "min": 126.499
                 }
               ],
               "head": [
@@ -13640,10 +13640,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "24.0 (31.7x)",
-                  "max": 24.204,
-                  "median": 23.962,
-                  "min": 23.301
+                  "display": "24.4 (33.1x)",
+                  "max": 24.528,
+                  "median": 24.374,
+                  "min": 23.972
                 }
               ],
               "head": [
@@ -13655,10 +13655,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "9.93 (48.7x)",
-                  "max": 10.006,
-                  "median": 9.927,
-                  "min": 9.813
+                  "display": "9.71 (48.3x)",
+                  "max": 9.798,
+                  "median": 9.709,
+                  "min": 8.957
                 }
               ],
               "head": [
@@ -13670,10 +13670,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "142.9 (7.0x)",
-                  "max": 143.498,
-                  "median": 142.91,
-                  "min": 142.433
+                  "display": "146.7 (8.1x)",
+                  "max": 147.118,
+                  "median": 146.695,
+                  "min": 146.459
                 }
               ],
               "head": [
@@ -13685,10 +13685,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "58.2 (76.7x)",
-                  "max": 58.752,
-                  "median": 58.23,
-                  "min": 57.991
+                  "display": "60.4 (81.6x)",
+                  "max": 60.883,
+                  "median": 60.447,
+                  "min": 59.742
                 }
               ],
               "head": [
@@ -13700,10 +13700,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "23.6 (111.1x)",
-                  "max": 24.638,
-                  "median": 23.556,
-                  "min": 22.299
+                  "display": "23.0 (111.7x)",
+                  "max": 24.629,
+                  "median": 23.009,
+                  "min": 20.426
                 }
               ],
               "head": [
@@ -13738,17 +13738,17 @@
           ],
           "mode": "sync",
           "notes": [
-            "Unreliable, sample spread over 2x on a 1×1 cell where the rest of the matrix holds within a few percent: fibre at capacity unbounded (2.8x, 48.4 to 137.5), flume at capacity unbounded (2.3x, 6.41 to 15.0). Those medians do not support a comparison."
+            "Unreliable, sample spread over 2x on a 1×1 cell where the rest of the matrix holds within a few percent: flume at capacity unbounded (2.3x, 6.41 to 15.0). Those medians do not support a comparison."
           ],
           "rows": [
             {
               "cells": [
                 {
                   "best": false,
-                  "display": "0.565",
-                  "max": 0.573,
-                  "median": 0.565,
-                  "min": 0.547
+                  "display": "0.582",
+                  "max": 0.593,
+                  "median": 0.582,
+                  "min": 0.553
                 },
                 {
                   "best": false,
@@ -13782,10 +13782,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.615",
-                  "max": 0.691,
-                  "median": 0.615,
-                  "min": 0.539
+                  "display": "0.641",
+                  "max": 0.699,
+                  "median": 0.641,
+                  "min": 0.605
                 },
                 {
                   "best": false,
@@ -13819,10 +13819,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "0.526",
-                  "max": 0.629,
-                  "median": 0.526,
-                  "min": 0.475
+                  "display": "0.640",
+                  "max": 0.68,
+                  "median": 0.64,
+                  "min": 0.603
                 },
                 {
                   "best": false,
@@ -13856,10 +13856,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.519",
-                  "max": 0.592,
-                  "median": 0.519,
-                  "min": 0.444
+                  "display": "0.680",
+                  "max": 0.702,
+                  "median": 0.68,
+                  "min": 0.533
                 },
                 {
                   "best": false,
@@ -13893,10 +13893,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.545",
-                  "max": 0.578,
-                  "median": 0.545,
-                  "min": 0.512
+                  "display": "0.684",
+                  "max": 0.741,
+                  "median": 0.684,
+                  "min": 0.68
                 },
                 {
                   "best": false,
@@ -13930,10 +13930,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "0.635",
-                  "max": 0.727,
-                  "median": 0.635,
-                  "min": 0.581
+                  "display": "0.602",
+                  "max": 0.694,
+                  "median": 0.602,
+                  "min": 0.423
                 },
                 {
                   "best": false,
@@ -13967,10 +13967,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.558",
-                  "max": 0.593,
-                  "median": 0.558,
-                  "min": 0.517
+                  "display": "0.719",
+                  "max": 0.727,
+                  "median": 0.719,
+                  "min": 0.708
                 },
                 {
                   "best": false,
@@ -14004,10 +14004,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "1.69",
-                  "max": 1.754,
-                  "median": 1.693,
-                  "min": 1.422
+                  "display": "2.10",
+                  "max": 2.136,
+                  "median": 2.098,
+                  "min": 2.078
                 },
                 {
                   "best": false,
@@ -14047,10 +14047,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.174",
-                  "max": 0.181,
-                  "median": 0.174,
-                  "min": 0.149
+                  "display": "0.183",
+                  "max": 0.184,
+                  "median": 0.183,
+                  "min": 0.18
                 },
                 {
                   "best": false,
@@ -14090,10 +14090,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.174",
-                  "max": 0.18,
-                  "median": 0.174,
-                  "min": 0.15
+                  "display": "0.180",
+                  "max": 0.182,
+                  "median": 0.18,
+                  "min": 0.178
                 },
                 {
                   "best": false,
@@ -14133,10 +14133,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.179",
-                  "max": 0.187,
-                  "median": 0.179,
-                  "min": 0.161
+                  "display": "0.187",
+                  "max": 0.189,
+                  "median": 0.187,
+                  "min": 0.182
                 },
                 {
                   "best": false,
@@ -14176,10 +14176,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.125",
-                  "max": 0.133,
-                  "median": 0.125,
-                  "min": 0.115
+                  "display": "0.135",
+                  "max": 0.136,
+                  "median": 0.135,
+                  "min": 0.133
                 },
                 {
                   "best": false,
@@ -14219,10 +14219,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.172",
-                  "max": 0.181,
-                  "median": 0.172,
-                  "min": 0.168
+                  "display": "0.183",
+                  "max": 0.186,
+                  "median": 0.183,
+                  "min": 0.163
                 },
                 {
                   "best": false,
@@ -14262,10 +14262,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.106",
-                  "max": 0.119,
-                  "median": 0.106,
-                  "min": 0.076
+                  "display": "0.131",
+                  "max": 0.132,
+                  "median": 0.131,
+                  "min": 0.13
                 },
                 {
                   "best": false,
@@ -14305,10 +14305,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "39.7",
-                  "max": 43.357,
-                  "median": 39.727,
-                  "min": 38.883
+                  "display": "43.3",
+                  "max": 43.722,
+                  "median": 43.294,
+                  "min": 41.408
                 },
                 {
                   "best": false,
@@ -14348,10 +14348,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "9.91",
-                  "max": 10.719,
-                  "median": 9.909,
-                  "min": 9.425
+                  "display": "9.17",
+                  "max": 10.073,
+                  "median": 9.172,
+                  "min": 8.135
                 },
                 {
                   "best": false,
@@ -14390,11 +14390,11 @@
             {
               "cells": [
                 {
-                  "best": false,
-                  "display": "5.58",
-                  "max": 10.207,
-                  "median": 5.584,
-                  "min": 3.158
+                  "best": true,
+                  "display": "8.79",
+                  "max": 11.589,
+                  "median": 8.789,
+                  "min": 5.92
                 },
                 {
                   "best": false,
@@ -14404,7 +14404,7 @@
                   "min": 0.197
                 },
                 {
-                  "best": true,
+                  "best": false,
                   "display": "8.20",
                   "max": 16.448,
                   "median": 8.201,
@@ -14434,10 +14434,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "8.88",
-                  "max": 10.551,
-                  "median": 8.879,
-                  "min": 8.174
+                  "display": "9.19",
+                  "max": 10.307,
+                  "median": 9.19,
+                  "min": 8.349
                 },
                 {
                   "best": true,
@@ -14478,9 +14478,9 @@
                 {
                   "best": false,
                   "display": "18.8",
-                  "max": 19.449,
-                  "median": 18.844,
-                  "min": 18.325
+                  "max": 19.036,
+                  "median": 18.795,
+                  "min": 18.186
                 },
                 {
                   "best": false,
@@ -14520,10 +14520,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "5.92",
-                  "max": 6.905,
-                  "median": 5.916,
-                  "min": 4.426
+                  "display": "7.02",
+                  "max": 7.882,
+                  "median": 7.018,
+                  "min": 5.39
                 },
                 {
                   "best": false,
@@ -14563,10 +14563,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "16.9",
-                  "max": 17.273,
-                  "median": 16.89,
-                  "min": 8.771
+                  "display": "13.2",
+                  "max": 14.803,
+                  "median": 13.207,
+                  "min": 12.59
                 },
                 {
                   "best": false,
@@ -14606,10 +14606,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "52.9",
-                  "max": 55.282,
-                  "median": 52.903,
-                  "min": 50.885
+                  "display": "52.3",
+                  "max": 54.06,
+                  "median": 52.314,
+                  "min": 29.267
                 },
                 {
                   "best": false,
@@ -14649,10 +14649,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "27.5",
-                  "max": 29.993,
-                  "median": 27.529,
-                  "min": 24.769
+                  "display": "29.9",
+                  "max": 31.713,
+                  "median": 29.861,
+                  "min": 28.135
                 },
                 {
                   "best": false,
@@ -14692,10 +14692,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "20.4",
-                  "max": 25.675,
-                  "median": 20.428,
-                  "min": 9.753
+                  "display": "14.2",
+                  "max": 18.012,
+                  "median": 14.247,
+                  "min": 10.648
                 },
                 {
                   "best": false,
@@ -14735,10 +14735,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "24.2",
-                  "max": 25.272,
-                  "median": 24.227,
-                  "min": 21.158
+                  "display": "23.6",
+                  "max": 24.899,
+                  "median": 23.56,
+                  "min": 20.599
                 },
                 {
                   "best": false,
@@ -14778,10 +14778,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "43.9",
-                  "max": 44.795,
-                  "median": 43.872,
-                  "min": 42.52
+                  "display": "45.7",
+                  "max": 46.182,
+                  "median": 45.738,
+                  "min": 43.611
                 },
                 {
                   "best": false,
@@ -14821,10 +14821,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "19.0",
-                  "max": 24.878,
-                  "median": 19.005,
-                  "min": 13.961
+                  "display": "17.6",
+                  "max": 19.101,
+                  "median": 17.61,
+                  "min": 11.586
                 },
                 {
                   "best": false,
@@ -14864,10 +14864,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "36.0",
-                  "max": 40.072,
-                  "median": 36.005,
-                  "min": 34.778
+                  "display": "35.1",
+                  "max": 38.464,
+                  "median": 35.063,
+                  "min": 32.605
                 },
                 {
                   "best": false,
@@ -14907,10 +14907,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "134.4",
-                  "max": 137.536,
-                  "median": 134.4,
-                  "min": 48.365
+                  "display": "134.2",
+                  "max": 134.561,
+                  "median": 134.19,
+                  "min": 133.876
                 },
                 {
                   "best": true,
@@ -14950,10 +14950,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.500",
-                  "max": 18.83,
-                  "median": 0.5,
-                  "min": 0.409
+                  "display": "0.484",
+                  "max": 0.531,
+                  "median": 0.484,
+                  "min": 0.43
                 },
                 {
                   "best": false,
@@ -14993,10 +14993,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "0.445",
-                  "max": 0.517,
-                  "median": 0.445,
-                  "min": 0.401
+                  "display": "0.457",
+                  "max": 0.475,
+                  "median": 0.457,
+                  "min": 0.406
                 },
                 {
                   "best": false,
@@ -15036,10 +15036,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "12.0",
-                  "max": 14.344,
-                  "median": 12.022,
-                  "min": 11.689
+                  "display": "11.7",
+                  "max": 11.921,
+                  "median": 11.714,
+                  "min": 11.611
                 },
                 {
                   "best": false,
@@ -15079,10 +15079,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "9.76",
-                  "max": 10.036,
-                  "median": 9.761,
-                  "min": 8.934
+                  "display": "9.45",
+                  "max": 10.19,
+                  "median": 9.447,
+                  "min": 9.177
                 },
                 {
                   "best": true,
@@ -15122,10 +15122,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "13.3",
-                  "max": 17.336,
-                  "median": 13.278,
-                  "min": 12.394
+                  "display": "19.1",
+                  "max": 22.951,
+                  "median": 19.066,
+                  "min": 15.284
                 },
                 {
                   "best": false,
@@ -15165,10 +15165,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "9.36",
-                  "max": 29.885,
-                  "median": 9.363,
-                  "min": 6.201
+                  "display": "10.1",
+                  "max": 12.832,
+                  "median": 10.121,
+                  "min": 9.146
                 },
                 {
                   "best": true,
@@ -15227,10 +15227,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "135.2 (3.4x)",
-                  "max": 138.846,
-                  "median": 135.242,
-                  "min": 127.196
+                  "display": "150.2 (3.5x)",
+                  "max": 151.868,
+                  "median": 150.176,
+                  "min": 147.351
                 },
                 {
                   "best": false,
@@ -15249,10 +15249,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "12.1 (1.2x)",
-                  "max": 16.325,
-                  "median": 12.112,
-                  "min": 10.506
+                  "display": "11.0 (1.2x)",
+                  "max": 12.166,
+                  "median": 11.013,
+                  "min": 10.336
                 },
                 {
                   "best": false,
@@ -15271,10 +15271,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "12.1 (2.2x)",
-                  "max": 16.987,
-                  "median": 12.145,
-                  "min": 9.081
+                  "display": "7.08 (0.8x)",
+                  "max": 17.496,
+                  "median": 7.081,
+                  "min": 6.42
                 },
                 {
                   "best": false,
@@ -15293,10 +15293,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "15.6 (1.8x)",
-                  "max": 20.616,
-                  "median": 15.642,
-                  "min": 12.07
+                  "display": "13.1 (1.4x)",
+                  "max": 14.247,
+                  "median": 13.056,
+                  "min": 12.025
                 },
                 {
                   "best": false,
@@ -15315,10 +15315,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "29.5 (1.6x)",
-                  "max": 30.542,
-                  "median": 29.486,
-                  "min": 28.885
+                  "display": "31.4 (1.7x)",
+                  "max": 32.648,
+                  "median": 31.436,
+                  "min": 29.773
                 },
                 {
                   "best": false,
@@ -15337,10 +15337,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "8.65 (1.5x)",
-                  "max": 9.92,
-                  "median": 8.65,
-                  "min": 7.397
+                  "display": "9.02 (1.3x)",
+                  "max": 11.601,
+                  "median": 9.018,
+                  "min": 8.257
                 },
                 {
                   "best": false,
@@ -15359,10 +15359,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "25.1 (1.5x)",
-                  "max": 31.526,
-                  "median": 25.102,
-                  "min": 16.192
+                  "display": "24.4 (1.8x)",
+                  "max": 26.542,
+                  "median": 24.402,
+                  "min": 18.791
                 },
                 {
                   "best": false,
@@ -15381,10 +15381,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "216.5 (4.1x)",
-                  "max": 234.49,
-                  "median": 216.454,
-                  "min": 187.967
+                  "display": "289.3 (5.5x)",
+                  "max": 293.886,
+                  "median": 289.337,
+                  "min": 285.956
                 },
                 {
                   "best": false,
@@ -15403,10 +15403,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "63.6 (2.3x)",
-                  "max": 65.438,
-                  "median": 63.619,
-                  "min": 63.014
+                  "display": "72.0 (2.4x)",
+                  "max": 76.335,
+                  "median": 72.025,
+                  "min": 69.557
                 },
                 {
                   "best": false,
@@ -15425,10 +15425,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "38.7 (1.9x)",
-                  "max": 53.372,
-                  "median": 38.708,
-                  "min": 22.579
+                  "display": "40.3 (2.8x)",
+                  "max": 59.085,
+                  "median": 40.343,
+                  "min": 28.974
                 },
                 {
                   "best": false,
@@ -15447,10 +15447,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "65.1 (2.7x)",
-                  "max": 71.154,
-                  "median": 65.104,
-                  "min": 57.34
+                  "display": "77.1 (3.3x)",
+                  "max": 87.655,
+                  "median": 77.126,
+                  "min": 71.177
                 },
                 {
                   "best": false,
@@ -15469,10 +15469,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "117.5 (2.7x)",
-                  "max": 119.337,
-                  "median": 117.548,
-                  "min": 111.467
+                  "display": "129.6 (2.8x)",
+                  "max": 136.737,
+                  "median": 129.608,
+                  "min": 119.373
                 },
                 {
                   "best": false,
@@ -15491,10 +15491,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "39.3 (2.1x)",
-                  "max": 54.731,
-                  "median": 39.348,
-                  "min": 21.26
+                  "display": "36.2 (2.1x)",
+                  "max": 61.672,
+                  "median": 36.179,
+                  "min": 29.051
                 },
                 {
                   "best": false,
@@ -15513,10 +15513,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "92.3 (2.6x)",
-                  "max": 99.989,
-                  "median": 92.275,
-                  "min": 81.741
+                  "display": "104.3 (3.0x)",
+                  "max": 118.724,
+                  "median": 104.254,
+                  "min": 87.383
                 },
                 {
                   "best": false,
@@ -15535,10 +15535,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "225.6 (1.7x)",
-                  "max": 326.878,
-                  "median": 225.56,
-                  "min": 195.475
+                  "display": "325.5 (2.4x)",
+                  "max": 330.474,
+                  "median": 325.538,
+                  "min": 323.529
                 },
                 {
                   "best": false,
@@ -15557,10 +15557,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "101.4 (202.8x)",
-                  "max": 104.79,
-                  "median": 101.413,
-                  "min": 88.157
+                  "display": "106.8 (220.6x)",
+                  "max": 108.264,
+                  "median": 106.788,
+                  "min": 99.313
                 },
                 {
                   "best": false,
@@ -15579,10 +15579,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "91.1 (204.7x)",
-                  "max": 94.856,
-                  "median": 91.07,
-                  "min": 80.855
+                  "display": "102.6 (224.4x)",
+                  "max": 104.986,
+                  "median": 102.552,
+                  "min": 99.764
                 },
                 {
                   "best": false,
@@ -15601,10 +15601,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "203.2 (16.9x)",
-                  "max": 218.506,
-                  "median": 203.176,
-                  "min": 195.168
+                  "display": "218.3 (18.6x)",
+                  "max": 226.64,
+                  "median": 218.301,
+                  "min": 198.585
                 },
                 {
                   "best": false,
@@ -15623,10 +15623,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "157.3 (16.1x)",
-                  "max": 165.497,
-                  "median": 157.282,
-                  "min": 148.23
+                  "display": "160.1 (16.9x)",
+                  "max": 178.542,
+                  "median": 160.124,
+                  "min": 153.562
                 },
                 {
                   "best": false,
@@ -15645,10 +15645,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "202.2 (15.2x)",
-                  "max": 212.798,
-                  "median": 202.241,
-                  "min": 194.937
+                  "display": "223.7 (11.7x)",
+                  "max": 226.734,
+                  "median": 223.689,
+                  "min": 209.867
                 },
                 {
                   "best": false,
@@ -15667,10 +15667,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "151.2 (16.1x)",
-                  "max": 174.258,
-                  "median": 151.176,
-                  "min": 98.679
+                  "display": "162.0 (16.0x)",
+                  "max": 169.744,
+                  "median": 162.008,
+                  "min": 156.415
                 },
                 {
                   "best": false,
@@ -15711,10 +15711,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "25.4",
-                  "max": 26.062,
-                  "median": 25.441,
-                  "min": 24.844
+                  "display": "25.6",
+                  "max": 25.59,
+                  "median": 25.56,
+                  "min": 25.269
                 },
                 null,
                 null,
@@ -15742,10 +15742,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "7.05",
-                  "max": 7.196,
-                  "median": 7.053,
-                  "min": 6.921
+                  "display": "7.81",
+                  "max": 8.091,
+                  "median": 7.813,
+                  "min": 7.674
                 },
                 null,
                 null,
@@ -15773,10 +15773,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "3.95",
-                  "max": 3.972,
-                  "median": 3.949,
-                  "min": 3.283
+                  "display": "4.30",
+                  "max": 4.441,
+                  "median": 4.297,
+                  "min": 4.066
                 },
                 null,
                 null,
@@ -15804,10 +15804,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "6.63",
-                  "max": 6.831,
-                  "median": 6.628,
-                  "min": 6.448
+                  "display": "7.49",
+                  "max": 24.228,
+                  "median": 7.492,
+                  "min": 7.361
                 },
                 null,
                 null,
@@ -15835,10 +15835,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "5.36",
-                  "max": 5.625,
-                  "median": 5.363,
-                  "min": 5.221
+                  "display": "7.27",
+                  "max": 7.415,
+                  "median": 7.271,
+                  "min": 7.137
                 },
                 null,
                 null,
@@ -15866,10 +15866,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "4.12",
-                  "max": 4.236,
-                  "median": 4.123,
-                  "min": 4.021
+                  "display": "4.46",
+                  "max": 4.513,
+                  "median": 4.465,
+                  "min": 4.393
                 },
                 null,
                 null,
@@ -15897,10 +15897,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "4.77",
-                  "max": 4.93,
-                  "median": 4.77,
-                  "min": 4.631
+                  "display": "6.41",
+                  "max": 6.489,
+                  "median": 6.414,
+                  "min": 6.295
                 },
                 null,
                 null,
@@ -15928,10 +15928,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "10.0",
-                  "max": 10.198,
-                  "median": 10.043,
-                  "min": 9.24
+                  "display": "10.9",
+                  "max": 10.932,
+                  "median": 10.866,
+                  "min": 10.825
                 },
                 {
                   "best": false,
@@ -15971,10 +15971,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "7.80",
-                  "max": 8.139,
-                  "median": 7.803,
-                  "min": 7.685
+                  "display": "8.26",
+                  "max": 8.465,
+                  "median": 8.257,
+                  "min": 7.964
                 },
                 {
                   "best": false,
@@ -16014,10 +16014,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "6.84",
-                  "max": 7.215,
-                  "median": 6.841,
-                  "min": 5.966
+                  "display": "6.68",
+                  "max": 6.905,
+                  "median": 6.678,
+                  "min": 6.312
                 },
                 {
                   "best": false,
@@ -16057,10 +16057,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "7.86",
-                  "max": 7.969,
-                  "median": 7.858,
-                  "min": 7.353
+                  "display": "9.55",
+                  "max": 9.8,
+                  "median": 9.548,
+                  "min": 9.31
                 },
                 {
                   "best": false,
@@ -16100,10 +16100,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "6.85",
-                  "max": 7.003,
-                  "median": 6.851,
-                  "min": 6.563
+                  "display": "7.27",
+                  "max": 7.838,
+                  "median": 7.273,
+                  "min": 7.122
                 },
                 {
                   "best": false,
@@ -16143,10 +16143,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "6.59",
-                  "max": 7.06,
-                  "median": 6.586,
-                  "min": 6.357
+                  "display": "8.03",
+                  "max": 8.526,
+                  "median": 8.034,
+                  "min": 7.914
                 },
                 {
                   "best": false,
@@ -16186,10 +16186,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "5.10",
-                  "max": 5.362,
-                  "median": 5.101,
-                  "min": 3.327
+                  "display": "5.72",
+                  "max": 6.108,
+                  "median": 5.723,
+                  "min": 5.416
                 },
                 {
                   "best": false,
@@ -16229,10 +16229,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "57.0",
-                  "max": 57.301,
-                  "median": 57.022,
-                  "min": 56.347
+                  "display": "70.3",
+                  "max": 70.627,
+                  "median": 70.327,
+                  "min": 70.002
                 },
                 {
                   "best": false,
@@ -16272,10 +16272,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "20.3",
-                  "max": 20.696,
-                  "median": 20.282,
-                  "min": 20.158
+                  "display": "22.7",
+                  "max": 23.125,
+                  "median": 22.72,
+                  "min": 22.67
                 },
                 {
                   "best": false,
@@ -16315,10 +16315,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "10.3",
-                  "max": 10.623,
-                  "median": 10.262,
-                  "min": 9.899
+                  "display": "10.4",
+                  "max": 11.718,
+                  "median": 10.423,
+                  "min": 9.785
                 },
                 {
                   "best": false,
@@ -16357,11 +16357,11 @@
             {
               "cells": [
                 {
-                  "best": false,
-                  "display": "18.5",
-                  "max": 18.781,
-                  "median": 18.451,
-                  "min": 18.156
+                  "best": true,
+                  "display": "22.5",
+                  "max": 23.124,
+                  "median": 22.541,
+                  "min": 22.464
                 },
                 {
                   "best": false,
@@ -16385,7 +16385,7 @@
                   "min": 3.397
                 },
                 {
-                  "best": true,
+                  "best": false,
                   "display": "22.3",
                   "max": 23.584,
                   "median": 22.288,
@@ -16401,10 +16401,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "23.7",
-                  "max": 25.281,
-                  "median": 23.708,
-                  "min": 18.621
+                  "display": "29.1",
+                  "max": 29.764,
+                  "median": 29.107,
+                  "min": 23.567
                 },
                 {
                   "best": false,
@@ -16444,10 +16444,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "7.11",
-                  "max": 7.335,
-                  "median": 7.112,
-                  "min": 6.924
+                  "display": "11.9",
+                  "max": 12.199,
+                  "median": 11.895,
+                  "min": 11.242
                 },
                 {
                   "best": false,
@@ -16487,10 +16487,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "21.3",
-                  "max": 22.186,
-                  "median": 21.339,
-                  "min": 14.574
+                  "display": "28.8",
+                  "max": 29.493,
+                  "median": 28.771,
+                  "min": 24.873
                 },
                 {
                   "best": false,
@@ -16530,10 +16530,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "58.8",
-                  "max": 59.967,
-                  "median": 58.801,
-                  "min": 57.917
+                  "display": "68.8",
+                  "max": 70.335,
+                  "median": 68.801,
+                  "min": 67.852
                 },
                 {
                   "best": false,
@@ -16573,10 +16573,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "21.7",
-                  "max": 22.506,
-                  "median": 21.733,
-                  "min": 21.568
+                  "display": "24.3",
+                  "max": 24.839,
+                  "median": 24.331,
+                  "min": 24.076
                 },
                 {
                   "best": false,
@@ -16616,10 +16616,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "15.0",
-                  "max": 17.974,
-                  "median": 15.027,
-                  "min": 14.434
+                  "display": "16.9",
+                  "max": 18.937,
+                  "median": 16.916,
+                  "min": 14.886
                 },
                 {
                   "best": false,
@@ -16659,10 +16659,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "20.4",
-                  "max": 21.001,
-                  "median": 20.411,
-                  "min": 19.814
+                  "display": "24.1",
+                  "max": 24.406,
+                  "median": 24.058,
+                  "min": 23.467
                 },
                 {
                   "best": false,
@@ -16702,10 +16702,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "30.2",
-                  "max": 31.671,
-                  "median": 30.166,
-                  "min": 24.591
+                  "display": "27.9",
+                  "max": 35.188,
+                  "median": 27.879,
+                  "min": 26.922
                 },
                 {
                   "best": false,
@@ -16744,11 +16744,11 @@
             {
               "cells": [
                 {
-                  "best": false,
-                  "display": "10.4",
-                  "max": 10.544,
-                  "median": 10.36,
-                  "min": 9.751
+                  "best": true,
+                  "display": "17.2",
+                  "max": 19.521,
+                  "median": 17.17,
+                  "min": 15.673
                 },
                 {
                   "best": false,
@@ -16758,7 +16758,7 @@
                   "min": 3.422
                 },
                 {
-                  "best": true,
+                  "best": false,
                   "display": "15.6",
                   "max": 18.044,
                   "median": 15.562,
@@ -16788,10 +16788,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "25.7",
-                  "max": 27.706,
-                  "median": 25.675,
-                  "min": 16.719
+                  "display": "34.0",
+                  "max": 34.503,
+                  "median": 33.996,
+                  "min": 30.374
                 },
                 {
                   "best": false,
@@ -16831,10 +16831,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "74.6",
-                  "max": 75.514,
-                  "median": 74.641,
-                  "min": 51.895
+                  "display": "72.3",
+                  "max": 73.925,
+                  "median": 72.266,
+                  "min": 62.972
                 },
                 {
                   "best": false,
@@ -16873,11 +16873,11 @@
             {
               "cells": [
                 {
-                  "best": false,
-                  "display": "29.0",
-                  "max": 33.202,
-                  "median": 28.976,
-                  "min": 22.611
+                  "best": true,
+                  "display": "30.9",
+                  "max": 33.712,
+                  "median": 30.933,
+                  "min": 26.142
                 },
                 {
                   "best": false,
@@ -16887,7 +16887,7 @@
                   "min": 16.257
                 },
                 {
-                  "best": true,
+                  "best": false,
                   "display": "29.2",
                   "max": 29.72,
                   "median": 29.228,
@@ -16916,11 +16916,11 @@
             {
               "cells": [
                 {
-                  "best": false,
-                  "display": "23.6",
-                  "max": 25.247,
-                  "median": 23.64,
-                  "min": 16.67
+                  "best": true,
+                  "display": "32.0",
+                  "max": 33.538,
+                  "median": 31.968,
+                  "min": 29.992
                 },
                 {
                   "best": false,
@@ -16930,7 +16930,7 @@
                   "min": 9.479
                 },
                 {
-                  "best": true,
+                  "best": false,
                   "display": "29.6",
                   "max": 31.261,
                   "median": 29.649,
@@ -16961,9 +16961,9 @@
                 {
                   "best": false,
                   "display": "13.0",
-                  "max": 13.749,
-                  "median": 12.984,
-                  "min": 11.674
+                  "max": 13.676,
+                  "median": 13.026,
+                  "min": 11.75
                 },
                 {
                   "best": false,
@@ -17003,10 +17003,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "9.44",
-                  "max": 10.531,
-                  "median": 9.443,
-                  "min": 8.392
+                  "display": "10.6",
+                  "max": 10.941,
+                  "median": 10.622,
+                  "min": 9.514
                 },
                 {
                   "best": false,
@@ -17046,10 +17046,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "11.9",
-                  "max": 12.571,
-                  "median": 11.884,
-                  "min": 11.641
+                  "display": "11.8",
+                  "max": 12.144,
+                  "median": 11.769,
+                  "min": 11.548
                 },
                 {
                   "best": false,
@@ -17089,10 +17089,10 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "8.44",
-                  "max": 10.215,
-                  "median": 8.436,
-                  "min": 7.819
+                  "display": "10.4",
+                  "max": 12.524,
+                  "median": 10.414,
+                  "min": 9.761
                 },
                 {
                   "best": false,
@@ -17151,10 +17151,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "155.4 (2.7x)",
-                  "max": 156.413,
-                  "median": 155.397,
-                  "min": 154.474
+                  "display": "157.3 (2.2x)",
+                  "max": 160.158,
+                  "median": 157.338,
+                  "min": 147.195
                 },
                 {
                   "best": false,
@@ -17173,10 +17173,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "76.3 (3.8x)",
-                  "max": 77.213,
-                  "median": 76.326,
-                  "min": 75.496
+                  "display": "76.5 (3.4x)",
+                  "max": 76.942,
+                  "median": 76.545,
+                  "min": 75.647
                 },
                 {
                   "best": false,
@@ -17195,10 +17195,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "29.0 (2.8x)",
-                  "max": 31.226,
-                  "median": 29.004,
-                  "min": 28.699
+                  "display": "30.0 (2.9x)",
+                  "max": 30.753,
+                  "median": 29.956,
+                  "min": 27.996
                 },
                 {
                   "best": false,
@@ -17217,10 +17217,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "58.5 (3.2x)",
-                  "max": 59.747,
-                  "median": 58.462,
-                  "min": 57.508
+                  "display": "65.4 (2.9x)",
+                  "max": 66.291,
+                  "median": 65.392,
+                  "min": 60.139
                 },
                 {
                   "best": false,
@@ -17239,10 +17239,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "74.8 (3.2x)",
-                  "max": 88.024,
-                  "median": 74.85,
-                  "min": 68.551
+                  "display": "73.3 (2.5x)",
+                  "max": 81.403,
+                  "median": 73.323,
+                  "min": 72.138
                 },
                 {
                   "best": false,
@@ -17261,10 +17261,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "21.5 (3.0x)",
-                  "max": 23.464,
-                  "median": 21.52,
-                  "min": 19.94
+                  "display": "33.1 (2.8x)",
+                  "max": 37.123,
+                  "median": 33.139,
+                  "min": 24.815
                 },
                 {
                   "best": false,
@@ -17283,10 +17283,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "72.0 (3.4x)",
-                  "max": 75.74,
-                  "median": 72.025,
-                  "min": 71.101
+                  "display": "70.7 (2.5x)",
+                  "max": 71.715,
+                  "median": 70.674,
+                  "min": 69.825
                 },
                 {
                   "best": false,
@@ -17305,10 +17305,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "213.5 (3.6x)",
-                  "max": 214.219,
-                  "median": 213.505,
-                  "min": 212.367
+                  "display": "195.9 (2.8x)",
+                  "max": 197.183,
+                  "median": 195.92,
+                  "min": 195.382
                 },
                 {
                   "best": false,
@@ -17327,10 +17327,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "130.8 (6.0x)",
-                  "max": 132.663,
-                  "median": 130.784,
-                  "min": 129.126
+                  "display": "136.1 (5.6x)",
+                  "max": 142.638,
+                  "median": 136.104,
+                  "min": 132.431
                 },
                 {
                   "best": false,
@@ -17349,10 +17349,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "88.1 (5.9x)",
-                  "max": 99.757,
-                  "median": 88.106,
-                  "min": 85.059
+                  "display": "83.6 (4.9x)",
+                  "max": 91.941,
+                  "median": 83.617,
+                  "min": 76.916
                 },
                 {
                   "best": false,
@@ -17371,10 +17371,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "115.1 (5.6x)",
-                  "max": 116.6,
-                  "median": 115.147,
-                  "min": 113.739
+                  "display": "128.9 (5.4x)",
+                  "max": 131.9,
+                  "median": 128.907,
+                  "min": 123.432
                 },
                 {
                   "best": false,
@@ -17393,10 +17393,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "168.2 (5.6x)",
-                  "max": 177.337,
-                  "median": 168.163,
-                  "min": 148.963
+                  "display": "169.5 (6.1x)",
+                  "max": 179.742,
+                  "median": 169.525,
+                  "min": 154.953
                 },
                 {
                   "best": false,
@@ -17415,10 +17415,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "70.4 (6.8x)",
-                  "max": 73.029,
-                  "median": 70.41,
-                  "min": 66.898
+                  "display": "83.1 (4.8x)",
+                  "max": 89.44,
+                  "median": 83.14,
+                  "min": 78.515
                 },
                 {
                   "best": false,
@@ -17437,10 +17437,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "164.8 (6.4x)",
-                  "max": 179.697,
-                  "median": 164.755,
-                  "min": 159.24
+                  "display": "164.8 (4.8x)",
+                  "max": 167.177,
+                  "median": 164.769,
+                  "min": 161.105
                 },
                 {
                   "best": false,
@@ -17459,10 +17459,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "182.9 (2.5x)",
-                  "max": 186.727,
-                  "median": 182.938,
-                  "min": 179.407
+                  "display": "205.6 (2.8x)",
+                  "max": 211.439,
+                  "median": 205.56,
+                  "min": 186.727
                 },
                 {
                   "best": false,
@@ -17481,10 +17481,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "91.3 (3.1x)",
-                  "max": 104.177,
-                  "median": 91.253,
-                  "min": 87.125
+                  "display": "98.2 (3.2x)",
+                  "max": 134.455,
+                  "median": 98.174,
+                  "min": 90.475
                 },
                 {
                   "best": false,
@@ -17503,10 +17503,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "93.2 (3.9x)",
-                  "max": 106.61,
-                  "median": 93.237,
-                  "min": 89.816
+                  "display": "102.4 (3.2x)",
+                  "max": 147.526,
+                  "median": 102.41,
+                  "min": 94.719
                 },
                 {
                   "best": false,
@@ -17525,10 +17525,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "201.7 (15.5x)",
-                  "max": 210.489,
-                  "median": 201.747,
-                  "min": 195.516
+                  "display": "214.5 (16.5x)",
+                  "max": 225.865,
+                  "median": 214.508,
+                  "min": 204.616
                 },
                 {
                   "best": false,
@@ -17547,10 +17547,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "125.2 (13.3x)",
-                  "max": 134.037,
-                  "median": 125.19,
-                  "min": 115.748
+                  "display": "126.9 (11.9x)",
+                  "max": 134.955,
+                  "median": 126.884,
+                  "min": 126.115
                 },
                 {
                   "best": false,
@@ -17569,10 +17569,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "203.1 (17.1x)",
-                  "max": 206.954,
-                  "median": 203.104,
-                  "min": 189.542
+                  "display": "220.3 (18.7x)",
+                  "max": 226.503,
+                  "median": 220.301,
+                  "min": 217.405
                 },
                 {
                   "best": false,
@@ -17591,10 +17591,10 @@
               "cells": [
                 {
                   "best": true,
-                  "display": "118.2 (14.0x)",
-                  "max": 132.937,
-                  "median": 118.221,
-                  "min": 114.382
+                  "display": "126.4 (12.1x)",
+                  "max": 137.01,
+                  "median": 126.445,
+                  "min": 119.609
                 },
                 {
                   "best": false,
@@ -17642,38 +17642,38 @@
           ],
           "mode": "sync",
           "notes": [
-            "Unreliable, sample spread over 2x on a 1×1 cell where the rest of the matrix holds within a few percent: fibre-exclusive at handoff (2.8x, 37.6 to 104.5), lite-sync at handoff (2.8x, 77.3 to 214.0). Those medians do not support a comparison."
+            "Unreliable, sample spread over 2x on a 1×1 cell where the rest of the matrix holds within a few percent: lite-sync at handoff (2.8x, 77.3 to 214.0). Those medians do not support a comparison."
           ],
           "rows": [
             {
               "cells": [
                 {
                   "best": false,
-                  "display": "41.9",
-                  "max": 42.292,
-                  "median": 41.93,
-                  "min": 41.242
+                  "display": "43.3",
+                  "max": 43.623,
+                  "median": 43.3,
+                  "min": 39.521
                 },
                 {
                   "best": false,
-                  "display": "47.0",
-                  "max": 47.565,
-                  "median": 46.993,
-                  "min": 46.014
+                  "display": "46.6",
+                  "max": 47.36,
+                  "median": 46.6,
+                  "min": 38.603
                 },
                 {
                   "best": true,
-                  "display": "118.6",
-                  "max": 120.624,
-                  "median": 118.633,
-                  "min": 118.2
+                  "display": "152.9",
+                  "max": 153.226,
+                  "median": 152.915,
+                  "min": 150.896
                 },
                 {
                   "best": false,
-                  "display": "114.4",
-                  "max": 115.441,
-                  "median": 114.411,
-                  "min": 113.308
+                  "display": "149.4",
+                  "max": 152.059,
+                  "median": 149.415,
+                  "min": 147.793
                 },
                 {
                   "best": false,
@@ -17712,31 +17712,31 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "82.8",
-                  "max": 84.161,
-                  "median": 82.752,
-                  "min": 81.962
+                  "display": "83.8",
+                  "max": 84.137,
+                  "median": 83.756,
+                  "min": 83.475
                 },
                 {
                   "best": false,
-                  "display": "103.2",
-                  "max": 104.496,
-                  "median": 103.229,
-                  "min": 37.617
-                },
-                {
-                  "best": false,
-                  "display": "189.7",
-                  "max": 192.856,
-                  "median": 189.734,
-                  "min": 181.857
+                  "display": "106.7",
+                  "max": 107.001,
+                  "median": 106.716,
+                  "min": 98.78
                 },
                 {
                   "best": true,
-                  "display": "190.5",
-                  "max": 192.76,
-                  "median": 190.464,
-                  "min": 180.968
+                  "display": "327.6",
+                  "max": 339.934,
+                  "median": 327.56,
+                  "min": 263.412
+                },
+                {
+                  "best": false,
+                  "display": "295.6",
+                  "max": 299.058,
+                  "median": 295.632,
+                  "min": 279.851
                 },
                 {
                   "best": false,
@@ -17798,31 +17798,31 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "42.9",
-                  "max": 43.328,
-                  "median": 42.9,
-                  "min": 41.303
+                  "display": "38.4",
+                  "max": 43.231,
+                  "median": 38.41,
+                  "min": 36.338
                 },
                 {
                   "best": false,
-                  "display": "52.4",
-                  "max": 52.519,
-                  "median": 52.395,
-                  "min": 51.583
+                  "display": "53.8",
+                  "max": 54.769,
+                  "median": 53.783,
+                  "min": 52.613
                 },
                 {
                   "best": true,
-                  "display": "120.4",
-                  "max": 121.018,
-                  "median": 120.374,
-                  "min": 97.681
+                  "display": "134.1",
+                  "max": 134.491,
+                  "median": 134.089,
+                  "min": 133.264
                 },
                 {
                   "best": false,
-                  "display": "110.6",
-                  "max": 111.101,
-                  "median": 110.562,
-                  "min": 109.946
+                  "display": "131.5",
+                  "max": 131.615,
+                  "median": 131.518,
+                  "min": 130.787
                 },
                 {
                   "best": false,
@@ -17868,31 +17868,31 @@
               "cells": [
                 {
                   "best": false,
-                  "display": "55.3",
-                  "max": 56.701,
-                  "median": 55.255,
-                  "min": 54.493
+                  "display": "56.1",
+                  "max": 57.585,
+                  "median": 56.114,
+                  "min": 55.573
                 },
                 {
                   "best": false,
-                  "display": "57.9",
-                  "max": 75.355,
-                  "median": 57.86,
-                  "min": 53.077
+                  "display": "75.0",
+                  "max": 75.151,
+                  "median": 74.986,
+                  "min": 71.248
                 },
                 {
                   "best": false,
-                  "display": "129.6",
-                  "max": 133.749,
-                  "median": 129.581,
-                  "min": 127.535
+                  "display": "177.8",
+                  "max": 180.997,
+                  "median": 177.817,
+                  "min": 170.389
                 },
                 {
                   "best": false,
-                  "display": "102.1",
-                  "max": 107.735,
-                  "median": 102.139,
-                  "min": 99.222
+                  "display": "166.5",
+                  "max": 173.144,
+                  "median": 166.47,
+                  "min": 166.132
                 },
                 {
                   "best": false,
@@ -17946,22 +17946,22 @@
     {
       "crate": "fibre",
       "name": "fibre",
-      "version": "0.6.7"
+      "version": "0.6.9"
     },
     {
       "crate": "fibre",
       "name": "fibre-exclusive",
-      "version": "0.6.7"
+      "version": "0.6.9"
     },
     {
       "crate": "fibre",
       "name": "fibre-pool",
-      "version": "0.6.7"
+      "version": "0.6.9"
     },
     {
       "crate": "fibre",
       "name": "fibre-pool-host",
-      "version": "0.6.7"
+      "version": "0.6.9"
     },
     {
       "crate": "async-channel",

@@ -11,10 +11,10 @@ Channel created, sent and received inside the timed loop; a pooled creation is a
 
 | Pool | Ops | Time (low / median / high) | Throughput (low / median / high) |
 |---|---|---:|---:|
-| Pair | 100 | 703.73 ns / 705.46 ns / 707.61 ns | 141.32 Melem/s / 141.75 Melem/s / 142.10 Melem/s |
-| Pair | 1000 | 6.8707 µs / 6.8858 µs / 6.8967 µs | 145.00 Melem/s / 145.23 Melem/s / 145.54 Melem/s |
-| Host | 100 | 700.75 ns / 701.96 ns / 703.28 ns | 142.19 Melem/s / 142.46 Melem/s / 142.70 Melem/s |
-| Host | 1000 | 6.8813 µs / 6.9020 µs / 6.9138 µs | 144.64 Melem/s / 144.88 Melem/s / 145.32 Melem/s |
+| Pair | 100 | 723.54 ns / 725.03 ns / 729.59 ns | 137.06 Melem/s / 137.92 Melem/s / 138.21 Melem/s |
+| Pair | 1000 | 7.1112 µs / 7.1484 µs / 7.2589 µs | 137.76 Melem/s / 139.89 Melem/s / 140.62 Melem/s |
+| Host | 100 | 704.98 ns / 711.88 ns / 717.00 ns | 139.47 Melem/s / 140.47 Melem/s / 141.85 Melem/s |
+| Host | 1000 | 6.8840 µs / 6.9543 µs / 7.0323 µs | 142.20 Melem/s / 143.80 Melem/s / 145.26 Melem/s |
 
 ## Transfer only
 
@@ -24,10 +24,10 @@ Channels pre-created outside the timed loop; send, recv and the retirement push 
 
 | Pool | Ops | Time (low / median / high) | Throughput (low / median / high) |
 |---|---|---:|---:|
-| Pair | 100 | 521.66 ns / 523.31 ns / 526.38 ns | 189.98 Melem/s / 191.09 Melem/s / 191.70 Melem/s |
-| Pair | 1000 | 5.0064 µs / 5.0178 µs / 5.0362 µs | 198.56 Melem/s / 199.29 Melem/s / 199.75 Melem/s |
-| Host | 100 | 543.90 ns / 547.83 ns / 549.83 ns | 181.87 Melem/s / 182.54 Melem/s / 183.86 Melem/s |
-| Host | 1000 | 5.1933 µs / 5.2143 µs / 5.2288 µs | 191.25 Melem/s / 191.78 Melem/s / 192.56 Melem/s |
+| Pair | 100 | 491.12 ns / 495.27 ns / 501.05 ns | 199.58 Melem/s / 201.91 Melem/s / 203.62 Melem/s |
+| Pair | 1000 | 4.7627 µs / 4.8257 µs / 4.9226 µs | 203.14 Melem/s / 207.22 Melem/s / 209.96 Melem/s |
+| Host | 100 | 509.58 ns / 549.48 ns / 602.51 ns | 165.97 Melem/s / 181.99 Melem/s / 196.24 Melem/s |
+| Host | 1000 | 5.0611 µs / 5.6234 µs / 5.9716 µs | 167.46 Melem/s / 177.83 Melem/s / 197.58 Melem/s |
 
 ## Batch creation
 
@@ -37,10 +37,10 @@ Channels pre-created outside the timed loop; send, recv and the retirement push 
 
 | Pool | Ops | Time (low / median / high) | Throughput (low / median / high) |
 |---|---|---:|---:|
-| Pair | 100 | 780.56 ns / 785.60 ns / 792.95 ns | 126.11 Melem/s / 127.29 Melem/s / 128.11 Melem/s |
-| Pair | 1000 | 7.3353 µs / 7.3597 µs / 7.4035 µs | 135.07 Melem/s / 135.88 Melem/s / 136.33 Melem/s |
-| Host | 100 | 818.52 ns / 823.30 ns / 828.18 ns | 120.75 Melem/s / 121.46 Melem/s / 122.17 Melem/s |
-| Host | 1000 | 7.7952 µs / 7.8192 µs / 7.8513 µs | 127.37 Melem/s / 127.89 Melem/s / 128.28 Melem/s |
+| Pair | 100 | 666.13 ns / 673.48 ns / 680.67 ns | 146.91 Melem/s / 148.48 Melem/s / 150.12 Melem/s |
+| Pair | 1000 | 6.6549 µs / 6.7179 µs / 6.7520 µs | 148.10 Melem/s / 148.86 Melem/s / 150.27 Melem/s |
+| Host | 100 | 752.92 ns / 754.51 ns / 756.74 ns | 132.15 Melem/s / 132.54 Melem/s / 132.82 Melem/s |
+| Host | 1000 | 7.2379 µs / 7.2685 µs / 7.3064 µs | 136.87 Melem/s / 137.58 Melem/s / 138.16 Melem/s |
 
 ## Inside a request record
 
@@ -50,10 +50,10 @@ Each op carries a request record. The pair pool allocates the record per request
 
 | Pool | Ops | Time (low / median / high) | Throughput (low / median / high) |
 |---|---|---:|---:|
-| Pair | 100 | 2.4555 µs / 2.4923 µs / 2.5257 µs | 39.593 Melem/s / 40.124 Melem/s / 40.725 Melem/s |
-| Pair | 1000 | 23.539 µs / 23.657 µs / 23.781 µs | 42.050 Melem/s / 42.271 Melem/s / 42.483 Melem/s |
-| Host | 100 | 1.1569 µs / 1.1587 µs / 1.1609 µs | 86.140 Melem/s / 86.306 Melem/s / 86.440 Melem/s |
-| Host | 1000 | 11.592 µs / 11.630 µs / 11.669 µs | 85.695 Melem/s / 85.988 Melem/s / 86.266 Melem/s |
+| Pair | 100 | 2.3435 µs / 2.3844 µs / 2.4243 µs | 41.249 Melem/s / 41.940 Melem/s / 42.671 Melem/s |
+| Pair | 1000 | 23.565 µs / 23.807 µs / 24.001 µs | 41.664 Melem/s / 42.004 Melem/s / 42.436 Melem/s |
+| Host | 100 | 922.47 ns / 923.68 ns / 924.69 ns | 108.14 Melem/s / 108.26 Melem/s / 108.40 Melem/s |
+| Host | 1000 | 9.1471 µs / 9.1595 µs / 9.1770 µs | 108.97 Melem/s / 109.18 Melem/s / 109.32 Melem/s |
 
 ## Cross-thread
 
@@ -63,10 +63,10 @@ Channels pre-created, a second OS thread sends them all, the receiver drains the
 
 | Pool | Ops | Time (low / median / high) | Throughput (low / median / high) |
 |---|---|---:|---:|
-| Pair | 1000 | 6.1077 µs / 6.1402 µs / 6.1605 µs | 162.32 Melem/s / 162.86 Melem/s / 163.73 Melem/s |
-| Pair | 10000 | 52.674 µs / 53.622 µs / 54.259 µs | 184.30 Melem/s / 186.49 Melem/s / 189.85 Melem/s |
-| Host | 1000 | 6.1688 µs / 6.2675 µs / 6.3731 µs | 156.91 Melem/s / 159.55 Melem/s / 162.10 Melem/s |
-| Host | 10000 | 52.521 µs / 52.824 µs / 53.003 µs | 188.67 Melem/s / 189.31 Melem/s / 190.40 Melem/s |
+| Pair | 1000 | 5.9409 µs / 5.9968 µs / 6.0232 µs | 166.02 Melem/s / 166.76 Melem/s / 168.32 Melem/s |
+| Pair | 10000 | 50.359 µs / 50.536 µs / 50.732 µs | 197.12 Melem/s / 197.88 Melem/s / 198.57 Melem/s |
+| Host | 1000 | 6.0091 µs / 6.0257 µs / 6.0340 µs | 165.73 Melem/s / 165.96 Melem/s / 166.41 Melem/s |
+| Host | 10000 | 51.450 µs / 51.533 µs / 51.613 µs | 193.75 Melem/s / 194.05 Melem/s / 194.36 Melem/s |
 
 ## Wake latency
 
@@ -76,7 +76,7 @@ Ping-pong between a task and a peer thread, one channel each way per round, so b
 
 | Pool | Ops | Time (low / median / high) | Throughput (low / median / high) |
 |---|---|---:|---:|
-| Pair | 1000 | 5.4211 ms / 5.5753 ms / 5.6503 ms | 176.98 Kelem/s / 179.36 Kelem/s / 184.46 Kelem/s |
-| Pair | 10000 | 55.034 ms / 55.716 ms / 56.361 ms | 177.43 Kelem/s / 179.48 Kelem/s / 181.71 Kelem/s |
-| Host | 1000 | 5.4337 ms / 5.5045 ms / 5.5629 ms | 179.76 Kelem/s / 181.67 Kelem/s / 184.04 Kelem/s |
-| Host | 10000 | 53.929 ms / 54.979 ms / 55.826 ms | 179.13 Kelem/s / 181.89 Kelem/s / 185.43 Kelem/s |
+| Pair | 1000 | 5.1859 ms / 5.2922 ms / 5.5574 ms | 179.94 Kelem/s / 188.96 Kelem/s / 192.83 Kelem/s |
+| Pair | 10000 | 51.992 ms / 53.225 ms / 54.731 ms | 182.71 Kelem/s / 187.88 Kelem/s / 192.34 Kelem/s |
+| Host | 1000 | 5.1495 ms / 5.2437 ms / 5.5085 ms | 181.54 Kelem/s / 190.70 Kelem/s / 194.19 Kelem/s |
+| Host | 10000 | 51.460 ms / 52.204 ms / 53.989 ms | 185.22 Kelem/s / 191.56 Kelem/s / 194.32 Kelem/s |

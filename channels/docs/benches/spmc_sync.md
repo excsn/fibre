@@ -7,9 +7,9 @@
 
 | Cons | Cap | Items | Time (low / median / high) | Throughput (low / median / high) |
 |---|---|---|---:|---:|
-| 1 | 1 | 100000 | 420.68 ms / 428.05 ms / 434.91 ms | 229.93 Kelem/s / 233.62 Kelem/s / 237.71 Kelem/s |
-| 1 | 128 | 100000 | 6.6143 ms / 6.6674 ms / 6.7239 ms | 14.872 Melem/s / 14.998 Melem/s / 15.119 Melem/s |
-| 4 | 1 | 100000 | 857.51 ms / 863.74 ms / 869.70 ms | 459.93 Kelem/s / 463.10 Kelem/s / 466.46 Kelem/s |
-| 4 | 128 | 100000 | 25.095 ms / 25.512 ms / 25.976 ms | 15.399 Melem/s / 15.679 Melem/s / 15.939 Melem/s |
-| 14 | 1 | 100000 | 2.8141 s / 2.8234 s / 2.8337 s | 494.05 Kelem/s / 495.86 Kelem/s / 497.50 Kelem/s |
-| 14 | 128 | 100000 | 4.4640 s / 4.6387 s / 4.8091 s | 291.12 Kelem/s / 301.81 Kelem/s / 313.62 Kelem/s |
+| 1 | 1 | 100000 | 409.18 ms / 419.15 ms / 433.15 ms | 230.87 Kelem/s / 238.58 Kelem/s / 244.39 Kelem/s |
+| 1 | 128 | 100000 | 6.2295 ms / 6.3661 ms / 6.5038 ms | 15.376 Melem/s / 15.708 Melem/s / 16.053 Melem/s |
+| 4 | 1 | 100000 | 898.35 ms / 915.84 ms / 943.25 ms | 424.07 Kelem/s / 436.76 Kelem/s / 445.26 Kelem/s |
+| 4 | 128 | 100000 | 20.327 ms / 20.552 ms / 20.792 ms | 19.238 Melem/s / 19.463 Melem/s / 19.679 Melem/s |
+| 14 | 1 | 100000 | 2.8938 s / 2.9179 s / 2.9446 s | 475.45 Kelem/s / 479.79 Kelem/s / 483.80 Kelem/s |
+| 14 | 128 | 100000 | 5.4696 s / 5.9431 s / 6.3352 s | 220.99 Kelem/s / 235.57 Kelem/s / 255.96 Kelem/s |
