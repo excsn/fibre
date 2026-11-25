@@ -161,16 +161,20 @@ impl<T: Send> UnboundedSyncReceiver<T> {
     if max == 0 {
       return Ok(0);
     }
-    let first = self.recv()?;
+    if max == 1 {
+      out.push(self.recv()?);
+      return Ok(1);
+    }
+    if self.closed.load(Ordering::Relaxed) {
+      return Err(RecvError::Disconnected);
+    }
+    let (first, landed) = match self.shared.recv_sync_first(&self.cell) {
+      Ok(first) => first,
+      Err(_) => return Err(RecvError::Disconnected),
+    };
     let _ = out.try_reserve_exact(max);
     out.push(first);
-    let mut got = 1;
-    if got < max {
-      if let Ok(k) = self.shared.try_recv_batch_internal(out, max - got) {
-        got += k;
-      }
-    }
-    Ok(got)
+    Ok(1 + self.shared.drain_after_first(out, max - 1, landed))
   }
 
   pub fn to_async(self) -> UnboundedAsyncReceiver<T> {
@@ -342,21 +346,23 @@ impl<'a, T: Send> Future for RecvBatchFuture<'a, T> {
     if this.receiver.closed.load(Ordering::Relaxed) {
       return Poll::Ready(Err(RecvError::Disconnected));
     }
+    if this.max == 1 {
+      return this
+        .receiver
+        .shared
+        .poll_recv_internal(cx.waker(), &mut this.receiver.stream_ctx)
+        .map(|res| res.map(|item| vec![item]));
+    }
     match this
       .receiver
       .shared
-      .poll_recv_internal(cx.waker(), &mut this.receiver.stream_ctx)
+      .poll_recv_first(cx.waker(), &mut this.receiver.stream_ctx)
     {
-      Poll::Ready(Ok(first)) => {
+      Poll::Ready(Ok((first, landed))) => {
         let mut out = Vec::new();
         let _ = out.try_reserve_exact(this.max);
         out.push(first);
-        if out.len() < this.max {
-          let _ = this
-            .receiver
-            .shared
-            .try_recv_batch_internal(&mut out, this.max - 1);
-        }
+        this.receiver.shared.drain_after_first(&mut out, this.max - 1, landed);
         Poll::Ready(Ok(out))
       }
       Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
@@ -392,25 +398,29 @@ impl<'a, T: Send> Future for RecvBatchMutFuture<'a, T> {
     if this.receiver.closed.load(Ordering::Relaxed) {
       return Poll::Ready(Err(RecvError::Disconnected));
     }
+    if this.max == 1 {
+      let out = &mut *this.out;
+      return this
+        .receiver
+        .shared
+        .poll_recv_internal(cx.waker(), &mut this.receiver.stream_ctx)
+        .map(|res| {
+          res.map(|item| {
+            out.push(item);
+            1
+          })
+        });
+    }
     match this
       .receiver
       .shared
-      .poll_recv_internal(cx.waker(), &mut this.receiver.stream_ctx)
+      .poll_recv_first(cx.waker(), &mut this.receiver.stream_ctx)
     {
-      Poll::Ready(Ok(first)) => {
+      Poll::Ready(Ok((first, landed))) => {
         let _ = this.out.try_reserve_exact(this.max);
         this.out.push(first);
-        let mut got = 1;
-        if got < this.max {
-          if let Ok(k) = this
-            .receiver
-            .shared
-            .try_recv_batch_internal(this.out, this.max - got)
-          {
-            got += k;
-          }
-        }
-        Poll::Ready(Ok(got))
+        let more = this.receiver.shared.drain_after_first(this.out, this.max - 1, landed);
+        Poll::Ready(Ok(1 + more))
       }
       Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
       Poll::Pending => Poll::Pending,

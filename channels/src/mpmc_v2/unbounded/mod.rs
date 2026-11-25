@@ -39,8 +39,9 @@ mod tests {
   use std::pin::pin;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Arc;
-  use std::task::{Context, Poll};
+  use std::task::{Context, Poll, Waker};
   use std::thread;
+  use std::time::{Duration, Instant};
 
   fn poll_once<F: Future + ?Sized>(fut: std::pin::Pin<&mut F>) -> Poll<F::Output> {
     let waker = futures_util::task::noop_waker();
@@ -252,5 +253,123 @@ mod tests {
       got += rx.recv_batch_mut(&mut out, 48).unwrap();
     }
     assert_eq!(out, (0..total).collect::<Vec<_>>());
+  }
+
+  struct CountWake(AtomicUsize);
+  impl std::task::Wake for CountWake {
+    fn wake(self: Arc<Self>) {
+      self.0.fetch_add(1, Ordering::SeqCst);
+    }
+  }
+
+  fn count_waker() -> (Arc<CountWake>, Waker) {
+    let count = Arc::new(CountWake(AtomicUsize::new(0)));
+    let waker = Waker::from(count.clone());
+    (count, waker)
+  }
+
+  fn poll_with<F: Future + ?Sized>(fut: std::pin::Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
+    fut.poll(&mut Context::from_waker(waker))
+  }
+
+  fn wait_for_parked<T: Send>(shared: &shared::UnboundedShared<T>, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while shared.parked_receivers() != count {
+      assert!(Instant::now() < deadline, "receivers did not park");
+      thread::yield_now();
+    }
+  }
+
+  #[test]
+  fn batch_send_reaches_every_parked_receiver() {
+    let (tx, rx) = channel::<u32>();
+    let (got_tx, got_rx) = std::sync::mpsc::channel();
+    for _ in 0..3 {
+      let mut rx = rx.clone();
+      let got_tx = got_tx.clone();
+      thread::spawn(move || {
+        let item = rx.recv();
+        let _ = got_tx.send(item);
+      });
+    }
+    wait_for_parked(&rx.shared, 3);
+
+    let mut producer = tx.clone();
+    assert_eq!(producer.send_batch(vec![1, 2, 3]).unwrap(), 3);
+
+    let mut got = Vec::new();
+    for _ in 0..3 {
+      let item = got_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("a parked receiver was left out of the batch");
+      got.push(item.unwrap());
+    }
+    got.sort_unstable();
+    assert_eq!(got, vec![1, 2, 3]);
+  }
+
+  #[test]
+  fn batch_send_completes_every_pending_receive() {
+    let (mut tx, rx) = channel_async::<u32>();
+    let mut receivers = [rx.clone(), rx.clone(), rx];
+    let (counts, wakers): (Vec<_>, Vec<_>) = (0..3).map(|_| count_waker()).unzip();
+    let mut futs: Vec<_> = receivers.iter_mut().map(|r| Box::pin(r.recv())).collect();
+    for (fut, waker) in futs.iter_mut().zip(&wakers) {
+      assert!(poll_with(fut.as_mut(), waker).is_pending());
+    }
+
+    {
+      let mut batch = pin!(tx.send_batch(vec![1, 2, 3]));
+      assert!(matches!(poll_once(batch.as_mut()), Poll::Ready(Ok(3))));
+    }
+
+    // Polls a receive only after its waker fired, as an executor does.
+    let mut got = Vec::new();
+    let mut seen = [0usize; 3];
+    let mut done = [false; 3];
+    loop {
+      let mut progressed = false;
+      for i in 0..3 {
+        let fired = counts[i].0.load(Ordering::SeqCst);
+        if done[i] || fired == seen[i] {
+          continue;
+        }
+        seen[i] = fired;
+        progressed = true;
+        if let Poll::Ready(item) = poll_with(futs[i].as_mut(), &wakers[i]) {
+          got.push(item.unwrap());
+          done[i] = true;
+        }
+      }
+      if !progressed {
+        break;
+      }
+    }
+    got.sort_unstable();
+    assert_eq!(got, vec![1, 2, 3], "a pending receive was not woken for its item");
+  }
+
+  #[test]
+  fn receive_dropped_after_its_wake_hands_the_wake_to_the_next_receiver() {
+    let (mut tx, rx) = channel_async::<u32>();
+    let mut first = rx.clone();
+    let mut second = rx;
+    let (first_count, first_waker) = count_waker();
+    let (second_count, second_waker) = count_waker();
+    let mut first_fut = Box::pin(first.recv());
+    let mut second_fut = Box::pin(second.recv());
+    assert!(poll_with(first_fut.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second_fut.as_mut(), &second_waker).is_pending());
+
+    tx.try_send(7).unwrap();
+    assert_eq!(first_count.0.load(Ordering::SeqCst), 1);
+    drop(first_fut);
+
+    assert_ne!(
+      second_count.0.load(Ordering::SeqCst),
+      0,
+      "the item is queued and the receiver still pending was not woken"
+    );
+    assert!(matches!(poll_with(second_fut.as_mut(), &second_waker), Poll::Ready(Ok(7))));
   }
 }

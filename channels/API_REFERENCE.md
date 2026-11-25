@@ -859,7 +859,7 @@ All four unbounded handles are `Clone`. Sends and waiting receives take `&mut se
 
 *   `pub fn send(&mut self, value: T) -> Result<(), SendError>`: Never blocks.
 *   `pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>>`
-*   `pub fn send_batch(&mut self, items: Vec<T>) -> Result<usize, SendBatchError<T>>`: One publish and one wake per batch: only one parked receiver wakes. Other parked receivers stay blocked with items queued until another send or a disconnect wakes them. Single sends wake one receiver per item.
+*   `pub fn send_batch(&mut self, items: Vec<T>) -> Result<usize, SendBatchError<T>>`: One publish and one wake per batch. The receiver it wakes wakes the next parked receiver while items remain queued, so a batch reaches every parked receiver it has an item for. Single sends wake one receiver per item.
 *   `pub fn try_send_batch(&mut self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`: Same wake rule as `send_batch`.
 *   `pub fn send_batch_mut(&mut self, items: &mut Vec<T>) -> Result<usize, SendError>`: Same wake rule as `send_batch`.
 *   `pub fn try_send_batch_mut(&mut self, items: &mut Vec<T>) -> Result<usize, SendError>`: Same wake rule as `send_batch`.
@@ -876,7 +876,7 @@ All four unbounded handles are `Clone`. Sends and waiting receives take `&mut se
 
 The synchronous `Clone` receiving handle of the unbounded channel.
 
-*   `pub fn recv(&mut self) -> Result<T, RecvError>`: Blocks if empty, including while items queued by a `send_batch` wait for a wake.
+*   `pub fn recv(&mut self) -> Result<T, RecvError>`: Blocks if empty.
 *   `pub fn recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
 *   `pub fn recv_batch(&mut self, max: usize) -> Result<Vec<T>, RecvError>`: Blocks until at least one item.
 *   `pub fn recv_batch_mut(&mut self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError>`: Blocks until at least one item.

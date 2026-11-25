@@ -457,7 +457,7 @@ fn main() {
 }
 ```
 
-Send items one at a time when several receivers are parked. An unbounded `send_batch` wakes only one parked receiver and the others stay blocked with items queued until another send or a disconnect wakes them.
+An unbounded `send_batch` reaches parked receivers too. It wakes one and each receiver that wakes passes the wake on while items remain queued.
 
 ## Collecting Work From Many Producers
 

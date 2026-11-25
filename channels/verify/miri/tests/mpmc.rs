@@ -126,6 +126,18 @@ fn unbounded_disconnect_wakes_parked_consumers() {
 }
 
 #[test]
+fn unbounded_batch_reaches_both_blocking_consumers() {
+  let (mut tx, mut rx) = mpmc::unbounded::<u32>();
+  let mut rx2 = rx.clone();
+  let c1 = thread::spawn(move || rx.recv().unwrap());
+  let c2 = thread::spawn(move || rx2.recv().unwrap());
+  tx.send_batch(vec![1, 2]).unwrap();
+  let mut got = [c1.join().unwrap(), c2.join().unwrap()];
+  got.sort_unstable();
+  assert_eq!(got, [1, 2]);
+}
+
+#[test]
 fn async_send_future_registers_then_cancels() {
   let (tx, rx) = mpmc::bounded_async::<u32>(1);
   block_on(tx.send(1)).unwrap();
