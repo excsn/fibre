@@ -1325,7 +1325,7 @@ fn logic_clonable_full(
   Box::pin(async move {
     let start = Instant::now();
     for _ in 0..cfg.num_items {
-      let (tx, rx) = oneshot::oneshot();
+      let (tx, mut rx) = oneshot::oneshot();
       tx.send(ITEM_VALUE).expect("send failed");
       let _ = rx.recv().await.unwrap();
     }
@@ -1347,7 +1347,7 @@ fn logic_clonable_xfer(
       pairs.push(oneshot::oneshot());
     }
     let start = Instant::now();
-    for (tx, rx) in pairs {
+    for (tx, mut rx) in pairs {
       tx.send(ITEM_VALUE).expect("send failed");
       let _ = rx.recv().await.unwrap();
     }
@@ -1456,7 +1456,7 @@ fn logic_clonable_record(
     let mut sum = 0u64;
     for i in 0..cfg.num_items {
       let core = Arc::new(Req { id: i as u64 });
-      let (tx, rx) = oneshot::oneshot();
+      let (tx, mut rx) = oneshot::oneshot();
       tx.send(core.id).expect("send failed");
       sum += rx.recv().await.unwrap();
       black_box(&core);
@@ -1921,7 +1921,7 @@ fn logic_clonable_handoff(
     barrier.wait();
     let start = Instant::now();
     let mut sum = 0u64;
-    for rx in receivers {
+    for mut rx in receivers {
       sum += rx.recv().await.unwrap();
     }
     let duration = start.elapsed();
@@ -2254,7 +2254,7 @@ fn logic_clonable_pingpong(
       let barrier = Arc::clone(&barrier);
       thread::spawn(move || {
         barrier.wait();
-        for (tx, rx) in in_tx.into_iter().zip(out_rx) {
+        for (tx, mut rx) in in_tx.into_iter().zip(out_rx) {
           tx.send(ITEM_VALUE).expect("send failed");
           futures_executor::block_on(rx.recv()).unwrap();
         }
@@ -2264,7 +2264,7 @@ fn logic_clonable_pingpong(
     barrier.wait();
     let start = Instant::now();
     let mut sum = 0u64;
-    for (rx, tx) in in_rx.into_iter().zip(out_tx) {
+    for (mut rx, tx) in in_rx.into_iter().zip(out_tx) {
       sum += rx.recv().await.unwrap();
       tx.send(ITEM_VALUE).expect("send failed");
     }
@@ -2898,7 +2898,7 @@ fn report_parked_fraction(rt: &Runtime) {
       })
     };
     barrier.wait();
-    for rx in receivers {
+    for mut rx in receivers {
       counting(rx.recv(), &parks).await.unwrap();
     }
     sender.join().unwrap();
@@ -2926,14 +2926,14 @@ fn report_parked_fraction(rt: &Runtime) {
       let barrier = Arc::clone(&barrier);
       thread::spawn(move || {
         barrier.wait();
-        for (tx, rx) in in_tx.into_iter().zip(out_rx) {
+        for (tx, mut rx) in in_tx.into_iter().zip(out_rx) {
           tx.send(ITEM_VALUE).expect("send failed");
           futures_executor::block_on(rx.recv()).unwrap();
         }
       })
     };
     barrier.wait();
-    for (rx, tx) in in_rx.into_iter().zip(out_tx) {
+    for (mut rx, tx) in in_rx.into_iter().zip(out_tx) {
       counting(rx.recv(), &parks).await.unwrap();
       tx.send(ITEM_VALUE).expect("send failed");
     }

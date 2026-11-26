@@ -10,14 +10,14 @@ use std::thread;
 
 #[test]
 fn send_then_recv() {
-  let (tx, rx) = oneshot::oneshot::<u32>();
+  let (tx, mut rx) = oneshot::oneshot::<u32>();
   tx.send(42).unwrap();
   assert_eq!(block_on(rx.recv()).unwrap(), 42);
 }
 
 #[test]
 fn recv_registers_then_cancels() {
-  let (tx, rx) = oneshot::oneshot::<u32>();
+  let (tx, mut rx) = oneshot::oneshot::<u32>();
   {
     let mut fut = pin!(rx.recv());
     assert!(poll_once(fut.as_mut()).is_pending());
@@ -29,7 +29,7 @@ fn recv_registers_then_cancels() {
 #[test]
 fn only_first_of_competing_clones_wins() {
   let counter = drop_counter();
-  let (tx, rx) = oneshot::oneshot();
+  let (tx, mut rx) = oneshot::oneshot();
   let tx2 = tx.clone();
   tx.send(DropCounter::new(&counter)).unwrap();
   let second = tx2.send(DropCounter::new(&counter));
@@ -55,14 +55,14 @@ fn unconsumed_value_dropped_with_channel() {
 
 #[test]
 fn sender_drop_disconnects() {
-  let (tx, rx) = oneshot::oneshot::<u32>();
+  let (tx, mut rx) = oneshot::oneshot::<u32>();
   drop(tx);
   assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
 }
 
 #[test]
 fn try_recv_empty_then_value() {
-  let (tx, rx) = oneshot::oneshot::<u32>();
+  let (tx, mut rx) = oneshot::oneshot::<u32>();
   assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   tx.send(5).unwrap();
   assert_eq!(rx.try_recv().unwrap(), 5);
@@ -70,7 +70,7 @@ fn try_recv_empty_then_value() {
 
 #[test]
 fn cross_thread_completion() {
-  let (tx, rx) = oneshot::oneshot::<u32>();
+  let (tx, mut rx) = oneshot::oneshot::<u32>();
   let sender = thread::spawn(move || {
     tx.send(99).unwrap();
   });
@@ -80,7 +80,7 @@ fn cross_thread_completion() {
 
 #[test]
 fn spinning_try_recv_races_send_and_sender_drop() {
-  let (tx, rx) = oneshot::oneshot::<u32>();
+  let (tx, mut rx) = oneshot::oneshot::<u32>();
   let sender = thread::spawn(move || tx.send(1).unwrap());
   loop {
     match rx.try_recv() {

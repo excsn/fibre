@@ -31,7 +31,7 @@ impl Drop for DropCount {
 #[test]
 fn send_ok_never_reads_disconnected() {
   loom::model(|| {
-    let (tx, rx) = oneshot::<u32>();
+    let (tx, mut rx) = oneshot::<u32>();
     let t = thread::spawn(move || {
       tx.send(1).unwrap();
     });
@@ -54,7 +54,7 @@ fn send_ok_never_reads_disconnected() {
 #[test]
 fn concurrent_sender_drop_does_not_mask_sent_value() {
   loom::model(|| {
-    let (tx, rx) = oneshot::<u32>();
+    let (tx, mut rx) = oneshot::<u32>();
     let tx2 = tx.clone();
     let a = thread::spawn(move || {
       tx.send(1).unwrap();

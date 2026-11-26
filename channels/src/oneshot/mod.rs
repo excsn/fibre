@@ -18,7 +18,7 @@
 //! use std::thread;
 //!
 //! // Basic usage
-//! let (tx, rx) = oneshot::oneshot::<String>();
+//! let (tx, mut rx) = oneshot::oneshot::<String>();
 //!
 //! tokio::runtime::Runtime::new().unwrap().block_on(async {
 //!     tokio::spawn(async move {
@@ -43,7 +43,7 @@
 //! use fibre::oneshot;
 //! use fibre::error::RecvError;
 //!
-//! let (tx1, rx) = oneshot::oneshot::<i32>();
+//! let (tx1, mut rx) = oneshot::oneshot::<i32>();
 //! let tx2 = tx1.clone();
 //!
 //! tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -128,6 +128,16 @@ impl<T> fmt::Debug for Sender<T> {
 }
 
 /// The receiving side of a oneshot channel.
+///
+/// The receive methods and `close` take `&mut self`, so one receive is
+/// pending at a time:
+///
+/// ```compile_fail,E0499
+/// let (_tx, mut rx) = fibre::oneshot::oneshot::<u32>();
+/// let first = rx.recv();
+/// let second = rx.recv();
+/// drop((first, second));
+/// ```
 pub struct Receiver<T> {
   shared: Arc<OneShotShared<T>>,
   closed: AtomicBool,
@@ -231,11 +241,11 @@ impl<T> Receiver<T> {
   /// channel is disconnected.
   /// Blocking receive for synchronous callers: parks the thread until the
   /// value arrives or the channel disconnects.
-  pub fn recv_blocking(&self) -> Result<T, RecvError> {
+  pub fn recv_blocking(&mut self) -> Result<T, RecvError> {
     crate::sync_util::block_on(self.recv())
   }
 
-  pub fn recv(&self) -> ReceiveFuture<'_, T> {
+  pub fn recv(&mut self) -> ReceiveFuture<'_, T> {
     ReceiveFuture {
       receiver_shared: &self.shared,
       closed_flag: &self.closed,
@@ -249,7 +259,7 @@ impl<T> Receiver<T> {
   /// - `Err(TryRecvError::Empty)` if no value has been sent yet.
   /// - `Err(TryRecvError::Disconnected)` if no value was sent and all senders have dropped,
   ///   or if this receiver handle was explicitly closed.
-  pub fn try_recv(&self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
     }
@@ -267,7 +277,7 @@ impl<T> Receiver<T> {
   /// # Errors
   ///
   /// Returns `Err(CloseError)` if this handle has already been closed.
-  pub fn close(&self) -> Result<(), CloseError> {
+  pub fn close(&mut self) -> Result<(), CloseError> {
     if self
       .closed
       .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)

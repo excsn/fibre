@@ -10,7 +10,7 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[tokio::test]
 async fn send_recv_ok() {
-  let (tx, rx) = oneshot::<String>();
+  let (tx, mut rx) = oneshot::<String>();
   let message = "hello oneshot".to_string();
 
   tokio::spawn(async move {
@@ -26,7 +26,7 @@ async fn send_recv_ok() {
 
 #[tokio::test]
 async fn try_recv_before_send() {
-  let (tx, rx) = oneshot::<i32>();
+  let (tx, mut rx) = oneshot::<i32>();
   assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   drop(tx); // ensure it transitions to disconnected later
   assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
@@ -34,7 +34,7 @@ async fn try_recv_before_send() {
 
 #[tokio::test]
 async fn try_recv_after_send() {
-  let (tx, rx) = oneshot::<i32>();
+  let (tx, mut rx) = oneshot::<i32>();
   tx.send(123).expect("Send failed");
   assert_eq!(rx.try_recv().unwrap(), 123);
   // Second try_recv should indicate it's taken (effectively Empty or Disconnected if senders gone)
@@ -50,7 +50,7 @@ async fn try_recv_after_send() {
 
 #[tokio::test]
 async fn recv_after_all_senders_dropped_no_send() {
-  let (tx1, rx) = oneshot::<i32>();
+  let (tx1, mut rx) = oneshot::<i32>();
   let tx2 = tx1.clone();
   let tx3 = tx2.clone();
 
@@ -80,7 +80,7 @@ async fn send_fails_if_receiver_dropped() {
 
 #[tokio::test]
 async fn only_first_send_succeeds_cloned_senders() {
-  let (tx1, rx) = oneshot::<i32>();
+  let (tx1, mut rx) = oneshot::<i32>();
   let tx2 = tx1.clone();
   let tx3 = tx1.clone();
 
@@ -166,8 +166,8 @@ async fn receiver_dropped_while_sender_sending_concurrently() {
 
 #[tokio::test]
 async fn select_on_recv() {
-  let (tx1, rx1) = oneshot::<i32>();
-  let (_tx2, rx2) = oneshot::<i32>(); // This one won't receive anything
+  let (tx1, mut rx1) = oneshot::<i32>();
+  let (_tx2, mut rx2) = oneshot::<i32>(); // This one won't receive anything
 
   tokio::spawn(async move {
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -192,7 +192,7 @@ async fn select_on_recv() {
 
 #[tokio::test]
 async fn sender_clones_drop_receiver_gets_disconnected() {
-  let (tx_orig, rx) = oneshot::<()>();
+  let (tx_orig, mut rx) = oneshot::<()>();
   let mut senders = Vec::new();
   for _ in 0..5 {
     senders.push(tx_orig.clone());
@@ -210,7 +210,7 @@ async fn sender_clones_drop_receiver_gets_disconnected() {
 
 #[tokio::test]
 async fn send_consumes_sender() {
-  let (tx, rx) = oneshot::<i32>();
+  let (tx, mut rx) = oneshot::<i32>();
   // tx.send(1); // This consumes tx
   // tx.send(2); // This would be a compile error: value used after move
 
@@ -227,7 +227,7 @@ async fn send_consumes_sender() {
 
 #[tokio::test]
 async fn is_closed_and_is_sent_semantics() {
-  let (tx1, rx) = oneshot::<i32>();
+  let (tx1, mut rx) = oneshot::<i32>();
   let tx2 = tx1.clone();
 
   assert!(!tx1.is_closed()); // Receiver exists
@@ -384,7 +384,7 @@ fn try_recv_never_reports_disconnected_after_a_successful_send() {
 
   let mut false_disconnects = 0usize;
   for _ in 0..ROUNDS {
-    let (tx, rx) = oneshot::<u64>();
+    let (tx, mut rx) = oneshot::<u64>();
     work_tx.send(tx).unwrap();
     loop {
       match rx.try_recv() {
@@ -864,7 +864,7 @@ mod recv_blocking {
 
   #[test]
   fn clonable_recv_blocking_cross_thread() {
-    let (tx, rx) = oneshot::<u64>();
+    let (tx, mut rx) = oneshot::<u64>();
     let barrier = Arc::new(Barrier::new(2));
     let b = Arc::clone(&barrier);
     let t = thread::spawn(move || {

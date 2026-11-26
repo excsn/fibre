@@ -7,7 +7,7 @@ mod common_async;
 fn main() {
   println!("--- Oneshot: Sync Sender, Sync Receiver (Simulated with Async) ---");
   common_async::run_async(async {
-    let (tx, rx) = oneshot::oneshot::<String>();
+    let (tx, mut rx) = oneshot::oneshot::<String>();
     let message = "Hello from sync-simulated oneshot!".to_string();
 
     let sender_handle = thread::spawn(move || {
@@ -35,7 +35,7 @@ fn main() {
 
   println!("\n--- Oneshot: Async Sender, Async Receiver ---");
   common_async::run_async(async {
-    let (tx, rx) = oneshot::oneshot::<String>();
+    let (tx, mut rx) = oneshot::oneshot::<String>();
     let message = "Hello from async oneshot!".to_string();
 
     tokio::spawn(async move {
@@ -67,7 +67,7 @@ fn main() {
 
   println!("\n--- Oneshot: Sync Sender (Thread) to Async Receiver ---");
   common_async::run_async(async {
-    let (tx, rx) = oneshot::oneshot::<String>();
+    let (tx, mut rx) = oneshot::oneshot::<String>();
     let message = "Sync sender -> async receiver".to_string();
 
     let sender_thread = thread::spawn(move || {
@@ -100,7 +100,7 @@ fn main() {
   });
 
   println!("\n--- Oneshot: Async Sender to Sync Receiver (Simulated) ---");
-  let (tx_async_to_sync, rx_async_for_sync) = oneshot::oneshot::<String>();
+  let (tx_async_to_sync, mut rx_async_for_sync) = oneshot::oneshot::<String>();
   let message_async_to_sync = "Async sender -> sync receiver (simulated)".to_string();
 
   common_async::block_on_tokio_task(async move {
@@ -134,7 +134,7 @@ fn main() {
 
   println!("\n--- Oneshot: Dropped Sender ---");
   common_async::run_async(async {
-    let (tx, rx) = oneshot::oneshot::<String>();
+    let (tx, mut rx) = oneshot::oneshot::<String>();
     drop(tx);
     match rx.recv().await {
       Err(RecvError::Disconnected) => {

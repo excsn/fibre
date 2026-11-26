@@ -572,7 +572,7 @@ Every oneshot receiver (`Receiver`, `ExclusiveReceiver`, `PooledReceiver`, `Host
 use fibre::oneshot;
 
 fn main() {
-    let (tx, rx) = oneshot::oneshot::<u32>();
+    let (tx, mut rx) = oneshot::oneshot::<u32>();
     let second = tx.clone();
 
     tx.send(1).unwrap();

@@ -128,12 +128,12 @@ The sending side of a oneshot channel. `Clone`; only the first send across all c
 
 ### Struct `oneshot::Receiver<T>`
 
-The receiving side of a oneshot channel. Not `Clone`.
+The receiving side of a oneshot channel. Not `Clone`. The receive methods and `close` take `&mut self`, so one receive is pending at a time.
 
-*   `pub fn recv(&self) -> ReceiveFuture<'_, T>`: Cancel-safe.
-*   `pub fn recv_blocking(&self) -> Result<T, RecvError>`: For synchronous callers; returns without parking or allocating a parker when the value has already arrived.
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn close(&self) -> Result<(), CloseError>`: Drops a value that was sent but not received.
+*   `pub fn recv(&mut self) -> ReceiveFuture<'_, T>`: Cancel-safe.
+*   `pub fn recv_blocking(&mut self) -> Result<T, RecvError>`: For synchronous callers; returns without parking or allocating a parker when the value has already arrived.
+*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
+*   `pub fn close(&mut self) -> Result<(), CloseError>`: Drops a value that was sent but not received.
 *   `pub fn is_closed(&self) -> bool`: `true` once a value was taken or no value will ever be sent.
 
 ### Struct `oneshot::ExclusiveSender<T>`
