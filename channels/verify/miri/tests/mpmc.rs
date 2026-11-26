@@ -98,15 +98,13 @@ fn unbounded_2p_2c_race() {
 }
 
 #[test]
-fn unbounded_fulfilled_then_dropped_future_reclaims_item() {
+fn unbounded_parked_future_dropped_after_a_send_drops_the_value_once() {
   let counter = drop_counter();
   let (mut tx, mut rx) = mpmc::unbounded_async();
   {
     let mut fut = pin!(rx.recv());
-    assert!(poll_once(fut.as_mut()).is_pending()); // registered as a waiter
-    tx.try_send(DropCounter::new(&counter)).unwrap(); // handoff fulfills it
-    // Dropped without being polled again: the delivered value must be
-    // reclaimed, not leaked or double-dropped.
+    assert!(poll_once(fut.as_mut()).is_pending());
+    tx.try_send(DropCounter::new(&counter)).unwrap();
   }
   assert_eq!(drops(&counter), 0);
   drop(rx.try_recv().unwrap());

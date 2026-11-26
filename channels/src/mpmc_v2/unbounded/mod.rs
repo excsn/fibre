@@ -157,28 +157,26 @@ mod tests {
   }
 
   #[test]
-  fn fulfilled_then_dropped_future_reclaims_item() {
+  fn a_parked_future_dropped_after_a_send_loses_no_item() {
     let (mut tx, mut rx) = channel_async::<u32>();
     {
       let mut fut = pin!(rx.recv());
-      assert!(poll_once(fut.as_mut()).is_pending()); // registered
-      tx.try_send(42).unwrap(); // handoff fulfills the parked future
-      // Dropped WITHOUT being polled again: the delivered item must be
-      // reclaimed, not lost.
+      assert!(poll_once(fut.as_mut()).is_pending());
+      tx.try_send(42).unwrap();
     }
     assert_eq!(rx.try_recv().unwrap(), 42);
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
   }
 
   #[test]
-  fn reclaimed_item_precedes_chain_items() {
+  fn items_sent_while_a_future_was_parked_keep_their_order_after_it_drops() {
     let (mut tx, mut rx) = channel_async::<u32>();
     {
       let mut fut = pin!(rx.recv());
       assert!(poll_once(fut.as_mut()).is_pending());
-      tx.try_send(1).unwrap(); // fulfills the future
+      tx.try_send(1).unwrap();
       tx.try_send(2).unwrap();
-    } // drop reclaims item 1
+    }
     assert_eq!(rx.try_recv().unwrap(), 1);
     assert_eq!(rx.try_recv().unwrap(), 2);
   }
