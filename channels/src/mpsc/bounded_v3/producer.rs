@@ -90,6 +90,31 @@ impl<T: Send> Drop for SyncSendUnwind<'_, T> {
   }
 }
 
+/// The awake count a sync batch send holds between being woken and its next
+/// claim. A receiver waker that panics inside `resolve_run` unwinds the send
+/// while it holds one, so the count is given back on drop.
+struct HeldAwake<'a, T: Send> {
+  shared: &'a Shared<T>,
+  held: bool,
+}
+
+impl<T: Send> HeldAwake<'_, T> {
+  #[inline]
+  fn release(&mut self) {
+    if self.held {
+      self.held = false;
+      self.shared.awake_release();
+    }
+  }
+}
+
+impl<T: Send> Drop for HeldAwake<'_, T> {
+  #[inline]
+  fn drop(&mut self) {
+    self.release();
+  }
+}
+
 unsafe impl<T: Send> Send for Sender<T> {}
 unsafe impl<T: Send> Send for AsyncSender<T> {}
 unsafe impl<T: Send> Sync for AsyncSender<T> {}
@@ -369,7 +394,10 @@ impl<T: Send> Sender<T> {
 
     let mut iter = items.into_iter();
     let mut sent = 0;
-    let mut held = false;
+    let mut held = HeldAwake {
+      shared: &*self.shared,
+      held: false,
+    };
 
     while sent < total {
       if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
@@ -384,20 +412,14 @@ impl<T: Send> Sender<T> {
           .shared
           .resolve_run(t, valid, m, &mut iter.by_ref().take(valid));
         sent += valid;
-        if held {
-          self.shared.awake_release();
-          held = false;
-        }
+        held.release();
         continue;
       }
-      if held {
-        self.shared.awake_release();
-        held = false;
-      }
+      held.release();
       // Window closed - block until it reopens (fresh notified, finish-on-exit).
       let waited = self.wait_for_window();
       if let Ok(h) = waited {
-        held = h;
+        held.held = h;
       }
       if waited.is_err() {
         return Err(SendBatchError {
@@ -440,7 +462,10 @@ impl<T: Send> Sender<T> {
     let total = items.len();
     let mut drain = items.drain(..);
     let mut sent = 0;
-    let mut held = false;
+    let mut held = HeldAwake {
+      shared: &*self.shared,
+      held: false,
+    };
     while sent < total {
       if self.closed.load(Ordering::Relaxed) || !self.shared.receivers_alive() {
         break;
@@ -451,20 +476,14 @@ impl<T: Send> Sender<T> {
           .shared
           .resolve_run(t, valid, m, &mut drain.by_ref().take(valid));
         sent += valid;
-        if held {
-          self.shared.awake_release();
-          held = false;
-        }
+        held.release();
         continue;
       }
-      if held {
-        self.shared.awake_release();
-        held = false;
-      }
+      held.release();
       // Window closed - block until it reopens.
       let waited = self.wait_for_window();
       if let Ok(h) = waited {
-        held = h;
+        held.held = h;
       }
       if waited.is_err() {
         break;
