@@ -25,7 +25,6 @@ pub struct WatchdogTick {
 /// Spawns the stall-watchdog thread.
 ///
 /// `detail` - if provided, called each tick to get `(ring_len, send_waiters, recv_waiters)`.
-/// Only available for mpmc_v3 sync (the only handle with `debug_state`).
 pub fn spawn(
   sent: Arc<AtomicUsize>,
   received: Arc<AtomicUsize>,

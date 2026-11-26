@@ -10,7 +10,7 @@ stall watchdog, so it's meant to be run directly under a profiler:
 cargo flamegraph -p fibre_bench -- -c spsc -m sync -C 128 -i 1000000 -b 8
 ```
 
-It supports every channel family in the crate (`spsc`, `spmc`, `mpsc`, `mpmc-v2`, `mpmc-v3`),
+It supports every channel family in the crate (`spsc`, `spmc`, `mpsc`, `mpmc-v2`),
 sync and async, bounded/unbounded/rendezvous (where applicable), and single-item or batched
 (`send_batch`/`recv_batch`) sends.
 
@@ -40,7 +40,7 @@ at the end of every run regardless (and immediately, if the watchdog detects a s
 
 | Flag | Short | Default | Meaning |
 |---|---|---|---|
-| `--channel` | `-c` | `mpmc-v3` | Channel family: `mpmc-v3`, `mpmc-v2`, `mpsc`, `spmc`, `spsc` |
+| `--channel` | `-c` | `mpmc-v2` | Channel family: `mpmc-v2`, `mpsc`, `spmc`, `spsc` |
 | `--mode` | `-m` | `sync` | `sync` or `async` |
 | `--flavor` | `-f` | `bounded` | `bounded`, `unbounded`, or `rendezvous` |
 | `--producers` | `-p` | `1` | Number of producer threads/tasks |
@@ -53,9 +53,7 @@ at the end of every run regardless (and immediately, if the watchdog detects a s
 
 The watchdog prints a `[watchdog] sent=.. recv=.. in_flight=..` line every `stall_ms` while
 running. If `sent`/`received` don't move for `stall_count` consecutive ticks, it aborts (exit code
-2) and prints a best-effort classification (lost wakeup / lost item(s) / mutual deadlock) - full
-detail (ring length, waiter counts) is only available for `mpmc-v3` sync, which exposes
-`debug_state`.
+2) and prints a best-effort classification (lost wakeup / lost item(s) / mutual deadlock).
 
 ## Results file
 
@@ -68,8 +66,7 @@ be reviewed directly from the file instead of needing terminal output pasted in.
 {"ts":1751378653,"channel":"spsc","mode":"sync","flavor":"bounded","capacity":1024,"producers":1,"consumers":1,"items":700000000,"batch_size":8,"stall_ms":500,"stall_count":4,"duration_ms":14523.891,"sent":700000000,"received":700000000,"throughput_m_per_sec":48.2,"ticks":[{"elapsed_ms":500,"sent":24123456,"received":24000000,"in_flight":123456,"ring_len":null,"send_waiters":null,"recv_waiters":null}]}
 ```
 
-`ring_len`/`send_waiters`/`recv_waiters` are `null` except for `mpmc-v3` sync (the only handle with
-`debug_state`).
+`ring_len`/`send_waiters`/`recv_waiters` are always `null`: no channel in the crate exposes those counts.
 
 ## Channel constraints
 
@@ -79,9 +76,7 @@ be reviewed directly from the file instead of needing terminal output pasted in.
   throughput uses `sent` (dispatch rate), not `received`, so it's comparable to the other channel
   types.
 - **`mpsc`**: `--consumers 1` (enforced), no `rendezvous`.
-- **`mpmc-v2`** / **`mpmc-v3`**: any producer/consumer count, all three flavors. `mpmc-v3` only has
-  its own implementation for `bounded`; `unbounded`/`rendezvous` under `-c mpmc-v3` silently
-  delegate to `mpmc-v2`'s implementation.
+- **`mpmc-v2`**: any producer/consumer count, all three flavors.
 - **`rendezvous` has no batch API** - `-b` > 0 with `-f rendezvous` is rejected at startup
   regardless of channel.
 
@@ -116,12 +111,6 @@ cargo run --release -p fibre_bench -- -c mpsc -m async -f unbounded -p 4 -i 1000
 cargo run --release -p fibre_bench -- -c mpmc-v2 -m sync -f bounded -p 4 -n 4 -C 128 -i 1000000
 cargo run --release -p fibre_bench -- -c mpmc-v2 -m sync -f rendezvous -p 4 -n 4 -i 1000000
 cargo run --release -p fibre_bench -- -c mpmc-v2 -m async -f bounded -p 4 -n 4 -C 128 -i 1000000 -b 16
-```
-
-**MPMC v3** (Vyukov ring + tombstone handoff; bounded only for its own code path):
-```sh
-cargo run --release -p fibre_bench -- -c mpmc-v3 -m sync -p 4 -n 4 -C 128 -i 1000000
-cargo run --release -p fibre_bench -- -c mpmc-v3 -m async -p 4 -n 4 -C 128 -i 1000000 -b 32
 ```
 
 ## Profiling with `cargo flamegraph`

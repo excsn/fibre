@@ -75,35 +75,28 @@ High-performance sync/async channels and hybrid locks for concurrent Rust.
     * [Struct `mpmc::rendezvous::RendezvousAsyncSender<T>`](#struct-mpmcrendezvousrendezvousasyncsendert)
     * [Struct `mpmc::rendezvous::RendezvousAsyncReceiver<T>`](#struct-mpmcrendezvousrendezvousasyncreceivert)
     * [mpmc rendezvous futures](#mpmc-rendezvous-futures)
-* [7. Module `fibre::mpmc_exp`](#7-module-fibrempmc_exp)
-    * [mpmc_exp functions](#mpmc_exp-functions)
-    * [Struct `mpmc_exp::Sender<T>`](#struct-mpmc_expsendert)
-    * [Struct `mpmc_exp::Receiver<T>`](#struct-mpmc_expreceivert)
-    * [Struct `mpmc_exp::AsyncSender<T>`](#struct-mpmc_expasyncsendert)
-    * [Struct `mpmc_exp::AsyncReceiver<T>`](#struct-mpmc_expasyncreceivert)
-    * [mpmc_exp futures](#mpmc_exp-futures)
-* [8. Module `fibre::sync`](#8-module-fibresync)
+* [7. Module `fibre::sync`](#7-module-fibresync)
     * [Struct `sync::HybridMutex<T>`](#struct-synchybridmutext)
     * [Struct `sync::MutexGuard<'a, T>`](#struct-syncmutexguarda-t)
     * [Struct `sync::HybridRwLock<T>`](#struct-synchybridrwlockt)
     * [Struct `sync::ReadGuard<'a, T>`](#struct-syncreadguarda-t)
     * [Struct `sync::WriteGuard<'a, T>`](#struct-syncwriteguarda-t)
-* [9. Module `fibre::sync::v2`](#9-module-fibresyncv2)
+* [8. Module `fibre::sync::v2`](#8-module-fibresyncv2)
     * [Struct `v2::HybridRwLock<T>`](#struct-v2hybridrwlockt)
     * [Struct `v2::ReadGuard<'a, T>`](#struct-v2readguarda-t)
     * [Struct `v2::WriteGuard<'a, T>`](#struct-v2writeguarda-t)
-* [10. Module `fibre::telemetry`](#10-module-fibretelemetry)
+* [9. Module `fibre::telemetry`](#9-module-fibretelemetry)
     * [telemetry functions](#telemetry-functions)
     * [telemetry macros](#telemetry-macros)
     * [Struct `telemetry::enabled::TelemetryEvent`](#struct-telemetryenabledtelemetryevent)
-* [11. Batch Operation Semantics](#11-batch-operation-semantics)
+* [10. Batch Operation Semantics](#10-batch-operation-semantics)
     * [By-value send](#by-value-send)
     * [In-place send](#in-place-send)
     * [By-value receive](#by-value-receive)
     * [In-place receive](#in-place-receive)
     * [Batch edge cases](#batch-edge-cases)
     * [Batch cancellation](#batch-cancellation)
-* [12. Error Handling](#12-error-handling)
+* [11. Error Handling](#11-error-handling)
     * [Enum `error::TrySendError<T>`](#enum-errortrysenderrort)
     * [Enum `error::SendError`](#enum-errorsenderror)
     * [Enum `error::TryRecvError`](#enum-errortryrecverror)
@@ -1001,94 +994,7 @@ Asynchronous receiver. `Clone`. No batch API. Does not implement `futures::Strea
 *   `rendezvous::SendFuture<'a, T>`: `Output = Result<(), SendError>`
 *   `rendezvous::RecvFuture<'a, T>`: `Output = Result<T, RecvError>`
 
-## 7. Module `fibre::mpmc_exp`
-
-An experimental lock-free bounded MPMC channel. `capacity` is rounded up to the next power of two. `rendezvous`, `unbounded` and `unbounded_async` are re-exports of the `fibre::mpmc` items.
-
-### mpmc_exp functions
-
-*   `pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>)`: Panics if `capacity == 0`.
-*   `pub fn bounded_async<T: Send>(capacity: usize) -> (AsyncSender<T>, AsyncReceiver<T>)`: Panics if `capacity == 0`.
-
-### Struct `mpmc_exp::Sender<T>`
-
-A synchronous `Clone` sending handle.
-
-*   `pub fn send(&self, item: T) -> Result<(), SendError>`
-*   `pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>>`
-*   `pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`
-*   `pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError>`
-*   `pub fn send_batch(&self, items: Vec<T>) -> Result<usize, SendBatchError<T>>`
-*   `pub fn send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError>`
-*   `pub fn close(&self) -> Result<(), CloseError>`
-*   `pub fn is_closed(&self) -> bool`
-*   `pub fn capacity(&self) -> Option<usize>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_async(self) -> AsyncSender<T>`
-
-### Struct `mpmc_exp::Receiver<T>`
-
-A synchronous `Clone` receiving handle.
-
-*   `pub fn recv(&self) -> Result<T, RecvError>`
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
-*   `pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError>`
-*   `pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError>`
-*   `pub fn recv_batch(&self, max: usize) -> Result<Vec<T>, RecvError>`
-*   `pub fn recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError>`
-*   `pub fn debug_state(&self) -> (usize, usize, usize)`: Buffered length, parked send waiters and parked receive waiters.
-*   `pub fn close(&self) -> Result<(), CloseError>`
-*   `pub fn is_closed(&self) -> bool`
-*   `pub fn capacity(&self) -> Option<usize>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_async(self) -> AsyncReceiver<T>`
-
-### Struct `mpmc_exp::AsyncSender<T>`
-
-An asynchronous `Clone` sending handle.
-
-*   `pub fn send(&self, item: T) -> SendFuture<'_, T>`
-*   `pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>>`
-*   `pub fn try_send_batch(&self, items: Vec<T>) -> Result<usize, TrySendBatchError<T>>`
-*   `pub fn try_send_batch_mut(&self, items: &mut Vec<T>) -> Result<usize, SendError>`
-*   `pub fn send_batch(&self, items: Vec<T>) -> SendBatchFuture<'_, T>`
-*   `pub fn send_batch_mut<'a>(&'a self, items: &'a mut Vec<T>) -> SendBatchMutFuture<'a, T>`
-*   `pub fn close(&self) -> Result<(), CloseError>`
-*   `pub fn is_closed(&self) -> bool`
-*   `pub fn capacity(&self) -> Option<usize>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_sync(self) -> Sender<T>`
-
-### Struct `mpmc_exp::AsyncReceiver<T>`
-
-An asynchronous `Clone` receiving handle. Implements `futures::Stream`.
-
-*   `pub fn recv(&self) -> RecvFuture<'_, T>`
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError>`
-*   `pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError>`
-*   `pub fn recv_batch(&self, max: usize) -> RecvBatchFuture<'_, T>`
-*   `pub fn recv_batch_mut<'a>(&'a self, out: &'a mut Vec<T>, max: usize) -> RecvBatchMutFuture<'a, T>`
-*   `pub fn close(&self) -> Result<(), CloseError>`
-*   `pub fn is_closed(&self) -> bool`
-*   `pub fn capacity(&self) -> Option<usize>`
-*   `pub fn len(&self) -> usize`
-*   `pub fn is_empty(&self) -> bool`
-*   `pub fn is_full(&self) -> bool`
-*   `pub fn to_sync(self) -> Receiver<T>`
-
-### mpmc_exp futures
-
-*   `SendFuture<'a, T>`, `SendBatchFuture<'a, T>`, `SendBatchMutFuture<'a, T>`, `RecvFuture<'a, T>`, `RecvBatchFuture<'a, T>`, `RecvBatchMutFuture<'a, T>`: Same outputs as the `fibre::mpmc` futures of those names.
-
-## 8. Module `fibre::sync`
+## 7. Module `fibre::sync`
 
 Locks that wait either way: a synchronous caller parks its thread and an asynchronous caller yields to its executor with a waker, on the same lock at the same time.
 
@@ -1132,7 +1038,7 @@ A shared hold, released on drop. Implements `Deref<Target = T>`.
 
 The exclusive hold, released on drop. Implements `Deref<Target = T>` and `DerefMut`.
 
-## 9. Module `fibre::sync::v2`
+## 8. Module `fibre::sync::v2`
 
 A reader-writer lock with the same names and methods as `fibre::sync::HybridRwLock` (§8). Waiters queue and wake by the §8 rules, with one exception: a writer that has taken the lock waits for slot readers without parking. `write` and `try_write` spin and yield the thread. `write_async` re-polls itself through its waker. A read guard held across an `.await` keeps that writer busy until the guard drops.
 
@@ -1156,7 +1062,7 @@ A shared hold, released on drop. Implements `Deref<Target = T>`.
 
 The exclusive hold, released on drop. Implements `Deref<Target = T>` and `DerefMut`.
 
-## 10. Module `fibre::telemetry`
+## 9. Module `fibre::telemetry`
 
 Event recording behind the `diagnostics` feature. The functions and macros are no-ops without the feature. Only `fibre::spmc` emits events.
 
@@ -1190,7 +1096,7 @@ A recorded event. Exists only with the `diagnostics` feature. The functions abov
 *   `pub event_type: String`
 *   `pub message: Option<String>`
 
-## 11. Batch Operation Semantics
+## 10. Batch Operation Semantics
 
 `spsc`, `mpsc`, `spmc` and `mpmc` bounded and unbounded handles provide eight batch operations per handle pair. `oneshot`, `spmc::topic` and the rendezvous channels do not provide batch operations.
 
@@ -1232,7 +1138,7 @@ A recorded event. Exists only with the `diagnostics` feature. The functions abov
 *   The `_mut` send futures are cancel-safe: unsent items remain in the caller's vector.
 *   All batch receive futures are cancel-safe.
 
-## 12. Error Handling
+## 11. Error Handling
 
 All error types live in `fibre::error` and are re-exported from the crate root.
 

@@ -13,7 +13,6 @@ pub mod mpsc;
 pub mod spmc;
 pub mod mpmc_v2;
 pub use mpmc_v2 as mpmc;
-pub mod mpmc_exp;
 pub mod telemetry;
 
 /// Hybrid sync/async locking primitives (`HybridMutex`, `HybridRwLock`).

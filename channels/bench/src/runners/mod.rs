@@ -1,5 +1,4 @@
 pub mod mpmc_v2;
-pub mod mpmc_v3;
 pub mod mpsc;
 pub mod spmc;
 pub mod spsc;

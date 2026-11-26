@@ -7,9 +7,6 @@ use runners::BenchConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Channel {
-  /// mpmc_v3 bounded (Vyukov ring + tombstone handoff); rendezvous/unbounded delegate to mpmc-v2
-  #[value(name = "mpmc-v3")]
-  MpmcV3,
   /// mpmc_v2 (lock-based bounded/unbounded + rendezvous)
   #[value(name = "mpmc-v2")]
   MpmcV2,
@@ -37,7 +34,7 @@ pub enum Flavor {
 #[derive(Parser, Debug)]
 #[command(name = "fibre_bench", about = "Fibre channel throughput benchmark")]
 struct Args {
-  #[arg(short = 'c', long, default_value = "mpmc-v3", help = "Channel family")]
+  #[arg(short = 'c', long, default_value = "mpmc-v2", help = "Channel family")]
   channel: Channel,
 
   #[arg(short = 'm', long, default_value = "sync", help = "Sync or async mode")]
@@ -80,7 +77,6 @@ struct Args {
 
 fn channel_name(c: Channel) -> &'static str {
   match c {
-    Channel::MpmcV3 => "mpmc-v3",
     Channel::MpmcV2 => "mpmc-v2",
     Channel::Mpsc => "mpsc",
     Channel::Spmc => "spmc",
@@ -175,9 +171,7 @@ fn main() {
   };
 
   let result = match (args.channel, args.mode, args.flavor) {
-    (Channel::MpmcV3, Mode::Sync, Flavor::Bounded) => runners::mpmc_v3::run_sync(&cfg),
-    (Channel::MpmcV3, Mode::Async, Flavor::Bounded) => runners::mpmc_v3::run_async(&cfg),
-    (Channel::MpmcV3, mode, flavor) | (Channel::MpmcV2, mode, flavor) => match mode {
+    (Channel::MpmcV2, mode, flavor) => match mode {
       Mode::Sync => runners::mpmc_v2::run_sync(&cfg, &flavor),
       Mode::Async => runners::mpmc_v2::run_async(&cfg, &flavor),
     },
