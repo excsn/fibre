@@ -195,6 +195,7 @@ impl<T: Send + Clone> BoundedAsyncReceiver<T> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::error::{RecvError, RecvErrorTimeout};
   use std::thread;
   use std::time::Duration;
 
@@ -206,8 +207,31 @@ mod tests {
   pub const ITEMS_HIGH: usize = 1000;
 
   #[test]
+  fn recv_timeout_leaves_no_waker_registered_when_it_returns() {
+    let (_tx, mut rx) = bounded::<u32>(2);
+    for _ in 0..5 {
+      assert_eq!(rx.recv_timeout(Duration::from_millis(2)), Err(RecvErrorTimeout::Timeout));
+    }
+    assert_eq!(rx.shared.registered_wakers(0), 0);
+  }
+
+  #[test]
+  fn recv_on_a_finished_channel_leaves_no_waker_registered() {
+    let (tx, mut rx) = bounded::<u32>(2);
+    let waiter = thread::spawn(move || {
+      let res = rx.recv();
+      (res, rx)
+    });
+    thread::sleep(Duration::from_millis(50));
+    drop(tx);
+    let (res, rx) = waiter.join().unwrap();
+    assert_eq!(res, Err(RecvError::Disconnected));
+    assert_eq!(rx.shared.registered_wakers(0), 0);
+  }
+
+  #[test]
   fn spmc_single_recv() {
-    let (tx, rx) = bounded(2);
+    let (tx, mut rx) = bounded(2);
     assert_eq!(tx.len(), 0);
     assert!(tx.is_empty());
     assert!(!tx.is_full());
@@ -230,8 +254,8 @@ mod tests {
 
   #[test]
   fn spmc_multiple_receivers_len_checks() {
-    let (tx, rx1) = bounded(4);
-    let rx2 = rx1.clone();
+    let (tx, mut rx1) = bounded(4);
+    let mut rx2 = rx1.clone();
 
     assert_eq!(tx.len(), 0);
     assert!(tx.is_empty());
@@ -276,8 +300,8 @@ mod tests {
 
   #[test]
   fn spmc_sync_try_send() {
-    let (tx, rx1) = bounded(1);
-    let rx2 = rx1.clone(); // Keep another receiver
+    let (tx, mut rx1) = bounded(1);
+    let mut rx2 = rx1.clone(); // Keep another receiver
 
     assert!(tx.try_send(10).is_ok()); // head = 1. min_tail(rx1,rx2) = 0. tx.len = 1.
     assert_eq!(tx.len(), 1);
@@ -305,9 +329,9 @@ mod tests {
 
   #[test]
   fn spmc_multiple_receivers() {
-    let (tx, rx1) = bounded(ITEMS_LOW);
-    let rx2 = rx1.clone();
-    let rx3 = rx1.clone();
+    let (tx, mut rx1) = bounded(ITEMS_LOW);
+    let mut rx2 = rx1.clone();
+    let mut rx3 = rx1.clone();
 
     for i in 0..ITEMS_LOW {
       tx.send(i).unwrap();
@@ -338,8 +362,8 @@ mod tests {
 
   #[test]
   fn spmc_sync_slow_consumer_blocks_producer() {
-    let (tx, rx_fast) = bounded(1); // Capacity of 1
-    let rx_slow = rx_fast.clone();
+    let (tx, mut rx_fast) = bounded(1); // Capacity of 1
+    let mut rx_slow = rx_fast.clone();
 
     tx.send(1).unwrap();
     assert_eq!(tx.len(), 1);
@@ -397,7 +421,7 @@ mod tests {
   #[test]
   fn spmc_close_and_is_closed() {
     // --- Test producer closing ---
-    let (mut tx, rx) = bounded(2);
+    let (mut tx, mut rx) = bounded(2);
     tx.send(10).unwrap();
     assert!(!tx.is_closed());
     assert!(!rx.is_closed());
@@ -417,8 +441,8 @@ mod tests {
 
     // --- Test receiver closing ---
     // (This part of the test would have run if the first part didn't panic)
-    let (tx, rx1) = bounded(2);
-    let rx2 = rx1.clone();
+    let (tx, mut rx1) = bounded(2);
+    let mut rx2 = rx1.clone();
     tx.send(1).unwrap();
 
     // Close one receiver
@@ -453,7 +477,7 @@ mod tests {
     }
 
     // Create a channel with capacity 2
-    let (tx, rx) = bounded::<Droppable>(2);
+    let (tx, mut rx) = bounded::<Droppable>(2);
 
     // 1. Send 2 items to fill the buffer
     tx.try_send(Droppable).unwrap();
@@ -552,8 +576,8 @@ mod tests {
     fn closed_receiver_converted_to_async_never_clones_a_value_the_producer_drops() {
       let dropped_during_clone = Arc::new(AtomicBool::new(false));
       let hook: CloneHook = Arc::new(Mutex::new(None));
-      let (tx, live) = bounded::<HookedPayload>(1);
-      let closing = live.clone();
+      let (tx, mut live) = bounded::<HookedPayload>(1);
+      let mut closing = live.clone();
 
       assert!(tx
         .try_send(HookedPayload::new(&dropped_during_clone, &hook))
@@ -589,7 +613,7 @@ mod tests {
       assert!(live.try_recv().is_ok());
 
       closing.close().unwrap();
-      let converted = closing.to_sync();
+      let mut converted = closing.to_sync();
 
       let next = HookedPayload::new(&dropped_during_clone, &hook);
       *hook.lock().unwrap() = Some(Box::new(move || {
@@ -606,8 +630,8 @@ mod tests {
 
     #[test]
     fn clone_of_a_closed_receiver_does_not_wedge_the_channel() {
-      let (tx, live) = bounded::<u32>(1);
-      let closing = live.clone();
+      let (tx, mut live) = bounded::<u32>(1);
+      let mut closing = live.clone();
       closing.close().unwrap();
 
       tx.try_send(1).unwrap();
@@ -615,7 +639,7 @@ mod tests {
       tx.try_send(2).unwrap();
       assert_eq!(live.try_recv(), Ok(2));
 
-      let cloned = closing.clone();
+      let mut cloned = closing.clone();
 
       let producer_blocked = matches!(tx.try_send(3), Err(TrySendError::Full(_)));
       let clone_can_receive = cloned.try_recv().is_ok();

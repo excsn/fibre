@@ -79,60 +79,67 @@ const CTR_WAKEP_CALLS: &str = "WakeSenderCalls";
 const CTR_SLOT_WAKES: &str = "SlotWakesIssued";
 const CTR_GLOBAL_CONSUMER_WAKES_ON_P_DROP: &str = "GlobalReceiverWakesOnPDrop";
 
-// sync_waker function
+static SYNC_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
+  |data| unsafe {
+    // clone
+    crate::log_event!(
+      None,
+      LOC_SYNCWAKER,
+      EVT_SYNCWAKER_CLONE,
+      "for {:?}",
+      (*(data as *const Thread)).id()
+    );
+    std::sync::Arc::increment_strong_count(data as *const Thread);
+    RawWaker::new(data, &SYNC_WAKER_VTABLE)
+  },
+  |data| unsafe {
+    // wake (consumes)
+    let thread_to_wake = std::sync::Arc::from_raw(data as *const Thread);
+    crate::log_event!(
+      None,
+      LOC_SYNCWAKER,
+      EVT_SYNCWAKER_WAKE,
+      "consuming for {:?}",
+      thread_to_wake.id()
+    );
+    thread_to_wake.unpark();
+  },
+  |data| unsafe {
+    // wake_by_ref
+    let thread_to_wake = &*(data as *const Thread);
+    crate::log_event!(
+      None,
+      LOC_SYNCWAKER,
+      EVT_SYNCWAKER_WAKE,
+      "by_ref for {:?}",
+      thread_to_wake.id()
+    );
+    thread_to_wake.unpark();
+  },
+  |data| unsafe {
+    // drop
+    let thread_to_drop = std::sync::Arc::from_raw(data as *const Thread);
+    crate::log_event!(
+      None,
+      LOC_SYNCWAKER,
+      EVT_SYNCWAKER_DROP,
+      "for {:?}",
+      thread_to_drop.id()
+    );
+    drop(thread_to_drop);
+  },
+);
+
+/// A waker that unparks `thread`. Its clones share one allocation, so
+/// `will_wake` matches a clone against the original.
 fn sync_waker(thread: Thread) -> Waker {
-  const VTABLE: RawWakerVTable = RawWakerVTable::new(
-    |data| unsafe {
-      // clone
-      crate::log_event!(
-        None,
-        LOC_SYNCWAKER,
-        EVT_SYNCWAKER_CLONE,
-        "for {:?}",
-        (*(data as *const Thread)).id()
-      );
-      let thread_ptr = Box::into_raw(Box::new((*(data as *const Thread)).clone()));
-      RawWaker::new(thread_ptr as *const (), &VTABLE)
-    },
-    |data| unsafe {
-      // wake (consumes)
-      let thread_to_wake = Box::from_raw(data as *mut Thread);
-      crate::log_event!(
-        None,
-        LOC_SYNCWAKER,
-        EVT_SYNCWAKER_WAKE,
-        "consuming for {:?}",
-        thread_to_wake.id()
-      );
-      thread_to_wake.unpark();
-    },
-    |data| unsafe {
-      // wake_by_ref
-      let thread_to_wake = &*(data as *const Thread);
-      crate::log_event!(
-        None,
-        LOC_SYNCWAKER,
-        EVT_SYNCWAKER_WAKE,
-        "by_ref for {:?}",
-        thread_to_wake.id()
-      );
-      thread_to_wake.unpark();
-    },
-    |data| unsafe {
-      // drop
-      let thread_to_drop = Box::from_raw(data as *mut Thread);
-      crate::log_event!(
-        None,
-        LOC_SYNCWAKER,
-        EVT_SYNCWAKER_DROP,
-        "for {:?}",
-        thread_to_drop.id()
-      );
-      drop(thread_to_drop);
-    },
-  );
-  let thread_ptr = Box::into_raw(Box::new(thread));
-  unsafe { Waker::from_raw(RawWaker::new(thread_ptr as *const (), &VTABLE)) }
+  let data = std::sync::Arc::into_raw(std::sync::Arc::new(thread));
+  unsafe { Waker::from_raw(RawWaker::new(data as *const (), &SYNC_WAKER_VTABLE)) }
+}
+
+/// Removes `waker` from `slot`'s list if a producer has not already taken it.
+fn unregister_sync_waker<T>(slot: &Slot<T>, waker: &Waker) {
+  slot.wakers.lock().retain(|w| !w.will_wake(waker));
 }
 
 pub(crate) struct Slot<T> {
@@ -181,6 +188,11 @@ impl<T: Send + Clone> fmt::Debug for SpmcShared<T> {
 }
 
 impl<T: Send + Clone> SpmcShared<T> {
+  #[cfg(test)]
+  pub(crate) fn registered_wakers(&self, slot_idx: usize) -> usize {
+    self.buffer[slot_idx].wakers.lock().len()
+  }
+
   fn new(capacity: usize) -> Self {
     let mut buffer = Vec::with_capacity(capacity);
     for i in 0..capacity {
@@ -305,12 +317,11 @@ impl<T: Send + Clone> SpmcShared<T> {
     let slot_idx = current_head_idx % self.capacity;
     let slot = &self.buffer[slot_idx];
 
-    // If the slot contains an active, initialized item from a previous cycle, we must drop it first to prevent a memory leak.
-    if slot.sequence.load(Ordering::Relaxed) % 2 == 1 {
-      unsafe {
-        (*slot.value.get()).assume_init_drop();
-      }
-    }
+    let old = if slot.sequence.load(Ordering::Relaxed) % 2 == 1 {
+      Some(unsafe { (*slot.value.get()).assume_init_read() })
+    } else {
+      None
+    };
 
     crate::log_event!(
       Some(current_head_idx),
@@ -364,6 +375,7 @@ impl<T: Send + Clone> SpmcShared<T> {
     for waker in wakers_to_wake {
       waker.wake();
     }
+    drop(old);
 
     Ok(())
   }
@@ -386,9 +398,9 @@ impl<T: Send + Clone> SpmcShared<T> {
     Ok(self.capacity - (current_head_idx - min_tail_idx).min(self.capacity))
   }
 
-  /// Writes up to `k` items from `iter` into consecutive slots. The caller
-  /// must guarantee `k` does not exceed the available space (safe to compute
-  /// via `producer_space` because space only grows under a single producer).
+  /// Writes up to `k` items from `iter` into consecutive slots. `k` must come
+  /// from `claim_batch_space`, which leaves no value from an earlier lap in
+  /// those slots.
   ///
   /// All slot values and sequence numbers are written first, then `head` is
   /// advanced exactly once (Release), then each written slot's waker list is
@@ -402,16 +414,6 @@ impl<T: Send + Clone> SpmcShared<T> {
       let Some(value) = iter.next() else { break };
       let idx = current_head_idx + i;
       let slot = &self.buffer[idx % self.capacity];
-
-      // If the slot still holds an item from a previous lap, drop it in
-      // place to prevent a memory leak. No consumer can be reading it: the
-      // space check guarantees every consumer tail is past that lap.
-      if slot.sequence.load(Ordering::Relaxed) % 2 == 1 {
-        unsafe {
-          (*slot.value.get()).assume_init_drop();
-        }
-      }
-
       unsafe {
         (*slot.value.get()).write(value);
       }
@@ -446,6 +448,37 @@ impl<T: Send + Clone> SpmcShared<T> {
   /// Batch counterpart of `try_send_internal`: writes up to `limit` items.
   /// Returns `Ok(k)` with the count written (`0` if the buffer is full for
   /// the slowest consumer) or `Err(())` if all consumers are gone.
+  /// Drops the values left from an earlier lap in the `k` slots from `head`.
+  /// Each value is moved out and its slot marked empty before it is dropped,
+  /// so a `Drop` that panics or sends finds no value left in the slot.
+  fn clear_old_values(&self, head: usize, k: usize) {
+    for i in 0..k {
+      let slot = &self.buffer[(head + i) % self.capacity];
+      let seq = slot.sequence.load(Ordering::Relaxed);
+      if seq % 2 == 1 {
+        let old = unsafe { (*slot.value.get()).assume_init_read() };
+        slot.sequence.store(seq - 1, Ordering::Relaxed);
+        drop(old);
+      }
+    }
+  }
+
+  /// Space for up to `limit` items with every target slot already empty.
+  /// A payload `Drop` that sends moves `head`, so the space is taken again.
+  fn claim_batch_space(&self, limit: usize) -> Result<usize, ()> {
+    loop {
+      let k = self.producer_space()?.min(limit);
+      if k == 0 || !std::mem::needs_drop::<T>() {
+        return Ok(k);
+      }
+      let head = self.head.load(Ordering::Relaxed);
+      self.clear_old_values(head, k);
+      if self.head.load(Ordering::Relaxed) == head {
+        return Ok(k);
+      }
+    }
+  }
+
   fn try_send_batch_internal<I: Iterator<Item = T>>(
     &self,
     iter: &mut I,
@@ -454,8 +487,7 @@ impl<T: Send + Clone> SpmcShared<T> {
     if limit == 0 {
       return Ok(0);
     }
-    let space = self.producer_space()?;
-    let k = space.min(limit);
+    let k = self.claim_batch_space(limit)?;
     if k == 0 {
       return Ok(0);
     }
@@ -469,8 +501,7 @@ impl<T: Send + Clone> SpmcShared<T> {
     if items.is_empty() {
       return Ok(0);
     }
-    let space = self.producer_space()?;
-    let k = space.min(items.len());
+    let k = self.claim_batch_space(items.len())?;
     if k == 0 {
       return Ok(0);
     }
@@ -723,14 +754,14 @@ fn poll_recv_internal<T: Send + Clone>(
 }
 
 impl<T: Send + Clone> BoundedSyncReceiver<T> {
-  pub fn try_recv(&self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
     }
     try_recv_internal(&self.shared, &self.tail)
   }
 
-  pub fn recv(&self) -> Result<T, RecvError> {
+  pub fn recv(&mut self) -> Result<T, RecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(RecvError::Disconnected);
     }
@@ -756,22 +787,23 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
             slot_idx
           );
           let waker_for_slot = sync_waker(thread::current());
-          slot.wakers.lock().push(waker_for_slot);
+          slot.wakers.lock().push(waker_for_slot.clone());
 
           match try_recv_internal(&self.shared, &self.tail) {
             Ok(value) => {
               crate::log_event!(Some(current_tail_val), &consumer_name, EVT_C_GOT_ON_RECHECK);
+              unregister_sync_waker(slot, &waker_for_slot);
               return Ok(value);
             }
-            Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
+            Err(TryRecvError::Disconnected) => {
+              unregister_sync_waker(slot, &waker_for_slot);
+              return Err(RecvError::Disconnected);
+            }
             Err(TryRecvError::Empty) => {
               if self.shared.producer_dropped.load(Ordering::Acquire) {
                 let head = self.shared.head.load(Ordering::Acquire);
                 if self.tail.load(Ordering::Relaxed) >= head {
-                  slot
-                    .wakers
-                    .lock()
-                    .retain(|w| !w.will_wake(&sync_waker(thread::current())));
+                  unregister_sync_waker(slot, &waker_for_slot);
                   return Err(RecvError::Disconnected);
                 }
               }
@@ -781,6 +813,7 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
           crate::log_event!(Some(current_tail_val), &consumer_name, EVT_C_EXEC_PARK);
           crate::increment_counter!(&consumer_name, CTR_C_PARK_ATTEMPTS);
           thread::park();
+          unregister_sync_waker(slot, &waker_for_slot);
           telemetry::log_event(
             Some(self.tail.load(Ordering::Relaxed)),
             &consumer_name,
@@ -795,7 +828,7 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
     }
   }
 
-  pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvErrorTimeout> {
+  pub fn recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvErrorTimeout> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(RecvErrorTimeout::Disconnected);
     }
@@ -822,12 +855,12 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
           match try_recv_internal(&self.shared, &self.tail) {
             Ok(value) => {
               // Clean up waker we just pushed
-              slot.wakers.lock().retain(|w| !w.will_wake(&waker_for_slot));
+              unregister_sync_waker(slot, &waker_for_slot);
               return Ok(value);
             }
             Err(TryRecvError::Disconnected) => {
               // Clean up waker we just pushed
-              slot.wakers.lock().retain(|w| !w.will_wake(&waker_for_slot));
+              unregister_sync_waker(slot, &waker_for_slot);
               return Err(RecvErrorTimeout::Disconnected);
             }
             Err(TryRecvError::Empty) => {
@@ -835,7 +868,7 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
                 let head = self.shared.head.load(Ordering::Acquire);
                 if self.tail.load(Ordering::Relaxed) >= head {
                   // Clean up waker we just pushed
-                  slot.wakers.lock().retain(|w| !w.will_wake(&waker_for_slot));
+                  unregister_sync_waker(slot, &waker_for_slot);
                   return Err(RecvErrorTimeout::Disconnected);
                 }
               }
@@ -843,6 +876,7 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
           }
 
           thread::park_timeout(remaining_timeout);
+          unregister_sync_waker(slot, &waker_for_slot);
         }
       }
     }
@@ -853,7 +887,7 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
   /// Returns 1..=max items in order, `Err(TryRecvError::Empty)`, or
   /// `Err(TryRecvError::Disconnected)` once the producer is gone and this
   /// consumer has drained its view of the buffer.
-  pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError> {
+  pub fn try_recv_batch(&mut self, max: usize) -> Result<Vec<T>, TryRecvError> {
     let mut out = Vec::new();
     self.try_recv_batch_mut(&mut out, max)?;
     Ok(out)
@@ -862,7 +896,7 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
   /// Attempts to receive up to `max` items without blocking, appending them
   /// to the end of `out`. Returns the number appended. The consumer tail is
   /// advanced once for the whole batch and the producer is woken once.
-  pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
+  pub fn try_recv_batch_mut(&mut self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError> {
     if max == 0 {
       return Ok(0);
     }
@@ -874,7 +908,7 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
 
   /// Receives up to `max` items, blocking until at least one is available,
   /// then draining up to `max` without further waiting.
-  pub fn recv_batch(&self, max: usize) -> Result<Vec<T>, RecvError> {
+  pub fn recv_batch(&mut self, max: usize) -> Result<Vec<T>, RecvError> {
     let mut out = Vec::new();
     self.recv_batch_mut(&mut out, max)?;
     Ok(out)
@@ -882,7 +916,7 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
 
   /// Receives up to `max` items, blocking until at least one is available,
   /// appending them to the end of `out`. Returns the number appended.
-  pub fn recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError> {
+  pub fn recv_batch_mut(&mut self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError> {
     if max == 0 {
       return Ok(0);
     }
@@ -900,15 +934,22 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
           let slot = &self.shared.buffer[slot_idx];
 
           let waker_for_slot = sync_waker(thread::current());
-          slot.wakers.lock().push(waker_for_slot);
+          slot.wakers.lock().push(waker_for_slot.clone());
 
           match try_recv_batch_internal(&self.shared, &self.tail, out, max) {
-            Ok(k) => return Ok(k),
-            Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
+            Ok(k) => {
+              unregister_sync_waker(slot, &waker_for_slot);
+              return Ok(k);
+            }
+            Err(TryRecvError::Disconnected) => {
+              unregister_sync_waker(slot, &waker_for_slot);
+              return Err(RecvError::Disconnected);
+            }
             Err(TryRecvError::Empty) => {
               if self.shared.producer_dropped.load(Ordering::Acquire) {
                 let head = self.shared.head.load(Ordering::Acquire);
                 if self.tail.load(Ordering::Relaxed) >= head {
+                  unregister_sync_waker(slot, &waker_for_slot);
                   return Err(RecvError::Disconnected);
                 }
               }
@@ -916,6 +957,7 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
           }
 
           thread::park();
+          unregister_sync_waker(slot, &waker_for_slot);
         }
       }
     }
@@ -929,7 +971,7 @@ impl<T: Send + Clone> BoundedSyncReceiver<T> {
     self.shared.capacity
   }
 
-  pub fn close(&self) -> Result<(), CloseError> {
+  pub fn close(&mut self) -> Result<(), CloseError> {
     if self
       .closed
       .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)

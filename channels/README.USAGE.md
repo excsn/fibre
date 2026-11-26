@@ -207,8 +207,8 @@ use fibre::spmc;
 use std::thread;
 
 fn main() {
-    let (tx, rx1) = spmc::bounded::<String>(4);
-    let rx2 = rx1.clone();
+    let (tx, mut rx1) = spmc::bounded::<String>(4);
+    let mut rx2 = rx1.clone();
 
     let first = thread::spawn(move || rx1.recv().unwrap());
     let second = thread::spawn(move || rx2.recv().unwrap());
@@ -507,10 +507,10 @@ A clone starts at the position of the handle it was cloned from, so it receives 
 use fibre::spmc;
 
 fn main() {
-    let (tx, rx) = spmc::bounded::<u32>(4);
+    let (tx, mut rx) = spmc::bounded::<u32>(4);
     tx.send(1).unwrap();
 
-    let late = rx.clone();
+    let mut late = rx.clone();
     assert_eq!(rx.recv().unwrap(), 1);
     assert_eq!(late.recv().unwrap(), 1);
 }
@@ -899,7 +899,7 @@ fibre = { version = "0", features = ["diagnostics"] }
 use fibre::spmc;
 
 fn main() {
-    let (tx, rx) = spmc::bounded::<u32>(4);
+    let (tx, mut rx) = spmc::bounded::<u32>(4);
     tx.send(1).unwrap();
     assert_eq!(rx.recv().unwrap(), 1);
 

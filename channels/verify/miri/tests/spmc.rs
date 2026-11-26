@@ -14,7 +14,7 @@ fn broadcast_delivers_every_item_to_every_consumer() {
   let (tx, rx1) = spmc::bounded::<usize>(4);
   let rx2 = rx1.clone();
   let mut handles = Vec::new();
-  for rx in [rx1, rx2] {
+  for mut rx in [rx1, rx2] {
     handles.push(thread::spawn(move || {
       for i in 0..ITEMS_SMALL {
         assert_eq!(rx.recv().unwrap(), i);
@@ -49,7 +49,7 @@ fn values_dropped_exactly_once_per_clone() {
         self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
       }
     }
-    let (tx, rx) = spmc::bounded(4);
+    let (tx, mut rx) = spmc::bounded(4);
     tx.send(CloneCounted(counter.clone())).unwrap();
     tx.send(CloneCounted(counter.clone())).unwrap();
     let got = rx.recv().unwrap(); // one clone out
@@ -74,8 +74,8 @@ fn async_recv_registers_then_cancels() {
 
 #[test]
 fn backpressure_from_slowest_consumer_cross_thread() {
-  let (tx, rx1) = spmc::bounded::<usize>(2);
-  let rx2 = rx1.clone();
+  let (tx, mut rx1) = spmc::bounded::<usize>(2);
+  let mut rx2 = rx1.clone();
   let c1 = thread::spawn(move || {
     for i in 0..ITEMS_SMALL {
       assert_eq!(rx1.recv().unwrap(), i);
@@ -97,7 +97,7 @@ fn backpressure_from_slowest_consumer_cross_thread() {
 fn dropping_slow_consumer_releases_backpressure() {
   // rx2 never receives; its cursor pins the ring until it drops. The sender
   // can only finish if the drop correctly removes the cursor.
-  let (tx, rx1) = spmc::bounded::<usize>(2);
+  let (tx, mut rx1) = spmc::bounded::<usize>(2);
   let rx2 = rx1.clone();
   let sender = thread::spawn(move || {
     for i in 0..ITEMS_SMALL {
@@ -118,7 +118,7 @@ fn dropping_slow_consumer_releases_backpressure() {
 
 #[test]
 fn batch_roundtrip() {
-  let (tx, rx) = spmc::bounded::<usize>(4);
+  let (tx, mut rx) = spmc::bounded::<usize>(4);
   let consumer = thread::spawn(move || {
     let mut expected = 0;
     while expected < ITEMS_SMALL {
@@ -146,8 +146,8 @@ impl Clone for CloneTally {
 
 #[test]
 fn receivers_on_one_thread_clone_a_send_only_payload_sent_from_another() {
-  let (tx, rx1) = spmc::bounded::<CloneTally>(4);
-  let rx2 = rx1.clone();
+  let (tx, mut rx1) = spmc::bounded::<CloneTally>(4);
+  let mut rx2 = rx1.clone();
   let producer = thread::spawn(move || {
     for _ in 0..ITEMS_SMALL {
       assert!(tx.send(CloneTally(Cell::new(0))).is_ok());
@@ -158,4 +158,92 @@ fn receivers_on_one_thread_clone_a_send_only_payload_sent_from_another() {
     assert!(rx2.recv().is_ok());
   }
   producer.join().unwrap();
+}
+
+mod payload_code_in_the_sender {
+  use fibre::spmc;
+  use std::cell::{Cell, RefCell};
+  use std::panic::{catch_unwind, AssertUnwindSafe};
+  use std::rc::Rc;
+
+  thread_local! {
+    static PANIC_ON: Cell<Option<u32>> = const { Cell::new(None) };
+    static SEND_ON: Cell<Option<u32>> = const { Cell::new(None) };
+    static TX: RefCell<Option<Rc<spmc::BoundedSyncSender<Item>>>> = const { RefCell::new(None) };
+  }
+
+  #[derive(Clone)]
+  struct Item(Box<u32>);
+
+  impl Drop for Item {
+    fn drop(&mut self) {
+      if PANIC_ON.get() == Some(*self.0) {
+        PANIC_ON.set(None);
+        panic!("payload drop panics");
+      }
+      if SEND_ON.get() == Some(*self.0) {
+        SEND_ON.set(None);
+        let tx = TX.with(|t| t.borrow().clone()).expect("sender registered");
+        assert!(tx.try_send(Item(Box::new(77))).is_ok());
+      }
+    }
+  }
+
+  fn drain(rx: &mut spmc::BoundedSyncReceiver<Item>) -> Vec<u32> {
+    let mut got = Vec::new();
+    while let Ok(item) = rx.try_recv() {
+      got.push(*item.0);
+    }
+    got
+  }
+
+  #[test]
+  fn drop_panicking_inside_try_send() {
+    let (tx, mut rx) = spmc::bounded::<Item>(1);
+    tx.try_send(Item(Box::new(1))).unwrap();
+    assert_eq!(drain(&mut rx), vec![1]);
+    PANIC_ON.set(Some(1));
+    assert!(catch_unwind(AssertUnwindSafe(|| tx.try_send(Item(Box::new(2))))).is_err());
+    assert_eq!(drain(&mut rx), vec![2]);
+  }
+
+  #[test]
+  fn drop_panicking_inside_try_send_batch() {
+    let (tx, mut rx) = spmc::bounded::<Item>(2);
+    assert_eq!(tx.try_send_batch(vec![Item(Box::new(1)), Item(Box::new(2))]).ok(), Some(2));
+    assert_eq!(drain(&mut rx), vec![1, 2]);
+    PANIC_ON.set(Some(1));
+    assert!(catch_unwind(AssertUnwindSafe(|| tx.try_send_batch(vec![Item(Box::new(3)), Item(Box::new(4))]))).is_err());
+    assert_eq!(tx.try_send_batch(vec![Item(Box::new(5)), Item(Box::new(6))]).ok(), Some(2));
+    assert_eq!(drain(&mut rx), vec![5, 6]);
+  }
+
+  #[test]
+  fn drop_sending_inside_try_send() {
+    let (tx, mut rx) = spmc::bounded::<Item>(2);
+    let tx = Rc::new(tx);
+    TX.with(|t| *t.borrow_mut() = Some(tx.clone()));
+    tx.try_send(Item(Box::new(1))).unwrap();
+    tx.try_send(Item(Box::new(2))).unwrap();
+    assert_eq!(drain(&mut rx), vec![1, 2]);
+    SEND_ON.set(Some(1));
+    tx.try_send(Item(Box::new(3))).unwrap();
+    TX.with(|t| *t.borrow_mut() = None);
+    assert_eq!(drain(&mut rx), vec![3, 77]);
+  }
+
+  #[test]
+  fn drop_sending_inside_try_send_batch() {
+    let (tx, mut rx) = spmc::bounded::<Item>(4);
+    let tx = Rc::new(tx);
+    TX.with(|t| *t.borrow_mut() = Some(tx.clone()));
+    let first: Vec<_> = (1..=4).map(|i| Item(Box::new(i))).collect();
+    assert_eq!(tx.try_send_batch(first).ok(), Some(4));
+    assert_eq!(drain(&mut rx), vec![1, 2, 3, 4]);
+    SEND_ON.set(Some(1));
+    let second: Vec<_> = (10..=12).map(|i| Item(Box::new(i))).collect();
+    assert_eq!(tx.try_send_batch(second).ok(), Some(3));
+    TX.with(|t| *t.borrow_mut() = None);
+    assert_eq!(drain(&mut rx), vec![77, 10, 11, 12]);
+  }
 }

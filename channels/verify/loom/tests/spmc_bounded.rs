@@ -17,7 +17,7 @@ use loom::thread;
 #[test]
 fn one_item() {
   loom::model(|| {
-    let (tx, rx) = bounded::<u32>(2);
+    let (tx, mut rx) = bounded::<u32>(2);
     let t = thread::spawn(move || {
       tx.send(7).unwrap();
     });

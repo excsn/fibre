@@ -614,7 +614,7 @@ A broadcast channel for one producer and multiple consumers. `T` must be `Send +
 
 ### Struct `spmc::BoundedSyncSender<T>`
 
-The synchronous sending handle. Not `Clone`; `!Sync`.
+The synchronous sending handle. Not `Clone`; `!Sync`. The send methods drop a slot's value from the previous lap when they reuse the slot, so a payload's `Drop` runs inside them. It may panic or send on the same sender.
 
 *   `pub fn send(&self, value: T) -> Result<(), SendError>`: Blocks if any consumer's buffer is full.
 *   `pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>>`
@@ -632,16 +632,16 @@ The synchronous sending handle. Not `Clone`; `!Sync`.
 
 ### Struct `spmc::BoundedSyncReceiver<T>`
 
-The synchronous receiving handle. `Clone`; `!Sync`. A clone of a closed receiver is closed. A clone starts at the position of the handle it was cloned from, so it receives everything that handle has not yet consumed. This differs from `spmc::topic` and from `tokio::sync::broadcast::subscribe`.
+The synchronous receiving handle. `Clone`; `!Sync`. The receive methods and `close` take `&mut self`. A clone of a closed receiver is closed. A clone starts at the position of the handle it was cloned from, so it receives everything that handle has not yet consumed. This differs from `spmc::topic` and from `tokio::sync::broadcast::subscribe`.
 
-*   `pub fn recv(&self) -> Result<T, RecvError>`: Blocks if this consumer's buffer is empty.
-*   `pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn recv_batch(&self, max: usize) -> Result<Vec<T>, RecvError>`: Each consumer receives (clones) every broadcast item; the consumer tail advances once per batch.
-*   `pub fn try_recv_batch(&self, max: usize) -> Result<Vec<T>, TryRecvError>`
-*   `pub fn recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError>`: Appends to `out`.
-*   `pub fn try_recv_batch_mut(&self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError>`: Appends to `out`.
-*   `pub fn close(&self) -> Result<(), CloseError>`
+*   `pub fn recv(&mut self) -> Result<T, RecvError>`: Blocks if this consumer's buffer is empty.
+*   `pub fn recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
+*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
+*   `pub fn recv_batch(&mut self, max: usize) -> Result<Vec<T>, RecvError>`: Each consumer receives (clones) every broadcast item; the consumer tail advances once per batch.
+*   `pub fn try_recv_batch(&mut self, max: usize) -> Result<Vec<T>, TryRecvError>`
+*   `pub fn recv_batch_mut(&mut self, out: &mut Vec<T>, max: usize) -> Result<usize, RecvError>`: Appends to `out`.
+*   `pub fn try_recv_batch_mut(&mut self, out: &mut Vec<T>, max: usize) -> Result<usize, TryRecvError>`: Appends to `out`.
+*   `pub fn close(&mut self) -> Result<(), CloseError>`
 *   `pub fn is_closed(&self) -> bool`
 *   `pub fn capacity(&self) -> usize`
 *   `pub fn len(&self) -> usize`

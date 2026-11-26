@@ -36,7 +36,7 @@ pub fn run_sync(cfg: &BenchConfig) -> RunResult {
 
   let mut consumers = Vec::new();
   for _ in 0..cfg.consumers {
-    let rx = rx.clone();
+    let mut rx = rx.clone();
     let received = received.clone();
     consumers.push(thread::spawn(move || {
       if batch_size == 0 {

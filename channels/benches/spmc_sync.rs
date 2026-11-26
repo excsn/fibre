@@ -53,7 +53,7 @@ fn benchmark_logic_spmc_sync(
   let start_time = Instant::now();
 
   thread::scope(|s| {
-    for receiver in receivers {
+    for mut receiver in receivers {
       let barrier_clone = Arc::clone(&barrier);
       // The `move` is still needed for `receiver`. The closure now moves
       // the `barrier_clone` Arc, not the original barrier.

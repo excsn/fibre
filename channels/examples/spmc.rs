@@ -13,8 +13,8 @@ fn main() {
   println!("--- SPMC: Sync Sender, Sync Receivers ---");
   {
     let (tx, rx1_orig) = spmc::bounded::<String>(capacity);
-    let rx1 = rx1_orig.clone(); // Keep original alive for other clones
-    let rx2 = rx1_orig.clone();
+    let mut rx1 = rx1_orig.clone(); // Keep original alive for other clones
+    let mut rx2 = rx1_orig.clone();
     drop(rx1_orig); // Drop the temporary original
     let num_messages = 3;
 
@@ -150,8 +150,8 @@ fn main() {
   println!("\n--- SPMC: Async Sender to Sync Receivers ---");
   {
     let (tx_async, rx_async1_orig) = spmc::bounded_async::<String>(capacity);
-    let rx_sync1 = rx_async1_orig.clone().to_sync(); // Convert receivers
-    let rx_sync2 = rx_async1_orig.to_sync();
+    let mut rx_sync1 = rx_async1_orig.clone().to_sync(); // Convert receivers
+    let mut rx_sync2 = rx_async1_orig.to_sync();
     let num_messages = 2;
 
     // Run async producer in a separate tokio task/runtime

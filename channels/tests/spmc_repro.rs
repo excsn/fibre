@@ -31,7 +31,7 @@ mod spmc_deadlock_tests {
     );
 
     for i in 0..num_consumers {
-      let rx_clone = rx_orig.clone();
+      let mut rx_clone = rx_orig.clone();
       let barrier_clone = Arc::clone(&barrier);
       let completed_flag = Arc::clone(&consumers_completed_work[i]);
       let consumer_name = format!("C{}-Iter{}", i, iteration_idx);

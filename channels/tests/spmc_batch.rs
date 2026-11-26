@@ -15,14 +15,14 @@ use std::time::Duration;
 
 #[test]
 fn sync_try_send_batch_all_fit() {
-  let (tx, rx) = spmc::bounded::<u32>(8);
+  let (tx, mut rx) = spmc::bounded::<u32>(8);
   assert_eq!(tx.try_send_batch(vec![1, 2, 3]).unwrap(), 3);
   assert_eq!(rx.try_recv_batch(8).unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
 fn sync_try_send_batch_partial_slowest_consumer() {
-  let (tx, rx) = spmc::bounded::<u32>(4);
+  let (tx, mut rx) = spmc::bounded::<u32>(4);
   let err = tx.try_send_batch((0..6).collect()).unwrap_err();
   assert_eq!(err.sent, 4);
   assert_eq!(err.reason, BatchSendErrorReason::Full);
@@ -42,13 +42,13 @@ fn sync_try_send_batch_no_consumers() {
 
 #[test]
 fn sync_batch_fanout_every_receiver_sees_all() {
-  let (tx, rx1) = spmc::bounded::<u32>(16);
-  let rx2 = rx1.clone();
-  let rx3 = rx1.clone();
+  let (tx, mut rx1) = spmc::bounded::<u32>(16);
+  let mut rx2 = rx1.clone();
+  let mut rx3 = rx1.clone();
 
   assert_eq!(tx.try_send_batch((0..10).collect()).unwrap(), 10);
 
-  for rx in [&rx1, &rx2, &rx3] {
+  for rx in [&mut rx1, &mut rx2, &mut rx3] {
     let mut got = Vec::new();
     while got.len() < 10 {
       rx.try_recv_batch_mut(&mut got, 4).unwrap();
@@ -59,7 +59,7 @@ fn sync_batch_fanout_every_receiver_sees_all() {
 
 #[test]
 fn sync_send_batch_mut_drains_front() {
-  let (tx, rx) = spmc::bounded::<u32>(3);
+  let (tx, mut rx) = spmc::bounded::<u32>(3);
   let mut items = vec![10, 20, 30, 40, 50];
   assert_eq!(tx.try_send_batch_mut(&mut items).unwrap(), 3);
   assert_eq!(items, vec![40, 50]);
@@ -71,7 +71,7 @@ fn sync_send_batch_mut_drains_front() {
 
 #[test]
 fn sync_send_batch_blocks_on_slow_consumer_and_unblocks() {
-  let (tx, rx) = spmc::bounded::<usize>(4);
+  let (tx, mut rx) = spmc::bounded::<usize>(4);
 
   let producer = thread::spawn(move || tx.send_batch((0..16).collect()).unwrap());
 
@@ -91,8 +91,8 @@ fn sync_send_batch_unblocks_at_slowest_consumer_pace() {
   // One fast consumer, one slow consumer: the producer's progress is bounded
   // by the slow consumer; once the slow consumer resumes, the producer
   // completes.
-  let (tx, rx_fast) = spmc::bounded::<usize>(4);
-  let rx_slow = rx_fast.clone();
+  let (tx, mut rx_fast) = spmc::bounded::<usize>(4);
+  let mut rx_slow = rx_fast.clone();
 
   let producer = thread::spawn(move || tx.send_batch((0..12).collect()).unwrap());
 
@@ -122,7 +122,7 @@ fn sync_send_batch_unblocks_at_slowest_consumer_pace() {
 
 #[test]
 fn sync_recv_batch_blocks_until_first() {
-  let (tx, rx) = spmc::bounded::<u32>(8);
+  let (tx, mut rx) = spmc::bounded::<u32>(8);
   let consumer = thread::spawn(move || rx.recv_batch(8).unwrap());
   thread::sleep(Duration::from_millis(100));
   tx.try_send_batch(vec![5, 6]).unwrap();
@@ -133,7 +133,7 @@ fn sync_recv_batch_blocks_until_first() {
 
 #[test]
 fn sync_recv_batch_disconnected_after_drain() {
-  let (tx, rx) = spmc::bounded::<u32>(8);
+  let (tx, mut rx) = spmc::bounded::<u32>(8);
   tx.try_send_batch(vec![1, 2, 3]).unwrap();
   drop(tx);
   assert_eq!(rx.recv_batch(10).unwrap(), vec![1, 2, 3]);
@@ -156,7 +156,7 @@ fn sync_batch_wrap_around_with_drop_check() {
 
   let drops = Arc::new(AtomicUsize::new(0));
   {
-    let (tx, rx) = spmc::bounded::<Droppable>(4);
+    let (tx, mut rx) = spmc::bounded::<Droppable>(4);
     // Multiple laps over the ring force slot overwrites (stale values must be
     // dropped in place, exactly once).
     for lap in 0..6u32 {
@@ -175,7 +175,7 @@ fn sync_batch_wrap_around_with_drop_check() {
 
 #[test]
 fn sync_batch_empty_and_zero_max() {
-  let (tx, rx) = spmc::bounded::<u32>(4);
+  let (tx, mut rx) = spmc::bounded::<u32>(4);
   assert_eq!(tx.try_send_batch(Vec::new()).unwrap(), 0);
   assert_eq!(tx.send_batch(Vec::new()).unwrap(), 0);
   let mut empty = Vec::new();
