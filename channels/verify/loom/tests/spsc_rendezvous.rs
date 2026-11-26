@@ -16,7 +16,7 @@ use std::time::Duration;
 #[test]
 fn handoff() {
   loom::model(|| {
-    let (tx, rx) = rendezvous::<u32>();
+    let (tx, mut rx) = rendezvous::<u32>();
     let t = thread::spawn(move || {
       tx.send(5).unwrap();
     });
@@ -30,7 +30,7 @@ fn handoff() {
 #[test]
 fn sender_drop_disconnects_receiver() {
   loom::model(|| {
-    let (tx, rx) = rendezvous::<u32>();
+    let (tx, mut rx) = rendezvous::<u32>();
     let t = thread::spawn(move || {
       drop(tx);
     });
@@ -45,7 +45,7 @@ fn sender_drop_disconnects_receiver() {
 #[test]
 fn timed_out_recv_and_try_send_agree_on_delivery() {
   loom::model(|| {
-    let (tx, rx) = rendezvous::<u32>();
+    let (tx, mut rx) = rendezvous::<u32>();
     let t = thread::spawn(move || tx.try_send(5).is_ok());
     let received = rx.recv_timeout(Duration::ZERO);
     let sent = t.join().unwrap();

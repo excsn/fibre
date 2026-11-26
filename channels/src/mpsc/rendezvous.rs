@@ -65,6 +65,16 @@ pub struct RendezvousSyncSender<T: Send> {
 
 /// The synchronous receiving half of an MPSC rendezvous channel. Single
 /// consumer - not `Clone`.
+///
+/// The receive methods take `&mut self`, so one receive runs at a time:
+///
+/// ```compile_fail,E0499
+/// let (_tx, mut rx) = fibre::mpsc::rendezvous::rendezvous::<u32>();
+/// std::thread::scope(|s| {
+///   s.spawn(|| rx.recv());
+///   s.spawn(|| rx.recv());
+/// });
+/// ```
 #[derive(Debug)]
 pub struct RendezvousSyncReceiver<T: Send> {
   shared: Arc<MpscRvShared<T>>,
@@ -82,6 +92,15 @@ pub struct RendezvousAsyncSender<T: Send> {
 
 /// The asynchronous receiving half of an MPSC rendezvous channel. Single
 /// consumer - not `Clone`.
+///
+/// The receive methods take `&mut self`, so one receive is pending at a time:
+///
+/// ```compile_fail,E0499
+/// let (_tx, mut rx) = fibre::mpsc::rendezvous::rendezvous_async::<u32>();
+/// let first = rx.recv();
+/// let second = rx.recv();
+/// drop((first, second));
+/// ```
 #[derive(Debug)]
 pub struct RendezvousAsyncReceiver<T: Send> {
   shared: Arc<MpscRvShared<T>>,
@@ -181,7 +200,7 @@ impl<T: Send> Drop for RendezvousSyncSender<T> {
 impl<T: Send> RendezvousSyncReceiver<T> {
   /// Receives a value, blocking until a sender hands one off or the channel
   /// disconnects.
-  pub fn recv(&self) -> Result<T, RecvError> {
+  pub fn recv(&mut self) -> Result<T, RecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(RecvError::Disconnected);
     }
@@ -189,7 +208,7 @@ impl<T: Send> RendezvousSyncReceiver<T> {
   }
 
   /// Attempts to take from an already-waiting sender without blocking.
-  pub fn try_recv(&self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
     }
@@ -197,7 +216,7 @@ impl<T: Send> RendezvousSyncReceiver<T> {
   }
 
   /// Receives a value, blocking for at most `timeout`.
-  pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvErrorTimeout> {
+  pub fn recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvErrorTimeout> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(RecvErrorTimeout::Disconnected);
     }
@@ -205,7 +224,7 @@ impl<T: Send> RendezvousSyncReceiver<T> {
   }
 
   /// Closes this handle; parked senders observe closure.
-  pub fn close(&self) -> Result<(), CloseError> {
+  pub fn close(&mut self) -> Result<(), CloseError> {
     if self
       .closed
       .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
@@ -267,7 +286,7 @@ impl<T: Send> Drop for RendezvousSyncReceiver<T> {
 impl<T: Send> RendezvousAsyncSender<T> {
   /// Sends a value, resolving once the receiver takes it or the channel closes.
   pub fn send(&self, item: T) -> SendFuture<'_, T> {
-    SendFuture::new(&self.shared, item)
+    SendFuture::new(self, item)
   }
 
   /// Attempts to hand off to an already-waiting receiver without awaiting.
@@ -351,12 +370,12 @@ impl<T: Send> Drop for RendezvousAsyncSender<T> {
 impl<T: Send> RendezvousAsyncReceiver<T> {
   /// Receives a value, resolving once a sender hands one off or the channel
   /// disconnects.
-  pub fn recv(&self) -> RecvFuture<'_, T> {
-    RecvFuture::new(&self.shared)
+  pub fn recv(&mut self) -> RecvFuture<'_, T> {
+    RecvFuture::new(self)
   }
 
   /// Attempts to take from an already-waiting sender without awaiting.
-  pub fn try_recv(&self) -> Result<T, TryRecvError> {
+  pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
     if self.closed.load(Ordering::Relaxed) {
       return Err(TryRecvError::Disconnected);
     }
@@ -364,7 +383,7 @@ impl<T: Send> RendezvousAsyncReceiver<T> {
   }
 
   /// See [`RendezvousSyncReceiver::close`].
-  pub fn close(&self) -> Result<(), CloseError> {
+  pub fn close(&mut self) -> Result<(), CloseError> {
     if self
       .closed
       .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
@@ -431,7 +450,7 @@ impl<T: Send> Drop for RendezvousAsyncReceiver<T> {
 /// Future returned by [`RendezvousAsyncSender::send`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T: Send> {
-  shared: &'a Arc<MpscRvShared<T>>,
+  handle: &'a RendezvousAsyncSender<T>,
   slot: Option<T>,
   state: AtomicU8,
   registered: bool,
@@ -439,9 +458,9 @@ pub struct SendFuture<'a, T: Send> {
 }
 
 impl<'a, T: Send> SendFuture<'a, T> {
-  fn new(shared: &'a Arc<MpscRvShared<T>>, item: T) -> Self {
+  fn new(handle: &'a RendezvousAsyncSender<T>, item: T) -> Self {
     Self {
-      shared,
+      handle,
       slot: Some(item),
       state: AtomicU8::new(WAITING),
       registered: false,
@@ -455,10 +474,19 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.get_unchecked_mut() };
-    if this.slot.is_none() && !this.registered {
-      return Poll::Ready(Ok(()));
+    if !this.registered {
+      if this.slot.is_none() {
+        return Poll::Ready(Ok(()));
+      }
+      if this.handle.closed.load(Ordering::Relaxed) {
+        return Poll::Ready(Err(SendError::Closed));
+      }
+    }
+    if this.registered {
+      return this.handle.shared.poll_send_registered(cx, &this.state, &mut this.registered);
     }
     this
+      .handle
       .shared
       .poll_send(cx, &this.state, &mut this.slot, &mut this.registered)
   }
@@ -471,6 +499,7 @@ impl<'a, T: Send> Drop for SendFuture<'a, T> {
       // dropped with the future - no ghost delivery. If it loses, the item was
       // already handed off under the lock and delivery stands.
       self
+        .handle
         .shared
         .cancel_sender(&self.state as *const AtomicU8, &self.state);
     }
@@ -480,7 +509,7 @@ impl<'a, T: Send> Drop for SendFuture<'a, T> {
 /// Future returned by [`RendezvousAsyncReceiver::recv`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct RecvFuture<'a, T: Send> {
-  shared: &'a Arc<MpscRvShared<T>>,
+  handle: &'a RendezvousAsyncReceiver<T>,
   dest: Option<T>,
   state: AtomicU8,
   registered: bool,
@@ -488,9 +517,9 @@ pub struct RecvFuture<'a, T: Send> {
 }
 
 impl<'a, T: Send> RecvFuture<'a, T> {
-  fn new(shared: &'a Arc<MpscRvShared<T>>) -> Self {
+  fn new(handle: &'a RendezvousAsyncReceiver<T>) -> Self {
     Self {
-      shared,
+      handle,
       dest: None,
       state: AtomicU8::new(WAITING),
       registered: false,
@@ -504,7 +533,18 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.get_unchecked_mut() };
+    if !this.registered && this.handle.closed.load(Ordering::Relaxed) {
+      return Poll::Ready(Err(RecvError::Disconnected));
+    }
+    if this.registered {
+      return match this.handle.shared.poll_recv_registered(cx, &this.state, &mut this.registered) {
+        Poll::Ready(Ok(())) => Poll::Ready(Ok(this.dest.take().expect("DONE implies the sender wrote the item"))),
+        Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+        Poll::Pending => Poll::Pending,
+      };
+    }
     this
+      .handle
       .shared
       .poll_recv(cx, &this.state, &mut this.dest, &mut this.registered)
   }
@@ -513,7 +553,7 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
 impl<'a, T: Send> Drop for RecvFuture<'a, T> {
   fn drop(&mut self) {
     if self.registered {
-      self.shared.abandon_receiver(&self.state, &mut self.dest);
+      self.handle.shared.abandon_receiver(&self.state, &raw mut self.dest);
     }
   }
 }

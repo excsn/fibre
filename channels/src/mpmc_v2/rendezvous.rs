@@ -287,7 +287,7 @@ impl<T: Send> Drop for RendezvousSyncReceiver<T> {
 impl<T: Send> RendezvousAsyncSender<T> {
   /// Sends a value, resolving once a receiver takes it or the channel closes.
   pub fn send(&self, item: T) -> SendFuture<'_, T> {
-    SendFuture::new(&self.shared, item)
+    SendFuture::new(self, item)
   }
 
   /// Attempts to hand off to an already-waiting receiver without awaiting.
@@ -372,7 +372,7 @@ impl<T: Send> RendezvousAsyncReceiver<T> {
   /// Receives a value, resolving once a sender hands one off or the channel
   /// disconnects.
   pub fn recv(&self) -> RecvFuture<'_, T> {
-    RecvFuture::new(&self.shared)
+    RecvFuture::new(self)
   }
 
   /// Attempts to take from an already-waiting sender without awaiting.
@@ -461,7 +461,7 @@ impl<T: Send> Drop for RendezvousAsyncReceiver<T> {
 /// Future returned by [`RendezvousAsyncSender::send`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T: Send> {
-  shared: &'a Arc<MpmcRvShared<T>>,
+  handle: &'a RendezvousAsyncSender<T>,
   slot: Option<T>,
   state: AtomicU8,
   registered: bool,
@@ -469,9 +469,9 @@ pub struct SendFuture<'a, T: Send> {
 }
 
 impl<'a, T: Send> SendFuture<'a, T> {
-  fn new(shared: &'a Arc<MpmcRvShared<T>>, item: T) -> Self {
+  fn new(handle: &'a RendezvousAsyncSender<T>, item: T) -> Self {
     Self {
-      shared,
+      handle,
       slot: Some(item),
       state: AtomicU8::new(WAITING),
       registered: false,
@@ -485,10 +485,19 @@ impl<'a, T: Send> Future for SendFuture<'a, T> {
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.get_unchecked_mut() };
-    if this.slot.is_none() && !this.registered {
-      return Poll::Ready(Ok(()));
+    if !this.registered {
+      if this.slot.is_none() {
+        return Poll::Ready(Ok(()));
+      }
+      if this.handle.closed.load(Ordering::Relaxed) {
+        return Poll::Ready(Err(SendError::Closed));
+      }
+    }
+    if this.registered {
+      return this.handle.shared.poll_send_registered(cx, &this.state, &mut this.registered);
     }
     this
+      .handle
       .shared
       .poll_send(cx, &this.state, &mut this.slot, &mut this.registered)
   }
@@ -501,6 +510,7 @@ impl<'a, T: Send> Drop for SendFuture<'a, T> {
       // dropped with the future - no ghost delivery. If it loses, the item was
       // already handed off under the lock and delivery stands.
       self
+        .handle
         .shared
         .cancel_sender(&self.state as *const AtomicU8, &self.state);
     }
@@ -510,7 +520,7 @@ impl<'a, T: Send> Drop for SendFuture<'a, T> {
 /// Future returned by [`RendezvousAsyncReceiver::recv`].
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct RecvFuture<'a, T: Send> {
-  shared: &'a Arc<MpmcRvShared<T>>,
+  handle: &'a RendezvousAsyncReceiver<T>,
   dest: Option<T>,
   state: AtomicU8,
   registered: bool,
@@ -518,9 +528,9 @@ pub struct RecvFuture<'a, T: Send> {
 }
 
 impl<'a, T: Send> RecvFuture<'a, T> {
-  fn new(shared: &'a Arc<MpmcRvShared<T>>) -> Self {
+  fn new(handle: &'a RendezvousAsyncReceiver<T>) -> Self {
     Self {
-      shared,
+      handle,
       dest: None,
       state: AtomicU8::new(WAITING),
       registered: false,
@@ -534,7 +544,18 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let this = unsafe { self.get_unchecked_mut() };
+    if !this.registered && this.handle.closed.load(Ordering::Relaxed) {
+      return Poll::Ready(Err(RecvError::Disconnected));
+    }
+    if this.registered {
+      return match this.handle.shared.poll_recv_registered(cx, &this.state, &mut this.registered) {
+        Poll::Ready(Ok(())) => Poll::Ready(Ok(this.dest.take().expect("DONE implies the sender wrote the item"))),
+        Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+        Poll::Pending => Poll::Pending,
+      };
+    }
     this
+      .handle
       .shared
       .poll_recv(cx, &this.state, &mut this.dest, &mut this.registered)
   }
@@ -543,7 +564,7 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
 impl<'a, T: Send> Drop for RecvFuture<'a, T> {
   fn drop(&mut self) {
     if self.registered {
-      self.shared.abandon_receiver(&self.state, &mut self.dest);
+      self.handle.shared.abandon_receiver(&self.state, &raw mut self.dest);
     }
   }
 }

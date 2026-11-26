@@ -331,12 +331,12 @@ Synchronous sender. Not `Clone`. No batch API.
 
 ### Struct `spsc::rendezvous::RendezvousSyncReceiver<T>`
 
-Synchronous receiver. Not `Clone`. No batch API.
+Synchronous receiver. Not `Clone`. The receive methods and `close` take `&mut self`, so one receive runs at a time. No batch API.
 
-*   `pub fn recv(&self) -> Result<T, RecvError>`
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
-*   `pub fn close(&self) -> Result<(), CloseError>`
+*   `pub fn recv(&mut self) -> Result<T, RecvError>`
+*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
+*   `pub fn recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
+*   `pub fn close(&mut self) -> Result<(), CloseError>`
 *   `pub fn is_closed(&self) -> bool`
 *   `pub fn len(&self) -> usize`
 *   `pub fn is_empty(&self) -> bool`
@@ -360,11 +360,11 @@ Asynchronous sender. Not `Clone`. No batch API.
 
 ### Struct `spsc::rendezvous::RendezvousAsyncReceiver<T>`
 
-Asynchronous receiver. Not `Clone`. No batch API. Does not implement `futures::Stream`.
+Asynchronous receiver. Not `Clone`. The receive methods and `close` take `&mut self`, so one receive runs at a time. No batch API. Does not implement `futures::Stream`.
 
-*   `pub fn recv(&self) -> RecvFuture<'_, T>`: Cancel-safe: a dropped receive that was already handed an item passes it to the next receive.
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn close(&self) -> Result<(), CloseError>`
+*   `pub fn recv(&mut self) -> RecvFuture<'_, T>`: Cancel-safe: a dropped receive that was already handed an item passes it to the next receive.
+*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
+*   `pub fn close(&mut self) -> Result<(), CloseError>`
 *   `pub fn is_closed(&self) -> bool`
 *   `pub fn len(&self) -> usize`
 *   `pub fn is_empty(&self) -> bool`
@@ -557,12 +557,12 @@ Synchronous sender. `Clone`. No batch API.
 
 ### Struct `mpsc::rendezvous::RendezvousSyncReceiver<T>`
 
-Synchronous receiver. Not `Clone`. No batch API.
+Synchronous receiver. Not `Clone`. The receive methods and `close` take `&mut self`, so one receive runs at a time. No batch API.
 
-*   `pub fn recv(&self) -> Result<T, RecvError>`
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
-*   `pub fn close(&self) -> Result<(), CloseError>`
+*   `pub fn recv(&mut self) -> Result<T, RecvError>`
+*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
+*   `pub fn recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvErrorTimeout>`
+*   `pub fn close(&mut self) -> Result<(), CloseError>`
 *   `pub fn is_closed(&self) -> bool`
 *   `pub fn len(&self) -> usize`
 *   `pub fn is_empty(&self) -> bool`
@@ -586,11 +586,11 @@ Asynchronous sender. `Clone`. No batch API.
 
 ### Struct `mpsc::rendezvous::RendezvousAsyncReceiver<T>`
 
-Asynchronous receiver. Not `Clone`. No batch API. Does not implement `futures::Stream`.
+Asynchronous receiver. Not `Clone`. The receive methods and `close` take `&mut self`, so one receive runs at a time. No batch API. Does not implement `futures::Stream`.
 
-*   `pub fn recv(&self) -> RecvFuture<'_, T>`: Cancel-safe: a dropped receive that was already handed an item passes it to the next receive.
-*   `pub fn try_recv(&self) -> Result<T, TryRecvError>`
-*   `pub fn close(&self) -> Result<(), CloseError>`
+*   `pub fn recv(&mut self) -> RecvFuture<'_, T>`: Cancel-safe: a dropped receive that was already handed an item passes it to the next receive.
+*   `pub fn try_recv(&mut self) -> Result<T, TryRecvError>`
+*   `pub fn close(&mut self) -> Result<(), CloseError>`
 *   `pub fn is_closed(&self) -> bool`
 *   `pub fn len(&self) -> usize`
 *   `pub fn is_empty(&self) -> bool`

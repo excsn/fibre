@@ -553,7 +553,7 @@ use fibre::mpsc::rendezvous;
 use std::thread;
 
 fn main() {
-    let (tx, rx) = rendezvous::rendezvous::<u32>();
+    let (tx, mut rx) = rendezvous::rendezvous::<u32>();
 
     let producer = thread::spawn(move || tx.send(7).unwrap());
 

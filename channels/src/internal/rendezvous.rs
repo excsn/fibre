@@ -472,18 +472,16 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
 
   // --- Async polling ------------------------------------------------------
 
-  /// Polls a send. `slot` is the future's inline payload; `state` is its inline
-  /// state atomic.
-  pub(crate) fn poll_send(
+  /// Polls a send that is already parked. The payload slot is not touched:
+  /// a peer may be reading it through the parked record.
+  pub(crate) fn poll_send_registered(
     &self,
     cx: &mut Context<'_>,
     state: &AtomicU8,
-    slot: &mut Option<T>,
     registered: &mut bool,
   ) -> Poll<Result<(), SendError>> {
     let state_ptr = state as *const AtomicU8;
-
-    if *registered {
+    {
       match state.load(Ordering::Acquire) {
         WAITING => {
           // Spurious poll: refresh the waker in place.
@@ -518,7 +516,21 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
         }
       }
     }
+  }
 
+  /// Polls a send that is not parked yet. `slot` is the future's inline
+  /// payload; `state` is its inline state atomic. A parked record keeps a raw
+  /// pointer to `slot`, so later polls go through `poll_send_registered`.
+  pub(crate) fn poll_send(
+    &self,
+    cx: &mut Context<'_>,
+    state: &AtomicU8,
+    slot: &mut Option<T>,
+    registered: &mut bool,
+  ) -> Poll<Result<(), SendError>> {
+    let state_ptr = state as *const AtomicU8;
+
+    debug_assert!(!*registered);
     let mut core = self.core.lock();
     if core.receiver_count == 0 {
       return Poll::Ready(Err(SendError::Closed));
@@ -540,17 +552,17 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
     Poll::Pending
   }
 
-  /// Polls a receive. `dest` is the future's inline destination slot.
-  pub(crate) fn poll_recv(
+  /// Polls a receive that is already parked. `Ok(())` means a sender wrote
+  /// the item into the future's slot, which the caller now takes. The slot
+  /// is not touched here: a sender may be writing it through the record.
+  pub(crate) fn poll_recv_registered(
     &self,
     cx: &mut Context<'_>,
     state: &AtomicU8,
-    dest: &mut Option<T>,
     registered: &mut bool,
-  ) -> Poll<Result<T, RecvError>> {
+  ) -> Poll<Result<(), RecvError>> {
     let state_ptr = state as *const AtomicU8;
-
-    if *registered {
+    {
       match state.load(Ordering::Acquire) {
         WAITING => {
           let mut core = self.core.lock();
@@ -567,17 +579,13 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
           drop(core);
           *registered = false;
           return match state.load(Ordering::Acquire) {
-            DONE => Poll::Ready(Ok(
-              dest.take().expect("DONE implies the sender wrote the item"),
-            )),
+            DONE => Poll::Ready(Ok(())),
             _ => Poll::Ready(Err(RecvError::Disconnected)),
           };
         }
         DONE => {
           *registered = false;
-          return Poll::Ready(Ok(
-            dest.take().expect("DONE implies the sender wrote the item")
-          ));
+          return Poll::Ready(Ok(()));
         }
         _ => {
           *registered = false;
@@ -585,7 +593,21 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
         }
       }
     }
+  }
 
+  /// Polls a receive that is not parked yet. `dest` is the future's inline
+  /// destination slot. A parked record keeps a raw pointer to it, so later
+  /// polls go through `poll_recv_registered`.
+  pub(crate) fn poll_recv(
+    &self,
+    cx: &mut Context<'_>,
+    state: &AtomicU8,
+    dest: &mut Option<T>,
+    registered: &mut bool,
+  ) -> Poll<Result<T, RecvError>> {
+    let state_ptr = state as *const AtomicU8;
+
+    debug_assert!(!*registered);
     let mut core = self.core.lock();
     if let Some(rec) = core.sender_waiters.pop_front() {
       let (item, wake) = fulfill_sender(rec);
@@ -642,14 +664,14 @@ impl<T: Send, R: ReceiverStore<T>> RendezvousShared<T, R> {
   /// parked receiver if there is one and otherwise waits for the next receive.
   #[cold]
   #[inline(never)]
-  pub(crate) fn abandon_receiver(&self, state: &AtomicU8, dest: &mut Option<T>) {
+  pub(crate) fn abandon_receiver(&self, state: &AtomicU8, dest: *mut Option<T>) {
     let mut core = self.core.lock();
     if state.load(Ordering::Acquire) == WAITING {
       state.store(CANCELLED, Ordering::Release);
       core.receivers.remove_receiver(state as *const AtomicU8);
       return;
     }
-    let Some(item) = dest.take() else {
+    let Some(item) = (unsafe { (*dest).take() }) else {
       return;
     };
     match core.receivers.pop_receiver() {

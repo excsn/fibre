@@ -11,7 +11,7 @@ use std::time::Duration;
 
 #[test]
 fn sync_basic_handoff() {
-  let (tx, rx) = rendezvous::<u32>();
+  let (tx, mut rx) = rendezvous::<u32>();
   let producer = thread::spawn(move || {
     for i in 0..5 {
       tx.send(i).unwrap();
@@ -36,7 +36,7 @@ fn sync_try_send_without_receiver_is_full() {
 
 #[test]
 fn sync_try_recv_without_sender_is_empty() {
-  let (_tx, rx) = rendezvous::<u32>();
+  let (_tx, mut rx) = rendezvous::<u32>();
   assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 }
 
@@ -49,14 +49,14 @@ fn sync_receiver_drop_disconnects_sender() {
 
 #[test]
 fn sync_sender_drop_disconnects_receiver() {
-  let (tx, rx) = rendezvous::<u32>();
+  let (tx, mut rx) = rendezvous::<u32>();
   drop(tx);
   assert_eq!(rx.recv(), Err(RecvError::Disconnected));
 }
 
 #[test]
 fn sync_last_sender_drop_wakes_receiver() {
-  let (tx, rx) = rendezvous::<u32>();
+  let (tx, mut rx) = rendezvous::<u32>();
   let tx2 = tx.clone();
   let consumer = thread::spawn(move || rx.recv());
   thread::sleep(Duration::from_millis(50));
@@ -69,7 +69,7 @@ fn sync_last_sender_drop_wakes_receiver() {
 
 #[test]
 fn sync_recv_timeout_elapses() {
-  let (_tx, rx) = rendezvous::<u32>();
+  let (_tx, mut rx) = rendezvous::<u32>();
   assert_eq!(
     rx.recv_timeout(Duration::from_millis(60)),
     Err(RecvErrorTimeout::Timeout)
@@ -80,7 +80,7 @@ fn sync_recv_timeout_elapses() {
 fn sync_many_producers_one_consumer_totals() {
   const PRODUCERS: usize = 4;
   const PER: usize = 250;
-  let (tx, rx) = rendezvous::<usize>();
+  let (tx, mut rx) = rendezvous::<usize>();
   let mut producers = Vec::new();
   for p in 0..PRODUCERS {
     let tx = tx.clone();
@@ -109,7 +109,7 @@ fn sync_many_producers_one_consumer_totals() {
 
 #[tokio::test]
 async fn async_basic_handoff() {
-  let (tx, rx) = rendezvous_async::<u32>();
+  let (tx, mut rx) = rendezvous_async::<u32>();
   let producer = tokio::spawn(async move {
     for i in 0..5 {
       tx.send(i).await.unwrap();
@@ -126,7 +126,7 @@ async fn async_basic_handoff() {
 #[tokio::test]
 async fn async_cancelled_send_does_not_ghost_deliver() {
   use tokio::time::timeout;
-  let (tx, rx) = rendezvous_async::<u32>();
+  let (tx, mut rx) = rendezvous_async::<u32>();
   {
     let fut = tx.send(123);
     assert!(timeout(Duration::from_millis(60), fut).await.is_err());
@@ -150,7 +150,7 @@ async fn async_cancelled_send_reclaims_payload() {
 
 #[tokio::test]
 async fn async_many_producers_one_consumer() {
-  let (tx, rx) = rendezvous_async::<usize>();
+  let (tx, mut rx) = rendezvous_async::<usize>();
   let received = Arc::new(AtomicUsize::new(0));
   let mut tasks = Vec::new();
   for p in 0..4 {
@@ -176,7 +176,7 @@ fn item_delivered_to_a_dropped_recv_future_goes_to_the_next_receive() {
   use std::future::Future;
   use std::task::{Context, Waker};
 
-  let (tx, rx) = rendezvous_async::<u32>();
+  let (tx, mut rx) = rendezvous_async::<u32>();
   {
     let mut fut = Box::pin(rx.recv());
     assert!(fut

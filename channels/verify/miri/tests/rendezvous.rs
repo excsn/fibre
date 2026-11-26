@@ -9,7 +9,7 @@ use std::thread;
 
 #[test]
 fn spsc_rendezvous_handoff() {
-  let (tx, rx) = spsc::rendezvous::rendezvous::<usize>();
+  let (tx, mut rx) = spsc::rendezvous::rendezvous::<usize>();
   let producer = thread::spawn(move || {
     for i in 0..ITEMS_SMALL {
       tx.send(i).unwrap();
@@ -23,7 +23,7 @@ fn spsc_rendezvous_handoff() {
 
 #[test]
 fn spsc_rendezvous_async_handoff() {
-  let (tx, rx) = spsc::rendezvous::rendezvous_async::<usize>();
+  let (tx, mut rx) = spsc::rendezvous::rendezvous_async::<usize>();
   let producer = thread::spawn(move || {
     for i in 0..ITEMS_SMALL {
       block_on(tx.send(i)).unwrap();
@@ -37,7 +37,7 @@ fn spsc_rendezvous_async_handoff() {
 
 #[test]
 fn mpsc_rendezvous_two_producers() {
-  let (tx, rx) = mpsc::rendezvous::rendezvous::<usize>();
+  let (tx, mut rx) = mpsc::rendezvous::rendezvous::<usize>();
   let tx2 = tx.clone();
   let p1 = thread::spawn(move || {
     for _ in 0..20 {
@@ -60,7 +60,7 @@ fn mpsc_rendezvous_two_producers() {
 
 #[test]
 fn mpsc_rendezvous_async_handoff() {
-  let (tx, rx) = mpsc::rendezvous::rendezvous_async::<usize>();
+  let (tx, mut rx) = mpsc::rendezvous::rendezvous_async::<usize>();
   let producer = thread::spawn(move || {
     for i in 0..20 {
       block_on(tx.send(i)).unwrap();
@@ -88,7 +88,7 @@ fn mpmc_rendezvous_async_handoff() {
 
 #[test]
 fn blocked_receiver_unblocks_on_sender_drop() {
-  let (tx, rx) = spsc::rendezvous::rendezvous::<u32>();
+  let (tx, mut rx) = spsc::rendezvous::rendezvous::<u32>();
   let consumer = thread::spawn(move || rx.recv());
   drop(tx);
   assert!(consumer.join().unwrap().is_err());
@@ -133,7 +133,7 @@ fn mpmc_item_returned_by_a_dropped_recv_future_is_received_later() {
 
 #[test]
 fn mpsc_item_returned_by_a_dropped_recv_future_is_received_later() {
-  let (tx, rx) = mpsc::rendezvous::rendezvous_async::<Box<usize>>();
+  let (tx, mut rx) = mpsc::rendezvous::rendezvous_async::<Box<usize>>();
   {
     let mut fut = Box::pin(rx.recv());
     assert!(poll_once(fut.as_mut()).is_pending());
@@ -144,7 +144,7 @@ fn mpsc_item_returned_by_a_dropped_recv_future_is_received_later() {
 
 #[test]
 fn spsc_item_returned_by_a_dropped_recv_future_is_received_later() {
-  let (tx, rx) = spsc::rendezvous::rendezvous_async::<Box<usize>>();
+  let (tx, mut rx) = spsc::rendezvous::rendezvous_async::<Box<usize>>();
   {
     let mut fut = Box::pin(rx.recv());
     assert!(poll_once(fut.as_mut()).is_pending());
@@ -179,3 +179,51 @@ fn returned_item_crosses_to_a_receiver_on_another_thread() {
   assert_eq!(consumer.join().unwrap(), 9);
   drop(tx);
 }
+
+macro_rules! repolled_future_tests {
+  ($module:ident, $flavor:path) => {
+    mod $module {
+      use fibre_miri::poll_once;
+      use std::pin::pin;
+      use std::task::Poll;
+      use $flavor as rv;
+
+      #[test]
+      fn a_recv_future_polled_again_is_filled_through_its_first_registration() {
+        let (tx, mut rx) = rv::rendezvous_async::<Box<u32>>();
+        let mut recv = pin!(rx.recv());
+        assert!(poll_once(recv.as_mut()).is_pending());
+        assert!(poll_once(recv.as_mut()).is_pending());
+        assert!(tx.try_send(Box::new(5)).is_ok());
+        assert_eq!(poll_once(recv.as_mut()), Poll::Ready(Ok(Box::new(5))));
+      }
+
+      #[test]
+      fn a_send_future_polled_again_is_taken_through_its_first_registration() {
+        let (tx, mut rx) = rv::rendezvous_async::<Box<u32>>();
+        let mut send = pin!(tx.send(Box::new(9)));
+        assert!(poll_once(send.as_mut()).is_pending());
+        assert!(poll_once(send.as_mut()).is_pending());
+        assert_eq!(rx.try_recv(), Ok(Box::new(9)));
+        assert_eq!(poll_once(send.as_mut()), Poll::Ready(Ok(())));
+      }
+
+      #[test]
+      fn a_filled_recv_future_dropped_after_a_second_poll_passes_its_item_on() {
+        let (tx, mut rx) = rv::rendezvous_async::<Box<u32>>();
+        {
+          let mut recv = pin!(rx.recv());
+          assert!(poll_once(recv.as_mut()).is_pending());
+          assert!(poll_once(recv.as_mut()).is_pending());
+          assert!(tx.try_send(Box::new(3)).is_ok());
+        }
+        let mut next = pin!(rx.recv());
+        assert_eq!(poll_once(next.as_mut()), Poll::Ready(Ok(Box::new(3))));
+      }
+    }
+  };
+}
+
+repolled_future_tests!(spsc_repolled, fibre::spsc::rendezvous);
+repolled_future_tests!(mpsc_repolled, fibre::mpsc::rendezvous);
+repolled_future_tests!(mpmc_repolled, fibre::mpmc::rendezvous);

@@ -61,7 +61,7 @@ fn benchmark_logic_mpsc_sync(
   cfg: &MpscRendezvousBenchConfig,
 ) -> (BenchContext, MpscRendezvousBenchState, Duration) {
   // Create a fresh synchronous rendezvous channel
-  let (tx, rx) = mpsc::rendezvous::rendezvous();
+  let (tx, mut rx) = mpsc::rendezvous::rendezvous();
 
   let start_time = Instant::now();
 
@@ -115,7 +115,7 @@ fn benchmark_logic_mpsc_async(
   let cfg_clone = cfg.clone();
   Box::pin(async move {
     // Create a fresh asynchronous rendezvous channel
-    let (tx, rx) = mpsc::rendezvous::rendezvous_async();
+    let (tx, mut rx) = mpsc::rendezvous::rendezvous_async();
 
     let start_time = Instant::now();
 
