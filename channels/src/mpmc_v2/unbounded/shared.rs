@@ -5,31 +5,21 @@
 //! per-handle slabs, sends never block, no send waiters exist. The consumer
 //! side is serialized by one small `HybridMutex` - the single-consumer-lock
 //! mechanism the v2-vs-v3 contention benchmarks crowned - guarding only the
-//! chain cursor,
-//! the recv-waiter queue, and the reclaimed-item buffer.
+//! chain cursor and the recv-waiter queue.
 //!
-//! **Eager handoff:** whoever holds the consumer mutex while waiters exist
-//! delivers chain items directly into waiters' cells (in chain order, to
-//! waiters in FIFO order) instead of the classic wake-then-repoll dance. This
-//! is the load-bearing optimization from mpmc_v2's bounded core, applied on
-//! the consumer side only; `EAGER_HANDOFF` is the compile-time kill-switch for
-//! A/B measurement, following the proven `EAGER_HANDOFF_ENABLED` precedent.
-//!
-//! **Wake-one:** with eager handoff off, a publish of any size wakes one
-//! parked receiver. A receiver that comes back from that wake and leaves an
+//! **Wake-one:** a publish of any size wakes one parked receiver. A receiver that comes back from that wake and leaves an
 //! item queued wakes the next parked receiver, unless another notified
 //! receiver has yet to come back. A batch receive decides this after it has
 //! drained. A notified receiver that leaves without receiving does the same.
 //!
 //! Waiter entries hold `Arc<WaiterCell>` rather than raw pointers into parked
-//! stacks or pinned futures, so the delivery path cannot use-after-free a
-//! cancelled waiter by construction.
+//! stacks or pinned futures, so a notifier cannot use-after-free a cancelled
+//! waiter by construction.
 
 use crate::error::{RecvError, TryRecvError};
 use crate::internal::cache_padded::CachePadded;
 use crate::internal::slab_chain::{alloc_stub, retire_node, ChainHead, Node, SlabPool};
 
-use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::task::Waker;
@@ -40,54 +30,31 @@ use crate::internal::sync::{
 };
 use crate::sync::{HybridMutex as Mutex, MutexGuard};
 
-/// Compile-time kill-switch for eager handoff (A/B: flip and re-bench).
-pub(crate) const EAGER_HANDOFF: bool = false;
-
 const LEN_SHARDS: usize = 16;
 
 // --- Waiter cells -------------------------------------------------------------
 
 pub(crate) const WAITER_WAITING: u8 = 0;
-/// An item was deposited into the cell's slot (handoff delivery).
-pub(crate) const WAITER_FULFILLED: u8 = 1;
-/// Classic wake-one consumed the registration without delivering an item
-/// (kill-switch-off path and disconnect wakes); the waiter must re-attempt.
+/// A wake consumed the registration without delivering an item; the waiter
+/// must re-attempt.
 pub(crate) const WAITER_NOTIFIED: u8 = 2;
 
-/// A waiter's landing pad. `state` transitions are only ever performed while
-/// holding the consumer mutex; the owner reads `slot` only after observing
-/// `WAITER_FULFILLED` with `Acquire`, after which no deliverer touches the
-/// cell again.
-pub(crate) struct WaiterCell<T> {
+/// A waiter's state. Transitions out of `WAITER_WAITING` are only ever
+/// performed while holding the consumer mutex.
+pub(crate) struct WaiterCell {
   pub(crate) state: AtomicU8,
-  slot: UnsafeCell<Option<T>>,
 }
 
-unsafe impl<T: Send> Send for WaiterCell<T> {}
-unsafe impl<T: Send> Sync for WaiterCell<T> {}
-
-impl<T: Send> WaiterCell<T> {
+impl WaiterCell {
   pub(crate) fn new() -> Arc<Self> {
     Arc::new(WaiterCell {
       state: AtomicU8::new(WAITER_WAITING),
-      slot: UnsafeCell::new(None),
     })
   }
 
   /// Rearm a cached cell for re-registration. Owner-only, while unregistered.
   pub(crate) fn rearm(&self) {
     self.state.store(WAITER_WAITING, Ordering::Relaxed);
-  }
-
-  /// Takes the delivered item. Owner-only, after observing FULFILLED.
-  pub(crate) fn take(&self) -> Option<T> {
-    unsafe { (*self.slot.get()).take() }
-  }
-
-  /// Deliverer-only, under the consumer mutex, on a WAITING cell.
-  fn fulfill(&self, item: T) {
-    unsafe { *self.slot.get() = Some(item) };
-    self.state.store(WAITER_FULFILLED, Ordering::Release);
   }
 }
 
@@ -105,10 +72,10 @@ impl WakeHandle {
   }
 }
 
-struct WaiterEntry<T> {
+struct WaiterEntry {
   id: u64,
   wake: WakeHandle,
-  cell: Arc<WaiterCell<T>>,
+  cell: Arc<WaiterCell>,
 }
 
 /// Deferred wakeups, fired after the consumer mutex is released.
@@ -129,11 +96,7 @@ impl WakeList {
 
 pub(crate) struct ConsumerState<T> {
   tail: *mut Node<T>,
-  waiters: VecDeque<WaiterEntry<T>>,
-  /// Items recovered from cancelled-but-already-fulfilled waiters. Drained
-  /// before the chain so a recovered item re-enters as close to its original
-  /// position as still possible.
-  reclaimed: VecDeque<T>,
+  waiters: VecDeque<WaiterEntry>,
   next_id: u64,
   /// Receivers notified without an item that have not yet come back for one.
   in_flight: usize,
@@ -184,7 +147,6 @@ impl<T: Send> UnboundedShared<T> {
       consumer: Mutex::new(ConsumerState {
         tail: stub,
         waiters: VecDeque::new(),
-        reclaimed: VecDeque::new(),
         next_id: 0,
         in_flight: 0,
       }),
@@ -220,8 +182,7 @@ impl<T: Send> UnboundedShared<T> {
 
   /// Post-publish notify. The common case (no waiters) touches nothing shared
   /// beyond the gate load; with waiters, the producer enters the consumer
-  /// mutex and runs a handoff session (or classic wake-one under the
-  /// kill-switch) - which also removes the wake-then-lose-race respawning.
+  /// mutex and wakes one.
   pub(crate) fn notify_receivers(&self) {
     fence(Ordering::SeqCst);
     if self.recv_waiter_count.load(Ordering::Relaxed) == 0 {
@@ -230,9 +191,7 @@ impl<T: Send> UnboundedShared<T> {
     let mut wakes = WakeList::new();
     {
       let mut c = self.consumer.lock();
-      if EAGER_HANDOFF {
-        self.handoff_session(&mut c, &mut wakes);
-      } else if let Some(e) = c.waiters.pop_front() {
+      if let Some(e) = c.waiters.pop_front() {
         e.cell.state.store(WAITER_NOTIFIED, Ordering::Release);
         c.in_flight += 1;
         wakes.0.push(e.wake);
@@ -312,12 +271,7 @@ impl<T: Send> UnboundedShared<T> {
     self.recv_waiter_count.load(Ordering::Acquire)
   }
 
-  /// Pops one item - reclaimed items first, then the chain.
   fn pop_locked(&self, c: &mut ConsumerState<T>) -> Option<T> {
-    if let Some(v) = c.reclaimed.pop_front() {
-      self.consumed.fetch_add(1, Ordering::Relaxed);
-      return Some(v);
-    }
     unsafe {
       let tail = c.tail;
       let next = (*tail).next.load(Ordering::Acquire);
@@ -332,26 +286,10 @@ impl<T: Send> UnboundedShared<T> {
     }
   }
 
-  /// Delivers items (in FIFO order) directly into waiter cells (in FIFO
-  /// order) while both exist. Wakes are deferred to after unlock.
-  fn handoff_session(&self, c: &mut ConsumerState<T>, wakes: &mut WakeList) {
-    while !c.waiters.is_empty() {
-      let Some(item) = self.pop_locked(c) else { break };
-      let e = c.waiters.pop_front().unwrap();
-      e.cell.fulfill(item);
-      wakes.0.push(e.wake);
-    }
-  }
-
   /// Runs after a receiver has taken its items; callers hold the lock.
   /// `landed` says the receiver came here from a notification.
-  fn maybe_handoff(&self, c: &mut ConsumerState<T>, wakes: &mut WakeList, landed: bool) {
-    if EAGER_HANDOFF {
-      if !c.waiters.is_empty() {
-        self.handoff_session(c, wakes);
-        self.store_waiter_count(c);
-      }
-    } else if landed {
+  fn after_take(&self, c: &mut ConsumerState<T>, wakes: &mut WakeList, landed: bool) {
+    if landed {
       self.wake_next_for_queued(c, wakes);
     }
   }
@@ -362,8 +300,7 @@ impl<T: Send> UnboundedShared<T> {
     if c.in_flight != 0 || c.waiters.is_empty() {
       return;
     }
-    let queued = !c.reclaimed.is_empty() || unsafe { !(*c.tail).next.load(Ordering::Acquire).is_null() };
-    if !queued {
+    if unsafe { (*c.tail).next.load(Ordering::Acquire).is_null() } {
       return;
     }
     let e = c.waiters.pop_front().unwrap();
@@ -381,7 +318,7 @@ impl<T: Send> UnboundedShared<T> {
 
   /// Callers hold the lock and have found `ctx`'s registration gone. Returns
   /// true when a notifier took it, which makes the caller the landing.
-  fn land_if_notified(c: &mut ConsumerState<T>, ctx: &mut AsyncWaitCtx<T>) -> bool {
+  fn land_if_notified(c: &mut ConsumerState<T>, ctx: &mut AsyncWaitCtx) -> bool {
     if ctx.cell.state.load(Ordering::Acquire) != WAITER_NOTIFIED {
       return false;
     }
@@ -392,7 +329,7 @@ impl<T: Send> UnboundedShared<T> {
 
   /// Drops `ctx`'s registration; callers hold the lock. Returns true when a
   /// notifier had already taken it.
-  fn unregister(&self, c: &mut ConsumerState<T>, ctx: &mut AsyncWaitCtx<T>) -> bool {
+  fn unregister(&self, c: &mut ConsumerState<T>, ctx: &mut AsyncWaitCtx) -> bool {
     let Some(id) = ctx.registered.take() else {
       return false;
     };
@@ -402,7 +339,7 @@ impl<T: Send> UnboundedShared<T> {
     Self::land_if_notified(c, ctx)
   }
 
-  fn register_waiter(&self, c: &mut ConsumerState<T>, wake: WakeHandle, cell: Arc<WaiterCell<T>>) -> u64 {
+  fn register_waiter(&self, c: &mut ConsumerState<T>, wake: WakeHandle, cell: Arc<WaiterCell>) -> u64 {
     let id = c.next_id;
     c.next_id = c.next_id.wrapping_add(1);
     c.waiters.push_back(WaiterEntry { id, wake, cell });
@@ -430,29 +367,9 @@ impl<T: Send> UnboundedShared<T> {
     false
   }
 
-  /// Recovers an item from a cancelled-but-fulfilled waiter: closest-possible
-  /// FIFO reinsertion, delivered onward immediately if someone is waiting so
-  /// it can never strand while consumers sleep.
-  fn reclaim(&self, c: &mut ConsumerState<T>, item: T, wakes: &mut WakeList) {
-    c.reclaimed.push_front(item);
-    // The reclaimed item was already counted consumed once; popping it again
-    // would double-count. Compensate here, where it re-enters the queue.
-    self.consumed.fetch_sub(1, Ordering::Relaxed);
-    if EAGER_HANDOFF {
-      self.handoff_session(c, wakes);
-      self.store_waiter_count(c);
-    } else if let Some(e) = c.waiters.pop_front() {
-      e.cell.state.store(WAITER_NOTIFIED, Ordering::Release);
-      c.in_flight += 1;
-      wakes.0.push(e.wake);
-      self.store_waiter_count(c);
-    }
-  }
-
   // --- Non-blocking API cores ----------------------------------------------------
 
   pub(crate) fn try_recv_internal(&self) -> Result<T, TryRecvError> {
-    let mut wakes = WakeList::new();
     let res;
     {
       let mut c = self.consumer.lock();
@@ -470,11 +387,7 @@ impl<T: Send> UnboundedShared<T> {
           }
         }
       };
-      if res.is_ok() {
-        self.maybe_handoff(&mut c, &mut wakes, false);
-      }
     }
-    wakes.fire();
     res
   }
 
@@ -487,7 +400,6 @@ impl<T: Send> UnboundedShared<T> {
       return Ok(0);
     }
     let _ = out.try_reserve_exact(max);
-    let mut wakes = WakeList::new();
     let res;
     {
       let mut c = self.consumer.lock();
@@ -514,11 +426,7 @@ impl<T: Send> UnboundedShared<T> {
       } else {
         Err(TryRecvError::Empty)
       };
-      if res.is_ok() {
-        self.maybe_handoff(&mut c, &mut wakes, false);
-      }
     }
-    wakes.fire();
     res
   }
 
@@ -538,7 +446,7 @@ impl<T: Send> UnboundedShared<T> {
           None => break,
         }
       }
-      self.maybe_handoff(&mut c, &mut wakes, landed);
+      self.after_take(&mut c, &mut wakes, landed);
     }
     wakes.fire();
     got
@@ -548,22 +456,16 @@ impl<T: Send> UnboundedShared<T> {
 
   /// Blocking receive with optional deadline. `deadline: None` waits forever.
   ///
-  /// `cell` is the caller's landing pad (the receiver handle caches one so the
+  /// `cell` is the caller's waiter state (the receiver handle caches one so the
   /// hot path never allocates). Its state may be stale from a previous wait;
-  /// registration rearms it before any deliverer can see it.
+  /// registration rearms it before any notifier can see it.
   pub(crate) fn recv_sync_internal(
     &self,
-    cell: &Arc<WaiterCell<T>>,
+    cell: &Arc<WaiterCell>,
     deadline: Option<Instant>,
   ) -> Result<T, RecvTimeoutOutcome> {
     let mut c = self.consumer.lock();
     if let Some(v) = self.pop_locked(&mut c) {
-      if EAGER_HANDOFF {
-        let mut wakes = WakeList::new();
-        self.maybe_handoff(&mut c, &mut wakes, false);
-        drop(c);
-        wakes.fire();
-      }
       return Ok(v);
     }
     self.recv_sync_wait(c, cell, deadline, false).map(|(item, _)| item)
@@ -572,7 +474,7 @@ impl<T: Send> UnboundedShared<T> {
   /// First item of a blocking batch receive, with whether the receiver came
   /// to it from a notification. The caller follows with `drain_after_first`,
   /// which decides the wake once it has taken its share.
-  pub(crate) fn recv_sync_first(&self, cell: &Arc<WaiterCell<T>>) -> Result<(T, bool), RecvTimeoutOutcome> {
+  pub(crate) fn recv_sync_first(&self, cell: &Arc<WaiterCell>) -> Result<(T, bool), RecvTimeoutOutcome> {
     let mut c = self.consumer.lock();
     if let Some(v) = self.pop_locked(&mut c) {
       return Ok((v, false));
@@ -589,7 +491,7 @@ impl<T: Send> UnboundedShared<T> {
   fn recv_sync_wait<'a>(
     &'a self,
     mut c: MutexGuard<'a, ConsumerState<T>>,
-    cell: &Arc<WaiterCell<T>>,
+    cell: &Arc<WaiterCell>,
     deadline: Option<Instant>,
     defer_wake: bool,
   ) -> Result<(T, bool), RecvTimeoutOutcome> {
@@ -606,7 +508,7 @@ impl<T: Send> UnboundedShared<T> {
           self.remove_waiter(&mut c, id);
         }
         if !defer_wake {
-          self.maybe_handoff(&mut c, &mut wakes, landed);
+          self.after_take(&mut c, &mut wakes, landed);
         }
         attempt = Some(Ok((v, landed)));
       } else if !self.senders_alive() {
@@ -631,7 +533,7 @@ impl<T: Send> UnboundedShared<T> {
           let id = registered.take().unwrap();
           self.remove_waiter(&mut c, id);
           if !defer_wake {
-            self.maybe_handoff(&mut c, &mut wakes, landed);
+            self.after_take(&mut c, &mut wakes, landed);
           }
           attempt = Some(Ok((v, landed)));
         } else {
@@ -644,22 +546,19 @@ impl<T: Send> UnboundedShared<T> {
         return res;
       }
 
-      // Park until a terminal cell state or deadline.
+      // Park until notified or the deadline.
       loop {
         match deadline {
           None => thread::park(),
           Some(d) => {
             let now = Instant::now();
             if now >= d {
-              return self.timeout_finish(cell, registered.take()).map(|item| (item, false));
+              return self.timeout_finish(registered.take()).map(|item| (item, false));
             }
             thread::park_timeout(d - now);
           }
         }
         match cell.state.load(Ordering::Acquire) {
-          WAITER_FULFILLED => {
-            return Ok((cell.take().expect("fulfilled waiter cell must hold an item"), false));
-          }
           WAITER_NOTIFIED => {
             // Registration consumed without delivery: retry from the top.
             registered = None;
@@ -669,7 +568,7 @@ impl<T: Send> UnboundedShared<T> {
             // Spurious wake: still registered; check deadline and re-park.
             if let Some(d) = deadline {
               if Instant::now() >= d {
-                return self.timeout_finish(cell, registered.take()).map(|item| (item, false));
+                return self.timeout_finish(registered.take()).map(|item| (item, false));
               }
             }
           }
@@ -681,13 +580,9 @@ impl<T: Send> UnboundedShared<T> {
     }
   }
 
-  /// Resolves a timeout race: if the registration is gone, a deliverer beat
-  /// us - honor its outcome (state writes happen under the lock we now hold).
-  fn timeout_finish(
-    &self,
-    cell: &Arc<WaiterCell<T>>,
-    registered: Option<u64>,
-  ) -> Result<T, RecvTimeoutOutcome> {
+  /// Resolves a timeout race: if the registration is gone, a notifier took it
+  /// under the lock we now hold, so this receive is the one it woke.
+  fn timeout_finish(&self, registered: Option<u64>) -> Result<T, RecvTimeoutOutcome> {
     let Some(id) = registered else {
       return Err(RecvTimeoutOutcome::Timeout);
     };
@@ -698,19 +593,14 @@ impl<T: Send> UnboundedShared<T> {
       if self.remove_waiter(&mut c, id) {
         return Err(RecvTimeoutOutcome::Timeout);
       }
-      res = match cell.state.load(Ordering::Acquire) {
-        WAITER_FULFILLED => Ok(cell.take().expect("fulfilled waiter cell must hold an item")),
-        // Notified for a queued item: returning without it would drop the wake.
-        _ => {
-          Self::land(&mut c);
-          match self.pop_locked(&mut c) {
-            Some(v) => {
-              self.maybe_handoff(&mut c, &mut wakes, true);
-              Ok(v)
-            }
-            None => Err(RecvTimeoutOutcome::Timeout),
-          }
+      // Notified for a queued item: returning without it would drop the wake.
+      Self::land(&mut c);
+      res = match self.pop_locked(&mut c) {
+        Some(v) => {
+          self.after_take(&mut c, &mut wakes, true);
+          Ok(v)
         }
+        None => Err(RecvTimeoutOutcome::Timeout),
       };
     }
     wakes.fire();
@@ -724,19 +614,13 @@ impl<T: Send> UnboundedShared<T> {
   pub(crate) fn poll_recv_internal(
     &self,
     waker: &Waker,
-    ctx: &mut AsyncWaitCtx<T>,
+    ctx: &mut AsyncWaitCtx,
   ) -> std::task::Poll<Result<T, RecvError>> {
     use std::task::Poll;
 
     if ctx.registered.is_none() && ctx.cell.state.load(Ordering::Acquire) == WAITER_WAITING {
       let mut c = self.consumer.lock();
       if let Some(v) = self.pop_locked(&mut c) {
-        if EAGER_HANDOFF {
-          let mut wakes = WakeList::new();
-          self.maybe_handoff(&mut c, &mut wakes, false);
-          drop(c);
-          wakes.fire();
-        }
         return Poll::Ready(Ok(v));
       }
       return self.poll_recv_wait(Some(c), waker, ctx, false).map(|res| res.map(|(item, _)| item));
@@ -748,7 +632,7 @@ impl<T: Send> UnboundedShared<T> {
   pub(crate) fn poll_recv_first(
     &self,
     waker: &Waker,
-    ctx: &mut AsyncWaitCtx<T>,
+    ctx: &mut AsyncWaitCtx,
   ) -> std::task::Poll<Result<(T, bool), RecvError>> {
     use std::task::Poll;
 
@@ -771,17 +655,12 @@ impl<T: Send> UnboundedShared<T> {
     &'a self,
     held: Option<MutexGuard<'a, ConsumerState<T>>>,
     waker: &Waker,
-    ctx: &mut AsyncWaitCtx<T>,
+    ctx: &mut AsyncWaitCtx,
     defer_wake: bool,
   ) -> std::task::Poll<Result<(T, bool), RecvError>> {
     use std::task::Poll;
 
-    // A previous handoff may have completed us before this poll.
-    let notified = match ctx.take_terminal() {
-      Some(TerminalState::Fulfilled(v)) => return Poll::Ready(Ok((v, false))),
-      Some(TerminalState::Notified) => true,
-      None => false,
-    };
+    let notified = ctx.take_notified();
 
     let mut wakes = WakeList::new();
     let out;
@@ -797,7 +676,7 @@ impl<T: Send> UnboundedShared<T> {
       if let Some(v) = self.pop_locked(&mut c) {
         landed |= self.unregister(&mut c, ctx);
         if !defer_wake {
-          self.maybe_handoff(&mut c, &mut wakes, landed);
+          self.after_take(&mut c, &mut wakes, landed);
         }
         out = Poll::Ready(Ok((v, landed)));
       } else if !self.senders_alive() {
@@ -810,7 +689,7 @@ impl<T: Send> UnboundedShared<T> {
         match ctx.registered {
           Some(id) => {
             if !self.update_waker(&mut c, id, waker) {
-              // Entry vanished: a deliverer took it before this lock.
+              // Entry vanished: a notifier took it before this lock.
               ctx.registered = None;
               landed |= Self::land_if_notified(&mut c, ctx);
             }
@@ -828,7 +707,7 @@ impl<T: Send> UnboundedShared<T> {
         if let Some(v) = self.pop_locked(&mut c) {
           landed |= self.unregister(&mut c, ctx);
           if !defer_wake {
-            self.maybe_handoff(&mut c, &mut wakes, landed);
+            self.after_take(&mut c, &mut wakes, landed);
           }
           out = Poll::Ready(Ok((v, landed)));
         } else if !self.senders_alive() {
@@ -838,19 +717,13 @@ impl<T: Send> UnboundedShared<T> {
             None => Err(RecvError::Disconnected),
           });
         } else if ctx.registered.is_none() {
-          // Lost the entry to a terminal transition mid-poll; resolve it now.
-          out = match ctx.take_terminal() {
-            Some(TerminalState::Fulfilled(v)) => Poll::Ready(Ok((v, false))),
-            Some(TerminalState::Notified) => {
-              Self::land(&mut c);
-              Poll::Pending
-            }
-            None => Poll::Pending,
-          };
-          if matches!(out, Poll::Pending) {
-            // Ensure we get polled again promptly.
-            waker.wake_by_ref();
+          // Lost the entry to a notifier mid-poll; resolve it now.
+          if ctx.take_notified() {
+            Self::land(&mut c);
           }
+          out = Poll::Pending;
+          // Ensure we get polled again promptly.
+          waker.wake_by_ref();
         } else {
           out = Poll::Pending;
         }
@@ -861,27 +734,16 @@ impl<T: Send> UnboundedShared<T> {
   }
 
   /// Cancel-safety: called by future/stream drops while registered.
-  pub(crate) fn cancel_wait(&self, ctx: &mut AsyncWaitCtx<T>) {
+  pub(crate) fn cancel_wait(&self, ctx: &mut AsyncWaitCtx) {
     let Some(id) = ctx.registered.take() else {
       return;
     };
     let mut wakes = WakeList::new();
     {
       let mut c = self.consumer.lock();
-      if !self.remove_waiter(&mut c, id) {
-        // A deliverer won: terminal state is already set (it happened under
-        // this lock). Recover a fulfilled item so it is never lost, and rearm
-        // the cell: the ctx outlives this wait (handles cache it), and a
-        // stale FULFILLED with an emptied slot would panic the next poll.
-        if ctx.cell.state.load(Ordering::Acquire) == WAITER_FULFILLED {
-          if let Some(item) = ctx.cell.take() {
-            self.reclaim(&mut c, item, &mut wakes);
-          }
-          ctx.cell.rearm();
-        } else if Self::land_if_notified(&mut c, ctx) {
-          // Notified for a queued item it will never take.
-          self.wake_next_for_queued(&mut c, &mut wakes);
-        }
+      if !self.remove_waiter(&mut c, id) && Self::land_if_notified(&mut c, ctx) {
+        // Notified for a queued item it will never take.
+        self.wake_next_for_queued(&mut c, &mut wakes);
       }
     }
     wakes.fire();
@@ -889,17 +751,12 @@ impl<T: Send> UnboundedShared<T> {
 }
 
 /// Registration state a recv future/stream carries across polls.
-pub(crate) struct AsyncWaitCtx<T> {
-  pub(crate) cell: Arc<WaiterCell<T>>,
+pub(crate) struct AsyncWaitCtx {
+  pub(crate) cell: Arc<WaiterCell>,
   pub(crate) registered: Option<u64>,
 }
 
-enum TerminalState<T> {
-  Fulfilled(T),
-  Notified,
-}
-
-impl<T: Send> AsyncWaitCtx<T> {
+impl AsyncWaitCtx {
   pub(crate) fn new() -> Self {
     AsyncWaitCtx {
       cell: WaiterCell::new(),
@@ -907,22 +764,14 @@ impl<T: Send> AsyncWaitCtx<T> {
     }
   }
 
-  fn take_terminal(&mut self) -> Option<TerminalState<T>> {
-    match self.cell.state.load(Ordering::Acquire) {
-      WAITER_FULFILLED => {
-        self.registered = None;
-        self.cell.rearm();
-        Some(TerminalState::Fulfilled(
-          self.cell.take().expect("fulfilled waiter cell must hold an item"),
-        ))
-      }
-      WAITER_NOTIFIED => {
-        self.registered = None;
-        self.cell.rearm();
-        Some(TerminalState::Notified)
-      }
-      _ => None,
+  /// Consumes a notification, if there is one, and rearms the cell.
+  fn take_notified(&mut self) -> bool {
+    if self.cell.state.load(Ordering::Acquire) != WAITER_NOTIFIED {
+      return false;
     }
+    self.registered = None;
+    self.cell.rearm();
+    true
   }
 }
 
@@ -936,7 +785,7 @@ pub(crate) enum RecvTimeoutOutcome {
 impl<T> Drop for UnboundedShared<T> {
   fn drop(&mut self) {
     // Drain every published item, then retire the final tail node (retirement
-    // runs one behind). Reclaimed items drop with the VecDeque.
+    // runs one behind).
     let c = self.consumer.get_mut();
     unsafe {
       loop {
@@ -983,7 +832,7 @@ mod tests {
     tx.send(7).unwrap();
     assert_eq!(timing_out.state.load(Ordering::Acquire), WAITER_NOTIFIED);
 
-    match shared.timeout_finish(&timing_out, Some(timing_out_id)) {
+    match shared.timeout_finish(Some(timing_out_id)) {
       Ok(item) => assert_eq!(item, 7),
       Err(_) => assert_ne!(
         parked_wake.0.load(std::sync::atomic::Ordering::SeqCst),

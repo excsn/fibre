@@ -142,7 +142,7 @@ pub fn bounded<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
 ///
 /// In reality, the channel is bounded by available memory. Sends never block;
 /// this is a dedicated implementation (lock-free slab-chain producers, a
-/// mutex-serialized consumer side with eager handoff), not the bounded
+/// mutex-serialized consumer side), not the bounded
 /// channel with an infinite capacity.
 ///
 /// Sending and (blocking) receiving take `&mut self` so each handle keeps its

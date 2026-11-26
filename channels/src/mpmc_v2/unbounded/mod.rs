@@ -1,5 +1,5 @@
 //! Unbounded MPMC: lock-free slab-chain producers + a mutex-serialized
-//! consumer side with eager handoff. See `shared.rs` for the design notes.
+//! consumer side that wakes one parked receiver per publish. See `shared.rs` for the design notes.
 
 mod consumer;
 mod producer;
@@ -151,7 +151,7 @@ mod tests {
     {
       let mut fut = pin!(rx.recv());
       assert!(poll_once(fut.as_mut()).is_pending());
-    } // dropped while registered (never fulfilled)
+    }
     tx.try_send(7).unwrap();
     assert_eq!(rx.try_recv().unwrap(), 7);
   }

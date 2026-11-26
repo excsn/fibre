@@ -21,7 +21,7 @@ pub struct UnboundedSyncReceiver<T: Send> {
   pub(crate) closed: AtomicBool,
   /// Cached landing pad for blocking waits, reused across `recv` calls.
   /// `&mut self` on the waiting methods guarantees one wait at a time.
-  cell: Arc<WaiterCell<T>>,
+  cell: Arc<WaiterCell>,
 }
 
 pub struct UnboundedAsyncReceiver<T: Send> {
@@ -29,7 +29,7 @@ pub struct UnboundedAsyncReceiver<T: Send> {
   pub(crate) closed: AtomicBool,
   /// Registration state shared by the `Stream` impl and the `recv*` futures
   /// (which borrow it via `&mut self`), so polling never allocates.
-  stream_ctx: AsyncWaitCtx<T>,
+  stream_ctx: AsyncWaitCtx,
 }
 
 impl<T: Send> fmt::Debug for UnboundedSyncReceiver<T> {
@@ -182,7 +182,7 @@ impl<T: Send> UnboundedSyncReceiver<T> {
     let cell = unsafe { std::ptr::read(&self.cell) };
     let closed = AtomicBool::new(self.closed.load(Ordering::Relaxed));
     std::mem::forget(self);
-    // The cell may carry a consumed terminal state from a past wait; the
+    // The cell may carry a consumed notification from a past wait; the
     // async ctx reads state before registering, so reset it here.
     cell.rearm();
     UnboundedAsyncReceiver {
