@@ -285,7 +285,7 @@ impl<T: Send> Stream for UnboundedAsyncReceiver<T> {
     if this.closed.load(Ordering::Relaxed) {
       return Poll::Ready(None);
     }
-    match this.shared.poll_recv_internal(cx.waker(), &mut this.stream_ctx) {
+    match this.shared.poll_recv_internal(cx.waker(), &mut this.stream_ctx, false) {
       Poll::Ready(Ok(v)) => Poll::Ready(Some(v)),
       Poll::Ready(Err(_)) => Poll::Ready(None),
       Poll::Pending => Poll::Pending,
@@ -316,7 +316,7 @@ impl<'a, T: Send> Future for RecvFuture<'a, T> {
     this
       .receiver
       .shared
-      .poll_recv_internal(cx.waker(), &mut this.receiver.stream_ctx)
+      .poll_recv_internal(cx.waker(), &mut this.receiver.stream_ctx, true)
   }
 }
 
@@ -350,7 +350,7 @@ impl<'a, T: Send> Future for RecvBatchFuture<'a, T> {
       return this
         .receiver
         .shared
-        .poll_recv_internal(cx.waker(), &mut this.receiver.stream_ctx)
+        .poll_recv_internal(cx.waker(), &mut this.receiver.stream_ctx, true)
         .map(|res| res.map(|item| vec![item]));
     }
     match this
@@ -403,7 +403,7 @@ impl<'a, T: Send> Future for RecvBatchMutFuture<'a, T> {
       return this
         .receiver
         .shared
-        .poll_recv_internal(cx.waker(), &mut this.receiver.stream_ctx)
+        .poll_recv_internal(cx.waker(), &mut this.receiver.stream_ctx, true)
         .map(|res| {
           res.map(|item| {
             out.push(item);

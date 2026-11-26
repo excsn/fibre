@@ -370,4 +370,25 @@ mod tests {
     );
     assert!(matches!(poll_with(second_fut.as_mut(), &second_waker), Poll::Ready(Ok(7))));
   }
+
+  #[test]
+  fn a_stream_registration_left_unpolled_does_not_hold_the_wake_chain() {
+    let (mut tx, rx) = channel_async::<u32>();
+    let mut stream = rx.clone();
+    let mut first = rx.clone();
+    let mut second = rx;
+    assert!(futures_core::Stream::poll_next(std::pin::Pin::new(&mut stream), &mut Context::from_waker(Waker::noop())).is_pending());
+    let (first_count, first_waker) = count_waker();
+    let (second_count, second_waker) = count_waker();
+    let mut first_fut = Box::pin(first.recv());
+    let mut second_fut = Box::pin(second.recv());
+    assert!(poll_with(first_fut.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second_fut.as_mut(), &second_waker).is_pending());
+
+    tx.try_send_batch(vec![1, 2, 3]).unwrap();
+    assert_ne!(first_count.0.load(Ordering::SeqCst), 0, "the batch woke only the stream registration");
+    assert!(matches!(poll_with(first_fut.as_mut(), &first_waker), Poll::Ready(Ok(1))));
+    assert_ne!(second_count.0.load(Ordering::SeqCst), 0, "an item is queued and the second receive was not woken");
+    assert!(matches!(poll_with(second_fut.as_mut(), &second_waker), Poll::Ready(Ok(2))));
+  }
 }

@@ -7,10 +7,15 @@
 //! mechanism the v2-vs-v3 contention benchmarks crowned - guarding only the
 //! chain cursor and the recv-waiter queue.
 //!
-//! **Wake-one:** a publish of any size wakes one parked receiver. A receiver that comes back from that wake and leaves an
-//! item queued wakes the next parked receiver, unless another notified
-//! receiver has yet to come back. A batch receive decides this after it has
-//! drained. A notified receiver that leaves without receiving does the same.
+//! **Wake-one:** a publish of any size wakes one parked receiver. A receiver
+//! that comes back from that wake and leaves an item queued wakes the next
+//! parked receiver, unless another notified receiver has yet to come back. A
+//! batch receive decides this after it has drained. A notified receiver that
+//! leaves without receiving does the same.
+//!
+//! A registration the `Stream` impl leaves may never be polled again, so it is
+//! not counted as a receiver that will come back: a notifier that wakes one
+//! also wakes the next parked receiver.
 //!
 //! Waiter entries hold `Arc<WaiterCell>` rather than raw pointers into parked
 //! stacks or pinned futures, so a notifier cannot use-after-free a cancelled
@@ -38,6 +43,8 @@ pub(crate) const WAITER_WAITING: u8 = 0;
 /// A wake consumed the registration without delivering an item; the waiter
 /// must re-attempt.
 pub(crate) const WAITER_NOTIFIED: u8 = 2;
+/// As `WAITER_NOTIFIED`, for a registration not counted in `in_flight`.
+pub(crate) const WAITER_NOTIFIED_UNCOUNTED: u8 = 3;
 
 /// A waiter's state. Transitions out of `WAITER_WAITING` are only ever
 /// performed while holding the consumer mutex.
@@ -73,6 +80,8 @@ impl WakeHandle {
 }
 
 struct WaiterEntry {
+  /// The low bit is set when the registrant will come back after a wake, so
+  /// the wake is counted in `in_flight`.
   id: u64,
   wake: WakeHandle,
   cell: Arc<WaiterCell>,
@@ -191,11 +200,7 @@ impl<T: Send> UnboundedShared<T> {
     let mut wakes = WakeList::new();
     {
       let mut c = self.consumer.lock();
-      if let Some(e) = c.waiters.pop_front() {
-        e.cell.state.store(WAITER_NOTIFIED, Ordering::Release);
-        c.in_flight += 1;
-        wakes.0.push(e.wake);
-      }
+      Self::wake_one(&mut c, &mut wakes);
       self.store_waiter_count(&c);
     }
     wakes.fire();
@@ -228,9 +233,7 @@ impl<T: Send> UnboundedShared<T> {
       {
         let mut c = self.consumer.lock();
         while let Some(e) = c.waiters.pop_front() {
-          e.cell.state.store(WAITER_NOTIFIED, Ordering::Release);
-          c.in_flight += 1;
-          wakes.0.push(e.wake);
+          Self::notify(&mut c, e, &mut wakes);
         }
         self.store_waiter_count(&c);
       }
@@ -303,11 +306,48 @@ impl<T: Send> UnboundedShared<T> {
     if unsafe { (*c.tail).next.load(Ordering::Acquire).is_null() } {
       return;
     }
-    let e = c.waiters.pop_front().unwrap();
-    e.cell.state.store(WAITER_NOTIFIED, Ordering::Release);
-    c.in_flight += 1;
-    wakes.0.push(e.wake);
+    Self::wake_one(c, wakes);
     self.store_waiter_count(c);
+  }
+
+  /// Callers hold the lock. Wakes waiters from the front until one counted in
+  /// `in_flight` is woken or none is left.
+  #[inline]
+  fn wake_one(c: &mut ConsumerState<T>, wakes: &mut WakeList) {
+    let Some(e) = c.waiters.pop_front() else { return };
+    if e.id & 1 == 1 {
+      e.cell.state.store(WAITER_NOTIFIED, Ordering::Release);
+      c.in_flight += 1;
+      wakes.0.push(e.wake);
+      return;
+    }
+    Self::wake_past_uncounted(c, e, wakes);
+  }
+
+  #[cold]
+  #[inline(never)]
+  fn wake_past_uncounted(c: &mut ConsumerState<T>, first: WaiterEntry, wakes: &mut WakeList) {
+    Self::notify(c, first, wakes);
+    while let Some(e) = c.waiters.pop_front() {
+      if Self::notify(c, e, wakes) {
+        return;
+      }
+    }
+  }
+
+  /// Callers hold the lock and have taken `e` off the queue. Returns whether
+  /// the wake was counted.
+  #[inline]
+  fn notify(c: &mut ConsumerState<T>, e: WaiterEntry, wakes: &mut WakeList) -> bool {
+    let counted = e.id & 1 == 1;
+    if counted {
+      e.cell.state.store(WAITER_NOTIFIED, Ordering::Release);
+      c.in_flight += 1;
+    } else {
+      e.cell.state.store(WAITER_NOTIFIED_UNCOUNTED, Ordering::Release);
+    }
+    wakes.0.push(e.wake);
+    counted
   }
 
   /// A notified receiver has come back; callers hold the lock.
@@ -319,12 +359,18 @@ impl<T: Send> UnboundedShared<T> {
   /// Callers hold the lock and have found `ctx`'s registration gone. Returns
   /// true when a notifier took it, which makes the caller the landing.
   fn land_if_notified(c: &mut ConsumerState<T>, ctx: &mut AsyncWaitCtx) -> bool {
-    if ctx.cell.state.load(Ordering::Acquire) != WAITER_NOTIFIED {
-      return false;
+    match ctx.cell.state.load(Ordering::Acquire) {
+      WAITER_NOTIFIED => {
+        ctx.cell.rearm();
+        Self::land(c);
+        true
+      }
+      WAITER_NOTIFIED_UNCOUNTED => {
+        ctx.cell.rearm();
+        false
+      }
+      _ => false,
     }
-    ctx.cell.rearm();
-    Self::land(c);
-    true
   }
 
   /// Drops `ctx`'s registration; callers hold the lock. Returns true when a
@@ -339,8 +385,8 @@ impl<T: Send> UnboundedShared<T> {
     Self::land_if_notified(c, ctx)
   }
 
-  fn register_waiter(&self, c: &mut ConsumerState<T>, wake: WakeHandle, cell: Arc<WaiterCell>) -> u64 {
-    let id = c.next_id;
+  fn register_waiter(&self, c: &mut ConsumerState<T>, wake: WakeHandle, cell: Arc<WaiterCell>, counted: bool) -> u64 {
+    let id = (c.next_id << 1) | counted as u64;
     c.next_id = c.next_id.wrapping_add(1);
     c.waiters.push_back(WaiterEntry { id, wake, cell });
     self.store_waiter_count(c);
@@ -526,6 +572,7 @@ impl<T: Send> UnboundedShared<T> {
             &mut c,
             WakeHandle::Thread(thread::current()),
             Arc::clone(cell),
+            true,
           ));
         }
         fence(Ordering::SeqCst);
@@ -610,11 +657,14 @@ impl<T: Send> UnboundedShared<T> {
   // --- Async receive ---------------------------------------------------------------
 
   /// One poll step for a single-item async receive. `ctx` carries the
-  /// future's registration state across polls.
+  /// future's registration state across polls. `counted` says the caller
+  /// polls again after a wake, which a future does and the `Stream` impl
+  /// cannot promise.
   pub(crate) fn poll_recv_internal(
     &self,
     waker: &Waker,
     ctx: &mut AsyncWaitCtx,
+    counted: bool,
   ) -> std::task::Poll<Result<T, RecvError>> {
     use std::task::Poll;
 
@@ -623,9 +673,9 @@ impl<T: Send> UnboundedShared<T> {
       if let Some(v) = self.pop_locked(&mut c) {
         return Poll::Ready(Ok(v));
       }
-      return self.poll_recv_wait(Some(c), waker, ctx, false).map(|res| res.map(|(item, _)| item));
+      return self.poll_recv_wait(Some(c), waker, ctx, false, counted).map(|res| res.map(|(item, _)| item));
     }
-    self.poll_recv_wait(None, waker, ctx, false).map(|res| res.map(|(item, _)| item))
+    self.poll_recv_wait(None, waker, ctx, false, counted).map(|res| res.map(|(item, _)| item))
   }
 
   /// First item of an async batch receive; see `recv_sync_first`.
@@ -641,9 +691,9 @@ impl<T: Send> UnboundedShared<T> {
       if let Some(v) = self.pop_locked(&mut c) {
         return Poll::Ready(Ok((v, false)));
       }
-      return self.poll_recv_wait(Some(c), waker, ctx, true);
+      return self.poll_recv_wait(Some(c), waker, ctx, true, true);
     }
-    self.poll_recv_wait(None, waker, ctx, true)
+    self.poll_recv_wait(None, waker, ctx, true, true)
   }
 
   /// The half of an async receive that registers and the half that comes
@@ -657,6 +707,7 @@ impl<T: Send> UnboundedShared<T> {
     waker: &Waker,
     ctx: &mut AsyncWaitCtx,
     defer_wake: bool,
+    counted: bool,
   ) -> std::task::Poll<Result<(T, bool), RecvError>> {
     use std::task::Poll;
 
@@ -700,6 +751,7 @@ impl<T: Send> UnboundedShared<T> {
               &mut c,
               WakeHandle::Task(waker.clone()),
               Arc::clone(&ctx.cell),
+              counted,
             ));
           }
         }
@@ -764,14 +816,17 @@ impl AsyncWaitCtx {
     }
   }
 
-  /// Consumes a notification, if there is one, and rearms the cell.
+  /// Consumes a notification if there is one and rearms the cell. Returns
+  /// whether the notification was counted in `in_flight`.
   fn take_notified(&mut self) -> bool {
-    if self.cell.state.load(Ordering::Acquire) != WAITER_NOTIFIED {
-      return false;
-    }
+    let counted = match self.cell.state.load(Ordering::Acquire) {
+      WAITER_NOTIFIED => true,
+      WAITER_NOTIFIED_UNCOUNTED => false,
+      _ => return false,
+    };
     self.registered = None;
     self.cell.rearm();
-    true
+    counted
   }
 }
 
@@ -824,8 +879,8 @@ mod tests {
     let parked_wake = std::sync::Arc::new(CountWake(StdAtomicUsize::new(0)));
     let timing_out_id = {
       let mut c = shared.consumer.lock();
-      let id = shared.register_waiter(&mut c, WakeHandle::Thread(thread::current()), Arc::clone(&timing_out));
-      shared.register_waiter(&mut c, WakeHandle::Task(Waker::from(parked_wake.clone())), Arc::clone(&parked));
+      let id = shared.register_waiter(&mut c, WakeHandle::Thread(thread::current()), Arc::clone(&timing_out), true);
+      shared.register_waiter(&mut c, WakeHandle::Task(Waker::from(parked_wake.clone())), Arc::clone(&parked), true);
       id
     };
 
