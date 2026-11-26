@@ -48,7 +48,7 @@ thiserror = "^2"
 
 parking_lot = "0.13"
 
-fibre = { version = "^0.6", path = "../channels" }
+fibre = { version = "^0.7", path = "../channels" }
 fibre_tracing = { version = "^0.6", path = "../tracing" }
 
 [dev-dependencies]
