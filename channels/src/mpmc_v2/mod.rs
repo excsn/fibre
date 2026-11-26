@@ -384,10 +384,11 @@ impl<T: Send> Sender<T> {
   /// `Sender` is not called.
   pub fn to_async(self) -> AsyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     AsyncSender {
       shared,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
     }
   }
 
@@ -553,10 +554,11 @@ impl<T: Send> Receiver<T> {
   /// `Receiver` is not called.
   pub fn to_async(self) -> AsyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     AsyncReceiver {
       shared,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
       state: None,
       is_registered: false,
     }
@@ -722,10 +724,11 @@ impl<T: Send> AsyncSender<T> {
   /// `AsyncSender` is not called.
   pub fn to_sync(self) -> Sender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     Sender {
       shared,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
     }
   }
 
@@ -868,10 +871,11 @@ impl<T: Send> AsyncReceiver<T> {
     self.unlink_stream();
     drop(self.state.take());
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     Receiver {
       shared,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
     }
   }
 

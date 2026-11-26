@@ -50,8 +50,11 @@ impl<T: Send> BoundedAsyncSender<T> {
 
   pub fn to_sync(self) -> BoundedSyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
-    BoundedSyncSender::from_shared(shared)
+    let converted = BoundedSyncSender::from_shared(shared);
+    converted.closed.store(closed, Ordering::Relaxed);
+    converted
   }
 
   pub fn send(&mut self, item: T) -> SendFuture<'_, T> {
@@ -208,8 +211,11 @@ impl<T: Send> BoundedAsyncReceiver<T> {
       self.shared.unregister(Role::Recv);
     }
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
-    BoundedSyncReceiver::from_shared(shared)
+    let converted = BoundedSyncReceiver::from_shared(shared);
+    converted.closed.store(closed, Ordering::Relaxed);
+    converted
   }
 
   pub fn recv(&mut self) -> ReceiveFuture<'_, T> {

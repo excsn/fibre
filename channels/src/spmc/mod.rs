@@ -126,10 +126,11 @@ impl<T: Send + Clone> BoundedSyncSender<T> {
   /// original `BoundedSyncSender` is not called.
   pub fn to_async(self) -> BoundedAsyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     BoundedAsyncSender {
       shared,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
       _not_sync: PhantomData,
     }
   }
@@ -143,10 +144,11 @@ impl<T: Send + Clone> BoundedAsyncSender<T> {
   /// original `BoundedAsyncSender` is not called.
   pub fn to_sync(self) -> BoundedSyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     BoundedSyncSender {
       shared,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
       _not_sync: PhantomData,
     }
   }

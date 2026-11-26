@@ -65,8 +65,11 @@ impl<T: Send> BoundedSyncSender<T> {
 
   pub fn to_async(self) -> BoundedAsyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
-    BoundedAsyncSender::from_shared(shared)
+    let converted = BoundedAsyncSender::from_shared(shared);
+    converted.closed.store(closed, Ordering::Relaxed);
+    converted
   }
 
   pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>> {
@@ -374,8 +377,11 @@ impl<T: Send> BoundedSyncReceiver<T> {
 
   pub fn to_async(self) -> BoundedAsyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
-    BoundedAsyncReceiver::from_shared(shared)
+    let converted = BoundedAsyncReceiver::from_shared(shared);
+    converted.closed.store(closed, Ordering::Relaxed);
+    converted
   }
 
   pub fn try_recv(&self) -> Result<T, TryRecvError> {

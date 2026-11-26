@@ -157,10 +157,11 @@ impl<T: Send> RendezvousSyncSender<T> {
   /// original handle's `Drop` does not run.
   pub fn to_async(self) -> RendezvousAsyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     RendezvousAsyncSender {
       shared,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
     }
   }
 }
@@ -256,10 +257,11 @@ impl<T: Send> RendezvousSyncReceiver<T> {
   /// Converts this handle into an asynchronous [`RendezvousAsyncReceiver`]. Zero-cost.
   pub fn to_async(self) -> RendezvousAsyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     RendezvousAsyncReceiver {
       shared,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
     }
   }
 }
@@ -339,10 +341,11 @@ impl<T: Send> RendezvousAsyncSender<T> {
   /// Converts this handle into a synchronous [`RendezvousSyncSender`]. Zero-cost.
   pub fn to_sync(self) -> RendezvousSyncSender<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     RendezvousSyncSender {
       shared,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
     }
   }
 }
@@ -423,10 +426,11 @@ impl<T: Send> RendezvousAsyncReceiver<T> {
   /// Converts this handle into a synchronous [`RendezvousSyncReceiver`]. Zero-cost.
   pub fn to_sync(self) -> RendezvousSyncReceiver<T> {
     let shared = unsafe { std::ptr::read(&self.shared) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     RendezvousSyncReceiver {
       shared,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
     }
   }
 }

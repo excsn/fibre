@@ -208,14 +208,23 @@ where
     drop(subs);
 
     if let Some(dispatcher) = self.dispatcher.upgrade() {
-      if let Some(list_arc) = dispatcher.subscriptions.pin().get(topic) {
-        list_arc.writer.modify(|list| {
-          list.retain(|w| {
-            w.upgrade()
-              .map_or(false, |s| !Arc::ptr_eq(&s, &self.producer_mailbox))
-          });
+      self.leave_topic(&dispatcher, topic);
+    }
+  }
+
+  /// Takes this receiver's mailbox off the dispatcher's list for `topic`.
+  fn leave_topic<Q: ?Sized>(&self, dispatcher: &SpmcTopicDispatcher<K, T>, topic: &Q)
+  where
+    K: Borrow<Q> + Equivalent<Q>,
+    Q: Hash + Eq,
+  {
+    if let Some(list_arc) = dispatcher.subscriptions.pin().get(topic) {
+      list_arc.writer.modify(|list| {
+        list.retain(|w| {
+          w.upgrade()
+            .map_or(false, |s| !Arc::ptr_eq(&s, &self.producer_mailbox))
         });
-      }
+      });
     }
   }
 
@@ -239,9 +248,9 @@ where
 
   fn close_internal(&self) {
     if let Some(dispatcher) = self.dispatcher.upgrade() {
-      let topics_to_unsubscribe: Vec<K> = self.subscriptions.lock().drain().collect();
-      for topic in topics_to_unsubscribe {
-        self.unsubscribe(&topic);
+      let topics: Vec<K> = self.subscriptions.lock().drain().collect();
+      for topic in &topics {
+        self.leave_topic(&dispatcher, topic);
       }
       dispatcher.receiver_count.fetch_sub(1, Ordering::Relaxed);
     }
@@ -265,13 +274,14 @@ where
     let consumer = unsafe { std::ptr::read(&self.consumer) };
     let producer_mailbox = unsafe { std::ptr::read(&self.producer_mailbox) };
     let subscriptions = unsafe { std::ptr::read(&self.subscriptions) };
+    let closed = self.closed.load(Ordering::Relaxed);
     mem::forget(self);
     TopicReceiver {
       dispatcher,
       consumer,
       producer_mailbox,
       subscriptions,
-      closed: AtomicBool::new(false),
+      closed: AtomicBool::new(closed),
     }
   }
 }
@@ -322,14 +332,8 @@ where
   T: Send + Clone + 'static,
 {
   fn drop(&mut self) {
-    if let Some(dispatcher) = self.dispatcher.upgrade() {
-      let topics_to_unsubscribe: Vec<K> = self.subscriptions.lock().drain().collect();
-
-      for topic in topics_to_unsubscribe {
-        self.unsubscribe(&topic);
-      }
-
-      dispatcher.receiver_count.fetch_sub(1, Ordering::Relaxed);
+    if !self.closed.swap(true, Ordering::AcqRel) {
+      self.close_internal();
     }
   }
 }
